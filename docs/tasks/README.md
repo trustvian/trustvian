@@ -10,12 +10,16 @@ criteria, and is written before the work starts.
 | [`v1.0/`](v1.0/) | Tasks decomposed from the v1.0 release gate |
 | [`../archive/tasks/`](../archive/tasks/) | Completed tasks, grouped by the milestone that shipped them |
 
-Two specifications sit directly in this directory rather than under a
-milestone, because they belong to phases that have not started and are not
-part of the v1.0 gate:
+Specifications sitting directly in this directory:
 
-- [015 — Trustvian MCP](015-trustvian-mcp.md)
-- [016 — Trustvian Control (Placeholder)](016-control.md)
+- [049 — Platform Architecture Alignment](049-platform-architecture-alignment.md)
+  — the planning task that produced the `v1.0` platform milestone sequence
+  (050–072). Documentation only; it implements nothing.
+- [016 — Control Plane Constraint (Standing)](016-control.md) — the
+  architectural constraint a control plane must respect. Superseded in
+  scheduling by 049, preserved for the constraint itself.
+- [015 — Trustvian MCP](015-trustvian-mcp.md) — a future phase that has not
+  started.
 
-Neither has been implemented. They are kept here, not archived, precisely
+None has been implemented. They are kept here, not archived, precisely
 because they describe work that has not happened.

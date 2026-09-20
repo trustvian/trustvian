@@ -3,10 +3,12 @@
 Empty for now, deliberately.
 
 The `v1.0` release gate is defined in
-[ROADMAP.md § v1.0 — Production-Ready OSS](../../ROADMAP.md#v10--production-ready-oss).
-It has not yet been decomposed into numbered task specifications; when it is,
-those files land here and follow the same shape as the completed tasks in
-[`../../archive/tasks/`](../../archive/tasks/).
+[ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform).
+Its milestone sequence — tasks 049 through 072 — is listed there. Task files
+land here as each is scoped, following the same shape as the completed tasks
+in [`../../archive/tasks/`](../../archive/tasks/). Only 049, the planning task
+that produced that sequence, exists so far, and it lives in
+[`../`](../) alongside the other not-yet-implemented specifications.
 
 This directory exists so the active and historical task namespaces are
 distinguishable before that work starts. No task numbers are reserved and no

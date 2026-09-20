@@ -1,23 +1,35 @@
-# 016 — Trustvian Control (Placeholder)
+# 016 — Control Plane Constraint (Standing)
 
-**Milestone:** Control / Enterprise phase · **Depends on:** v0.1
-shipped and adopted by real external users (not just internally
-complete) · **Blocks:** none
+**Milestone:** superseded in scope by `v1.0` Track B · **Depends on:**
+nothing · **Blocks:** nothing · **Status:** the constraint below stands;
+the *scheduling* assumption in it does not.
+
+> **Superseded in part by [task 049](049-platform-architecture-alignment.md).**
+> This task was written when a control plane was a post-`v1.0`,
+> enterprise-scale idea gated on external adoption. The product direction
+> changed: a **local-first** control plane is now `v1.0` scope, decomposed
+> into tasks 050–072 (see [ROADMAP.md § v1.0](../ROADMAP.md#v10--local-first-behavioral-security-platform)).
+>
+> What did **not** change is the architectural constraint this task exists
+> to record, which is why the file is kept rather than archived. Everything
+> below still holds; read "Control" as "the platform layer", and read the
+> adoption-gated timing as historical.
 
 ## Objective
 
 This is deliberately **not** an implementation task. It exists so the
-constraint "Trustvian Control consumes the OSS core as a dependency;
-never forks it" is written down before any Control work starts, not
+constraint "the control plane consumes the OSS core as a dependency;
+never forks it" is written down before any platform work starts, not
 decided under the pressure of already having code to reconcile.
 
 ## Why
 
-Every other task in this roadmap can be scoped concretely because it
-extends something that already exists. Trustvian Control cannot be —
-per the roadmap brief's own ordering, it starts "only after the OSS
-core proves its value," which is an external-adoption signal this
-repository cannot manufacture for itself. Writing a detailed technical
+*Historical reasoning, retained as written.* Every other task in this
+roadmap could be scoped concretely because it extended something that
+already existed. Control could not be — per the roadmap brief's own
+ordering at the time, it started "only after the OSS core proves its
+value," an external-adoption signal this repository cannot manufacture
+for itself. Writing a detailed technical
 task file now, before that signal exists, would be exactly the kind of
 premature, speculative design [ADR 0001](../adr/0001-hexagonal-core-and-pipeline-shape.md)
 through [0004](../adr/0004-narrow-store-port-in-memory-only.md)
@@ -66,7 +78,7 @@ N/A.
 
 ## Documentation
 
-- [ARCHITECTURE.md § relationship to Trustvian Control/Cloud](../ARCHITECTURE.md#relationship-to-trustvian-controlcloud)
+- [ARCHITECTURE.md § relationship to the platform layer](../ARCHITECTURE.md#relationship-to-the-platform-layer)
   already states this constraint; this task's only concrete output (if
   any, beyond this file existing) is confirming that section stays
   accurate as `v0.1`/`v0.2`/`v0.3` land, since each of those could in

@@ -84,7 +84,7 @@ integrations are Trustvian Control/Enterprise territory — not because
 they're hard, but because they're governance/centralization concerns
 this OSS core has never carried for any other feature (see
 [ADR 0002](../../../adr/0002-public-api-boundary.md) and
-[ROADMAP.md § Control / Enterprise phase](../../../ROADMAP.md#trustvian-control)
+[ROADMAP.md § Control / Enterprise phase](../../../ROADMAP.md#organizational-scale)
 for the same line drawn elsewhere in this project).
 
 ## Non-Goals
