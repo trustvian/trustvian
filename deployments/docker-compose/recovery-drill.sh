@@ -138,8 +138,41 @@ done
 if grep -q -- "$DB_PASSWORD" "$BACKUP_ROOT/drill/MANIFEST" || grep -q -- "$DB_PASSWORD" <<<"$backup_out"; then
     fail "the database password appears in the backup output or manifest"
 fi
-grep -q '^trustvian_schema_version=1$' "$BACKUP_ROOT/drill/MANIFEST" || fail "manifest lacks schema version 1"
-ok "artifacts 0600, checksums verify, schema version 1, no credentials"
+# The manifest must record the schema version the live database actually
+# carries. This drill used to assert the literal 1, which meant it would fail
+# the first time the schema moved — task 051 moved it — and a recovery drill
+# that breaks on a schema change breaks exactly when it is most needed.
+#
+# Comparing the two recorded values instead tests the property that matters:
+# the backup describes the database it was taken from. That stays true at
+# every future version, and neither side is trusted alone — a manifest
+# claiming a version nothing verifies would be as useless as no manifest.
+manifest_file="$BACKUP_ROOT/drill/MANIFEST"
+
+# psql_on strips all whitespace, so two rows would concatenate into one
+# meaningless number. The row count is asked for separately rather than
+# inferred from the value.
+schema_rows="$(psql_on "$DB_NAME" "SELECT count(*) FROM trustvian_schema_version")"
+[ "$schema_rows" = "1" ] \
+    || fail "'$DB_NAME' holds $schema_rows schema-version row(s), want exactly 1"
+live_schema="$(psql_on "$DB_NAME" "SELECT version FROM trustvian_schema_version")"
+
+manifest_lines="$(grep -c '^trustvian_schema_version=' "$manifest_file" || true)"
+[ "$manifest_lines" = "1" ] \
+    || fail "MANIFEST holds $manifest_lines trustvian_schema_version line(s), want exactly 1"
+manifest_schema="$(sed -n 's/^trustvian_schema_version=//p' "$manifest_file" | tr -d '[:space:]')"
+
+case "$live_schema" in
+    ''|*[!0-9]*) fail "the live database reported a non-numeric schema version: '$live_schema'" ;;
+esac
+case "$manifest_schema" in
+    ''|*[!0-9]*) fail "MANIFEST records a non-numeric schema version: '$manifest_schema'" ;;
+esac
+
+[ "$live_schema" = "$manifest_schema" ] \
+    || fail "MANIFEST records schema version $manifest_schema but '$DB_NAME' is at $live_schema"
+
+ok "artifacts 0600, checksums verify, schema version $live_schema matches the live database, no credentials"
 
 # ---------------------------------------------------------------------
 step "4/8 Restore guards refuse unsafe targets and corrupt backups"
