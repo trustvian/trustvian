@@ -42,6 +42,15 @@ var (
 	// ErrAggregateOverflow reports that another record would wrap the
 	// observation counter.
 	ErrAggregateOverflow = errors.New("platform: evaluation aggregate counter overflow")
+
+	// ErrUnboundAggregate reports an aggregate that did not come from
+	// NewEvaluationAggregate and is therefore bound to no evaluation run.
+	//
+	// Its own sentinel rather than reusing ErrInvalidID because the fault is
+	// in the *receiver*, not the record: a caller told that an identifier was
+	// invalid would go looking at the record they just passed, and find
+	// nothing wrong with it.
+	ErrUnboundAggregate = errors.New("platform: evaluation aggregate is not bound to an evaluation run")
 )
 
 // Decision values a DecisionRecord may carry.
@@ -212,6 +221,28 @@ func (s MetricSummary) observe(v float64) MetricSummary {
 // aggregate variable is a data race like any other — the value semantics make
 // synchronization *possible*, not unnecessary.
 type EvaluationAggregate struct {
+	// bound records that this value came from NewEvaluationAggregate with a
+	// valid run, and is the guard that makes the zero value unusable.
+	//
+	// Unexported fields stop a caller *mutating* an aggregate; they do not
+	// stop `platform.EvaluationAggregate{}`, which any package can write.
+	// Without this marker such a value accepts records happily — its empty
+	// environment even matches a record whose environment is also empty, so
+	// the environment guard waves it through — and the result is an evidence
+	// summary belonging to no run.
+	//
+	// A bool rather than re-validating the four identifiers on every
+	// AddRecord: they are immutable once set, so re-proving them per record
+	// would spend real time on a per-decision path re-deriving a constant.
+	// It also fails in the safer direction. A future second constructor that
+	// forgot this field would produce aggregates that reject everything —
+	// loud, immediate, easy to find — where a forgotten *field* in a
+	// validation list would silently pass.
+	//
+	// It cannot drift from the identifiers it vouches for: nothing sets it
+	// but the constructor, and nothing can reach the fields afterwards.
+	bound bool
+
 	// Run identity, captured once at construction. Task 052 made these
 	// immutable through EvaluationRun's exported API, so they cannot drift
 	// from the run they describe.
@@ -289,7 +320,9 @@ func NewEvaluationAggregate(run EvaluationRun) (EvaluationAggregate, error) {
 			ErrInvalidTransition, preview(string(run.Status())))
 	}
 
+	// Set only here, and only after every check above has passed.
 	return EvaluationAggregate{
+		bound:       true,
 		runID:       run.ID(),
 		candidateID: run.CandidateID(),
 		environment: run.Environment(),
@@ -336,6 +369,12 @@ func (a EvaluationAggregate) ContextRisk() MetricSummary        { return a.conte
 // AddRecord folds one DecisionRecord into the aggregate and returns the
 // result. The receiver is unchanged.
 //
+// The aggregate must have come from NewEvaluationAggregate. A zero value —
+// which any package can write, since unexported fields prevent mutation and
+// not construction — returns ErrUnboundAggregate and folds nothing: one
+// aggregate is evidence for exactly one valid run, and a record must not be
+// able to conjure one that belongs to no run at all.
+//
 // A DecisionRecord normally comes from a successful Engine.Analyze, but it is
 // a detached public struct: a caller can build or modify one freely. Every
 // field this method consumes is therefore validated as untrusted input, and
@@ -358,6 +397,13 @@ func (a EvaluationAggregate) ContextRisk() MetricSummary        { return a.conte
 // complete the EvaluationRun: this type has no authority over a run's
 // lifecycle.
 func (a EvaluationAggregate) AddRecord(record trustvian.DecisionRecord) (EvaluationAggregate, error) {
+	// First, before anything about the record is considered: an aggregate
+	// that never bound a run has nothing to be evidence *for*, and no record
+	// should be able to turn EvaluationAggregate{} into a populated summary.
+	if !a.bound {
+		return a, fmt.Errorf("%w: use NewEvaluationAggregate", ErrUnboundAggregate)
+	}
+
 	if a.recordCount == math.MaxUint64 {
 		return a, fmt.Errorf("%w: already at %d records", ErrAggregateOverflow, a.recordCount)
 	}

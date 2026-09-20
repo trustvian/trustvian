@@ -81,9 +81,12 @@ actually depend on.
   are refused. `MatchedDefault` and `PolicyRule` are validated as one pairing,
   so a hand-built record cannot claim a rule matched while naming none.
   `NewEvaluationAggregate` returns an error rather than binding evidence to an
-  invalid or zero-value run. Rejection paths echo only a bounded preview of
-  untrusted strings, so a malformed record cannot turn an error into an
-  amplification primitive. `AddRecord` costs 99 ns and zero allocations.
+  invalid or zero-value run, and a zero-value aggregate accepts no record at
+  all — both zero values are writable from any package, since unexported
+  fields prevent mutation rather than construction. Rejection paths echo only
+  a bounded preview of untrusted strings, so a malformed record cannot turn an
+  error into an amplification primitive. `AddRecord` costs 86 ns and zero
+  allocations.
 
 - **`platform/`: the control-plane domain, as a fourth Go module.** The first
   platform-layer runtime code — `Project`, `Agent`, `Candidate`,

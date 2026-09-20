@@ -24,7 +24,11 @@ import (
 func TestAddRecordRefusesToWrapTheCounter(t *testing.T) {
 	at := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
 
+	// bound: true because this models an aggregate the constructor produced
+	// and that then ran to the counter's limit — not an unbound one, which
+	// AddRecord now refuses before it ever reaches the overflow check.
 	full := EvaluationAggregate{
+		bound:       true,
 		runID:       "run-1",
 		candidateID: "cand-1",
 		environment: "staging",
@@ -51,6 +55,7 @@ func TestAddRecordSucceedsOneBelowTheLimit(t *testing.T) {
 	at := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
 
 	nearly := EvaluationAggregate{
+		bound:       true,
 		runID:       "run-1",
 		candidateID: "cand-1",
 		environment: "staging",
@@ -88,5 +93,58 @@ func overflowTestRecord(at time.Time) trustvian.DecisionRecord {
 		// guard refuses — which is how this fixture was first written, and
 		// how the guard proved itself.
 		MatchedDefault: true,
+	}
+}
+
+// TestBindingMarkerIsNotForgeableFromValidIdentifiers covers the state an
+// external caller cannot build: identifiers present, marker absent.
+//
+// It matters because the marker is what the guard trusts. If a future change
+// ever set the identifiers without setting `bound` — a second constructor, a
+// deserializer — this is the case that decides whether the result is usable.
+// It must not be: the marker vouches for validation having run, and
+// identifiers that merely *look* right are not evidence that it did.
+func TestBindingMarkerIsNotForgeableFromValidIdentifiers(t *testing.T) {
+	at := time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
+
+	tests := map[string]EvaluationAggregate{
+		"identifiers set, marker absent": {
+			runID: "run-1", candidateID: "cand-1",
+			environment: "staging", profile: "profile-1",
+		},
+		"marker absent, partial identity": {
+			runID: "run-1", environment: "staging",
+		},
+	}
+
+	for name, unbound := range tests {
+		t.Run(name, func(t *testing.T) {
+			got, err := unbound.AddRecord(overflowTestRecord(at))
+			if !errors.Is(err, ErrUnboundAggregate) {
+				t.Fatalf("AddRecord() error = %v, want one wrapping ErrUnboundAggregate", err)
+			}
+			if got != unbound {
+				t.Error("a refused record changed the aggregate")
+			}
+		})
+	}
+}
+
+// TestConstructorSetsTheMarkerOnlyOnSuccess: a rejected run must not leave a
+// half-built aggregate that would pass the guard.
+func TestConstructorSetsTheMarkerOnlyOnSuccess(t *testing.T) {
+	if _, err := NewEvaluationAggregate(EvaluationRun{}); err == nil {
+		t.Fatal("NewEvaluationAggregate(zero run) succeeded")
+	}
+
+	got, err := NewEvaluationAggregate(EvaluationRun{})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if got.bound {
+		t.Error("a failed construction returned an aggregate marked as bound")
+	}
+	if got != (EvaluationAggregate{}) {
+		t.Errorf("a failed construction returned %+v, want the zero value", got)
 	}
 }

@@ -192,6 +192,30 @@ valid evidence. Only a status this package never produces is refused — the
 same fail-closed stance the transitions take. No existence checks: that needs
 a collection, which is task 057.
 
+**The zero value is intentionally unusable.** Unexported fields prevent
+mutation, not construction, so `platform.EvaluationAggregate{}` can be written
+from any package — and an unbound aggregate has an empty environment, which
+the environment guard happily matches against a record whose environment is
+also empty. Every other check passes on a well-formed record, and the result
+would be a populated evidence summary belonging to no run.
+
+A private marker set only by the constructor, and only after every run check
+passes, closes it: `AddRecord` returns `ErrUnboundAggregate` and folds
+nothing. **Records can only be folded into an aggregate successfully created
+from a valid `EvaluationRun`.**
+
+A boolean rather than re-validating the four identifiers per record: they are
+immutable once set, so re-proving them would spend real time on a
+per-decision path re-deriving a constant. It also fails in the safer
+direction — a future constructor that forgot the marker would produce
+aggregates rejecting everything, which is loud and immediate, where a
+forgotten entry in a validation list would silently pass.
+
+The check runs **first**, ahead of every record-derived one. When both the
+receiver and the record are unusable, the binding fault is the one worth
+reporting: an unbound aggregate cannot accept any record, so naming a problem
+with the record would send a caller to debug the wrong object.
+
 ## Validation / Trust Boundary
 
 `DecisionRecord` is a **detached public struct**. A genuine one comes from
@@ -345,7 +369,10 @@ approval, mismatched environment, mismatched `Behavior.Environment`, empty
 for each of the five numeric fields — `NaN`, `±Inf`, below `0`, and above `1`.
 
 Construction: a zero-value run is refused, and every lifecycle state is
-accepted.
+accepted. A zero-value *aggregate* refuses a record that is valid in every
+other respect — deliberately including a matching empty environment, so the
+binding guard is what rejects it rather than the environment check doing so by
+accident — and reports the binding fault ahead of a record's own faults.
 
 Diagnostics stay bounded: a 1 MiB field in any of seven positions produces an
 error under 1 KiB that never reproduces a long run of the input, and a
@@ -404,6 +431,7 @@ Also updated: `docs/DOMAIN.md`, `docs/SECURITY.md`, `docs/ROADMAP.md`,
 - [ ] `MatchedDefault` and `PolicyRule` are validated as one coherent piece of
       evidence; neither malformed combination counts.
 - [ ] An invalid or zero-value `EvaluationRun` produces no aggregate.
+- [ ] A zero-value `EvaluationAggregate` accepts no record.
 - [ ] Validation errors bound what they echo from untrusted input.
 - [ ] Duplicates count twice, documented.
 - [ ] No score, gate, diff, promotion, or new-behavior semantic exists.

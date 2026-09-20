@@ -928,12 +928,18 @@ plausibly run once per decision in a future control plane.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| `EvaluationAggregateAddRecord` | 99.5 | 0 | 0 |
+| `EvaluationAggregateAddRecord` | 85.5 | 0 | 0 |
 
-Six runs, darwin/arm64, Apple M3 Pro, Go 1.27; spread 97.6–109.9 ns/op. An
-earlier revision measured 95.2 ns before policy-selection consistency
-validation added two string comparisons to the path — a ~4% cost for closing a
-fabricated-evidence hole, which is not a trade worth thinking about twice.
+Six runs, darwin/arm64, Apple M3 Pro, Go 1.27; spread 84.1–87.6 ns/op.
+
+**Read the allocation column, not the latency one.** Across three revisions
+of this path — 95.2, then 99.5 after policy-selection validation added two
+string comparisons, then 85.5 after a binding check added one more — `ns/op`
+moved in both directions while `B/op` and `allocs/op` stayed at zero. Each
+revision added work, so the final number being the fastest is session
+variance, not an optimization; this file's own [reading the
+numbers](#reading-the-numbers) section documents exactly that split. Nothing
+was tuned, and the validation added between measurements is all still there.
 
 **Zero allocations is the number that matters**, and it was not free. The
 first implementation paired each metric name with a `*MetricSummary` pointing

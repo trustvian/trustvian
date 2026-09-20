@@ -330,11 +330,12 @@ Specific boundaries worth naming:
   `PolicyRule` are validated as one pairing — a matched rule names itself, the
   default names nothing — so a hand-built record cannot claim a rule matched
   while naming none.
-- **An aggregate belongs to exactly one valid run.** A zero-value
-  `EvaluationRun` is constructible from any package (unexported fields prevent
-  mutation, not construction), and would otherwise produce an aggregate with
-  four empty identifiers whose environment check matched records with an empty
-  environment. Construction refuses it.
+- **An aggregate belongs to exactly one valid run**, at both ends. A
+  zero-value `EvaluationRun` produces no aggregate, and a zero-value
+  *aggregate* accepts no record — unexported fields prevent mutation, not
+  construction, so both zero values are writable from any package. Left open,
+  an unbound aggregate would have matched records whose environment was also
+  empty and accumulated evidence belonging to no run.
 
 See [ADR 0026](adr/0026-evaluation-aggregation-is-bounded-evidence.md).
 

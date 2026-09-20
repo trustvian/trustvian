@@ -998,3 +998,136 @@ func TestPreviewTruncatesOnARuneBoundary(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------
+// The constructor cannot be bypassed
+// ---------------------------------------------------------------------
+
+// TestZeroValueEvaluationAggregateRejectsRecords is the last invariant bypass
+// in this type, and the subtlest.
+//
+// Task 052's unexported fields stop a caller *mutating* an aggregate. They do
+// not stop `platform.EvaluationAggregate{}`, which any package can write. An
+// unbound aggregate has an empty environment — and so the environment guard,
+// which compares the record's environment against the aggregate's, matches
+// happily when the record's is empty too. Every other check passes on a
+// perfectly well-formed record. The result was a populated evidence summary
+// belonging to no run, no candidate, and no environment.
+//
+// The record below is deliberately valid in every other respect. If it failed
+// for an unrelated reason — a bad decision, a mismatched environment — this
+// test would pass while proving nothing.
+func TestZeroValueEvaluationAggregateRejectsRecords(t *testing.T) {
+	zero := platform.EvaluationAggregate{}
+
+	rec := trustvian.DecisionRecord{
+		EventID:   "evt-1",
+		Timestamp: aggEpoch,
+		// Empty on both sides, so the environment guard is satisfied and
+		// cannot be what rejects this record.
+		Environment:    "",
+		Behavior:       trustvian.StableFeatures{Environment: ""},
+		Decision:       "allow",
+		RiskLevel:      "low",
+		ApprovalStatus: event.ApprovalUnspecified,
+		MatchedDefault: true,
+		// Every numeric signal at 0, which is inside [0,1].
+	}
+
+	// Confirm the premise: this record is acceptable to a real aggregate
+	// whose environment is also empty. Otherwise the assertion below could
+	// pass for the wrong reason.
+	run, err := platform.NewEvaluationRun("run-1", "cand-1", "local", "profile-1", aggEpoch)
+	if err != nil {
+		t.Fatalf("NewEvaluationRun() error = %v", err)
+	}
+	bound, err := platform.NewEvaluationAggregate(run)
+	if err != nil {
+		t.Fatalf("NewEvaluationAggregate() error = %v", err)
+	}
+	inEnvironment := rec
+	inEnvironment.Environment = "local"
+	inEnvironment.Behavior.Environment = "local"
+	if _, err := bound.AddRecord(inEnvironment); err != nil {
+		t.Fatalf("premise broken: the record is malformed for an unrelated reason: %v", err)
+	}
+
+	got, err := zero.AddRecord(rec)
+	if !errors.Is(err, platform.ErrUnboundAggregate) {
+		t.Fatalf("AddRecord() on a zero-value aggregate: error = %v, want one wrapping ErrUnboundAggregate", err)
+	}
+	if got != zero {
+		t.Errorf("a refused record changed the aggregate:\n got %+v\nwant %+v", got, zero)
+	}
+	if got.RecordCount() != 0 {
+		t.Errorf("RecordCount() = %d, want 0", got.RecordCount())
+	}
+	if got.RunID() != "" || got.CandidateID() != "" || got.Environment() != "" || got.BehavioralProfile() != "" {
+		t.Error("a refused record populated the aggregate's identity")
+	}
+}
+
+// TestConstructorProducedAggregateStillAccepts is the positive half: the new
+// guard must not reject the values the constructor makes.
+func TestConstructorProducedAggregateStillAccepts(t *testing.T) {
+	a := newTestAggregate(t)
+
+	got, err := a.AddRecord(validRecord())
+	if err != nil {
+		t.Fatalf("AddRecord() on a constructor-produced aggregate: %v", err)
+	}
+	if got.RecordCount() != 1 {
+		t.Fatalf("RecordCount() = %d, want 1", got.RecordCount())
+	}
+
+	// The binding survives folding, so a chain of AddRecord calls keeps
+	// working rather than the second one rejecting the first one's output.
+	second := validRecord()
+	second.EventID = "evt-2"
+	got, err = got.AddRecord(second)
+	if err != nil {
+		t.Fatalf("second AddRecord(): %v", err)
+	}
+	if got.RecordCount() != 2 {
+		t.Errorf("RecordCount() = %d, want 2", got.RecordCount())
+	}
+
+	// And a copy of a bound aggregate is still bound — value semantics must
+	// carry the marker, not just the identifiers.
+	copied := got
+	if _, err := copied.AddRecord(validRecord()); err != nil {
+		t.Errorf("a copy of a bound aggregate was rejected: %v", err)
+	}
+}
+
+// TestUnboundAggregateReportsBindingBeforeRecordFaults pins the ordering.
+//
+// When both the receiver and the record are unusable, the binding fault is
+// the one to report: an unbound aggregate cannot accept *any* record, so
+// telling the caller their decision string is unrecognized sends them to
+// debug the wrong object. The guard therefore runs first, ahead of every
+// record-derived check.
+func TestUnboundAggregateReportsBindingBeforeRecordFaults(t *testing.T) {
+	zero := platform.EvaluationAggregate{}
+
+	// Wrong in several independent ways at once: no event id, no timestamp,
+	// an unrecognized decision and risk, a malformed policy pairing, and a
+	// non-finite metric. Any of these would be reported by a later check.
+	hopeless := trustvian.DecisionRecord{
+		Decision:       "banana",
+		RiskLevel:      "severe",
+		MatchedDefault: false,
+		TrustScore:     math.NaN(),
+	}
+
+	got, err := zero.AddRecord(hopeless)
+	if !errors.Is(err, platform.ErrUnboundAggregate) {
+		t.Fatalf("AddRecord() error = %v, want ErrUnboundAggregate reported ahead of the record's own faults", err)
+	}
+	if errors.Is(err, platform.ErrInvalidDecisionRecord) {
+		t.Error("the error reports a record fault; an unbound aggregate cannot accept any record")
+	}
+	if got != zero {
+		t.Error("a refused record changed the aggregate")
+	}
+}
