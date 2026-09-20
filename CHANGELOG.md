@@ -40,6 +40,23 @@ actually depend on.
 
 ### Added
 
+- **`DecisionRecord`: a serializable public projection of one analysis.**
+  `Result` is readable from outside the module, but four of its fields have
+  types from `internal/`, so a consumer could inspect a result without being
+  able to declare, store, or serialize one. `result.DecisionRecord()` returns
+  a public type with explicit JSON field names carrying the evidence behind a
+  decision: behavioral shape, fingerprint, anomaly score and contributors,
+  trust and risk, the policy rule and reason, and correlation identifiers.
+
+  It carries no raw event payload — `Event.Attributes`, tool arguments,
+  prompts, and completions have no field and cannot reach its JSON — and no
+  consumer-side identifiers. Both are asserted by test. The projection is
+  pure: no I/O, no clock, no scoring, and its slices are copied rather than
+  aliased.
+
+  `StableFeatures` gained JSON tags so the record serializes consistently.
+  The type is unreleased, so no published representation changed.
+
 - **Every `Engine` option is now usable from outside the module.** Two
   were exported but uncallable by third-party code, because their
   parameter types live under `internal/` and no public path produced

@@ -42,6 +42,8 @@ here and in its own documentation.
 | `alert` package exports | STABLE | `Alert`, `Severity`, `Rule`, `Condition`, `Evaluate`, `Sink`, `WebhookSink` | Additive fields and options | Major |
 | `config` exported types and `Compile*` functions | STABLE | Existing documents keep compiling | New optional fields, new document types | Major |
 | `StableFeatures` (root package) | STABLE | Field shapes; handed to a `WithContextRisk` callback | New fields | Major |
+| `DecisionRecord`, `ContributorRecord` | STABLE | Field shapes and meanings | New fields | Major |
+| `DecisionRecord` JSON field names | STABLE | A name, once published, keeps its meaning | New fields | Major |
 | Exported sentinel errors | STABLE | An error identity checked with `errors.Is` keeps matching the condition it names | New sentinels | Major |
 | Exported enum-like constants | STABLE WITH DEPRECATION | Existing values keep their meaning | New values — **consumers must tolerate unknown values** | Major to remove a value |
 | Configuration schema (`policy`, `alerts`, `anomaly`, `storage`) | STABLE | A valid `v1` document keeps loading across `v1.x` | New optional fields; a new schema version alongside `v1` | Major, or a new schema version |
@@ -115,6 +117,24 @@ an intentional facade, not an oversight: the `config` package produces
 every such value, so a caller never has to name one. It does mean a
 change to one of those types' *shapes* is breaking for external callers
 even though the type is internal, and it is treated that way.
+
+### The decision record
+
+`Result.DecisionRecord()` returns the serializable public projection of one
+analysis. Both its Go field shapes and its JSON field names are STABLE:
+adding a field is a minor, removing or redefining one is major.
+
+Two properties are part of the contract rather than implementation detail.
+The record carries **no raw event payload** — `Event.Attributes`, tool
+arguments, prompts, and completions have no field and cannot appear in its
+JSON — and it carries **no consumer-side identifiers**; anything associating
+records with projects, candidates, or evaluations belongs beside them, not on
+them. Both are asserted by test.
+
+The record has no schema version field, deliberately. This contract already
+governs how its fields may change, and a version number would duplicate that
+with machinery nothing reads. A transport that carries records across a
+network owns its own envelope version, exactly as `alert.Envelope` does.
 
 ### Persistence is not an extension point
 

@@ -23,6 +23,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -61,6 +62,16 @@ func main() {
 
 	fmt.Printf("decision=%s risk=%s trust=%.2f context_risk=%.2f\n",
 		result.Decision, result.Trust.Risk, result.Trust.Score, result.Trust.ContextRisk)
+
+	// The public projection a platform persists, streams, or serves over an
+	// API. Note what this module never does: name an internal type, or reach
+	// into Result's stage structs to build a payload of its own.
+	record := result.DecisionRecord()
+	encoded, err := json.MarshalIndent(record, "", "  ")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%s\n", encoded)
 }
 
 // newEngine builds a fully configured Engine and returns a function the
