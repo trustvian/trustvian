@@ -316,14 +316,22 @@ path. Returns an error, never saturates.
 
 ## Error Semantics
 
-Three sentinels, matching the repository's convention of wrapping with
+Four sentinels, matching the repository's convention of wrapping with
 `fmt.Errorf` and matching with `errors.Is`:
 
-| Sentinel | Meaning |
-|---|---|
-| `ErrInvalidDecisionRecord` | a consumed field is missing, unrecognized, or out of range |
-| `ErrEnvironmentMismatch` | the record belongs to a different environment |
-| `ErrAggregateOverflow` | `RecordCount` would wrap |
+| Sentinel | Where the fault is | Meaning |
+|---|---|---|
+| `ErrInvalidDecisionRecord` | the record | a consumed field is missing, unrecognized, or out of range |
+| `ErrEnvironmentMismatch` | the record | it belongs to a different evaluation environment |
+| `ErrAggregateOverflow` | neither | another observation would wrap `RecordCount` |
+| `ErrUnboundAggregate` | **the receiver** | `AddRecord` was called on an `EvaluationAggregate` that `NewEvaluationAggregate` did not successfully create from a valid `EvaluationRun` |
+
+The middle column is the distinction worth keeping. `ErrUnboundAggregate` is
+**not** a malformed-record error and there is nothing to repair in the record:
+the aggregate itself is bound to no run, so it can accept nothing at all. A
+caller who read it as a record fault would go inspecting the value they just
+passed and find nothing wrong with it, which is exactly why it has its own
+sentinel rather than reusing `ErrInvalidID`.
 
 Messages name the offending field and value without dumping the record, and
 **bound what they echo**.

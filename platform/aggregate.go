@@ -27,9 +27,15 @@ import (
 )
 
 // Sentinel errors, wrapped with fmt.Errorf and matched with errors.Is,
-// following the convention the core and the rest of this package use. Three
-// categories, because those are the three things a caller can do something
-// different about: fix the record, fix which aggregate it went to, or stop.
+// following the convention the core and the rest of this package use.
+//
+// Four categories, because those are the four different things a caller can
+// do about a failure: fix the record, route it to the aggregate whose
+// environment it belongs to, construct the aggregate properly in the first
+// place, or stop because the counter is exhausted. Still one per category
+// rather than one per field — a caller branches on "the record was
+// unusable", never on which of nine fields it was, and the wrapped message
+// names the field.
 var (
 	// ErrInvalidDecisionRecord reports a record whose consumed fields are
 	// missing, unrecognized, or out of range.
