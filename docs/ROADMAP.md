@@ -512,10 +512,12 @@ lost.
 | 071 | Platform backup, restore, and upgrade |
 | 072 | OSS platform `v1.0` release gate |
 
-Tasks 050 and 051 are the only ones that touch the core module, and both are
-additive. Everything from 052 onward lives in the platform layer. A third
-core-touching task is a signal that the boundary is being violated, and the
-response is to re-examine the design rather than extend the engine.
+Tasks 050 and 051 are the only core changes currently expected, and both are
+additive. Everything from 052 onward lives in the platform layer. Any further
+core change requires explicit architectural review and must be generic —
+justified by the behavioral engine on its own terms, never by platform
+convenience. What stays prohibited outright is platform awareness in the
+core.
 
 ### Open conflicts to resolve before implementation
 

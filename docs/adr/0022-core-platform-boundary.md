@@ -166,10 +166,17 @@ raised one level.
 
 - The platform can be built, tested, and reviewed without touching
   behavioral code, and the engine keeps a single reason to change.
-- Exactly two core-touching tasks are expected: a public export boundary
-  for results, and learning-scope isolation. Both are additive. If a
-  third appears, the boundary is being violated and the design should be
-  re-examined rather than the engine extended.
+- Tasks 050 and 051 are the only core changes currently expected: a
+  public result and export boundary, and generic learning-scope
+  isolation. Both are additive. Any further core change requires
+  explicit architectural review, and must be generic — justified by the
+  behavioral engine on its own terms rather than by what the platform
+  happens to need. A third such task is a reason to re-examine the
+  boundary, not proof on its own that it has been crossed.
+- What the boundary does prohibit absolutely is platform awareness.
+  Project, Candidate, EvaluationRun, Scorecard, Promotion, and
+  control-plane or dashboard concerns must never become core types,
+  fields, modes, or behavior, however convenient it would be.
 - Invariants 2 and 3 are release gates for `v1.0`, asserted by an
   automated check rather than by review, because both fail silently —
   and, for invariant 2, because the module boundary alone would not
