@@ -506,10 +506,22 @@ in-memory growth characteristics.
 
 ## Relationship to the platform layer
 
-**Nothing in this repository implements the platform yet.** This section
-records the boundary it must respect, decided in
-[ADR 0022](adr/0022-core-platform-boundary.md), so that the first
-implementation does not have to re-derive it.
+**The platform has begun, as `platform/`.** Task 052 added its domain —
+`Project`, `Agent`, `Candidate`, `EvaluationRun`, and references to an
+environment and a behavioral profile — and nothing else: no persistence, no
+transport, no aggregation, no gates. This section records the boundary it
+respects, decided in [ADR 0022](adr/0022-core-platform-boundary.md).
+
+`platform/` is a separate Go module at `trustvian-platform`. The path is
+deliberately not under `github.com/trustvian/trustvian`: Go's `internal/` rule
+turns on import-path ancestry rather than module membership, so a
+repository-prefixed path would be permitted to import the engine's internal
+packages, and this one is a compile error instead.
+
+It does not import the core at all today. The domain has no use for a
+`DecisionRecord` yet, and adding the dependency to demonstrate the
+relationship would be the speculative coupling the boundary exists to
+prevent. Aggregation introduces it when it needs it.
 
 Trustvian is becoming a two-layer product: the behavioral engine described
 above, and a platform that evaluates *candidates* — versions of an agent —
@@ -581,12 +593,12 @@ The event-history row is the load-bearing one. The engine holds learned state,
 not an event log. Any evaluation feature that needs to replay or diff raw events
 needs the platform to store them — and that is a boundary, not a gap.
 
-### The one core change the platform requires
+### Learning isolation, the core change the platform required
 
 Evaluating two candidates against one actor identity would train one baseline,
 so each candidate would teach the other and the evaluation would measure a
-baseline it had polluted. **Learning isolation is a prerequisite**, and it does
-not exist today.
+baseline it had polluted. **Learning isolation is a prerequisite**, and task
+051 implemented it.
 
 The constraint on solving it: the mechanism must be generic. `SessionID` must
 not become baseline identity, an evaluation run must not become fingerprint
@@ -594,9 +606,14 @@ identity, and candidate metadata — git SHA, artifact digest, model or tool-set
 hash — must never become a fingerprint dimension, or every deployment would
 look like a new actor. The engine must not learn what a Candidate is.
 
-`baseline.Key` was made composite in `v0.4` against exactly this kind of need.
-Whether isolation extends that key, scopes the store, or takes a third shape is
-an open design question owned by its own task, not decided here.
+`baseline.Key` was made composite in `v0.4` against exactly this kind of need,
+and task 051 extended it: a learning scope is now a key dimension, selected by
+`trustvian.WithLearningScope` and absent from behavioral identity — see
+[ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md).
+
+The platform names the same idea `BehavioralProfileRef` and keeps it separate
+from a candidate or a run, so that how profiles are allocated stays a decision
+a later task can make rather than one a convention already made.
 
 ### Inside the platform: everything is an adapter
 
@@ -639,10 +656,13 @@ reconnect behavior as part of its design — not after its first outage.
 
 ### Module boundary
 
-The platform is expected to live in a **separate Go module inside this
-repository**, the same arrangement `processor/` and `examples/` already use.
-That choice and its trade-offs are argued in
-[ADR 0022](adr/0022-core-platform-boundary.md).
+The platform lives in a **separate Go module inside this repository** —
+`platform/`, module path `trustvian-platform` — the same arrangement
+`processor/` and `examples/` already use. That choice and its trade-offs are
+argued in [ADR 0022](adr/0022-core-platform-boundary.md).
+
+It imports no core package today. The dependency is permitted and expected;
+it simply does not exist yet, because the domain has no use for one.
 
 One thing the module boundary does **not** buy, stated here because it is easy
 to assume otherwise: it does not enforce rule 2. Go's `internal/` restriction

@@ -793,6 +793,54 @@ not** — the central design question this task answers explicitly:
   signal (task 027, built with zero knowledge of AI agents) still
   detects the higher-order novelty.
 
+## The control-plane domain (`platform/`)
+
+The concepts above are the *behavioral* domain: what an actor did and how much
+it is trusted. `v1.0` adds a second, separate vocabulary in the `platform/`
+module — what is being evaluated, and by whom:
+
+```text
+Project
+  └─ Agent
+      └─ Candidate
+          └─ EvaluationRun ──▶ EnvironmentRef
+                          └──▶ BehavioralProfileRef
+```
+
+- **Project** — a local control-plane workspace owning agents. Not a tenant,
+  organization, or access-control boundary.
+- **Agent** — the stable logical identity of an agentic application across
+  every version of it. Independent of commit, digest, model, and deployment:
+  those describe a Candidate.
+- **Candidate** — one version or configuration of an Agent. Its metadata
+  (label, source ref, artifact digest, model, tool-set and config digests) is
+  **descriptive only**.
+- **EvaluationRun** — one bounded execution of one Candidate against one
+  environment reference and one behavioral profile reference. It carries
+  identity and lifecycle, and no results.
+- **EnvironmentRef** / **BehavioralProfileRef** — opaque references. The
+  environment model itself, and how behavioral profiles are allocated, are
+  later tasks.
+
+**These two domains never merge, and the separation is the point.** No
+platform identifier is a behavioral dimension: a candidate is not an actor, a
+run is not a fingerprint, and a git SHA never reaches a `StableFeatures` or a
+baseline key — treating one as behavior would make every deployment look like
+a brand-new actor and destroy the learning the product exists to accumulate.
+The relationship runs one way through a reference:
+
+```text
+platform BehavioralProfileRef
+        ↓  a later service decides the allocation
+core     trustvian.WithLearningScope(string)
+```
+
+A run's `Status` is execution state, not a verdict. `completed` means the
+execution finished; whether the candidate passed is a gate's separate answer.
+
+See [ADR 0025](adr/0025-platform-domain-values-with-caller-owned-identity.md)
+and [task 052](tasks/v1.0/052-evaluation-domain.md).
+
 This document describes the domain model as it exists today. Planned
 extensions to it (further v0.7 agent-behavioral-detection scenarios,
 further v0.6 sequence detectors, and others) are scoped in

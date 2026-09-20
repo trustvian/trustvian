@@ -247,6 +247,60 @@ control, and any code holding an `Engine` can name any scope. It partitions
 learning, not permission — see [future multi-tenant
 isolation](#future-multi-tenant-isolation).
 
+### Platform control-plane input
+
+**Threat:** the control-plane domain (`platform/`, task 052) accepts
+caller-supplied strings — identifiers, names, candidate metadata, failure
+reasons — that will eventually arrive over an API and land in storage.
+Unbounded or malformed values there become a resource problem, a log-injection
+problem, or two identities a human reads as one.
+
+**Status: bounded at construction.** One policy covers every string in the
+domain: at most 256 bytes (the same limit `config` already applies to public
+rule names), valid UTF-8, and no control characters — C0, C1, or DEL. Control
+characters are rejected because they survive no boundary intact: a newline
+splits a log line, a NUL truncates a C string, and an escape sequence rewrites
+the terminal an operator is reading.
+
+Identifiers additionally reject leading and trailing whitespace. `"cand-1 "`
+and `"cand-1"` are different map keys and different database rows, and
+accepting both manufactures two identities that look like one.
+
+The shape carries as much of the guarantee as the limits do. There is no map,
+no `any`, no raw payload field, and no prompt, completion, or tool-argument
+field anywhere in the domain — candidate metadata is a fixed set of optional
+descriptive fields, so its total size is bounded by construction rather than
+by a counted limit. Event history is deliberately absent and belongs behind a
+later capability boundary.
+
+**What this is not:** an authorization boundary. A `Project` is a workspace,
+not a tenant, and carries no access control. Multi-tenancy remains
+[unimplemented](#future-multi-tenant-isolation).
+
+### Platform identity cannot become behavioral identity
+
+**Threat:** an evaluation concept leaks into the engine — a candidate becomes
+an actor, a run becomes a fingerprint dimension, or a git SHA becomes
+behavior. The consequence is not a leak but a detector that no longer works:
+every deployment would look like a brand-new actor, and the learning the
+product exists to accumulate would reset on each release.
+
+**Status: structurally prevented, and checked.** The platform is a separate Go
+module whose path (`trustvian-platform`) is deliberately outside
+`github.com/trustvian/trustvian`, so Go's import-path ancestry rule makes a
+core `internal/*` import a compile error rather than a convention. The core
+declares no dependency on the platform in either direction.
+
+`scripts/check-platform-boundary.sh` enforces both directions in CI, as
+[ADR 0022](adr/0022-core-platform-boundary.md) requires: no core `internal/*`
+import in platform source, no platform package in the core's build graph, and
+no platform identifier declared in core runtime code.
+
+An event producer cannot supply a platform identifier either: `event.Event`
+has no field for one, and none is derived from `SessionID`, `TraceID`, or
+`Attributes` — the same trust boundary [learning-scope
+selection](#learning-scope-selection) already draws one layer down.
+
 ### Sequence state
 
 **Threat:** `v0.6`'s [transition-deviation

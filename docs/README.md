@@ -68,7 +68,7 @@ Two documents share a name and answer different questions:
 
 | Document | What's in it |
 |---|---|
-| [CONTRIBUTING.md](../CONTRIBUTING.md) | The local gates, the three modules, the test tiers |
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | The local gates, the four modules, the test tiers |
 | [Commit Convention](COMMIT_CONVENTION.md) | Commit subjects and pull request titles — CI validates the title |
 | [Compatibility Contract](compatibility.md) | What `v1` promises not to break, and what a breaking change costs in version numbers |
 | [Branching Strategy](governance/branching.md) | Branch from `main`, one change per pull request, squash merge |

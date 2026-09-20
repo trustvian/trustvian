@@ -47,22 +47,25 @@ would fail if the behavior regressed; several of this repository's
 guarantees were verified by deliberately breaking the implementation and
 confirming the test caught it.
 
-## The three modules
+## The four modules
 
-Trustvian is three Go modules, and they are separate on purpose:
+Trustvian is four Go modules, and they are separate on purpose:
 
 | Module | What it is |
 |---|---|
 | `.` (root) | The engine, CLI, and public API |
 | `processor/` | The OpenTelemetry Collector processor |
 | `examples/` | Runnable examples — and proof the public API works from outside |
+| `platform/` | The control-plane domain (evaluation), which the engine never depends on |
 
-`processor/` and `examples/` resolve the core module through a `replace`
-directive, so **always verify them with the workspace disabled**:
+The nested modules resolve the core module through a `replace` directive —
+except `platform/`, which does not depend on the core at all yet. **Always
+verify them with the workspace disabled**:
 
 ```bash
 cd processor && GOWORK=off go build ./... && GOWORK=off go test -race ./...
 cd examples  && GOWORK=off go build ./... && GOWORK=off go test ./...
+cd platform  && GOWORK=off go build ./... && GOWORK=off go test -race ./...
 ```
 
 A Go workspace makes these modules resolve the local source automatically,
@@ -95,7 +98,7 @@ Not every test runs on every commit:
 
 | Tier | Runs | What it covers |
 |---|---|---|
-| **Pull request / push** | `main` | Format, vet, build, tests, race, and `govulncheck` — all three modules. PostgreSQL integration with `-short`. Backup, restore, and upgrade from the previous release against PostgreSQL 17. Release-matrix dry run, container build (amd64), module consistency, workflow action references, Compose config validation. |
+| **Pull request / push** | `main` | Format, vet, build, tests, race, and `govulncheck` — all four modules. PostgreSQL integration with `-short`. Backup, restore, and upgrade from the previous release against PostgreSQL 17. Release-matrix dry run, container build (amd64), module consistency, workflow action references, Compose config validation. |
 | **Nightly** | Scheduled, or on demand | The full PostgreSQL stress tier (high-contention writes, concurrent first-writes, bounded row counts), database-restart durability, the reference deployment's end-to-end smoke test, and its recovery drill. |
 
 The split is by cost, not by importance. Correctness gates belong on pull
@@ -179,11 +182,20 @@ rewrites your code.
 ## Modules and releases
 
 This repository publishes exactly one Go module — the root,
-`github.com/trustvian/trustvian`. The `processor` and `examples` modules
-are repository-internal: their module paths are not resolvable and they are
-built from a clone. `make check-modules` enforces the invariants that keeps
-true; [docs/release-guide.md](docs/release-guide.md) explains the model and
-what promoting a module would require.
+`github.com/trustvian/trustvian`. The `processor`, `examples`, and `platform`
+modules are repository-internal: their module paths are not resolvable and
+they are built from a clone.
+
+`processor` and `examples` resolve the core through a local `replace`;
+`platform` does not depend on the core at all yet, so it declares neither a
+`require` nor a `replace`. Its module path also sits outside
+`github.com/trustvian/trustvian` on purpose, which is what makes a core
+`internal/*` import a compile error rather than a convention —
+`make check-platform-boundary` enforces that and the reverse direction.
+
+`make check-modules` enforces the publication invariants;
+[docs/release-guide.md](docs/release-guide.md) explains the model and what
+promoting a module would require.
 
 To build the release artifact matrix locally — no tag, credentials, or
 upload:

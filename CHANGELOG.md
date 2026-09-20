@@ -40,6 +40,47 @@ actually depend on.
 
 ### Added
 
+- **`platform/`: the control-plane domain, as a fourth Go module.** The first
+  platform-layer runtime code — `Project`, `Agent`, `Candidate`,
+  `EvaluationRun`, and opaque `EnvironmentRef` / `BehavioralProfileRef`
+  references — establishing what an evaluation is, what it belongs to, and
+  what may change once one has begun.
+
+  ```text
+  Project
+    └─ Agent
+        └─ Candidate
+            └─ EvaluationRun ──▶ EnvironmentRef
+                            └──▶ BehavioralProfileRef
+  ```
+
+  A separate module at `trustvian-platform`, deliberately **not** under
+  `github.com/trustvian/trustvian`: Go's `internal/` rule turns on
+  import-path ancestry rather than module membership, so a repository-prefixed
+  path would be allowed to import the engine's internal packages, and this one
+  is a compile error instead. It does not import the core at all yet — the
+  domain has no use for a `DecisionRecord`, and adding the dependency to
+  demonstrate the relationship would be exactly the speculative coupling the
+  boundary exists to prevent.
+
+  Identifiers are typed, opaque, and caller-owned: the domain generates none,
+  reads no clock, and requires no UUID format. Candidate metadata is a fixed
+  set of optional descriptive fields rather than a map — bounded by
+  construction, with nothing to alias — and never becomes behavioral identity.
+  A run's `Status` records that an execution finished, never that a candidate
+  passed; gates and promotion are separate later concerns. See [ADR
+  0025](docs/adr/0025-platform-domain-values-with-caller-owned-identity.md).
+
+  **No engine change.** `scripts/check-platform-boundary.sh` enforces both
+  directions of [ADR 0022](docs/adr/0022-core-platform-boundary.md)'s
+  boundary in CI: no core `internal/*` import in the platform, no platform
+  package in the core's build graph, and no platform identifier declared in
+  core runtime code.
+
+  Nothing here is usable yet: no persistence, transport, aggregation,
+  behavioral diff, scorecard, gate, or promotion. Those are later tasks, and
+  each would have been easier to add now than to remove later.
+
 - **Learning scopes: independent behavioral history under one actor
   identity.** `trustvian.WithLearningScope("...")` partitions an Engine's
   learned state. Two engines over one store with different scopes never

@@ -6,7 +6,7 @@ Maintainer-facing. For using Trustvian, start at the
 
 ## Module publication model
 
-This repository contains three Go modules and publishes exactly one. That
+This repository contains four Go modules and publishes exactly one. That
 distinction is load-bearing and easy to get wrong, so it is written down
 here and enforced by `scripts/check-modules.sh`.
 
@@ -15,6 +15,7 @@ here and enforced by `scripts/check-modules.sh`.
 | root | `github.com/trustvian/trustvian` | **Yes** | Go module + release binaries |
 | processor | `trustvian-processor` | No | Built from a clone |
 | examples | `trustvian-examples` | No | Read and run in place |
+| platform | `trustvian-platform` | No | Built from a clone |
 
 **The root module is the product.** It carries the engine, the public API
 (`event`, `config`, `alert`, and the root package), and the `trustvian`
@@ -23,13 +24,27 @@ consumers ignore a dependency's replaces, so one in a published `go.mod`
 means the module builds differently for everyone else than it does here —
 a failure that only appears after the tag is public.
 
-**The processor and examples modules are repository-internal**, and not
-merely "not published yet". Their module paths — `trustvian-processor`,
-`trustvian-examples` — are not resolvable: `go get trustvian-processor`
-fails with *"malformed module path: missing dot in first path element"*.
-Neither has ever been tagged. Both carry `replace
-github.com/trustvian/trustvian => ../`, which is exactly right for a
-module built from this repository rather than fetched from a proxy.
+**The processor, examples, and platform modules are repository-internal**,
+and not merely "not published yet". Their module paths —
+`trustvian-processor`, `trustvian-examples`, `trustvian-platform` — are not
+resolvable: `go get trustvian-processor` fails with *"malformed module path:
+missing dot in first path element"*. None has ever been tagged.
+
+They differ in how they reach the core, and the difference is worth stating
+precisely rather than averaging over:
+
+- `processor` and `examples` carry `replace github.com/trustvian/trustvian
+  => ../`, which is exactly right for a module built from this repository
+  rather than fetched from a proxy.
+- `platform` **does not depend on the core at all** and therefore declares no
+  `require` and no `replace`. The control-plane domain has no use for the
+  engine's public API yet, and adding the dependency to express the layering
+  would be coupling for its own sake. It gains one when aggregation needs it.
+
+`platform`'s module path is additionally load-bearing rather than
+conventional: being outside `github.com/trustvian/trustvian` is what makes a
+core `internal/*` import a compile error — see
+[ADR 0022](adr/0022-core-platform-boundary.md).
 
 Each exists as a separate module for a reason that has nothing to do with
 publishing:
@@ -58,7 +73,7 @@ developing against unreleased changes, not about any gap in the release.
 
 `scripts/check-modules.sh` enforces the invariants that hold in *both*
 states, and there is deliberately no separate release mode: with one
-published module and two repository-internal ones, no invariant is
+published module and three repository-internal ones, no invariant is
 stricter at release time. `release.yml` runs the same check. A mode split
 becomes worth adding when a nested module is actually promoted.
 
@@ -81,7 +96,7 @@ resolvable module path. Promoting it then means:
    module's version from a tag prefixed with its directory; a root `vX.Y.Z`
    tag does **not** version it.
 5. Keep local development working — most simply through `go.work`, which
-   already lists all three modules, rather than a replace in the published
+   already lists all four modules, rather than a replace in the published
    `go.mod`.
 
 `scripts/check-modules.sh` fails if the path becomes resolvable while the

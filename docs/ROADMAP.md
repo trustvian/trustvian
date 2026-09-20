@@ -121,10 +121,21 @@ The pre-`v1.0` core provides:
 - signed container images with SBOM and provenance attestations, published by
   an automated release pipeline
 
-**The platform layer does not exist yet.** No project, agent, candidate,
-evaluation run, scorecard, promotion workflow, dashboard, control API, or
-control-plane persistence is implemented. Everything about it in this document
-is approved direction, not shipped behavior.
+**The platform foundation has begun, and is not usable end to end.** Task 052
+added the `platform/` module — a separate Go module at `trustvian-platform`,
+holding the evaluation domain and nothing else:
+
+- implemented: `Project`, `Agent`, `Candidate`, `EvaluationRun`,
+  `EnvironmentRef`, `BehavioralProfileRef`, with construction-time validation
+  and an explicit run lifecycle;
+- not implemented: evaluation result aggregation, behavioral diff,
+  scorecards, deterministic gates, platform persistence, the control-plane API
+  and ingest, realtime, the CLI evaluation workflow, the TUI, the WebUI, the
+  full environment model, promotion, and the event-history capability.
+
+So there is vocabulary, and no machinery that acts on it. Everything else
+about the platform in this document remains approved direction rather than
+shipped behavior.
 
 Also not implemented: multi-tenancy, access control, an MCP server surface, a
 machine-learning detection path, and prompt- or content-level analysis.
@@ -192,7 +203,7 @@ gate is verified by reading source, tests, and benchmarks — never assumed.
 ### Reliability and correctness
 
 - Every package exercised by unit, integration, and end-to-end tests, with
-  `go test -race ./...` clean across all three modules.
+  `go test -race ./...` clean across all four modules.
 - Every documented formula or algorithm reproduced exactly by at least one
   test, extended to cover every signal added through `v0.6` and `v0.7`.
 - Cross-stage behavior — `Analyze` and `Observe` together — covered by tests
