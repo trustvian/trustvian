@@ -40,6 +40,23 @@ actually depend on.
 
 ### Added
 
+- **`DecisionRecord`: a serializable public projection of one analysis.**
+  `Result` is readable from outside the module, but four of its fields have
+  types from `internal/`, so a consumer could inspect a result without being
+  able to declare, store, or serialize one. `result.DecisionRecord()` returns
+  a public type with explicit JSON field names carrying the evidence behind a
+  decision: behavioral shape, fingerprint, anomaly score and contributors,
+  trust and risk, the policy rule and reason, and correlation identifiers.
+
+  It carries no raw event payload — `Event.Attributes`, tool arguments,
+  prompts, and completions have no field and cannot reach its JSON — and no
+  consumer-side identifiers. Both are asserted by test. The projection is
+  pure: no I/O, no clock, no scoring, and its slices are copied rather than
+  aliased, so a record shares no memory with the `Result` it came from.
+
+  `StableFeatures` gained JSON tags so the record serializes consistently.
+  The type is unreleased, so no published representation changed.
+
 - **Every `Engine` option is now usable from outside the module.** Two
   were exported but uncallable by third-party code, because their
   parameter types live under `internal/` and no public path produced
@@ -63,6 +80,48 @@ actually depend on.
   signature changed. Done deliberately before the `v1` freeze, when it
   costs nothing, rather than after it, when it would cost a major
   version. No in-repository caller used the option.
+
+### Fixed
+
+- **A pathological `WithContextRisk` callback could make a successful
+  analysis unserializable.** `trust.Compute` clamps its inputs with
+  `min`/`max`, which propagate `NaN`, so a callback returning `NaN` put one
+  into `Trust.ContextRisk` and `Trust.Score` — and `encoding/json` refuses
+  non-finite floats. `Analyze` returned success and the resulting record
+  could not be marshalled.
+
+  A non-finite input is now treated as invalid rather than as a position on
+  the scale, and resolves to whichever end trusts least: context risk and the
+  anomaly inputs to `1`, identity confidence to `0`. Both directions fail
+  closed, and `-Inf` no longer reads as "no risk". Analysis still succeeds,
+  because a detector that stops deciding when a caller's callback misbehaves
+  is worse than one that assumes the worst. Ordinary out-of-range finite
+  values keep their documented clamp behavior, and the trust formula is
+  unchanged.
+
+- **An unencodable `Event.Timestamp` could make a successful analysis
+  unserializable.** `Event.Validate()` rejected a zero timestamp but accepted
+  every other `time.Time` — and not every `time.Time` is one
+  `time.Time.MarshalJSON` will encode. A year outside `[0,9999]` or a zone
+  offset of 24 hours or more is constructible in Go and refused by RFC 3339,
+  so such an event analyzed successfully and produced a `DecisionRecord`
+  `json.Marshal` would not accept.
+
+  `Validate()` now rejects both cases with a new `event.ErrInvalidTimestamp`,
+  wrapped by `Analyze` through the existing `trustvian: invalid event:` path.
+  The rule is exactly the standard library's, asserted by a test that derives
+  its expectation from `MarshalJSON` rather than restating it, so the check
+  can neither drift permissive nor start refusing timestamps Go accepts.
+
+  A missing timestamp still returns `ErrMissingTimestamp`; the zero time is
+  encodable, so only the earlier check distinguishes absent from unencodable.
+  Rejection is at the input, where the caller still holds the event:
+  `DecisionRecord()` does not sanitize, because a security record with a
+  silently rewritten timestamp is worse than a refused event.
+
+  Behavioral change for callers submitting such timestamps — previously
+  accepted, now an error. No in-repository caller produces one, and no
+  encodable timestamp's treatment changed.
 
 ### Changed
 

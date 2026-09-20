@@ -64,6 +64,12 @@ to check required fields are set — `ID`, `Timestamp`,
 `Actor.ID`/`Type`/`IdentityConfidence`, `Operation.Category`/`Name`.
 `Target`, `Attributes`, and `Context` are optional.
 
+`Timestamp` is also checked for encodability: a year outside `[0,9999]` or a
+zone offset of 24 hours or more is constructible in Go but cannot be written
+as RFC 3339, and would produce a decision record `json.Marshal` refuses. Both
+return `event.ErrInvalidTimestamp`. Any timestamp from `time.Now()` or a
+parsed RFC 3339 string is fine.
+
 ## Constructing an `Engine`
 
 ```go
@@ -314,6 +320,29 @@ importing anything beyond the root package.
 [`examples/configured-engine`](../examples/configured-engine/) is this
 whole path as a runnable program, and — because `examples/` is a
 separate module — it is also the proof that it works from outside.
+
+### Getting a serializable record
+
+`Result` is the engine's rich in-process output. When you need to persist a
+decision, send it over an API, or stream it to a dashboard, project it:
+
+```go
+record := result.DecisionRecord()
+
+raw, err := json.Marshal(record)
+```
+
+`DecisionRecord` is a public type with explicit JSON field names, so a
+consumer can declare, store, and round-trip one without importing anything
+beyond this package. It carries the evidence behind the decision — behavioral
+shape, fingerprint, anomaly score and contributors, trust and risk, the policy
+rule and reason, and correlation identifiers such as trace, session, and
+delegation.
+
+It deliberately carries **no raw event payload**. `Event.Attributes`, tool
+arguments, prompts, and completions have no field on the record and cannot
+appear in its JSON. If you need raw history, store it yourself as an explicit
+choice — the record is security evidence, not an event archive.
 
 ### Persistence is selected, not implemented
 

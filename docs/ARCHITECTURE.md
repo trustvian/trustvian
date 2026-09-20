@@ -565,9 +565,20 @@ boundary is affordable. It builds on properties that already exist:
 | `Result` carries anomaly, confidence, trust, decision, contributors, explanation | A scorecard aggregates evidence that already exists |
 | PostgreSQL persistence; OTel ingestion | The runtime path is already production-shaped |
 | The core retains no raw event history | History is the platform's job, deliberately not the engine's |
+| `Result.DecisionRecord()` — a serializable public projection | The platform persists, streams, and aggregates records without naming an internal type or re-declaring behavioral shapes |
 
-The last row is the load-bearing one. The engine holds learned state, not an
-event log. Any evaluation feature that needs to replay or diff raw events
+`DecisionRecord` is the read boundary itself: a fixed-shape projection of the
+evidence behind one decision, carrying no event payload and no consumer-side
+identifiers. It is a copy, not a second implementation — nothing in it is
+recomputed, and it shares no memory with the `Result` it came from.
+
+Fixed-shape is not size-bounded: caller-supplied strings inside it are not
+length-limited here. Excluding the attribute map removes the part that grows
+without limit; capping what remains is an ingest concern, and belongs to the
+control API rather than to the type.
+
+The event-history row is the load-bearing one. The engine holds learned state,
+not an event log. Any evaluation feature that needs to replay or diff raw events
 needs the platform to store them — and that is a boundary, not a gap.
 
 ### The one core change the platform requires

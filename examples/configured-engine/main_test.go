@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -46,6 +47,60 @@ func TestExternalConsumerCanConfigureEveryOption(t *testing.T) {
 	}
 	if result.Decision == "" {
 		t.Fatal("Analyze() produced no decision")
+	}
+}
+
+// TestExternalConsumerCanProduceDecisionRecord is task 050's boundary proof:
+// a separate module obtains the public projection of an analysis, marshals it
+// with the standard library, and reads its fields — all without naming an
+// internal type. This is the path a control plane takes to persist, stream,
+// or serve a decision.
+func TestExternalConsumerCanProduceDecisionRecord(t *testing.T) {
+	engine, closeStore, err := newEngine(t.TempDir() + "/baseline.json")
+	if err != nil {
+		t.Fatalf("newEngine() error = %v", err)
+	}
+	defer closeStore()
+
+	result, err := engine.Analyze(context.Background(), secretsRead())
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+
+	// Declaring the variable is the part that was impossible before: a
+	// consumer could read Result's fields but could not name a type to hold
+	// the projection.
+	var record trustvian.DecisionRecord = result.DecisionRecord()
+
+	if record.EventID != "evt-1" || record.ActorID != "svc-billing" {
+		t.Fatalf("record identity not projected: %+v", record)
+	}
+	if record.FingerprintID == "" {
+		t.Error("FingerprintID is empty")
+	}
+	if record.Behavior.TargetName != "secrets-manager" {
+		t.Errorf("Behavior.TargetName = %q, want secrets-manager", record.Behavior.TargetName)
+	}
+	if record.ContextRisk != 0.6 {
+		t.Errorf("ContextRisk = %v, want 0.6", record.ContextRisk)
+	}
+	if len(record.Contributors) == 0 {
+		t.Error("no contributors: the record cannot explain its own score")
+	}
+	if record.PolicyReason == "" {
+		t.Error("PolicyReason is empty")
+	}
+
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var back trustvian.DecisionRecord
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if back.FingerprintID != record.FingerprintID || len(back.Contributors) != len(record.Contributors) {
+		t.Fatalf("round trip lost data:\n got %+v\nwant %+v", back, record)
 	}
 }
 

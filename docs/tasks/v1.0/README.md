@@ -5,9 +5,10 @@ Tasks for the `v1.0` milestone.
 | Task | Status |
 |---|---|
 | [049 — Platform Architecture Alignment](049-platform-architecture-alignment.md) | Specified. Documentation only; implements nothing |
-| 050–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
+| [050 — Public Serializable Decision Record](050-public-serializable-decision-record.md) | Specified and implemented |
+| 051–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
 
-The numbers 050–072 are the approved plan, not placeholders — the sequence,
+The numbers 051–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
 is the specification for any of them.
 
