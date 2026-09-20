@@ -125,15 +125,18 @@ The pre-`v1.0` core provides:
 added the `platform/` module — a separate Go module at `trustvian-platform`,
 holding the evaluation domain and nothing else:
 
-- implemented: `Project`, `Agent`, `Candidate`, `EvaluationRun`,
-  `EnvironmentRef`, `BehavioralProfileRef`, with construction-time validation
-  and an explicit run lifecycle;
-- not implemented: evaluation result aggregation, behavioral diff,
-  scorecards, deterministic gates, platform persistence, the control-plane API
-  and ingest, realtime, the CLI evaluation workflow, the TUI, the WebUI, the
-  full environment model, promotion, and the event-history capability.
+- implemented: the evaluation domain — `Project`, `Agent`, `Candidate`,
+  `EvaluationRun`, `EnvironmentRef`, `BehavioralProfileRef`, with
+  construction-time validation and an explicit run lifecycle (task 052) — and
+  evaluation result aggregation over the core's public `DecisionRecord`
+  (task 053);
+- not implemented: behavioral diff, scorecards, deterministic gates, platform
+  persistence, the control-plane API and ingest, realtime, the CLI evaluation
+  workflow, the TUI, the WebUI, the full environment model, promotion, and the
+  event-history capability.
 
-So there is vocabulary, and no machinery that acts on it. Everything else
+So the platform can now describe an evaluation and summarize what it observed.
+Nothing yet interprets that summary, stores it, or serves it. Everything else
 about the platform in this document remains approved direction rather than
 shipped behavior.
 

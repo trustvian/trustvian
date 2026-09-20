@@ -33,13 +33,16 @@ missing dot in first path element"*. None has ever been tagged.
 They differ in how they reach the core, and the difference is worth stating
 precisely rather than averaging over:
 
-- `processor` and `examples` carry `replace github.com/trustvian/trustvian
-  => ../`, which is exactly right for a module built from this repository
-  rather than fetched from a proxy.
-- `platform` **does not depend on the core at all** and therefore declares no
-  `require` and no `replace`. The control-plane domain has no use for the
-  engine's public API yet, and adding the dependency to express the layering
-  would be coupling for its own sake. It gains one when aggregation needs it.
+All three carry `replace github.com/trustvian/trustvian => ../`, which is
+exactly right for a module built from this repository rather than fetched from
+a proxy.
+
+`platform` additionally requires the root at the **zero placeholder**
+(`v0.0.0-00010101000000-000000000000`) that Go writes for a fully replaced
+dependency. That is the honest version: the `DecisionRecord` API it consumes
+landed after `v0.9.0` and has not been published in any tag, so naming a
+released version would assert something untrue. `scripts/check-modules.sh`
+recognizes this form explicitly.
 
 `platform`'s module path is additionally load-bearing rather than
 conventional: being outside `github.com/trustvian/trustvian` is what makes a

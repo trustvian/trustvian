@@ -40,6 +40,46 @@ actually depend on.
 
 ### Added
 
+- **Evaluation result aggregation: the platform now consumes engine
+  evidence.** `platform.EvaluationAggregate` folds
+  `trustvian.DecisionRecord` values into a bounded, fixed-shape summary of
+  what one evaluation observed:
+
+  ```text
+  Engine ──▶ DecisionRecord ──▶ EvaluationAggregate
+  ```
+
+  It counts observations, decisions by category, risk levels, approval
+  evidence, and policy-selection shape; summarizes the five numeric signals as
+  `{Count, Sum, Min, Max}` with an explicitly-absent mean when empty; and
+  bounds the evidence in event time. `AddRecord` returns a new aggregate, so
+  the receiver is never mutated and a rejected record leaves it identical.
+
+  **This is the first real platform → core dependency, and it needed no core
+  change** — which is the claim [task
+  050](docs/tasks/v1.0/050-public-serializable-decision-record.md) built
+  `DecisionRecord` to make good on. The platform imports the public API only;
+  `policy.Decision` and `trust.RiskLevel` stay internal, so their small closed
+  sets of string values are re-declared rather than the core's surface being
+  widened.
+
+  **Bounded by construction.** O(1) memory in the number of records: no slice,
+  no map, no retained record, and no deduplication set. Retaining records
+  would make it an accidental event archive, which is a separate capability
+  with its own boundary. One consequence is stated rather than left implicit:
+  duplicates count twice, because idempotency needs a retention window only an
+  ingest boundary can define.
+
+  **Evidence, not judgement.** No score, grade, pass, promotability,
+  critical-violation count, or new-behavior count — each needs context the
+  aggregate does not hold, and would become the field people read instead of
+  the gate. See [ADR
+  0026](docs/adr/0026-evaluation-aggregation-is-bounded-evidence.md).
+
+  Malformed input fails closed: every consumed field is validated before any
+  state changes, cross-environment records are refused, and nothing is
+  clamped or coerced. `AddRecord` costs 95 ns and zero allocations.
+
 - **`platform/`: the control-plane domain, as a fourth Go module.** The first
   platform-layer runtime code — `Project`, `Agent`, `Candidate`,
   `EvaluationRun`, and opaque `EnvironmentRef` / `BehavioralProfileRef`

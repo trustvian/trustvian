@@ -838,6 +838,35 @@ core     trustvian.WithLearningScope(string)
 A run's `Status` is execution state, not a verdict. `completed` means the
 execution finished; whether the candidate passed is a gate's separate answer.
 
+### Evaluation evidence
+
+`EvaluationAggregate` (task 053) is the bounded summary of what one evaluation
+observed, folded one `trustvian.DecisionRecord` at a time:
+
+```text
+Engine ──▶ DecisionRecord ──▶ EvaluationAggregate
+```
+
+It counts observations, decisions by category, risk levels, approval evidence,
+and policy-selection shape; it summarizes the five numeric signals as
+`{Count, Sum, Min, Max}` with an explicitly-absent mean when empty; and it
+bounds the evidence in event time.
+
+Three properties define it:
+
+- **Bounded.** Fixed-shape and O(1) in the number of records. No slice, no
+  map, no retained record — retaining them would make it an accidental event
+  archive, which is a separate capability with its own boundary.
+- **Factual.** It counts what happened. It computes no score, grade, pass,
+  promotability, critical-violation count, or new-behavior count: each of
+  those is a judgement needing context — thresholds, a comparison, policy
+  severity — that the aggregate does not hold.
+- **Fail-closed.** Every consumed field is validated before any state changes,
+  and a rejected record leaves the aggregate identical. Malformed evidence is
+  refused, never repaired.
+
+See [ADR 0026](adr/0026-evaluation-aggregation-is-bounded-evidence.md).
+
 See [ADR 0025](adr/0025-platform-domain-values-with-caller-owned-identity.md)
 and [task 052](tasks/v1.0/052-evaluation-domain.md).
 

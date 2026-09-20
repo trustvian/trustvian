@@ -661,8 +661,16 @@ The platform lives in a **separate Go module inside this repository** —
 `processor/` and `examples/` already use. That choice and its trade-offs are
 argued in [ADR 0022](adr/0022-core-platform-boundary.md).
 
-It imports no core package today. The dependency is permitted and expected;
-it simply does not exist yet, because the domain has no use for one.
+As of task 053 it imports the core's **public API only** —
+`trustvian.DecisionRecord` and `event.ApprovalStatus` — and nothing under
+`internal/`. That dependency is the one task 050 was built for: the platform
+began consuming engine evidence without a single core change.
+
+Where the core keeps a type internal (`policy.Decision`, `trust.RiskLevel`,
+both carried on the record as `string`), the platform re-declares the small
+closed set of values rather than asking the core to widen its public surface.
+Restating four and six constants is cheaper than a public type nobody outside
+this repository needs.
 
 One thing the module boundary does **not** buy, stated here because it is easy
 to assume otherwise: it does not enforce rule 2. Go's `internal/` restriction

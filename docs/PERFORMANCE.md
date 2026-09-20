@@ -920,6 +920,31 @@ serialize on that row's lock regardless of how many connections exist;
 only concurrency across different actors benefits from a larger pool. See
 [storage-guide.md § Pool sizing](storage-guide.md#pool-sizing).
 
+### v1.0 task 053 (Evaluation Result Aggregation)
+
+The first measured path outside the engine. `EvaluationAggregate.AddRecord`
+folds one public `DecisionRecord` into a fixed-shape summary, and will
+plausibly run once per decision in a future control plane.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `EvaluationAggregateAddRecord` | 95.2 | 0 | 0 |
+
+Six runs, darwin/arm64, Apple M3 Pro, Go 1.27; spread 92.8–96.8 ns/op.
+
+**Zero allocations is the number that matters**, and it was not free. The
+first implementation paired each metric name with a `*MetricSummary` pointing
+at the receiver's own field, so one loop could both validate and fold. That
+made the receiver escape to the heap — `moved to heap: a` under `-gcflags=-m`
+— costing one 416-byte allocation per record and 141 ns/op. Replacing the
+pointer array with five explicit assignments removed the escape entirely and
+took the path to 95 ns/op, a 32% improvement on top of the allocation.
+
+The invariant worth protecting is that a record does not allocate *because the
+aggregate has already seen many*. The aggregate is fixed-size and retains no
+record, so per-record cost is constant in the number of records — see
+[ADR 0026](adr/0026-evaluation-aggregation-is-bounded-evidence.md).
+
 ## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —

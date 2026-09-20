@@ -58,9 +58,8 @@ Trustvian is four Go modules, and they are separate on purpose:
 | `examples/` | Runnable examples — and proof the public API works from outside |
 | `platform/` | The control-plane domain (evaluation), which the engine never depends on |
 
-The nested modules resolve the core module through a `replace` directive —
-except `platform/`, which does not depend on the core at all yet. **Always
-verify them with the workspace disabled**:
+All three nested modules resolve the core through a `replace` directive.
+**Always verify them with the workspace disabled**:
 
 ```bash
 cd processor && GOWORK=off go build ./... && GOWORK=off go test -race ./...
@@ -186,12 +185,15 @@ This repository publishes exactly one Go module — the root,
 modules are repository-internal: their module paths are not resolvable and
 they are built from a clone.
 
-`processor` and `examples` resolve the core through a local `replace`;
-`platform` does not depend on the core at all yet, so it declares neither a
-`require` nor a `replace`. Its module path also sits outside
-`github.com/trustvian/trustvian` on purpose, which is what makes a core
-`internal/*` import a compile error rather than a convention —
-`make check-platform-boundary` enforces that and the reverse direction.
+All three resolve the core through a local `replace`. `platform` requires it
+at the zero placeholder Go writes for a fully replaced dependency, because the
+`DecisionRecord` API it consumes has not been published in any tag — naming a
+released version would be a claim that is false.
+
+`platform`'s module path also sits outside `github.com/trustvian/trustvian` on
+purpose, which is what makes a core `internal/*` import a compile error rather
+than a convention — `make check-platform-boundary` enforces that and the
+reverse direction.
 
 `make check-modules` enforces the publication invariants;
 [docs/release-guide.md](docs/release-guide.md) explains the model and what
