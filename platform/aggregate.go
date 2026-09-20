@@ -301,29 +301,8 @@ func NewEvaluationAggregate(run EvaluationRun) (EvaluationAggregate, error) {
 	//
 	// One aggregate is evidence for exactly one valid run, so an invalid run
 	// yields no aggregate.
-	if err := validateID("evaluation run id", string(run.ID())); err != nil {
+	if err := validateRunBinding(run); err != nil {
 		return EvaluationAggregate{}, err
-	}
-	if err := validateID("evaluation run candidate id", string(run.CandidateID())); err != nil {
-		return EvaluationAggregate{}, err
-	}
-	if err := validateID("evaluation run environment", string(run.Environment())); err != nil {
-		return EvaluationAggregate{}, err
-	}
-	if err := validateID("evaluation run behavioral profile", string(run.BehavioralProfile())); err != nil {
-		return EvaluationAggregate{}, err
-	}
-	if run.CreatedAt().IsZero() {
-		return EvaluationAggregate{}, fmt.Errorf("%w: evaluation run created_at is not set", ErrInvalidTimestamp)
-	}
-	// Any lifecycle state is acceptable — aggregation happens *during*
-	// execution, so a pending or running run is the common case and a
-	// terminal one is fine too. Only a status this package never produces
-	// is refused, which is the same fail-closed stance the transitions take
-	// for a value that came from somewhere unexpected.
-	if !run.Status().valid() {
-		return EvaluationAggregate{}, fmt.Errorf("%w: evaluation run is in an unrecognized state %s",
-			ErrInvalidTransition, preview(string(run.Status())))
 	}
 
 	// Set only here, and only after every check above has passed.
@@ -651,4 +630,40 @@ func preview(s string) string {
 	}
 
 	return strconv.Quote(s[:cut]) + "... (truncated, " + strconv.Itoa(len(s)) + " bytes total)"
+}
+
+// validateRunBinding checks that run could have come from NewEvaluationRun
+// and its transitions, before anything binds evidence to it.
+//
+// Shared by NewEvaluationAggregate and NewBehaviorCollector: both bind
+// evidence to a run, both face the same zero-value hazard, and the identifier
+// policy should be stated once. It reuses task 052's validateID rather than
+// restating the rules a third time.
+//
+// Any lifecycle state is acceptable — evidence is collected *during*
+// execution, so pending and running are the common cases and a terminal run is
+// equally valid. Only a status this package never produces is refused, the
+// same fail-closed stance the transitions take for a value that arrived from
+// somewhere unexpected.
+func validateRunBinding(run EvaluationRun) error {
+	if err := validateID("evaluation run id", string(run.ID())); err != nil {
+		return err
+	}
+	if err := validateID("evaluation run candidate id", string(run.CandidateID())); err != nil {
+		return err
+	}
+	if err := validateID("evaluation run environment", string(run.Environment())); err != nil {
+		return err
+	}
+	if err := validateID("evaluation run behavioral profile", string(run.BehavioralProfile())); err != nil {
+		return err
+	}
+	if run.CreatedAt().IsZero() {
+		return fmt.Errorf("%w: evaluation run created_at is not set", ErrInvalidTimestamp)
+	}
+	if !run.Status().valid() {
+		return fmt.Errorf("%w: evaluation run is in an unrecognized state %s",
+			ErrInvalidTransition, preview(string(run.Status())))
+	}
+	return nil
 }

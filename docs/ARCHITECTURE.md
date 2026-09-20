@@ -508,9 +508,22 @@ in-memory growth characteristics.
 
 **The platform has begun, as `platform/`.** Task 052 added its domain —
 `Project`, `Agent`, `Candidate`, `EvaluationRun`, and references to an
-environment and a behavioral profile — and nothing else: no persistence, no
-transport, no aggregation, no gates. This section records the boundary it
-respects, decided in [ADR 0022](adr/0022-core-platform-boundary.md).
+environment and a behavioral profile. Task 053 added `EvaluationAggregate`, a
+fixed-shape summary of one evaluation's decisions. Task 054 added the
+behavioral diff: `BehaviorCollector` → `BehaviorSnapshot` →
+`CompareBehaviorSnapshots`, reporting which behavioral shapes appeared,
+disappeared, or persisted between two evaluations.
+
+Still absent: persistence, transport, scorecards, gates, promotion, and event
+history. This section records the boundary all of it respects, decided in
+[ADR 0022](adr/0022-core-platform-boundary.md).
+
+The two reducers are deliberately separate. An aggregate is O(1) in the record
+count and holds no per-behavior state; a diff needs exactly that state, so it
+carries its own bound (512 distinct behaviors) rather than reopening the
+aggregate's shape — see
+[ADR 0026](adr/0026-evaluation-aggregation-is-bounded-evidence.md) and
+[ADR 0027](adr/0027-behavioral-diff-compares-bounded-snapshots.md).
 
 `platform/` is a separate Go module at `trustvian-platform`. The path is
 deliberately not under `github.com/trustvian/trustvian`: Go's `internal/` rule

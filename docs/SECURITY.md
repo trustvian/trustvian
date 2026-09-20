@@ -339,6 +339,55 @@ Specific boundaries worth naming:
 
 See [ADR 0026](adr/0026-evaluation-aggregation-is-bounded-evidence.md).
 
+### Behavioral comparison is bounded and refuses partial evidence
+
+**Threat:** a behavioral diff consumes attacker-influenced evidence and either
+grows without limit, or — worse — reports a confident answer derived from
+evidence that stopped early. The headline output is *which behaviors are new*,
+so a quietly truncated comparison under-reports additions in exactly the runs
+whose behavioral surface is widest.
+
+**Status: bounded by construction, and loud when it cannot answer.**
+
+- **Distinct behaviors are capped at 512** per collector. The set is keyed by
+  `FingerprintID`, which the core derives from caller-supplied fields — the
+  same hazard [ADR 0019](adr/0019-bounded-fingerprint-admission.md) bounded in
+  the engine. The platform declares its own constant rather than importing the
+  core's, so the two may diverge.
+- **Every retained string is bounded** to 256 bytes — fingerprint, operation
+  name, target name — and the enumerated dimensions are validated against the
+  public `event` constants. A capped entry count is not a bound if each entry
+  can hold an arbitrarily large string.
+- **Identity is never truncated, only rejected.** Two different behaviors must
+  not become one because a display string was shortened; a merged pair would
+  under-report exactly what the diff exists to report. Truncation is for
+  diagnostics.
+- **The 513th distinct behavior cannot be silently dropped.** It is refused,
+  and the collector becomes permanently incomplete — subsequent observations
+  fail rather than continuing to build a partial picture that reads like a
+  whole one.
+- **An incomplete snapshot cannot produce a diff.** Comparison refuses it
+  outright. An error a caller must handle is strictly better than a plausible
+  wrong number nobody questions.
+- **One fingerprint, two shapes fails closed**, in the collector and again
+  during comparison. Overwriting or merging would report two distinct
+  behaviors as one, and the realistic causes — tampering, corruption, a
+  collision — all warrant refusal.
+- **Comparison requires matching environments.** Environment is a stable
+  fingerprint dimension, so a cross-environment diff would classify every
+  behavior as simultaneously added and removed.
+- **Duplicates count twice**, with no identifier set: dedup is unbounded by
+  construction and belongs to an ingest boundary with a retention window.
+- **No raw event history is retained** — no record, event, contributor,
+  attribute, timestamp list, or identifier survives into a snapshot.
+- **Platform identity never becomes behavioral identity.** Actor, candidate,
+  run, session and profile references are excluded from the comparison key by
+  construction, not by convention.
+- **A diff is evidence, not a decision.** It reports presence and frequency
+  and applies no threshold. Whether a change is acceptable is a gate's
+  question, and putting it here would make the component that counts facts
+  also the one that renders verdicts.
+
 ### Platform identity cannot become behavioral identity
 
 **Threat:** an evaluation concept leaks into the engine — a candidate becomes

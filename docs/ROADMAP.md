@@ -127,18 +127,20 @@ holding the evaluation domain and nothing else:
 
 - implemented: the evaluation domain — `Project`, `Agent`, `Candidate`,
   `EvaluationRun`, `EnvironmentRef`, `BehavioralProfileRef`, with
-  construction-time validation and an explicit run lifecycle (task 052) — and
+  construction-time validation and an explicit run lifecycle (task 052);
   evaluation result aggregation over the core's public `DecisionRecord`
-  (task 053);
-- not implemented: behavioral diff, scorecards, deterministic gates, platform
-  persistence, the control-plane API and ingest, realtime, the CLI evaluation
-  workflow, the TUI, the WebUI, the full environment model, promotion, and the
+  (task 053); and behavioral diff over bounded behavioral snapshots
+  (task 054);
+- not implemented: scorecards, deterministic gates, platform persistence, the
+  control-plane API and ingest, realtime, the CLI evaluation workflow, the
+  TUI, the WebUI, the full environment model, promotion, and the
   event-history capability.
 
-So the platform can now describe an evaluation and summarize what it observed.
-Nothing yet interprets that summary, stores it, or serves it. Everything else
-about the platform in this document remains approved direction rather than
-shipped behavior.
+So the platform can now describe an evaluation, summarize what it observed,
+and compare bounded behavioral snapshots between two of them. Nothing yet
+scores, gates, persists, serves, or promotes. Everything else about the
+platform in this document remains approved direction rather than shipped
+behavior.
 
 Also not implemented: multi-tenancy, access control, an MCP server surface, a
 machine-learning detection path, and prompt- or content-level analysis.

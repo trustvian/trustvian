@@ -40,6 +40,46 @@ actually depend on.
 
 ### Added
 
+- **Behavioral diff: which behavioral shapes changed between two
+  evaluations.** `BehaviorCollector` reduces a `DecisionRecord` stream into a
+  bounded set of behaviors; `BehaviorSnapshot` is the detached, deterministic
+  result; `CompareBehaviorSnapshots` reports each behavior as `Added`,
+  `Removed` or `Shared` with counts and normalized frequencies.
+
+  ```text
+  DecisionRecord ──▶ BehaviorCollector ──▶ BehaviorSnapshot ──▶ BehaviorDiff
+  ```
+
+  The comparison key is `FingerprintID` and nothing else — not actor, session,
+  candidate, run, profile, commit, or digest. A diff keyed by any of those
+  would report change every time a candidate was rebuilt.
+
+  **`EvaluationAggregate` is unchanged.** [ADR
+  0026](docs/adr/0026-evaluation-aggregation-is-bounded-evidence.md) made it
+  O(1) and left this task to bring its own bounded contract; this is that
+  contract, as a separate reducer. An evaluation that will never be compared
+  pays nothing for behavioral bookkeeping.
+
+  **Bounded, and loud when it cannot answer.** At most 512 distinct behaviors
+  per collector and 1,024 deltas per diff; every retained string capped at 256
+  bytes and rejected rather than truncated, because two behaviors must not
+  merge because a name was shortened. A 513th distinct behavior marks the
+  collector **permanently incomplete**, and an incomplete snapshot **cannot be
+  compared** — silently comparing the first 512 would produce a confident,
+  specific, wrong "new behavior" count. One fingerprint claiming two shapes
+  fails closed in both the collector and the comparison.
+
+  Rates are derived from integer counts at comparison time, so equal counts
+  give identical rates whatever order records arrived in. Environments must
+  match; candidate, run and profile references may differ, since [task
+  051](docs/tasks/v1.0/051-behavioral-profile-learning-scope-isolation.md)
+  kept learning scope out of behavioral identity.
+
+  **Evidence, not judgement.** No drift score, severity, threshold, pass, or
+  promotability. `AddedCount` is the factual basis a later gate may build on.
+  See [ADR
+  0027](docs/adr/0027-behavioral-diff-compares-bounded-snapshots.md).
+
 - **Evaluation result aggregation: the platform now consumes engine
   evidence.** `platform.EvaluationAggregate` folds
   `trustvian.DecisionRecord` values into a bounded, fixed-shape summary of
