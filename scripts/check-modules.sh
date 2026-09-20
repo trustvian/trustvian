@@ -2,7 +2,7 @@
 #
 # Module consistency invariants.
 #
-# This repository has one published module and two that are deliberately
+# This repository has one published module and three that are deliberately
 # not published. That distinction is easy to break by accident and
 # expensive to discover during a release, so it is checked here and in CI
 # rather than remembered.

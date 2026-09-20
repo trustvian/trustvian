@@ -190,7 +190,7 @@ Why these thresholds:
 ### Scanning resolves modules the way a consumer does
 
 Every `govulncheck` invocation — in CI and in `make vulncheck` — runs with
-`GOWORK=off`, for all three modules.
+`GOWORK=off`, for all four modules.
 
 This is not a detail. `go.work` is git-ignored, so it exists on developer
 machines and not in CI. With a workspace active, Go's minimal version

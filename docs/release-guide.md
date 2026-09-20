@@ -6,7 +6,7 @@ Maintainer-facing. For using Trustvian, start at the
 
 ## Module publication model
 
-This repository contains three Go modules and publishes exactly one. That
+This repository contains four Go modules and publishes exactly one. That
 distinction is load-bearing and easy to get wrong, so it is written down
 here and enforced by `scripts/check-modules.sh`.
 
@@ -15,6 +15,7 @@ here and enforced by `scripts/check-modules.sh`.
 | root | `github.com/trustvian/trustvian` | **Yes** | Go module + release binaries |
 | processor | `trustvian-processor` | No | Built from a clone |
 | examples | `trustvian-examples` | No | Read and run in place |
+| platform | `trustvian-platform` | No | Built from a clone |
 
 **The root module is the product.** It carries the engine, the public API
 (`event`, `config`, `alert`, and the root package), and the `trustvian`
@@ -81,7 +82,7 @@ resolvable module path. Promoting it then means:
    module's version from a tag prefixed with its directory; a root `vX.Y.Z`
    tag does **not** version it.
 5. Keep local development working — most simply through `go.work`, which
-   already lists all three modules, rather than a replace in the published
+   already lists all four modules, rather than a replace in the published
    `go.mod`.
 
 `scripts/check-modules.sh` fails if the path becomes resolvable while the

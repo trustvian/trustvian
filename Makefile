@@ -8,7 +8,7 @@ GO       := go
 
 .PHONY: help build run demo baseline-demo test test-race bench vet fmt fmt-check tidy coverage install clean check examples \
 	compose-up compose-down compose-smoke recovery-drill integration-postgres \
-	check-modules release-dry-run vulncheck container-build container-scan sbom \
+	check-modules check-platform-boundary release-dry-run vulncheck container-build container-scan sbom \
 	pr-title
 
 help: ## Show this help
@@ -88,6 +88,7 @@ vulncheck: ## Scan every module for reachable vulnerabilities, exactly as CI res
 	GOWORK=off $(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
 	cd processor && GOWORK=off $(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
 	cd examples  && GOWORK=off $(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
+	cd platform  && GOWORK=off $(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 container-build: ## Build the official container image locally — nothing is pushed
 	docker buildx build --platform linux/amd64 --load -t $(IMAGE):$(IMAGE_TAG) .
@@ -105,6 +106,9 @@ sbom: ## Build with an SPDX SBOM attestation and extract it to dist/ (needs a do
 		--output type=oci,dest=dist/image-oci.tar -t $(IMAGE):$(IMAGE_TAG) .
 	./scripts/extract-sbom.sh dist/image-oci.tar dist/sbom.spdx.json
 	@echo "SBOM: dist/sbom.spdx.json"
+
+check-platform-boundary: ## Verify the core/platform boundary (see docs/adr/0022-core-platform-boundary.md)
+	./scripts/check-platform-boundary.sh
 
 check-modules: ## Verify module publication invariants (see docs/release-guide.md)
 	./scripts/check-modules.sh

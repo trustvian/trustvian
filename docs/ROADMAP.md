@@ -192,7 +192,7 @@ gate is verified by reading source, tests, and benchmarks — never assumed.
 ### Reliability and correctness
 
 - Every package exercised by unit, integration, and end-to-end tests, with
-  `go test -race ./...` clean across all three modules.
+  `go test -race ./...` clean across all four modules.
 - Every documented formula or algorithm reproduced exactly by at least one
   test, extended to cover every signal added through `v0.6` and `v0.7`.
 - Cross-stage behavior — `Analyze` and `Observe` together — covered by tests
