@@ -277,6 +277,68 @@ later capability boundary.
 not a tenant, and carries no access control. Multi-tenancy remains
 [unimplemented](#future-multi-tenant-isolation).
 
+### Platform aggregation treats engine evidence as untrusted input
+
+**Threat:** the control plane aggregates `DecisionRecord` values that did not
+come from a healthy engine — hand-constructed, tampered with in transit, or
+belonging to a different evaluation — and reports a confident summary built on
+them.
+
+**Status: fail-closed at the aggregation boundary.** `DecisionRecord` is a
+detached public struct, so a caller can build or modify one freely. The
+aggregator therefore validates every field it consumes, **before any state
+changes**, and a rejected record leaves the aggregate byte-identical: no
+partial count, no advanced time range.
+
+Malformed input is **refused, never repaired**. Nothing clamps a non-finite
+score or coerces an unrecognized decision into a default bucket. The core
+guarantees its own output, so a record failing these checks did not come from
+a healthy engine, and rewriting it would convert a corruption signal into a
+plausible-looking number.
+
+Specific boundaries worth naming:
+
+- **Cross-environment contamination is refused.** A record whose environment
+  differs from the evaluation's is rejected rather than counted. The record's
+  own `Behavior.Environment` must agree with it too — for genuine engine
+  output they are the same value, so a disagreement means the record was
+  assembled rather than produced.
+- **A policy rule name is not severity.** `block-prod-shell` proves nothing
+  about criticality, and nothing parses one. There is no per-rule map, which
+  would also be keyed by a caller-controlled value and therefore unbounded.
+- **Approval aggregation is evidence counting, not authorization.**
+  `ApprovalStatus` is supplied by whoever produced the event. Counting a
+  `Denied` is not finding a violation, and no field reads like one —
+  interpreting approval evidence needs policy context that belongs to the
+  scorecard and gate tasks.
+- **Sensitivity is not inferred.** No public rule says what `ContextRisk`
+  makes an action sensitive, so the aggregator does not invent one.
+- **No raw payload is retained.** No event, no attributes, no contributors
+  list, no prompts or tool arguments — the aggregate has nowhere to put them.
+- **Duplicates count twice.** Deduplication needs a set of every identifier
+  seen, which is unbounded; replay belongs to an ingest boundary that can
+  define a retention window. Stated rather than silently true.
+- **State stays fixed-size** as the record count grows, so a long evaluation
+  cannot exhaust memory through the aggregate.
+- **Diagnostics are bounded too.** `DecisionRecord` strings are unbounded
+  public input, so rejection paths echo only a 64-byte preview of any
+  untrusted value: malformed evidence cannot force an error or a log line to
+  reproduce the entire value. Quoting is applied to the truncated prefix
+  rather than the whole string, so the allocation is bounded as well as the
+  output, and truncation is visible rather than silent.
+- **Policy-selection evidence cannot be fabricated.** `MatchedDefault` and
+  `PolicyRule` are validated as one pairing — a matched rule names itself, the
+  default names nothing — so a hand-built record cannot claim a rule matched
+  while naming none.
+- **An aggregate belongs to exactly one valid run**, at both ends. A
+  zero-value `EvaluationRun` produces no aggregate, and a zero-value
+  *aggregate* accepts no record — unexported fields prevent mutation, not
+  construction, so both zero values are writable from any package. Left open,
+  an unbound aggregate would have matched records whose environment was also
+  empty and accumulated evidence belonging to no run.
+
+See [ADR 0026](adr/0026-evaluation-aggregation-is-bounded-evidence.md).
+
 ### Platform identity cannot become behavioral identity
 
 **Threat:** an evaluation concept leaks into the engine — a candidate becomes

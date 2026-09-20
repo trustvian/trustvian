@@ -376,8 +376,8 @@ jobs:
         run: go test -race ./...
 
       - name: Go vulnerability scan
-        # The module has no external dependencies today. The scan still runs:
-        # it costs nothing now and is the gate that notices the first one.
+        # As of task 053 the module depends on the root through a local
+        # replace, which pulls the root's own module graph into scope.
         working-directory: platform
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 

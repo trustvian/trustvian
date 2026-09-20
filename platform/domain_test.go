@@ -329,13 +329,18 @@ func TestPlatformEntitiesExposeNoMutationPath(t *testing.T) {
 		"Agent":         platform.Agent{},
 		"Candidate":     platform.Candidate{},
 		"EvaluationRun": platform.EvaluationRun{},
+		// Task 053's aggregate follows the same discipline: private state,
+		// read-only accessors, and AddRecord returning a new value.
+		"EvaluationAggregate": platform.EvaluationAggregate{},
 	}
 
-	// The lifecycle transitions produce a changed value by returning a new
-	// one. They are allowed to look like mutators by name; they are not
-	// allowed to be pointer-only, which the set difference below enforces
-	// independently of what anything is called.
-	namedTransitions := map[string]bool{"Start": true, "Complete": true, "Fail": true, "Cancel": true}
+	// The lifecycle transitions and AddRecord produce a changed value by
+	// returning a new one. They are allowed to look like mutators by name;
+	// they are not allowed to be pointer-only, which the set difference below
+	// enforces independently of what anything is called.
+	namedTransitions := map[string]bool{
+		"Start": true, "Complete": true, "Fail": true, "Cancel": true, "AddRecord": true,
+	}
 
 	for name, entity := range entities {
 		t.Run(name, func(t *testing.T) {
@@ -375,6 +380,24 @@ func TestPlatformEntitiesExposeNoMutationPath(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAddRecordIsAValueMethod is the positive half for task 053's aggregate:
+// AddRecord must be in the *value* method set and return a new aggregate, not
+// mutate through a pointer.
+func TestAddRecordIsAValueMethod(t *testing.T) {
+	valueType := reflect.TypeOf(platform.EvaluationAggregate{})
+
+	method, ok := valueType.MethodByName("AddRecord")
+	if !ok {
+		t.Fatal("EvaluationAggregate.AddRecord is not in the value method set, so it has a pointer receiver")
+	}
+	if got := method.Type.NumOut(); got != 2 {
+		t.Fatalf("AddRecord returns %d values, want 2 (EvaluationAggregate, error)", got)
+	}
+	if out := method.Type.Out(0); out != valueType {
+		t.Errorf("AddRecord returns %s first, want EvaluationAggregate", out)
 	}
 }
 
