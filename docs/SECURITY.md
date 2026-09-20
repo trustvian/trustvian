@@ -966,7 +966,7 @@ or policy decisions leak into or influence another's.
 **Status: not implemented; the data model is prepared for it.**
 Trustvian's OSS core is explicitly single-tenant (multi-tenancy, RBAC,
 and centralized management are Trustvian Control/Cloud concerns — see
-[ARCHITECTURE.md § relationship to Control/Cloud](ARCHITECTURE.md#relationship-to-trustvian-controlcloud)).
+[ARCHITECTURE.md § relationship to the platform layer](ARCHITECTURE.md#relationship-to-the-platform-layer)).
 However, `baseline.Key`'s composite `(ActorID, Environment)` shape
 means the data is already scoped in a way a future `TenantID` addition
 extends rather than restructures — a deliberate choice to make that

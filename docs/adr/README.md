@@ -45,6 +45,8 @@ as long as its own decision holds.
 | [0019](0019-bounded-fingerprint-admission.md) | Bounded fingerprint admission: refuse, never evict | Accepted |
 | [0020](0020-v1-compatibility-contract.md) | A repository-wide compatibility contract, not an API-only one | Accepted |
 | [0021](0021-public-stable-features-boundary.md) | A public stable-features view for the context-risk callback | Accepted |
+| [0022](0022-core-platform-boundary.md) | Core and platform are two layers, one direction | Accepted |
+| [0023](0023-interfaces-are-adapters.md) | Interfaces, transports, and stores are adapters over control-plane services | Accepted |
 
 No ADR is currently Superseded or Deprecated. Several later ADRs build on
 earlier ones — 0006 and 0018 on 0004's narrow port, 0007/0008/0017 on 0002's

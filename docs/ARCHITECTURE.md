@@ -504,27 +504,148 @@ dependency graph survives. See
 [Observability](observability.md) for the metric reference and the
 in-memory growth characteristics.
 
-## Relationship to Trustvian Control/Cloud
+## Relationship to the platform layer
 
-Nothing in this repository implements Trustvian Control or Trustvian
-Cloud, and this repository has no dependency — direct or planned — on
-either. The relationship is one-directional and adapter-shaped, the
-same pattern as OpenTelemetry and storage:
+**Nothing in this repository implements the platform yet.** This section
+records the boundary it must respect, decided in
+[ADR 0022](adr/0022-core-platform-boundary.md), so that the first
+implementation does not have to re-derive it.
 
+Trustvian is becoming a two-layer product: the behavioral engine described
+above, and a platform that evaluates *candidates* — versions of an agent —
+and records promotion decisions. The layering is strictly one-directional:
+
+```text
+                    Platform / control plane
+                    ├── projects, agents, candidates
+                    ├── evaluation runs, scorecards, hard gates
+                    ├── environments and promotion
+                    ├── control API, realtime stream, dashboard
+                    └── control-plane persistence
+                                 │
+                                 │  public API only:
+                                 │  Engine, Result, event, alert, config
+                                 ▼
+                    ┌─────────────────────────┐
+                    │    Trustvian Core       │
+                    │  Event → … → Decision   │
+                    └─────────────────────────┘
 ```
-Trustvian Control/Cloud  --(future, separate deliverable)-->  reads Decisions/exports from
-                                                                the core engine via its public API
+
+Four rules make that arrow one-directional, and each is an invariant rather
+than a preference:
+
+1. **The platform may depend on the core. The core must never depend on the
+   platform.** Not by import, not by interface, not by configuration.
+2. **The platform must not import `internal/*`.** Enforced by an explicit
+   automated check, not by the module boundary — see below.
+3. **No platform-aware branches in the engine.** There is no
+   `if runningUnderControl`, no `EvaluationRunID` field on `Event`, and no
+   mode flag. An engine that behaves differently under the platform is an
+   engine nobody can reason about in isolation.
+4. **`Engine` stays an engine.** Project, Candidate, EvaluationRun, Scorecard,
+   Promotion, Environment, users, and access control are platform concepts and
+   do not appear in the core — not as types, not as fields, not as options.
+
+### What the core already provides the platform
+
+The platform is not blocked on new engine capability, which is why the
+boundary is affordable. It builds on properties that already exist:
+
+| Property | Why the platform needs it |
+|---|---|
+| `Analyze` is read-only; `Observe` is the only write path | An evaluation can score behavior without teaching the baseline |
+| Learning is gated against unsafe decisions | A candidate cannot train its way out of being blocked |
+| Behavioral state is bounded | An evaluation's cost is predictable |
+| Baselines are keyed `{ActorID, Environment}` | Scoping already exists to build isolation on |
+| `ActorTypeAIAgent`, and agents reuse the normal pipeline | No second engine for agents |
+| `Context.SessionID` correlates without entering the fingerprint | Runs can group events without creating behavioral identity |
+| `Context.DelegatedFrom`, bounded, behavioral | Delegation stability is measurable evidence |
+| `Context.ApprovalStatus`, enforceable by policy | Approval compliance is a gate input |
+| `Result` carries anomaly, confidence, trust, decision, contributors, explanation | A scorecard aggregates evidence that already exists |
+| PostgreSQL persistence; OTel ingestion | The runtime path is already production-shaped |
+| The core retains no raw event history | History is the platform's job, deliberately not the engine's |
+
+The last row is the load-bearing one. The engine holds learned state, not an
+event log. Any evaluation feature that needs to replay or diff raw events
+needs the platform to store them — and that is a boundary, not a gap.
+
+### The one core change the platform requires
+
+Evaluating two candidates against one actor identity would train one baseline,
+so each candidate would teach the other and the evaluation would measure a
+baseline it had polluted. **Learning isolation is a prerequisite**, and it does
+not exist today.
+
+The constraint on solving it: the mechanism must be generic. `SessionID` must
+not become baseline identity, an evaluation run must not become fingerprint
+identity, and candidate metadata — git SHA, artifact digest, model or tool-set
+hash — must never become a fingerprint dimension, or every deployment would
+look like a new actor. The engine must not learn what a Candidate is.
+
+`baseline.Key` was made composite in `v0.4` against exactly this kind of need.
+Whether isolation extends that key, scopes the store, or takes a third shape is
+an open design question owned by its own task, not decided here.
+
+### Inside the platform: everything is an adapter
+
+The platform's own shape is decided in
+[ADR 0023](adr/0023-interfaces-are-adapters.md), and it matters here because
+it is what keeps the boundary above from being re-crossed by accident.
+
+Authoritative logic — evaluation, scoring, policy, behavioral diff, gate
+evaluation, promotion — lives in control-plane services. Three interfaces
+consume them and own none of it:
+
+```text
+        CLI            TUI            WebUI
+         └──────────────┼──────────────┘
+                        ▼
+              Control-plane services
+                        │
+        ┌───────────────┼───────────────┐
+        ▼               ▼               ▼
+   RealtimeBus      capability       Core engine
+   (transport-       stores          (public API)
+    independent)  (Control/Evaluation/
+                   Behavior/Event)
 ```
 
-A future Control/Cloud product would be a *consumer* of this module's
-public API (`Engine`, `Result`) or of telemetry `internal/otel`
-enriches, exactly like any other embedder — it would not become a
-dependency the core links against, and the core would gain no
-awareness of multi-tenancy, RBAC, or centralized management to support
-it. See [ROADMAP.md](ROADMAP.md) for what's implemented vs. planned,
-and [`tasks/016-control.md`](tasks/016-control.md) for this constraint
-recorded as a standing placeholder ahead of any real Control design
-work.
+Two consequences worth stating, because both are easy to erode:
+
+- **A rule implemented in one interface is a defect**, not a feature of that
+  interface. Three copies of a gate rule are three behaviors.
+- **Persistence is capabilities, not a database.** No generic `Database`
+  interface — the same reasoning
+  [ADR 0004](adr/0004-narrow-store-port-in-memory-only.md) used to keep
+  `internal/store.Store` at two methods, applied to a larger surface.
+  Capability interfaces are named once their call patterns are known, which
+  is why the evaluation domain is sequenced before local persistence.
+
+The realtime bus is defined by its abstraction rather than its wire format,
+and must answer bounded queues, slow consumers, subscriber isolation, and
+reconnect behavior as part of its design — not after its first outage.
+
+### Module boundary
+
+The platform is expected to live in a **separate Go module inside this
+repository**, the same arrangement `processor/` and `examples/` already use.
+That choice and its trade-offs are argued in
+[ADR 0022](adr/0022-core-platform-boundary.md).
+
+One thing the module boundary does **not** buy, stated here because it is easy
+to assume otherwise: it does not enforce rule 2. Go's `internal/` restriction
+turns on import-path ancestry rather than module membership, so a nested module
+whose path is `github.com/trustvian/trustvian/platform` could import
+`…/internal/store` and compile. That is why `processor/` and `examples/` are
+named `trustvian-processor` and `trustvian-examples` — their compiler
+enforcement comes from the module *path*, not from being modules.
+
+Rule 2 is therefore enforced by an explicit check in CI that no platform
+source imports `github.com/trustvian/trustvian/internal/…`. A non-prefixed
+module path is recommended alongside it as a second line of defence.
+`GOWORK=off` verification remains for a different purpose: proving the
+module's declared dependencies actually resolve, which a workspace hides.
 
 ## Relationship to a future Alert & Notification layer
 
