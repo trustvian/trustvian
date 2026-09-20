@@ -83,5 +83,10 @@ func overflowTestRecord(at time.Time) trustvian.DecisionRecord {
 		Behavior:    trustvian.StableFeatures{Environment: "staging"},
 		RiskLevel:   "low",
 		Decision:    "allow",
+		// MatchedDefault with no PolicyRule: the well-formed pairing. Leaving
+		// both zero would be the malformed combination the policy-selection
+		// guard refuses — which is how this fixture was first written, and
+		// how the guard proved itself.
+		MatchedDefault: true,
 	}
 }

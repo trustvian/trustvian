@@ -44,8 +44,8 @@ one.
 
 ## Scope
 
-- `EvaluationAggregate`, with `NewEvaluationAggregate(run)` and
-  `AddRecord(record) (EvaluationAggregate, error)`.
+- `EvaluationAggregate`, with `NewEvaluationAggregate(run) (EvaluationAggregate, error)`
+  and `AddRecord(record) (EvaluationAggregate, error)`.
 - Fixed-shape counters for decision, risk, approval, and policy-selection
   shape.
 - `MetricSummary` over the five numeric fields.
@@ -139,6 +139,21 @@ all. A rule *name* is an identifier — `block-prod-shell` does not prove
 severity, and nothing here parses one. There is no map keyed by rule name,
 which would also be unbounded.
 
+`MatchedDefault` and `PolicyRule` are validated as **one piece of evidence**,
+because that is what they are:
+
+```text
+matched a rule:  MatchedDefault == false  and  PolicyRule != ""
+matched default: MatchedDefault == true   and  PolicyRule == ""
+```
+
+`DecisionRecord` documents the pairing and `policy.Evaluate` produces exactly
+it. Counting the boolean alone would let a hand-built record assert that a
+rule matched while naming no rule — fabricated selection evidence that a later
+scorecard would read as real. Either malformed combination is refused; there
+is deliberately no "unknown" bucket, since inventing one would preserve the
+fabrication under a different name.
+
 ### What this must not infer
 
 Not computed, each for a concrete reason:
@@ -154,6 +169,28 @@ Not computed, each for a concrete reason:
 Each of these is a judgement that needs context the aggregate does not have.
 Computing one here would put it in the only place nobody would think to look
 for a policy decision.
+
+## Aggregate Construction
+
+`NewEvaluationAggregate` returns an error, because a run can be invalid.
+
+Task 052 made `EvaluationRun`'s fields unexported, which prevents *mutation* —
+it does not prevent `platform.EvaluationRun{}`, constructible from any
+package. Copying its accessors blindly would produce an aggregate with four
+empty identifiers: evidence belonging to no run, in no environment, which the
+environment check would then match against records whose environment was also
+empty. **One aggregate is evidence for exactly one valid run**, so an invalid
+run yields no aggregate.
+
+Validated: the four identifiers against the same policy
+[task 052](052-evaluation-domain.md) applies (reusing its helper rather than
+restating it), a non-zero `CreatedAt`, and a recognized `RunStatus`.
+
+**Every lifecycle state is accepted.** Aggregation happens *during* execution,
+so pending and running are the common cases and a terminal run is equally
+valid evidence. Only a status this package never produces is refused — the
+same fail-closed stance the transitions take. No existence checks: that needs
+a collection, which is task 057.
 
 ## Validation / Trust Boundary
 
@@ -264,7 +301,23 @@ Three sentinels, matching the repository's convention of wrapping with
 | `ErrEnvironmentMismatch` | the record belongs to a different environment |
 | `ErrAggregateOverflow` | `RecordCount` would wrap |
 
-Messages name the offending field and value without dumping the record.
+Messages name the offending field and value without dumping the record, and
+**bound what they echo**.
+
+`DecisionRecord` is fixed-*shape*, not size-bounded — task 050 says so
+explicitly, because caller-supplied identifiers have no length limit. A
+rejection path that echoed a field verbatim would let whoever constructed the
+record choose how much memory the error allocates and how much output a log
+absorbs: a malformed record becoming an amplification primitive at exactly the
+moment the system is already unhappy.
+
+Every untrusted string reaching an error goes through one preview helper
+bounded at 64 bytes. Quoting is applied to the *truncated prefix*, never to
+the whole value — quoting first and truncating after would build the full
+escaped copy, potentially several times the original size, before discarding
+it, which is the bound the helper exists to provide. Truncation lands on a
+rune boundary so the result stays valid UTF-8, and it is visible in the
+output, because a silently shortened value looks like the whole thing.
 
 **An error is all that happens.** A rejected record does not fail, cancel, or
 complete the `EvaluationRun`, and does not block anything. The aggregator has
@@ -288,8 +341,16 @@ for every malformed class, the returned aggregate equals the original exactly.
 
 Rejection classes: unknown and empty decision, unknown and empty risk, unknown
 approval, mismatched environment, mismatched `Behavior.Environment`, empty
-`EventID`, zero timestamp, and — for each of the five numeric fields — `NaN`,
-`±Inf`, below `0`, and above `1`.
+`EventID`, zero timestamp, both malformed policy-selection combinations, and —
+for each of the five numeric fields — `NaN`, `±Inf`, below `0`, and above `1`.
+
+Construction: a zero-value run is refused, and every lifecycle state is
+accepted.
+
+Diagnostics stay bounded: a 1 MiB field in any of seven positions produces an
+error under 1 KiB that never reproduces a long run of the input, and a
+multi-byte prefix swept across the truncation boundary keeps the message valid
+UTF-8.
 
 Duplicates count twice. Structural proof of O(1) shape. Extension of task
 052's reflective mutation-surface guard to the new types. An internal-package
@@ -340,6 +401,10 @@ Also updated: `docs/DOMAIN.md`, `docs/SECURITY.md`, `docs/ROADMAP.md`,
 - [ ] Every consumed field is validated before any state change; a rejected
       record leaves the aggregate identical.
 - [ ] Cross-environment records are refused.
+- [ ] `MatchedDefault` and `PolicyRule` are validated as one coherent piece of
+      evidence; neither malformed combination counts.
+- [ ] An invalid or zero-value `EvaluationRun` produces no aggregate.
+- [ ] Validation errors bound what they echo from untrusted input.
 - [ ] Duplicates count twice, documented.
 - [ ] No score, gate, diff, promotion, or new-behavior semantic exists.
 - [ ] A real-Engine integration test proves the boundary composes.

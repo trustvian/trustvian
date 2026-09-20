@@ -928,9 +928,12 @@ plausibly run once per decision in a future control plane.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| `EvaluationAggregateAddRecord` | 95.2 | 0 | 0 |
+| `EvaluationAggregateAddRecord` | 99.5 | 0 | 0 |
 
-Six runs, darwin/arm64, Apple M3 Pro, Go 1.27; spread 92.8–96.8 ns/op.
+Six runs, darwin/arm64, Apple M3 Pro, Go 1.27; spread 97.6–109.9 ns/op. An
+earlier revision measured 95.2 ns before policy-selection consistency
+validation added two string comparisons to the path — a ~4% cost for closing a
+fabricated-evidence hole, which is not a trade worth thinking about twice.
 
 **Zero allocations is the number that matters**, and it was not free. The
 first implementation paired each metric name with a `*MetricSummary` pointing

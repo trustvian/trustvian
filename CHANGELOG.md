@@ -77,8 +77,13 @@ actually depend on.
   0026](docs/adr/0026-evaluation-aggregation-is-bounded-evidence.md).
 
   Malformed input fails closed: every consumed field is validated before any
-  state changes, cross-environment records are refused, and nothing is
-  clamped or coerced. `AddRecord` costs 95 ns and zero allocations.
+  state changes, and nothing is clamped or coerced. Cross-environment records
+  are refused. `MatchedDefault` and `PolicyRule` are validated as one pairing,
+  so a hand-built record cannot claim a rule matched while naming none.
+  `NewEvaluationAggregate` returns an error rather than binding evidence to an
+  invalid or zero-value run. Rejection paths echo only a bounded preview of
+  untrusted strings, so a malformed record cannot turn an error into an
+  amplification primitive. `AddRecord` costs 99 ns and zero allocations.
 
 - **`platform/`: the control-plane domain, as a fourth Go module.** The first
   platform-layer runtime code — `Project`, `Agent`, `Candidate`,

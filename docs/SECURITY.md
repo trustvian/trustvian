@@ -320,6 +320,21 @@ Specific boundaries worth naming:
   define a retention window. Stated rather than silently true.
 - **State stays fixed-size** as the record count grows, so a long evaluation
   cannot exhaust memory through the aggregate.
+- **Diagnostics are bounded too.** `DecisionRecord` strings are unbounded
+  public input, so rejection paths echo only a 64-byte preview of any
+  untrusted value: malformed evidence cannot force an error or a log line to
+  reproduce the entire value. Quoting is applied to the truncated prefix
+  rather than the whole string, so the allocation is bounded as well as the
+  output, and truncation is visible rather than silent.
+- **Policy-selection evidence cannot be fabricated.** `MatchedDefault` and
+  `PolicyRule` are validated as one pairing — a matched rule names itself, the
+  default names nothing — so a hand-built record cannot claim a rule matched
+  while naming none.
+- **An aggregate belongs to exactly one valid run.** A zero-value
+  `EvaluationRun` is constructible from any package (unexported fields prevent
+  mutation, not construction), and would otherwise produce an aggregate with
+  four empty identifiers whose environment check matched records with an empty
+  environment. Construction refuses it.
 
 See [ADR 0026](adr/0026-evaluation-aggregation-is-bounded-evidence.md).
 

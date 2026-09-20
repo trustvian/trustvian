@@ -19,8 +19,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	trustvian "github.com/trustvian/trustvian"
+	"github.com/trustvian/trustvian/config"
 	"github.com/trustvian/trustvian/event"
 	platform "trustvian-platform"
 )
@@ -44,7 +46,11 @@ func newTestRun(t *testing.T) platform.EvaluationRun {
 
 func newTestAggregate(t *testing.T) platform.EvaluationAggregate {
 	t.Helper()
-	return platform.NewEvaluationAggregate(newTestRun(t))
+	a, err := platform.NewEvaluationAggregate(newTestRun(t))
+	if err != nil {
+		t.Fatalf("NewEvaluationAggregate() error = %v", err)
+	}
+	return a
 }
 
 // validRecord is a well-formed record of the shape a real Engine produces —
@@ -94,7 +100,10 @@ func add(t *testing.T, a platform.EvaluationAggregate, r trustvian.DecisionRecor
 
 func TestNewEvaluationAggregateCapturesRunIdentity(t *testing.T) {
 	run := newTestRun(t)
-	a := platform.NewEvaluationAggregate(run)
+	a, err := platform.NewEvaluationAggregate(run)
+	if err != nil {
+		t.Fatalf("NewEvaluationAggregate() error = %v", err)
+	}
 
 	if a.RunID() != run.ID() || a.CandidateID() != run.CandidateID() ||
 		a.Environment() != run.Environment() || a.BehavioralProfile() != run.BehavioralProfile() {
@@ -471,29 +480,45 @@ func TestAggregateRetainsNoRecords(t *testing.T) {
 		reflect.UnsafePointer: "unsafe",
 	}
 
-	var walk func(t *testing.T, typ reflect.Type, path string, depth int)
-	walk = func(t *testing.T, typ reflect.Type, path string, depth int) {
-		if depth > 4 {
-			t.Fatalf("%s: struct nesting deeper than expected", path)
-		}
-		for i := range typ.NumField() {
-			f := typ.Field(i)
-			where := path + "." + f.Name
+	recordType := reflect.TypeOf(trustvian.DecisionRecord{})
 
-			if reason, bad := forbidden[f.Type.Kind()]; bad {
-				t.Errorf("%s is a %s: %s", where, f.Type.Kind(), reason)
-				continue
+	// inspect checks one type, descending through structs and through the
+	// element type of fixed-size arrays.
+	//
+	// Arrays are not rejected on principle: [4]uint64 is O(1) and perfectly
+	// fine. What must not survive anywhere — at any container depth — is
+	// retained evidence, so [4]DecisionRecord is caught by looking at what an
+	// array holds rather than at the array itself.
+	var inspect func(t *testing.T, typ reflect.Type, path string, depth int)
+	inspect = func(t *testing.T, typ reflect.Type, path string, depth int) {
+		if depth > 6 {
+			t.Fatalf("%s: type nesting deeper than expected", path)
+		}
+		if typ == recordType {
+			t.Errorf("%s retains a DecisionRecord; the aggregate is a summary, not an archive", path)
+			return
+		}
+		if reason, bad := forbidden[typ.Kind()]; bad {
+			t.Errorf("%s is a %s: %s", path, typ.Kind(), reason)
+			return
+		}
+
+		switch typ.Kind() {
+		case reflect.Array:
+			// Fixed-size, so the array itself is bounded; what it contains
+			// still has to be.
+			inspect(t, typ.Elem(), path+"[...]", depth+1)
+		case reflect.Struct:
+			if typ == reflect.TypeOf(time.Time{}) {
+				return // an opaque stdlib value, not somewhere records hide
 			}
-			if f.Type == reflect.TypeOf(trustvian.DecisionRecord{}) {
-				t.Errorf("%s retains a DecisionRecord; the aggregate is a summary, not an archive", where)
-				continue
-			}
-			if f.Type.Kind() == reflect.Struct && f.Type != reflect.TypeOf(time.Time{}) {
-				walk(t, f.Type, where, depth+1)
+			for i := range typ.NumField() {
+				f := typ.Field(i)
+				inspect(t, f.Type, path+"."+f.Name, depth+1)
 			}
 		}
 	}
-	walk(t, reflect.TypeOf(platform.EvaluationAggregate{}), "EvaluationAggregate", 0)
+	inspect(t, reflect.TypeOf(platform.EvaluationAggregate{}), "EvaluationAggregate", 0)
 
 	// And the shape is genuinely constant: an aggregate that has seen many
 	// records is the same size as an empty one.
@@ -585,7 +610,7 @@ func TestRealEngineRecordAggregates(t *testing.T) {
 	}
 	record := result.DecisionRecord()
 
-	got, err := platform.NewEvaluationAggregate(newTestRun(t)).AddRecord(record)
+	got, err := newTestAggregate(t).AddRecord(record)
 	if err != nil {
 		t.Fatalf("AddRecord() rejected a record a real Engine produced: %v", err)
 	}
@@ -679,7 +704,10 @@ func BenchmarkEvaluationAggregateAddRecord(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewEvaluationRun() error = %v", err)
 	}
-	a := platform.NewEvaluationAggregate(run)
+	a, err := platform.NewEvaluationAggregate(run)
+	if err != nil {
+		b.Fatalf("NewEvaluationAggregate() error = %v", err)
+	}
 	record := validRecord()
 
 	b.ReportAllocs()
@@ -692,7 +720,281 @@ func BenchmarkEvaluationAggregateAddRecord(b *testing.B) {
 		// The counter is bounded by uint64; a benchmark cannot reach it, but
 		// resetting keeps the aggregate honest across very long runs.
 		if a.RecordCount() == math.MaxUint64 {
-			a = platform.NewEvaluationAggregate(run)
+			a, _ = platform.NewEvaluationAggregate(run)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------
+// Policy-selection consistency
+// ---------------------------------------------------------------------
+
+// TestPolicySelectionConsistencyIsEnforced closes a hole where a hand-built
+// record could assert "a rule matched" while naming no rule.
+//
+// MatchedDefault and PolicyRule are one piece of evidence. DecisionRecord
+// documents the pairing, and policy.Evaluate produces exactly it: a matched
+// rule carries its name, the default carries none. Counting the boolean alone
+// would let fabricated selection evidence through, and a later scorecard
+// would read it as real.
+func TestPolicySelectionConsistencyIsEnforced(t *testing.T) {
+	base := add(t, newTestAggregate(t), validRecord())
+
+	malformed := map[string]func(*trustvian.DecisionRecord){
+		"matched a rule but names none": func(r *trustvian.DecisionRecord) {
+			r.MatchedDefault = false
+			r.PolicyRule = ""
+		},
+		"matched the default but names a rule": func(r *trustvian.DecisionRecord) {
+			r.MatchedDefault = true
+			r.PolicyRule = "block-prod-shell"
+		},
+	}
+	for name, mutate := range malformed {
+		t.Run(name, func(t *testing.T) {
+			rec := validRecord()
+			rec.EventID = "evt-malformed"
+			mutate(&rec)
+
+			got, err := base.AddRecord(rec)
+			if !errors.Is(err, platform.ErrInvalidDecisionRecord) {
+				t.Fatalf("AddRecord() error = %v, want one wrapping ErrInvalidDecisionRecord", err)
+			}
+			if got != base {
+				t.Errorf("a rejected record changed the aggregate:\n got %+v\nwant %+v", got, base)
+			}
+		})
+	}
+
+	// And the two well-formed combinations still count, in the right bucket.
+	t.Run("default with no rule counts as default", func(t *testing.T) {
+		rec := validRecord()
+		rec.MatchedDefault, rec.PolicyRule = true, ""
+		if got := add(t, newTestAggregate(t), rec).PolicySelection(); got != (platform.PolicySelection{MatchedDefault: 1}) {
+			t.Fatalf("PolicySelection() = %+v, want MatchedDefault=1", got)
+		}
+	})
+	t.Run("named rule counts as a rule", func(t *testing.T) {
+		rec := validRecord()
+		rec.MatchedDefault, rec.PolicyRule = false, "block-prod-shell"
+		if got := add(t, newTestAggregate(t), rec).PolicySelection(); got != (platform.PolicySelection{MatchedRule: 1}) {
+			t.Fatalf("PolicySelection() = %+v, want MatchedRule=1", got)
+		}
+	})
+}
+
+// TestRealEnginePolicySelectionSemantics proves the pairing above is the
+// core's actual behavior rather than a reading of its documentation — one
+// engine with a matching rule, one falling through to the default, both
+// analyzed for real and both accepted by the aggregator.
+//
+// This is the only test importing `config`, and it does so because
+// `config.CompilePolicy` is the single public way to build a rule-bearing
+// Policy: `trustvian.WithPolicy` takes an internal type, deliberately (task
+// 048). The cost is that the platform's *test* binary pulls in config's own
+// dependencies, pgx among them. The non-test build links none of them —
+// `go list -deps .` reports zero — so nothing reaches a platform binary, and
+// the module's third-party confinement is unaffected.
+//
+// Worth the cost: an invariant believed from documentation is how three
+// earlier false claims in this project got written down. This one is
+// observed.
+func TestRealEnginePolicySelectionSemantics(t *testing.T) {
+	ruleEngine := func(t *testing.T) *trustvian.Engine {
+		t.Helper()
+		compiled, err := config.CompilePolicy(config.PolicyConfig{
+			Version:         config.SchemaVersionV1,
+			DefaultDecision: "observe_only",
+			DefaultReason:   "no rule matched",
+			Rules: []config.PolicyRule{{
+				Name:     "flag-tool-use",
+				Reason:   "tool calls are reviewed",
+				Decision: "alert",
+				When:     config.PolicyCondition{OperationCategory: "tool"},
+			}},
+		})
+		if err != nil {
+			t.Fatalf("CompilePolicy() error = %v", err)
+		}
+		return trustvian.NewEngine(trustvian.WithPolicy(compiled))
+	}
+
+	analyze := func(t *testing.T, engine *trustvian.Engine, category event.OperationCategory, name string) trustvian.DecisionRecord {
+		t.Helper()
+		ev := event.Event{
+			ID:        "evt-policy",
+			Timestamp: aggEpoch,
+			Actor:     event.Actor{ID: "agent-1", Type: event.ActorTypeAIAgent, IdentityConfidence: 0.9},
+			Operation: event.Operation{Category: category, Name: name},
+			Target:    event.Target{Name: "build-host", Category: event.TargetCategoryExternal},
+			Context:   event.Context{Environment: testEnvironment},
+		}
+		result, err := engine.Analyze(t.Context(), ev)
+		if err != nil {
+			t.Fatalf("Analyze() error = %v", err)
+		}
+		return result.DecisionRecord()
+	}
+
+	t.Run("a matched rule names itself", func(t *testing.T) {
+		rec := analyze(t, ruleEngine(t), event.OperationCategoryTool, "shell.execute")
+		if rec.MatchedDefault {
+			t.Fatalf("expected the rule to match: %+v", rec)
+		}
+		if rec.PolicyRule == "" {
+			t.Fatal("a matched rule produced an empty PolicyRule; the aggregator's invariant is wrong")
+		}
+		if got := add(t, newTestAggregate(t), rec).PolicySelection(); got != (platform.PolicySelection{MatchedRule: 1}) {
+			t.Errorf("PolicySelection() = %+v, want MatchedRule=1", got)
+		}
+	})
+
+	t.Run("the default names nothing", func(t *testing.T) {
+		rec := analyze(t, ruleEngine(t), event.OperationCategoryHTTP, "GET /health")
+		if !rec.MatchedDefault {
+			t.Fatalf("expected the default to apply: %+v", rec)
+		}
+		if rec.PolicyRule != "" {
+			t.Fatalf("the default produced PolicyRule %q; the aggregator's invariant is wrong", rec.PolicyRule)
+		}
+		if got := add(t, newTestAggregate(t), rec).PolicySelection(); got != (platform.PolicySelection{MatchedDefault: 1}) {
+			t.Errorf("PolicySelection() = %+v, want MatchedDefault=1", got)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------
+// Aggregate construction
+// ---------------------------------------------------------------------
+
+// TestNewEvaluationAggregateRejectsAnInvalidRun: one aggregate is evidence for
+// exactly one valid run. A zero-value EvaluationRun is constructible from any
+// package — task 052's unexported fields prevent mutation, not
+// `platform.EvaluationRun{}` — and copying its accessors would produce an
+// aggregate with four empty identifiers, belonging to no run.
+func TestNewEvaluationAggregateRejectsAnInvalidRun(t *testing.T) {
+	t.Run("zero-value run", func(t *testing.T) {
+		got, err := platform.NewEvaluationAggregate(platform.EvaluationRun{})
+		if err == nil {
+			t.Fatalf("NewEvaluationAggregate(zero run) succeeded and produced %+v", got)
+		}
+		if !errors.Is(err, platform.ErrInvalidID) {
+			t.Errorf("error = %v, want one wrapping ErrInvalidID", err)
+		}
+		if got != (platform.EvaluationAggregate{}) {
+			t.Error("a refused construction returned a non-zero aggregate")
+		}
+	})
+
+	// Every lifecycle state is acceptable: aggregation happens *during*
+	// execution, so pending and running are the common cases, and a terminal
+	// run is equally valid evidence.
+	t.Run("every lifecycle state is accepted", func(t *testing.T) {
+		pending := newTestRun(t)
+		running, err := pending.Start(aggEpoch.Add(time.Minute))
+		if err != nil {
+			t.Fatalf("Start() error = %v", err)
+		}
+		completed, err := running.Complete(aggEpoch.Add(2 * time.Minute))
+		if err != nil {
+			t.Fatalf("Complete() error = %v", err)
+		}
+		failed, err := running.Fail(aggEpoch.Add(2*time.Minute), "sandbox died")
+		if err != nil {
+			t.Fatalf("Fail() error = %v", err)
+		}
+		cancelled, err := running.Cancel(aggEpoch.Add(2 * time.Minute))
+		if err != nil {
+			t.Fatalf("Cancel() error = %v", err)
+		}
+
+		for name, run := range map[string]platform.EvaluationRun{
+			"pending": pending, "running": running,
+			"completed": completed, "failed": failed, "cancelled": cancelled,
+		} {
+			t.Run(name, func(t *testing.T) {
+				a, err := platform.NewEvaluationAggregate(run)
+				if err != nil {
+					t.Fatalf("NewEvaluationAggregate(%s run) error = %v", name, err)
+				}
+				if a.RunID() != run.ID() {
+					t.Errorf("RunID() = %q, want %q", a.RunID(), run.ID())
+				}
+			})
+		}
+	})
+}
+
+// ---------------------------------------------------------------------
+// Bounded diagnostics
+// ---------------------------------------------------------------------
+
+// TestValidationErrorsAreBounded closes an amplification path.
+//
+// DecisionRecord is fixed-*shape*, not size-bounded — task 050 says so
+// explicitly, because caller-supplied identifiers have no length limit. An
+// error that echoed a field verbatim would let whoever built the record
+// choose how much memory the rejection allocates and how much output a log
+// absorbs, at exactly the moment the system is already unhappy.
+func TestValidationErrorsAreBounded(t *testing.T) {
+	const huge = 1 << 20 // 1 MiB
+	const maxErrorBytes = 1024
+
+	giant := strings.Repeat("A", huge)
+
+	tests := map[string]func(*trustvian.DecisionRecord){
+		"event id":             func(r *trustvian.DecisionRecord) { r.EventID = giant; r.Decision = "nope" },
+		"decision":             func(r *trustvian.DecisionRecord) { r.Decision = giant },
+		"environment":          func(r *trustvian.DecisionRecord) { r.Environment = giant },
+		"risk level":           func(r *trustvian.DecisionRecord) { r.RiskLevel = giant },
+		"approval status":      func(r *trustvian.DecisionRecord) { r.ApprovalStatus = event.ApprovalStatus(giant) },
+		"policy rule":          func(r *trustvian.DecisionRecord) { r.MatchedDefault = true; r.PolicyRule = giant },
+		"behavior environment": func(r *trustvian.DecisionRecord) { r.Behavior.Environment = giant },
+	}
+
+	base := add(t, newTestAggregate(t), validRecord())
+
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			rec := validRecord()
+			mutate(&rec)
+
+			got, err := base.AddRecord(rec)
+			if err == nil {
+				t.Fatal("AddRecord() accepted a record with a 1 MiB field")
+			}
+			if got != base {
+				t.Error("a rejected record changed the aggregate")
+			}
+			if n := len(err.Error()); n > maxErrorBytes {
+				t.Errorf("error is %d bytes for a %d-byte input; diagnostics must stay bounded", n, huge)
+			}
+			if strings.Contains(err.Error(), strings.Repeat("A", 200)) {
+				t.Error("the error reproduced a long run of the untrusted value")
+			}
+			if !strings.Contains(err.Error(), "truncated") {
+				t.Errorf("truncation is not visible in the message: %q", err)
+			}
+		})
+	}
+}
+
+// TestPreviewTruncatesOnARuneBoundary: the preview claims to stay valid
+// UTF-8, so a multi-byte rune straddling the cut must not be split.
+func TestPreviewTruncatesOnARuneBoundary(t *testing.T) {
+	// 3 bytes per rune: with a 64-byte budget the cut lands mid-rune at
+	// several lengths, so sweep a window around the boundary.
+	for runes := 20; runes <= 24; runes++ {
+		value := strings.Repeat("→", runes) + strings.Repeat("A", 1<<16)
+
+		rec := validRecord()
+		rec.Decision = value
+		_, err := newTestAggregate(t).AddRecord(rec)
+		if err == nil {
+			t.Fatalf("%d runes: AddRecord() accepted an invalid decision", runes)
+		}
+		if !utf8.ValidString(err.Error()) {
+			t.Errorf("%d runes: the error is not valid UTF-8; truncation split a rune", runes)
 		}
 	}
 }

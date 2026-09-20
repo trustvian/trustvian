@@ -123,6 +123,19 @@ thresholds are configuration; an aggregate that carried them would become the
 place decisions are made while looking like the place facts are counted. Task
 056 owns gates, and it will read this.
 
+### Bounded state implies bounded diagnostics
+
+The same reasoning that keeps the aggregate fixed-size applies to what its
+rejection paths emit. `DecisionRecord` is fixed-shape but its strings are
+deliberately unbounded, so an error echoing a field verbatim would hand
+whoever built the record control over how much memory the failure allocates
+and how much output a log absorbs.
+
+Untrusted text therefore reaches an error only through a bounded preview. This
+is part of the same decision rather than a separate one: a component that
+refuses to grow with its input should not grow with its input's *errors*
+either.
+
 ## Consequences
 
 The aggregate is cheap to hold, cheap to persist, and safe to keep for as long

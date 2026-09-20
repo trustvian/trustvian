@@ -18,7 +18,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"time"
+	"unicode/utf8"
 
 	trustvian "github.com/trustvian/trustvian"
 	"github.com/trustvian/trustvian/event"
@@ -238,7 +240,8 @@ type EvaluationAggregate struct {
 	contextRisk        MetricSummary
 }
 
-// NewEvaluationAggregate returns an empty aggregate bound to run.
+// NewEvaluationAggregate returns an empty aggregate bound to run, or an error
+// if the run could not have come from NewEvaluationRun and its transitions.
 //
 // The run's identity is copied in because a record cannot supply it:
 // DecisionRecord carries no EvaluationRunID, CandidateID, or behavioral
@@ -251,13 +254,47 @@ type EvaluationAggregate struct {
 // purpose, so nothing here can attest that the engine producing these records
 // was configured with that scope. See
 // docs/tasks/v1.0/053-evaluation-result-aggregation.md.
-func NewEvaluationAggregate(run EvaluationRun) EvaluationAggregate {
+func NewEvaluationAggregate(run EvaluationRun) (EvaluationAggregate, error) {
+	// A zero-value EvaluationRun is constructible from any package —
+	// task 052's fields are unexported, which prevents *mutation*, not
+	// `platform.EvaluationRun{}`. Copying its accessors blindly would
+	// produce an aggregate with four empty identifiers: evidence belonging
+	// to no run, in no environment, which the environment check would then
+	// happily match against records whose own environment was also empty.
+	//
+	// One aggregate is evidence for exactly one valid run, so an invalid run
+	// yields no aggregate.
+	if err := validateID("evaluation run id", string(run.ID())); err != nil {
+		return EvaluationAggregate{}, err
+	}
+	if err := validateID("evaluation run candidate id", string(run.CandidateID())); err != nil {
+		return EvaluationAggregate{}, err
+	}
+	if err := validateID("evaluation run environment", string(run.Environment())); err != nil {
+		return EvaluationAggregate{}, err
+	}
+	if err := validateID("evaluation run behavioral profile", string(run.BehavioralProfile())); err != nil {
+		return EvaluationAggregate{}, err
+	}
+	if run.CreatedAt().IsZero() {
+		return EvaluationAggregate{}, fmt.Errorf("%w: evaluation run created_at is not set", ErrInvalidTimestamp)
+	}
+	// Any lifecycle state is acceptable — aggregation happens *during*
+	// execution, so a pending or running run is the common case and a
+	// terminal one is fine too. Only a status this package never produces
+	// is refused, which is the same fail-closed stance the transitions take
+	// for a value that came from somewhere unexpected.
+	if !run.Status().valid() {
+		return EvaluationAggregate{}, fmt.Errorf("%w: evaluation run is in an unrecognized state %s",
+			ErrInvalidTransition, preview(string(run.Status())))
+	}
+
 	return EvaluationAggregate{
 		runID:       run.ID(),
 		candidateID: run.CandidateID(),
 		environment: run.Environment(),
 		profile:     run.BehavioralProfile(),
-	}
+	}, nil
 }
 
 // Run identity, captured at construction.
@@ -329,23 +366,23 @@ func (a EvaluationAggregate) AddRecord(record trustvian.DecisionRecord) (Evaluat
 		return a, fmt.Errorf("%w: event id is empty", ErrInvalidDecisionRecord)
 	}
 	if record.Timestamp.IsZero() {
-		return a, fmt.Errorf("%w: event %q has no timestamp", ErrInvalidDecisionRecord, record.EventID)
+		return a, fmt.Errorf("%w: event %s has no timestamp", ErrInvalidDecisionRecord, preview(record.EventID))
 	}
 
 	// Environment isolation. Counting production evidence into a staging
 	// evaluation is a wrong answer rather than a rounding error, and the run's
 	// EnvironmentRef is the only thing positioned to notice.
 	if record.Environment != string(a.environment) {
-		return a, fmt.Errorf("%w: event %q is from %q, evaluation is %q",
-			ErrEnvironmentMismatch, record.EventID, record.Environment, a.environment)
+		return a, fmt.Errorf("%w: event %s is from %s, evaluation is %s",
+			ErrEnvironmentMismatch, preview(record.EventID), preview(record.Environment), preview(string(a.environment)))
 	}
 	// For genuine engine output these are the same value: features.Extract
 	// derives the stable environment from the same Event.Context.Environment
 	// the record reports. A disagreement means the record was assembled or
 	// tampered with rather than produced.
 	if record.Behavior.Environment != record.Environment {
-		return a, fmt.Errorf("%w: event %q reports environment %q but its behavior says %q",
-			ErrInvalidDecisionRecord, record.EventID, record.Environment, record.Behavior.Environment)
+		return a, fmt.Errorf("%w: event %s reports environment %s but its behavior says %s",
+			ErrInvalidDecisionRecord, preview(record.EventID), preview(record.Environment), preview(record.Behavior.Environment))
 	}
 
 	decisions, err := a.decisions.count(record.Decision, record.EventID)
@@ -359,6 +396,24 @@ func (a EvaluationAggregate) AddRecord(record trustvian.DecisionRecord) (Evaluat
 	approvals, err := a.approvals.count(record.ApprovalStatus, record.EventID)
 	if err != nil {
 		return a, err
+	}
+
+	// MatchedDefault and PolicyRule are one piece of evidence, not two
+	// independent fields, and DecisionRecord documents the pairing: a matched
+	// rule names itself, the default names nothing. Counting them separately
+	// would let a hand-built record assert "a rule matched" while naming no
+	// rule — fabricated policy-selection evidence that a later scorecard
+	// would read as real.
+	//
+	// Refused rather than bucketed: there is no "unknown" selection, because
+	// inventing one would preserve the fabrication under a different name.
+	if record.MatchedDefault && record.PolicyRule != "" {
+		return a, fmt.Errorf("%w: event %s matched the policy default but names rule %s",
+			ErrInvalidDecisionRecord, preview(record.EventID), preview(record.PolicyRule))
+	}
+	if !record.MatchedDefault && record.PolicyRule == "" {
+		return a, fmt.Errorf("%w: event %s matched a policy rule but names none",
+			ErrInvalidDecisionRecord, preview(record.EventID))
 	}
 
 	// The five numeric signals, all core-produced values in [0,1]. Validated
@@ -434,8 +489,8 @@ func (c DecisionCounts) count(decision, eventID string) (DecisionCounts, error) 
 	case decisionBlock:
 		c.Block++
 	default:
-		return c, fmt.Errorf("%w: event %q has unrecognized decision %q",
-			ErrInvalidDecisionRecord, eventID, decision)
+		return c, fmt.Errorf("%w: event %s has unrecognized decision %s",
+			ErrInvalidDecisionRecord, preview(eventID), preview(decision))
 	}
 	return c, nil
 }
@@ -453,8 +508,8 @@ func (c RiskCounts) count(risk, eventID string) (RiskCounts, error) {
 	case riskCritical:
 		c.Critical++
 	default:
-		return c, fmt.Errorf("%w: event %q has unrecognized risk level %q",
-			ErrInvalidDecisionRecord, eventID, risk)
+		return c, fmt.Errorf("%w: event %s has unrecognized risk level %s",
+			ErrInvalidDecisionRecord, preview(eventID), preview(risk))
 	}
 	return c, nil
 }
@@ -477,8 +532,8 @@ func (c ApprovalCounts) count(status event.ApprovalStatus, eventID string) (Appr
 	case event.ApprovalDenied:
 		c.Denied++
 	default:
-		return c, fmt.Errorf("%w: event %q has unrecognized approval status %q",
-			ErrInvalidDecisionRecord, eventID, status)
+		return c, fmt.Errorf("%w: event %s has unrecognized approval status %s",
+			ErrInvalidDecisionRecord, preview(eventID), preview(string(status)))
 	}
 	return c, nil
 }
@@ -490,14 +545,58 @@ func (c ApprovalCounts) count(status event.ApprovalStatus, eventID string) (Appr
 // would let a NaN through and poison every sum it reached.
 func validateUnitInterval(field string, v float64, eventID string) error {
 	if math.IsNaN(v) {
-		return fmt.Errorf("%w: event %q has %s = NaN", ErrInvalidDecisionRecord, eventID, field)
+		return fmt.Errorf("%w: event %s has %s = NaN", ErrInvalidDecisionRecord, preview(eventID), field)
 	}
 	if math.IsInf(v, 0) {
-		return fmt.Errorf("%w: event %q has %s = %v", ErrInvalidDecisionRecord, eventID, field, v)
+		return fmt.Errorf("%w: event %s has %s = %v", ErrInvalidDecisionRecord, preview(eventID), field, v)
 	}
 	if v < 0 || v > 1 {
-		return fmt.Errorf("%w: event %q has %s = %v, outside [0,1]",
-			ErrInvalidDecisionRecord, eventID, field, v)
+		return fmt.Errorf("%w: event %s has %s = %v, outside [0,1]",
+			ErrInvalidDecisionRecord, preview(eventID), field, v)
 	}
 	return nil
+}
+
+// maxPreviewBytes bounds how much of an untrusted string reaches an error
+// message. Long enough to identify a value at a glance — an event id, an
+// environment name, a misspelled decision — and short enough that a
+// pathological input cannot turn a rejection into a memory or log problem.
+const maxPreviewBytes = 64
+
+// preview renders untrusted text for a diagnostic, bounded.
+//
+// DecisionRecord is fixed-*shape*, not size-bounded: task 050 says so
+// explicitly, because caller-supplied identifiers and names have no length
+// limit. So a rejection path that echoed a field verbatim would let whoever
+// constructed the record choose how much memory the error allocates and how
+// much output the log absorbs — a malformed record turning into an
+// amplification primitive, at exactly the moment the system is already
+// unhappy.
+//
+// The quoting is applied to the truncated prefix, never to the whole string.
+// Quoting first and truncating after would produce the full escaped copy —
+// potentially several times the original size — before discarding it, which
+// is the bound this function exists to provide.
+//
+// Truncation lands on a rune boundary so the result stays valid UTF-8, and it
+// is visible in the output: a silently shortened value is worse than an
+// obviously shortened one, because it looks like the whole thing.
+func preview(s string) string {
+	if len(s) <= maxPreviewBytes {
+		return strconv.Quote(s)
+	}
+
+	// Back off to the start of the rune straddling the cut. The scan is
+	// bounded by UTF-8's maximum encoding length.
+	cut := maxPreviewBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	if cut == 0 {
+		// The prefix is not valid UTF-8 at all. Keep the full budget and let
+		// Quote escape it; the output stays bounded either way.
+		cut = maxPreviewBytes
+	}
+
+	return strconv.Quote(s[:cut]) + "... (truncated, " + strconv.Itoa(len(s)) + " bytes total)"
 }
