@@ -97,7 +97,7 @@ func TestStressSameKeyContentionLosesNoObservations(t *testing.T) {
 				defer wg.Done()
 				<-start // release all writers together
 				for range observationsEach {
-					if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
+					if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
 						errs <- err
 						return
 					}
@@ -177,7 +177,7 @@ func TestStressFirstWriteContentionLosesNoObservations(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start // every writer races the absent row simultaneously
-				if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
+				if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
 					errs <- err
 				}
 			}()
@@ -245,7 +245,7 @@ func TestStressMultiKeyConcurrencyDoesNotSerializeGlobally(t *testing.T) {
 			key := hardeningKey(fmt.Sprintf("stress-multi-key-%d", i))
 			<-start
 			for range observationsEach {
-				if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
+				if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
 					errs <- err
 					return
 				}
@@ -307,7 +307,7 @@ func TestStressMixedContentionUnderCancellation(t *testing.T) {
 			defer wg.Done()
 			<-start
 			for range eachCommit {
-				if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
+				if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
 					errs <- err
 					return
 				}
@@ -328,7 +328,7 @@ func TestStressMixedContentionUnderCancellation(t *testing.T) {
 			<-start
 			cctx, cancel := context.WithCancel(ctx)
 			cancel()
-			if _, err := s.Observe(cctx, key, fp, features.VolatileFeatures{}, testTime); err == nil {
+			if _, _, err := s.Observe(cctx, key, fp, features.VolatileFeatures{}, testTime); err == nil {
 				mu.Lock()
 				succeeded++
 				mu.Unlock()
@@ -375,7 +375,7 @@ func TestStressManyDistinctActorsBoundedRowCount(t *testing.T) {
 	for i := range actors {
 		key := hardeningKey(fmt.Sprintf("bounded-actor-%d", i))
 		for range observationsEach {
-			if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
+			if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
 				t.Fatalf("Observe() error = %v", err)
 			}
 			now = now.Add(time.Second)
@@ -487,7 +487,7 @@ func TestDatabaseRestartPreservesCommittedBaseline(t *testing.T) {
 	const observations = 9
 	now := testTime
 	for range observations {
-		if _, err := before.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
+		if _, _, err := before.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
 			t.Fatalf("Observe() error = %v", err)
 		}
 		now = now.Add(time.Second)
@@ -535,7 +535,7 @@ func TestDatabaseRestartPreservesCommittedBaseline(t *testing.T) {
 	assertBaselinesEquivalent(t, committed, reloaded)
 
 	// The store is fully functional afterwards, not merely readable.
-	if _, err := after.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
+	if _, _, err := after.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
 		t.Fatalf("Observe() error = %v after restart, want nil", err)
 	}
 	if got := observationCount(t, after, key); got != observations+1 {

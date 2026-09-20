@@ -40,6 +40,45 @@ actually depend on.
 
 ### Added
 
+- **Learning scopes: independent behavioral history under one actor
+  identity.** `trustvian.WithLearningScope("...")` partitions an Engine's
+  learned state. Two engines over one store with different scopes never
+  share a `Baseline`, even for the same actor in the same environment —
+  each accumulates its own history and each starts cold. Two engines with
+  the same scope share one profile; the scope is the identity, not the
+  Engine instance.
+
+  `baseline.Key` gains a `Scope` field, so learned-state identity is
+  `{Scope, ActorID, Environment}`. Everything downstream follows from that
+  one change: `InMemory` shards by the whole key, `FileStore` persists the
+  `Key` the `Baseline` already carries, PostgreSQL gets one composite
+  primary key, and `Freezer` becomes scope-aware without learning that
+  scopes exist.
+
+  **Scope is not behavioral identity.** The same event analyzed under two
+  scopes produces the same `StableFeatures` and the same `Fingerprint.ID`;
+  only the learned evidence it is compared against differs. Scope is absent
+  from the fingerprint hash, from `StableFeatures`, and from
+  `DecisionRecord`.
+
+  **Scope cannot come from an event.** It is Engine configuration, fixed at
+  construction, and is never derived from `SessionID`, `TraceID`, or
+  `Attributes` — so an event producer cannot choose which learned profile it
+  trains. This is a trust boundary, not tidiness; see
+  [SECURITY.md](docs/SECURITY.md#learning-scope-selection).
+
+  The default scope is `""`. `NewEngine()` without the option behaves
+  exactly as before and finds exactly the state it found before.
+
+  The 512-fingerprint bound ([ADR
+  0019](docs/adr/0019-bounded-fingerprint-admission.md)) is unchanged and
+  now applies per scoped baseline: filling one scope leaves every other with
+  its own independent capacity. The constant has never bounded the *number*
+  of baselines and does not now.
+
+  See [ADR
+  0024](docs/adr/0024-learning-scope-is-a-baseline-key-dimension.md).
+
 - **`DecisionRecord`: a serializable public projection of one analysis.**
   `Result` is readable from outside the module, but four of its fields have
   types from `internal/`, so a consumer could inspect a result without being
@@ -123,7 +162,50 @@ actually depend on.
   accepted, now an error. No in-repository caller produces one, and no
   encodable timestamp's treatment changed.
 
+- **`Engine.Observe` reported learning that did not happen.**
+  `Baseline.Observe` refuses an unknown fingerprint once a baseline holds
+  512 identities, but the store call still succeeded, so `Observe` returned
+  `learned == true` regardless. Task 049 recorded this as an open conflict:
+  a long run against a wide-surface actor could quietly stop learning while
+  reporting that it had.
+
+  The admission outcome now propagates from `Baseline.Observe` through
+  `Store.Observe` to `Engine.Observe`. `learned` is false for an ineligible
+  decision, false when an unknown fingerprint is refused at capacity, false
+  when the store is frozen, and true when a known fingerprint keeps learning
+  at capacity.
+
+  **Admission policy is unchanged** — ADR 0019's refuse-never-evict stands,
+  capacity refusal is still not an error, and analysis is unaffected. Only
+  the reporting changed.
+
 ### Changed
+
+- **Persisted state carries learning scopes, and both backends versioned.**
+  The FileStore snapshot moves to `version: 2` and PostgreSQL to
+  `SchemaVersion = 2`. Each reads its predecessor and upgrades in place:
+  every pre-scope baseline lands in the default scope with its learned state
+  unchanged, because a `Key` with no `Scope` field deserializes to exactly
+  that. Nothing is invented, and no learned state moves between scopes.
+
+  PostgreSQL's upgrade adds `scope text NOT NULL`, makes the primary key
+  `(scope, actor_id, environment)`, and restamps each row's derived
+  `schema_version` — all inside the existing migration transaction and
+  advisory lock, so it is atomic and safe against a racing process. Scope is
+  part of the primary key deliberately: storing it only in the jsonb would
+  let a second scope's insert collide with the first's row.
+
+  **Downgrade is not supported, deliberately.** Adding a JSON field is
+  normally additive, but `Scope` changes what a record *identifies* — one
+  version-2 snapshot can hold two baselines a version-1 reader sees as the
+  same key, and it would keep whichever it loaded last. A file an old binary
+  refuses is a recoverable operational problem; two learned profiles
+  silently merged is corrupted state nothing detects. Recovery from a
+  downgrade is restoring a pre-upgrade backup.
+
+- **Source-breaking for in-module callers of the `store.Store` port.**
+  `Observe` returns `(baseline.Baseline, bool, error)`. `Store` is not a
+  public extension point — see below — so no external consumer is affected.
 
 - Documented explicitly that **custom `Store` implementations are not a
   v1 extension point**. `store.Store` references internal types and

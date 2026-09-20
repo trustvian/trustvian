@@ -389,6 +389,29 @@ downtime: an online backup is consistent, but observations committed between
 it and the stop would be lost by a rollback. If you cannot stop first, take
 the backup, then stop, and accept that window.
 
+### Upgrading into `v1.0`: the schema moves
+
+`v1.0` is the first release that changes the PostgreSQL schema — version 1 to
+version 2, adding the learning-scope column
+([ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md)). The
+procedure above is unchanged, and `Migrate` performs the upgrade on first
+startup, atomically, inside its existing transaction and advisory lock. Every
+existing baseline is preserved and lands in the default scope; no learned
+state is discarded. The file-store snapshot moves from `version: 1` to
+`version: 2` on the same terms.
+
+**The mandatory backup above is load-bearing here, not ceremonial.** There is
+no downgrade across this change: a `v0.9.x` binary refuses version-2 state and
+fails startup, which is the intended behavior — it cannot see the scope column
+and would merge distinct learned profiles if it proceeded. Rolling back to
+`v0.9.x` means restoring the pre-upgrade backup, so take it and verify it
+before you start.
+
+Expect the first startup after the upgrade to take slightly longer than a
+restart: the migration rewrites the baseline table's primary key and restamps
+each row's `schema_version`. It is proportional to the number of actors you
+track, which is bounded by your deployment, not by traffic.
+
 **Several replicas.** If the target release changes the schema version, stop
 **all** old replicas before starting any new one. If it does not (see the
 [matrix](#compatibility-matrix)), a rolling replacement is safe: old and new

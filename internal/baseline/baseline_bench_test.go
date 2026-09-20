@@ -27,7 +27,7 @@ func BenchmarkObserve(b *testing.B) {
 
 	b.ReportAllocs()
 	for b.Loop() {
-		bl = bl.Observe(fp, vol, now)
+		bl, _ = bl.Observe(fp, vol, now)
 	}
 }
 
@@ -49,7 +49,7 @@ func BenchmarkObserveTransition(b *testing.B) {
 		if i%2 == 1 {
 			fp = fpB
 		}
-		bl = bl.Observe(fp, vol, now)
+		bl, _ = bl.Observe(fp, vol, now)
 		now = now.Add(time.Millisecond)
 	}
 }
@@ -77,7 +77,7 @@ func BenchmarkObserveTrigram(b *testing.B) {
 		case 2:
 			fp = fpC
 		}
-		bl = bl.Observe(fp, vol, now)
+		bl, _ = bl.Observe(fp, vol, now)
 		now = now.Add(time.Millisecond)
 	}
 }

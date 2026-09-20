@@ -58,6 +58,12 @@ type Engine struct {
 	anomalyConfig anomaly.Config
 	trustConfig   trust.Config
 	contextRisk   func(features.StableFeatures) float64
+
+	// learningScope partitions learned state. "" is the default scope,
+	// which is what every Engine built before WithLearningScope existed
+	// uses and what every pre-scope persisted baseline already is. See
+	// WithLearningScope.
+	learningScope string
 }
 
 // NewEngine constructs an Engine, applying opts in order over sane
@@ -91,7 +97,10 @@ func (e *Engine) Analyze(ctx context.Context, ev event.Event) (Result, error) {
 
 	feat := features.Extract(ev)
 	fp := fingerprint.Compute(feat.Stable)
-	key := baseline.Key{ActorID: ev.Actor.ID, Environment: ev.Context.Environment}
+	// Scope comes from this Engine's configuration, never from ev. An
+	// event producer must not be able to choose which learned history it
+	// trains — see WithLearningScope and docs/SECURITY.md.
+	key := baseline.Key{Scope: e.learningScope, ActorID: ev.Actor.ID, Environment: ev.Context.Environment}
 
 	bl, _ := e.store.Get(ctx, key)
 	an := anomaly.Score(feat, fp, bl, e.anomalyConfig)
@@ -137,20 +146,34 @@ func eligibleForLearning(d policy.Decision) bool {
 
 // Observe conditionally applies result to the Engine's Baseline: it is a
 // no-op unless result.Decision is eligible for learning (see
-// eligibleForLearning), reported via the returned learned bool. This is
-// what makes Observe safe to call unconditionally after every Analyze —
-// the gating that prevents baseline poisoning lives here, not in caller
-// discipline.
+// eligibleForLearning). This is what makes Observe safe to call
+// unconditionally after every Analyze — the gating that prevents
+// baseline poisoning lives here, not in caller discipline.
 //
 // result must have been produced by this Engine's Analyze (or one
 // configured identically); Observe trusts its Fingerprint, Features, and
-// BaselineKey rather than recomputing them.
+// BaselineKey rather than recomputing them. BaselineKey carries the
+// learning scope Analyze read from, so the write lands in exactly the
+// history the analysis was made against — nothing is recomputed from
+// event metadata, and no event field can redirect it.
+//
+// learned is the truth about what happened, not a restatement of
+// eligibility. It is false when the decision was ineligible, false when
+// the store declined the write (a frozen key), and false when the
+// baseline is at its fingerprint capacity and this fingerprint is one
+// it has never seen — that observation is refused, never evicting
+// anything, and reporting it as learning would tell a caller measuring
+// a baseline's growth that it grew when it did not. A known fingerprint
+// keeps learning at capacity and still reports true. See
+// docs/adr/0019-bounded-fingerprint-admission.md for the admission
+// policy, which this does not change.
 func (e *Engine) Observe(ctx context.Context, result Result) (learned bool, err error) {
 	if !eligibleForLearning(result.Decision) {
 		return false, nil
 	}
-	if _, err := e.store.Observe(ctx, result.BaselineKey, result.Fingerprint, result.Features.Volatile, result.Event.Timestamp); err != nil {
+	_, learned, err = e.store.Observe(ctx, result.BaselineKey, result.Fingerprint, result.Features.Volatile, result.Event.Timestamp)
+	if err != nil {
 		return false, err
 	}
-	return true, nil
+	return learned, nil
 }

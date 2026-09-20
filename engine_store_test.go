@@ -27,7 +27,7 @@ func (c *countingStore) Get(ctx context.Context, key baseline.Key) (baseline.Bas
 	return c.inner.Get(ctx, key)
 }
 
-func (c *countingStore) Observe(ctx context.Context, key baseline.Key, fp fingerprint.Fingerprint, vol features.VolatileFeatures, now time.Time) (baseline.Baseline, error) {
+func (c *countingStore) Observe(ctx context.Context, key baseline.Key, fp fingerprint.Fingerprint, vol features.VolatileFeatures, now time.Time) (baseline.Baseline, bool, error) {
 	c.observes++
 	if c.inner == nil {
 		c.inner = store.NewInMemory()

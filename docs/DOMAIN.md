@@ -132,12 +132,28 @@ says to add only when needed, not speculatively.
 ## Baseline
 
 `internal/baseline.Baseline` is the statistical history for one
-`Key{ActorID, Environment}`: a map from `Fingerprint.ID` to
+`Key{Scope, ActorID, Environment}`: a map from `Fingerprint.ID` to
 `FingerprintStats`.
 
-- **Learning** — `Baseline.Observe(fp, volatile, now) Baseline` is a
-  pure, copy-on-write update: it never mutates the receiver, it
-  returns a new `Baseline`. This is what makes a value read via
+`Scope` is the learning scope — an opaque namespace that lets one actor in
+one environment hold several independent histories, selected by
+`trustvian.WithLearningScope`. The empty string is the default scope, which
+is where every baseline lives unless a caller says otherwise.
+
+It is worth being precise about what it is *not*. A learning scope decides
+**which history an observation belongs to**; it never describes **what the
+actor did**. It is absent from `StableFeatures`, from the fingerprint hash,
+and from `Event` — the same event analyzed under two scopes yields the same
+`Fingerprint.ID` and differs only in the learned evidence it is compared
+against. See
+[ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md).
+
+- **Learning** — `Baseline.Observe(fp, volatile, now) (Baseline, bool)`
+  is a pure, copy-on-write update: it never mutates the receiver, it
+  returns a new `Baseline`. The bool reports whether this fingerprint's
+  statistics were actually updated — false exactly when admission control
+  refused an unknown fingerprint at capacity — and it travels out through
+  `Store.Observe` to `Engine.Observe`'s `learned` return. This is what makes a value read via
   `Store.Get` a permanently valid snapshot, safe to use without
   holding any lock.
 - **Updating** — per-`Fingerprint` statistics use an EWMA

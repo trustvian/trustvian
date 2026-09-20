@@ -15,11 +15,34 @@ import (
 	"github.com/trustvian/trustvian/internal/fingerprint"
 )
 
-// fileSnapshotVersion identifies the on-disk format. Bump it if the
-// shape of fileSnapshot (or any type it embeds) changes in a way that
-// isn't forward/backward compatible, so a future loader can detect and
-// handle old files deliberately instead of silently misreading them.
-const fileSnapshotVersion = 1
+// fileSnapshotVersion identifies the on-disk format this build writes.
+// Bump it when the shape of fileSnapshot (or any type it embeds)
+// changes in a way a previous version's loader could misread, so an
+// older binary detects the difference deliberately instead of silently
+// misinterpreting it.
+//
+// Version 2 added baseline.Key.Scope. That is the only change, and it
+// would normally be additive — an unknown JSON field is ignored — which
+// is exactly why the bump matters. Scope changes what a record
+// *identifies*: one version-2 file can hold (scope A, actor X, prod)
+// and (scope B, actor X, prod), which a version-1 reader sees as two
+// baselines with the same key and resolves by keeping whichever it
+// loaded last. Silently merging two histories that exist precisely to
+// be separate is not a compatible read, so version 1 refuses the file
+// instead.
+//
+// Downgrade compatibility is the deliberate cost. A file an old binary
+// cannot open is a recoverable operational problem; two learned
+// profiles collapsed into one is corrupted state nothing detects. See
+// docs/adr/0024-learning-scope-is-a-baseline-key-dimension.md.
+const fileSnapshotVersion = 2
+
+// fileSnapshotVersionLegacy is the pre-scope format. It is read, never
+// written: every baseline in such a file predates learning scopes, so
+// its Key has no Scope field and deserializes to the default scope ("")
+// — which is precisely what those baselines already are. The upgrade
+// invents nothing and moves no learned state between scopes.
+const fileSnapshotVersionLegacy = 1
 
 // fileSnapshot is FileStore's on-disk representation: every Baseline,
 // each of which already carries its own Key, so no separate keying
@@ -89,15 +112,15 @@ func (s *FileStore) Get(ctx context.Context, key baseline.Key) (baseline.Baselin
 	return s.inner.Get(ctx, key)
 }
 
-func (s *FileStore) Observe(ctx context.Context, key baseline.Key, fp fingerprint.Fingerprint, vol features.VolatileFeatures, now time.Time) (baseline.Baseline, error) {
-	bl, err := s.inner.Observe(ctx, key, fp, vol, now)
+func (s *FileStore) Observe(ctx context.Context, key baseline.Key, fp fingerprint.Fingerprint, vol features.VolatileFeatures, now time.Time) (baseline.Baseline, bool, error) {
+	bl, learned, err := s.inner.Observe(ctx, key, fp, vol, now)
 	if err != nil {
-		return bl, err
+		return bl, false, err
 	}
 	if err := s.flush(); err != nil {
-		return bl, fmt.Errorf("store: flush %s: %w", s.path, err)
+		return bl, false, fmt.Errorf("store: flush %s: %w", s.path, err)
 	}
-	return bl, nil
+	return bl, learned, nil
 }
 
 // Freeze implements Freezer. Not persisted — see FileStore's doc comment.
@@ -142,8 +165,13 @@ func loadFileSnapshot(path string) (map[baseline.Key]baseline.Baseline, error) {
 	if err := json.Unmarshal(raw, &snap); err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
-	if snap.Version != fileSnapshotVersion {
-		return nil, fmt.Errorf("unsupported snapshot version %d (want %d)", snap.Version, fileSnapshotVersion)
+	switch snap.Version {
+	case fileSnapshotVersion, fileSnapshotVersionLegacy:
+		// Both readable. A legacy file needs no conversion step: the
+		// absent Scope field has already deserialized to the default
+		// scope by the time we get here.
+	default:
+		return nil, fmt.Errorf("unsupported snapshot version %d (want %d or %d)", snap.Version, fileSnapshotVersionLegacy, fileSnapshotVersion)
 	}
 
 	out := make(map[baseline.Key]baseline.Baseline, len(snap.Baselines))

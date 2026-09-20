@@ -52,7 +52,7 @@ func TestInMemoryStoreStaysBoundedUnderFingerprintFlood(t *testing.T) {
 	now := time.Now()
 
 	for i := range 2000 {
-		if _, err := s.Observe(ctx, testKey, admissionFingerprint(i), features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second)); err != nil {
+		if _, _, err := s.Observe(ctx, testKey, admissionFingerprint(i), features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second)); err != nil {
 			t.Fatalf("Observe() at i=%d: %v", i, err)
 		}
 	}
@@ -76,7 +76,7 @@ func TestFileStoreRoundTripsBoundedBaseline(t *testing.T) {
 	now := time.Now()
 
 	for i := range 600 { // past the bound, so the stored baseline sits at it
-		if _, err := s.Observe(ctx, testKey, admissionFingerprint(i), features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second)); err != nil {
+		if _, _, err := s.Observe(ctx, testKey, admissionFingerprint(i), features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second)); err != nil {
 			t.Fatalf("Observe() at i=%d: %v", i, err)
 		}
 	}
@@ -149,10 +149,10 @@ func TestFileStoreRoundTripsOversizedLegacyBaseline(t *testing.T) {
 	// Known fingerprints keep learning; new ones are refused; cardinality
 	// neither shrinks nor grows.
 	known := admissionFingerprint(0)
-	if _, err := s.Observe(ctx, testKey, known, features.VolatileFeatures{}, now); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, known, features.VolatileFeatures{}, now); err != nil {
 		t.Fatalf("Observe() known fingerprint: %v", err)
 	}
-	if _, err := s.Observe(ctx, testKey, admissionFingerprint(legacySize+1), features.VolatileFeatures{}, now.Add(time.Second)); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, admissionFingerprint(legacySize+1), features.VolatileFeatures{}, now.Add(time.Second)); err != nil {
 		t.Fatalf("Observe() new fingerprint past the bound: %v", err)
 	}
 

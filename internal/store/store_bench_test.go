@@ -24,7 +24,7 @@ func BenchmarkInMemoryObserveSameKey(b *testing.B) {
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+			if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -45,7 +45,7 @@ func BenchmarkInMemoryObserveDistinctKeys(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		key := baseline.Key{ActorID: fmt.Sprintf("actor-%d", counter.Add(1)), Environment: "production"}
 		for pb.Next() {
-			if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+			if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -92,7 +92,7 @@ func BenchmarkInMemoryMemoryGrowth(b *testing.B) {
 			for i := range n {
 				keys[i] = baseline.Key{ActorID: fmt.Sprintf("actor-%d", i), Environment: "production"}
 				fps[i] = growthFingerprint(i)
-				if _, err := s.Observe(ctx, keys[i], fps[i], features.VolatileFeatures{}, now); err != nil {
+				if _, _, err := s.Observe(ctx, keys[i], fps[i], features.VolatileFeatures{}, now); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -101,7 +101,7 @@ func BenchmarkInMemoryMemoryGrowth(b *testing.B) {
 			i := 0
 			for b.Loop() {
 				idx := i % n
-				if _, err := s.Observe(ctx, keys[idx], fps[idx], features.VolatileFeatures{}, now); err != nil {
+				if _, _, err := s.Observe(ctx, keys[idx], fps[idx], features.VolatileFeatures{}, now); err != nil {
 					b.Fatal(err)
 				}
 				i++

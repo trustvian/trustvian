@@ -69,7 +69,7 @@ func BenchmarkObserveSameKey(b *testing.B) {
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+			if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -92,7 +92,7 @@ func BenchmarkObserveDistinctKeys(b *testing.B) {
 		id := counter.Add(1)
 		key := baseline.Key{ActorID: fmt.Sprintf("bench-actor-%d", id), Environment: "production"}
 		for pb.Next() {
-			if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+			if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -112,7 +112,7 @@ func BenchmarkGet(b *testing.B) {
 	// than the empty-row path.
 	now := testTime
 	for range 20 {
-		if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
+		if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
 			b.Fatal(err)
 		}
 		now = now.Add(time.Second)

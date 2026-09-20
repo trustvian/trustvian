@@ -30,7 +30,7 @@ func BenchmarkFileStoreObserveSameKey(b *testing.B) {
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+			if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -58,7 +58,7 @@ func BenchmarkFileStoreObserveDistinctKeys(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		key := baseline.Key{ActorID: fmt.Sprintf("actor-%d", counter.Add(1)), Environment: "production"}
 		for pb.Next() {
-			if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+			if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 				b.Fatal(err)
 			}
 		}
