@@ -129,10 +129,12 @@ The record carries **no raw event payload** — `Event.Attributes`, tool
 arguments, prompts, and completions have no field and cannot appear in its
 JSON. It carries **no consumer-side identifiers**; anything associating
 records with projects, candidates, or evaluations belongs beside them, not on
-them. And **every record a successful `Analyze` produces is marshallable**:
-non-finite values cannot reach it, because `trust.Compute` resolves an
-invalid input away from trust rather than letting it through. All three are
-asserted by test.
+them. And **every record a successful `Analyze` produces is marshallable**,
+which takes two guards: `trust.Compute` resolves a non-finite input away from
+trust rather than letting it through, and `Event.Validate()` rejects the
+timestamps `time.Time.MarshalJSON` refuses — a year outside `[0,9999]` or a
+zone offset of 24 hours or more. Both reject at the input; the projection
+itself sanitizes nothing. All three properties are asserted by test.
 
 Fixed-shape is not size-bounded. Caller-supplied strings in the record are
 not length-limited here; what is excluded is the open-ended part, the
@@ -357,6 +359,7 @@ users feel.
 | A documented default threshold or weight changing | Compatible tuning, if called out in CHANGELOG | Minor |
 | Learning eligibility changing which decisions train the baseline | Breaking semantic change | Major |
 | Fail-closed behavior becoming less strict | Never permitted without a major, and only with explicit security review | Major |
+| `Event.Validate()` rejecting input it previously accepted | Breaking for a producer that sent it | Major, unless the input could not be processed correctly in the first place |
 
 What is **not** promised: that a given event produces a numerically
 identical score forever. Baselines are learned state, and scores move as

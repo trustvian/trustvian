@@ -169,6 +169,27 @@ one outcome that turns a caller's bug into a silently permissive decision.
 
 Ordinary out-of-range finite values keep their documented clamp behavior.
 
+Non-finite floats are one of two ways a successful analysis could produce an
+unmarshallable record. The other is the timestamp, which the record carries
+verbatim. Not every `time.Time` is one `time.Time.MarshalJSON` will encode: a
+year outside `[0,9999]` or a zone offset of 24 hours or more is constructible
+in Go and refused by RFC 3339, and `Event.Validate()` checked only for the
+zero value.
+
+`Event.Validate()` now rejects both cases with `event.ErrInvalidTimestamp`,
+which `Analyze` wraps through its existing `trustvian: invalid event:` path.
+The zero value keeps `ErrMissingTimestamp` — the zero time is perfectly
+encodable, so only the earlier check separates "not set" from "not
+encodable". The rule is exactly the standard library's, not a stricter one:
+the test derives its expectation from `MarshalJSON` case by case, so a
+divergence in either direction fails.
+
+Both guards reject at the input. **`DecisionRecord()` itself sanitizes
+nothing** — it copies, and that is the whole of its contract. A projection
+that clamped a score or rewrote a timestamp would produce a security record
+whose evidence had been quietly altered, and would move the failure away from
+the only place a caller can still fix it.
+
 ### Placement
 
 Root package, beside `Result`. The record is a projection *of* `Result`, and
@@ -196,6 +217,11 @@ boundary — the opposite of what
   produces a successful analysis whose record marshals, with context risk
   resolved to `1` rather than to `0`.
 - Finite out-of-range context risk keeps the documented clamp behavior.
+- `Event.Validate()` accepts a timestamp if and only if the standard library
+  can marshal it, checked against `MarshalJSON` rather than against a
+  restatement of the rule; the zero value still returns `ErrMissingTimestamp`;
+  `Analyze` wraps the sentinel; and a record built at each boundary-valid
+  timestamp marshals and round-trips.
 - `trust.Compute` returns finite, in-range fields for any input, in both
   directions, and deterministically.
 
@@ -227,7 +253,8 @@ one), this file, `README.md` in this directory, and `CHANGELOG.md`.
       `internal/*`.
 - [ ] Projection is pure and deterministic.
 - [ ] Every successful `Analyze` produces a record `json.Marshal` accepts,
-      including under a pathological `WithContextRisk` callback.
+      including under a pathological `WithContextRisk` callback and for every
+      timestamp `Event.Validate()` admits.
 - [ ] Non-finite trust input resolves away from trust, never toward it.
 - [ ] No platform concept (`ProjectID`, `CandidateID`, `EvaluationRunID`, …)
       appears on the record.

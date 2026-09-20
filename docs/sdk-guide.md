@@ -64,6 +64,12 @@ to check required fields are set — `ID`, `Timestamp`,
 `Actor.ID`/`Type`/`IdentityConfidence`, `Operation.Category`/`Name`.
 `Target`, `Attributes`, and `Context` are optional.
 
+`Timestamp` is also checked for encodability: a year outside `[0,9999]` or a
+zone offset of 24 hours or more is constructible in Go but cannot be written
+as RFC 3339, and would produce a decision record `json.Marshal` refuses. Both
+return `event.ErrInvalidTimestamp`. Any timestamp from `time.Now()` or a
+parsed RFC 3339 string is fine.
+
 ## Constructing an `Engine`
 
 ```go

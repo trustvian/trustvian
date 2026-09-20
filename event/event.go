@@ -29,6 +29,9 @@ var (
 	ErrMissingOperationName      = errors.New("event: missing operation name")
 	ErrInvalidOperationCategory  = errors.New("event: invalid operation category")
 	ErrInvalidOperationDirection = errors.New("event: invalid operation direction")
+	// ErrInvalidTimestamp rejects a timestamp Go's standard-library JSON
+	// encoder cannot represent. See Event.Validate.
+	ErrInvalidTimestamp = errors.New("event: timestamp cannot be represented as RFC 3339")
 )
 
 // ActorType identifies the kind of thing that performed an Operation.
@@ -252,15 +255,56 @@ type Event struct {
 	Context    Context        `json:"context,omitzero"`
 }
 
+// validateTimestamp rejects the timestamps time.Time.MarshalJSON refuses.
+//
+// Not every constructible time.Time is representable in RFC 3339, and the
+// standard library reports that as a marshalling error rather than encoding
+// something lossy. Two cases exist, both verified against the standard
+// library rather than inferred:
+//
+//   - a year outside [0,9999], because RFC 3339 writes exactly four digits;
+//   - a zone offset of 24 hours or more in either direction, because the
+//     offset's hour field is two digits and must stay in [0,23].
+//
+// Catching them here rather than at the serialization boundary is the point.
+// A timestamp that cannot cross Trustvian's public JSON boundary is an
+// invalid input, and an input error belongs at the input — not in
+// persistence code discovering it hours later with no way to reject the
+// event that caused it.
+//
+// The checks are direct field reads: no formatting, no marshalling, no
+// allocation. This runs on every Analyze.
+func validateTimestamp(t time.Time) error {
+	if y := t.Year(); y < 0 || y > 9999 {
+		return fmt.Errorf("%w: year %d is outside [0,9999]", ErrInvalidTimestamp, y)
+	}
+	// t.Year() is the year in t's own location, which is the year RFC 3339
+	// writes — so the zone check is independent of the year check above.
+	_, offset := t.Zone()
+	if offset <= -24*60*60 || offset >= 24*60*60 {
+		return fmt.Errorf("%w: zone offset %ds is outside ±24h", ErrInvalidTimestamp, offset)
+	}
+	return nil
+}
+
 // Validate reports whether e has all fields required for pipeline
 // processing. Target, Attributes, and Context are optional and are not
 // checked.
+//
+// A missing Timestamp returns ErrMissingTimestamp; a Timestamp that Go's
+// standard-library JSON encoder would refuse returns ErrInvalidTimestamp.
+// The second check exists because a Result's public projection carries the
+// timestamp verbatim, so a value that cannot be encoded would otherwise
+// only surface as a marshalling failure downstream of a successful analysis.
 func (e Event) Validate() error {
 	if e.ID == "" {
 		return ErrMissingID
 	}
 	if e.Timestamp.IsZero() {
 		return ErrMissingTimestamp
+	}
+	if err := validateTimestamp(e.Timestamp); err != nil {
+		return err
 	}
 	if err := e.Actor.validate(); err != nil {
 		return err

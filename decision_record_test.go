@@ -15,6 +15,7 @@ package trustvian_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"reflect"
 	"strings"
@@ -402,5 +403,76 @@ func TestDecisionRecordCarriesNoPlatformIdentifiers(t *testing.T) {
 		if strings.Contains(strings.ToLower(string(raw)), forbidden) {
 			t.Errorf("DecisionRecord JSON mentions %q — platform concepts do not belong in the core:\n%s", forbidden, raw)
 		}
+	}
+}
+
+// TestAnalyzeRejectsUnserializableTimestamp closes the last path by which a
+// successful Analyze could hand back a record json.Marshal refuses. The trust
+// tests above cover non-finite floats; this covers the timestamp, which the
+// record carries verbatim from the event.
+//
+// Rejection happens at Analyze rather than in DecisionRecord() because that
+// is where the caller still has the offending event in hand. A projection
+// that sanitized instead would have to invent a timestamp, and a security
+// record whose time was silently rewritten is worse than no record.
+func TestAnalyzeRejectsUnserializableTimestamp(t *testing.T) {
+	tests := []struct {
+		name string
+		ts   time.Time
+	}{
+		{"year above range", time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{"year below range", time.Date(-1, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{"offset beyond 24 hours", time.Date(2026, 3, 4, 5, 6, 7, 0, time.FixedZone("far", 25*3600))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := recordEvent()
+			ev.Timestamp = tt.ts
+
+			_, err := trustvian.NewEngine().Analyze(context.Background(), ev)
+			if !errors.Is(err, event.ErrInvalidTimestamp) {
+				t.Fatalf("Analyze() error = %v, want one wrapping event.ErrInvalidTimestamp", err)
+			}
+			// The existing wrapper is preserved, so callers already matching
+			// on the invalid-event prefix keep working.
+			if !strings.Contains(err.Error(), "trustvian: invalid event:") {
+				t.Errorf("Analyze() error = %q, want it wrapped as an invalid event", err)
+			}
+		})
+	}
+}
+
+// TestDecisionRecordMarshalsAtTimestampBoundaries: the values Validate
+// accepts are exactly the values that survive to JSON. Without this, the
+// boundary check could drift toward being merely permissive.
+func TestDecisionRecordMarshalsAtTimestampBoundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		ts   time.Time
+	}{
+		{"lowest year", time.Date(0, 1, 1, 0, 0, 0, 1, time.UTC)},
+		{"highest year", time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)},
+		{"maximum eastern offset", time.Date(2026, 3, 4, 5, 6, 7, 0, time.FixedZone("+23:59", 23*3600+3540))},
+		{"maximum western offset", time.Date(2026, 3, 4, 5, 6, 7, 0, time.FixedZone("-23:59", -(23*3600+3540)))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := recordEvent()
+			ev.Timestamp = tt.ts
+
+			record := analyze(t, trustvian.NewEngine(), ev).DecisionRecord()
+			raw, err := json.Marshal(record)
+			if err != nil {
+				t.Fatalf("Marshal() error = %v — Validate accepted a timestamp the record cannot encode", err)
+			}
+
+			var back trustvian.DecisionRecord
+			if err := json.Unmarshal(raw, &back); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			if !back.Timestamp.Equal(tt.ts) {
+				t.Errorf("Timestamp round-tripped to %v, want %v", back.Timestamp, tt.ts)
+			}
+		})
 	}
 }

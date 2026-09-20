@@ -99,6 +99,30 @@ actually depend on.
   values keep their documented clamp behavior, and the trust formula is
   unchanged.
 
+- **An unencodable `Event.Timestamp` could make a successful analysis
+  unserializable.** `Event.Validate()` rejected a zero timestamp but accepted
+  every other `time.Time` — and not every `time.Time` is one
+  `time.Time.MarshalJSON` will encode. A year outside `[0,9999]` or a zone
+  offset of 24 hours or more is constructible in Go and refused by RFC 3339,
+  so such an event analyzed successfully and produced a `DecisionRecord`
+  `json.Marshal` would not accept.
+
+  `Validate()` now rejects both cases with a new `event.ErrInvalidTimestamp`,
+  wrapped by `Analyze` through the existing `trustvian: invalid event:` path.
+  The rule is exactly the standard library's, asserted by a test that derives
+  its expectation from `MarshalJSON` rather than restating it, so the check
+  can neither drift permissive nor start refusing timestamps Go accepts.
+
+  A missing timestamp still returns `ErrMissingTimestamp`; the zero time is
+  encodable, so only the earlier check distinguishes absent from unencodable.
+  Rejection is at the input, where the caller still holds the event:
+  `DecisionRecord()` does not sanitize, because a security record with a
+  silently rewritten timestamp is worse than a refused event.
+
+  Behavioral change for callers submitting such timestamps — previously
+  accepted, now an error. No in-repository caller produces one, and no
+  encodable timestamp's treatment changed.
+
 ### Changed
 
 - Documented explicitly that **custom `Store` implementations are not a
