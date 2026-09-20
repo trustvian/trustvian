@@ -6,9 +6,16 @@ import (
 	"github.com/trustvian/trustvian/event"
 )
 
-// DecisionRecord is an immutable, serializable public projection of one
+// DecisionRecord is a detached, serializable public projection of one
 // Engine.Analyze outcome: the evidence that produced a Decision, and the
 // Decision itself.
+//
+// Detached, not immutable — the fields are exported and Contributors is a
+// slice, so a holder can modify one. The guarantee is ownership rather than
+// constancy: a record shares no memory with the Result it came from.
+// Mutating that Result afterward cannot change the record, mutating the
+// record cannot change the Result, and producing one mutates nothing at
+// all.
 //
 // Result is the engine's rich in-process output and stays that. This is the
 // durable boundary — what a consumer persists, streams, aggregates, or sends
@@ -22,6 +29,13 @@ import (
 // its JSON. A consumer that needs raw history is responsible for storing it
 // itself, as an explicit choice rather than a side effect of recording a
 // decision.
+//
+// That makes the record fixed-shape, which is not the same as size-bounded.
+// Several fields carry caller-supplied strings — identifiers, operation and
+// target names — and nothing here limits their length. What is excluded is
+// the open-ended part: no attribute map, no arbitrary payload, no field that
+// grows with what a producer chose to send. Request and field size limits
+// belong to whatever ingests events over a network, not to this type.
 //
 // It carries no notion of the system consuming it either — no project,
 // candidate, evaluation, or promotion identifier. Those belong to whatever
@@ -89,9 +103,9 @@ type DecisionRecord struct {
 	MatchedDefault bool   `json:"matched_default"`
 
 	// Correlation and evidence carried from the event's context. All are
-	// caller-supplied identifiers, all are bounded, and none participates in
-	// behavioral identity — two events differing only in these fields share
-	// a FingerprintID.
+	// caller-supplied identifiers, and none participates in behavioral
+	// identity — two events differing only in these fields share a
+	// FingerprintID.
 	//
 	// TraceID and SpanID connect a decision back to the telemetry that
 	// produced it. SessionID groups a bounded interaction. DelegatedFrom and
@@ -123,8 +137,8 @@ type ContributorRecord struct {
 // no store access, and no mutation of r or of any baseline. The same Result
 // always projects to the same record.
 //
-// The returned record owns its data. Mutating r's contributors afterward does
-// not change the record, and mutating the record's does not change r.
+// The returned record owns its data: r's contributors are copied, not shared,
+// so mutating either side afterward leaves the other unchanged.
 //
 // Named DecisionRecord rather than Record because `result.Record()` reads as
 // an instruction to record something, and this API is frozen at v1.0.

@@ -124,12 +124,20 @@ even though the type is internal, and it is treated that way.
 analysis. Both its Go field shapes and its JSON field names are STABLE:
 adding a field is a minor, removing or redefining one is major.
 
-Two properties are part of the contract rather than implementation detail.
+Three properties are part of the contract rather than implementation detail.
 The record carries **no raw event payload** — `Event.Attributes`, tool
 arguments, prompts, and completions have no field and cannot appear in its
-JSON — and it carries **no consumer-side identifiers**; anything associating
+JSON. It carries **no consumer-side identifiers**; anything associating
 records with projects, candidates, or evaluations belongs beside them, not on
-them. Both are asserted by test.
+them. And **every record a successful `Analyze` produces is marshallable**:
+non-finite values cannot reach it, because `trust.Compute` resolves an
+invalid input away from trust rather than letting it through. All three are
+asserted by test.
+
+Fixed-shape is not size-bounded. Caller-supplied strings in the record are
+not length-limited here; what is excluded is the open-ended part, the
+attribute map. Field and request size limits belong to whatever ingests
+events over a network.
 
 The record has no schema version field, deliberately. This contract already
 governs how its fields may change, and a version number would duplicate that

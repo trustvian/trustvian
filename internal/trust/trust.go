@@ -9,6 +9,7 @@ package trust
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/trustvian/trustvian/internal/anomaly"
 )
@@ -81,7 +82,16 @@ type Trust struct {
 // environment, supplied by the caller — not learned from the baseline).
 // identityConfidence and contextRisk are expected in [0,1]; out-of-range
 // values are clamped defensively rather than producing an out-of-range or
-// NaN score.
+// NaN score. Every field of the returned Trust is therefore finite and in
+// [0,1] for any input whatsoever — which is what lets a Result be
+// serialized without a caller's arithmetic mistake becoming an encoding
+// failure downstream.
+//
+// A non-finite input is treated as invalid rather than as a value on the
+// scale, and resolved to whichever end trusts least: identityConfidence to
+// 0, contextRisk and the anomaly inputs to 1. Notably contextRisk, which a
+// WithContextRisk callback supplies and nothing else validates — an
+// unusable risk reading must never read as "no risk".
 //
 // The combination is multiplicative, not averaged:
 //
@@ -115,10 +125,10 @@ type Trust struct {
 // Tests here verify this formula against fixtures derived from the
 // formula itself.
 func Compute(an anomaly.Anomaly, identityConfidence, contextRisk float64, cfg Config) Trust {
-	identityConfidence = clamp01(identityConfidence)
-	contextRisk = clamp01(contextRisk)
-	anomalyScore := clamp01(an.Score)
-	confidence := clamp01(an.Confidence)
+	identityConfidence = clampFavorable(identityConfidence)
+	contextRisk = clampAdverse(contextRisk)
+	anomalyScore := clampAdverse(an.Score)
+	confidence := clampAdverse(an.Confidence)
 
 	effectiveAnomaly := anomalyScore * confidence
 	score := identityConfidence * (1 - effectiveAnomaly) * (1 - contextRisk)
@@ -163,4 +173,40 @@ func riskLevel(residualDistrust float64, cfg Config) RiskLevel {
 
 func clamp01(v float64) float64 {
 	return max(min(v, 1), 0)
+}
+
+// clampFavorable and clampAdverse sanitize one Compute input each, and
+// differ only in what they do with a non-finite value. Both fail closed;
+// "closed" simply points in opposite directions depending on which way the
+// input moves trust.
+//
+// Go's min/max propagate NaN, so clamp01 alone returns NaN for a NaN input —
+// which would flow into Trust.Score and out through every consumer of it,
+// including a DecisionRecord that encoding/json then refuses to marshal.
+// ±Inf clamps correctly by comparison, but -Inf clamping to 0 is its own
+// problem for an adverse input: it reads an unusable value as "no risk".
+//
+// So non-finite is treated as invalid input rather than as a position on the
+// scale, and resolved to whichever end of that scale trusts least.
+//
+// clampFavorable is for inputs where higher means more trust —
+// identityConfidence. A non-finite value becomes 0: an unusable reading must
+// not be credited as confidence nobody established.
+func clampFavorable(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0
+	}
+	return clamp01(v)
+}
+
+// clampAdverse is for inputs where higher means less trust — contextRisk, and
+// the anomaly score and confidence that combine into the anomaly penalty. A
+// non-finite value becomes 1: an unusable risk reading must never be read as
+// safe, which is the one outcome that would turn a caller's bug into a
+// silently permissive decision.
+func clampAdverse(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 1
+	}
+	return clamp01(v)
 }

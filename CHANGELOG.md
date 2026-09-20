@@ -52,7 +52,7 @@ actually depend on.
   prompts, and completions have no field and cannot reach its JSON — and no
   consumer-side identifiers. Both are asserted by test. The projection is
   pure: no I/O, no clock, no scoring, and its slices are copied rather than
-  aliased.
+  aliased, so a record shares no memory with the `Result` it came from.
 
   `StableFeatures` gained JSON tags so the record serializes consistently.
   The type is unreleased, so no published representation changed.
@@ -80,6 +80,24 @@ actually depend on.
   signature changed. Done deliberately before the `v1` freeze, when it
   costs nothing, rather than after it, when it would cost a major
   version. No in-repository caller used the option.
+
+### Fixed
+
+- **A pathological `WithContextRisk` callback could make a successful
+  analysis unserializable.** `trust.Compute` clamps its inputs with
+  `min`/`max`, which propagate `NaN`, so a callback returning `NaN` put one
+  into `Trust.ContextRisk` and `Trust.Score` — and `encoding/json` refuses
+  non-finite floats. `Analyze` returned success and the resulting record
+  could not be marshalled.
+
+  A non-finite input is now treated as invalid rather than as a position on
+  the scale, and resolves to whichever end trusts least: context risk and the
+  anomaly inputs to `1`, identity confidence to `0`. Both directions fail
+  closed, and `-Inf` no longer reads as "no risk". Analysis still succeeds,
+  because a detector that stops deciding when a caller's callback misbehaves
+  is worse than one that assumes the worst. Ordinary out-of-range finite
+  values keep their documented clamp behavior, and the trust formula is
+  unchanged.
 
 ### Changed
 

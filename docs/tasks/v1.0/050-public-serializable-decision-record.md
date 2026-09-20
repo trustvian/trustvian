@@ -98,8 +98,8 @@ first-class behavioral evidence — approval compliance and delegation stability
 are named scorecard inputs in the roadmap, and a record that omitted them
 would force the platform to re-read raw events to aggregate them.
 
-All five are bounded, caller-supplied identifiers already exposed on
-`event.Context`. None is new surface area; each is `omitempty`.
+All five are caller-supplied identifiers already exposed on `event.Context`.
+None is new surface area; each is `omitempty`.
 
 Including them changes nothing about identity: they are not fingerprint
 dimensions, and a test asserts that two events differing only in these fields
@@ -116,6 +116,14 @@ is absent from the marshalled JSON.
 This keeps two things small at once: the privacy surface, and the public
 compatibility surface.
 
+It makes the record **fixed-shape, not size-bounded**, and the difference is
+worth stating. Caller-supplied strings — `EventID`, `ActorID`, operation and
+target names, and the correlation identifiers — are not length-limited by
+`Event.Validate()` or by this task, and contributor details can embed
+caller-controlled behavioral names. What the record excludes is the part that
+grows with whatever a producer chose to send. Request and field size limits
+are an ingest concern and belong to task 058, not here.
+
 ### Serialization
 
 Standard-library JSON, explicit snake_case names, no map fields, no dependence
@@ -125,14 +133,41 @@ on internal package names.
 layer: field addition is additive and allowed in a minor, removal or
 redefinition is major. A version number would duplicate that with machinery
 nothing currently reads. When the record crosses a network boundary — task
-054's control API — that transport owns its own envelope version, exactly as
-`alert.Envelope` does for webhooks. Adding one here would be speculative.
+058's local control-plane API and ingest — that transport owns its own
+envelope version, exactly as `alert.Envelope` does for webhooks. Adding one
+here would be speculative.
 
-### Purity
+### Purity and ownership
 
 `DecisionRecord()` performs no I/O, reads no clock, generates no ID, computes
 no score, touches no store, and mutates neither `Result` nor any baseline. It
 copies. `Contributors` is deep-copied so neither side aliases the other.
+
+The record is **detached, not immutable**: its fields are exported and it
+holds a slice, so a holder can modify one. The guarantee is ownership —
+mutating the source `Result` cannot reach a record already produced, and
+mutating a record cannot reach the `Result`. Hiding fields to manufacture
+immutability would make the type worse at the one job it has, which is being
+a plain serializable value.
+
+### Serializable for every successful analysis
+
+`encoding/json` refuses non-finite floats, so "serializable" is only true if
+the engine cannot produce one. `WithContextRisk` takes an arbitrary caller
+callback, and nothing between it and `Trust` validated what came back:
+`trust.clamp01` is built on `min`/`max`, which propagate `NaN`, so a `NaN`
+reached `Trust.ContextRisk` and `Trust.Score` and made the record
+unmarshallable — while `Analyze` returned success.
+
+`trust.Compute` now treats a non-finite input as invalid rather than as a
+position on the scale, and resolves it to whichever end trusts least:
+`contextRisk` and the anomaly inputs to `1`, `identityConfidence` to `0`.
+Both directions fail closed. `Analyze` still succeeds, because a detector
+that refuses to decide when a callback misbehaves is worse than one that
+assumes the worst — and mapping an unusable risk reading to `0` would be the
+one outcome that turns a caller's bug into a silently permissive decision.
+
+Ordinary out-of-range finite values keep their documented clamp behavior.
 
 ### Placement
 
@@ -157,6 +192,12 @@ boundary — the opposite of what
 - The same `Result` projects to an identical record twice.
 - An external module compiles and uses the whole path with no `internal/*`
   import.
+- A `WithContextRisk` callback returning `NaN`, `+Inf`, or `-Inf` still
+  produces a successful analysis whose record marshals, with context risk
+  resolved to `1` rather than to `0`.
+- Finite out-of-range context risk keeps the documented clamp behavior.
+- `trust.Compute` returns finite, in-range fields for any input, in both
+  directions, and deterministically.
 
 ## Benchmarks
 
@@ -185,6 +226,9 @@ one), this file, `README.md` in this directory, and `CHANGELOG.md`.
 - [ ] An external module produces and marshals a record without importing
       `internal/*`.
 - [ ] Projection is pure and deterministic.
+- [ ] Every successful `Analyze` produces a record `json.Marshal` accepts,
+      including under a pathological `WithContextRisk` callback.
+- [ ] Non-finite trust input resolves away from trust, never toward it.
 - [ ] No platform concept (`ProjectID`, `CandidateID`, `EvaluationRunID`, …)
       appears on the record.
 - [ ] Nothing owned by task 051 changed.

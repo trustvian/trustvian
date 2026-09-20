@@ -15,6 +15,7 @@ package trustvian_test
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -316,6 +317,74 @@ func TestDecisionRecordIsDeterministic(t *testing.T) {
 	}
 	if string(first) != string(second) {
 		t.Fatalf("projection is not deterministic:\n%s\n%s", first, second)
+	}
+}
+
+// TestDecisionRecordMarshalsDespitePathologicalContextRisk closes the hole
+// that made this boundary conditional. WithContextRisk takes an arbitrary
+// caller callback, and nothing between it and Trust validated what came back.
+// A NaN reached Trust.ContextRisk and Trust.Score, and encoding/json refuses
+// non-finite floats — so a successful Analyze could produce a record the
+// public boundary could not serialize.
+//
+// Analyze still succeeds: a detector that refuses to decide because a
+// callback misbehaved is worse than one that assumes the worst. The invalid
+// reading resolves to maximum risk instead, which is the only direction that
+// cannot turn a caller's bug into a permissive decision.
+func TestDecisionRecordMarshalsDespitePathologicalContextRisk(t *testing.T) {
+	for name, risk := range map[string]float64{
+		"NaN":  math.NaN(),
+		"+Inf": math.Inf(1),
+		"-Inf": math.Inf(-1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := trustvian.NewEngine(trustvian.WithContextRisk(
+				func(trustvian.StableFeatures) float64 { return risk },
+			))
+
+			r, err := e.Analyze(context.Background(), recordEvent())
+			if err != nil {
+				t.Fatalf("Analyze() error = %v; a pathological callback must not fail analysis", err)
+			}
+
+			rec := r.DecisionRecord()
+			if _, err := json.Marshal(rec); err != nil {
+				t.Fatalf("Marshal() error = %v — the record is not serializable, which is the whole point of it", err)
+			}
+
+			// Maximum risk, never "no risk": -Inf clamping to 0 would have
+			// read an unusable value as safe.
+			if rec.ContextRisk != 1 {
+				t.Errorf("ContextRisk = %v for %s, want 1", rec.ContextRisk, name)
+			}
+			if rec.TrustScore != 0 {
+				t.Errorf("TrustScore = %v, want 0 under maximum context risk", rec.TrustScore)
+			}
+		})
+	}
+}
+
+// TestFiniteContextRiskStillClamps: ordinary out-of-range numbers keep the
+// documented clamp behavior. Only non-finite input is treated as invalid.
+func TestFiniteContextRiskStillClamps(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		risk float64
+		want float64
+	}{
+		{"above one", 4, 1},
+		{"below zero", -4, 0},
+		{"in range", 0.3, 0.3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := trustvian.NewEngine(trustvian.WithContextRisk(
+				func(trustvian.StableFeatures) float64 { return tt.risk },
+			))
+			r := analyze(t, e, recordEvent())
+			if got := r.DecisionRecord().ContextRisk; got != tt.want {
+				t.Fatalf("ContextRisk = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
