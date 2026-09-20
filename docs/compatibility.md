@@ -130,11 +130,14 @@ arguments, prompts, and completions have no field and cannot appear in its
 JSON. It carries **no consumer-side identifiers**; anything associating
 records with projects, candidates, or evaluations belongs beside them, not on
 them. And **every record a successful `Analyze` produces is marshallable**,
-which takes two guards: `trust.Compute` resolves a non-finite input away from
-trust rather than letting it through, and `Event.Validate()` rejects the
-timestamps `time.Time.MarshalJSON` refuses — a year outside `[0,9999]` or a
-zone offset of 24 hours or more. Both reject at the input; the projection
-itself sanitizes nothing. All three properties are asserted by test.
+which takes two guards with deliberately different outcomes. A non-finite
+trust input is resolved fail-closed inside `trust.Compute` before the
+`Result` is returned, so the analysis succeeds carrying conservative finite
+numbers. A timestamp `time.Time.MarshalJSON` refuses — a year outside
+`[0,9999]`, or a zone offset of 24 hours or more — is rejected by
+`Event.Validate()`, so the analysis fails with `event.ErrInvalidTimestamp`
+instead. The projection itself sanitizes nothing. All three properties are
+asserted by test.
 
 Fixed-shape is not size-bounded. Caller-supplied strings in the record are
 not length-limited here; what is excluded is the open-ended part, the

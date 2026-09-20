@@ -184,11 +184,38 @@ encodable". The rule is exactly the standard library's, not a stricter one:
 the test derives its expectation from `MarshalJSON` case by case, so a
 divergence in either direction fails.
 
-Both guards reject at the input. **`DecisionRecord()` itself sanitizes
-nothing** — it copies, and that is the whole of its contract. A projection
-that clamped a score or rewrote a timestamp would produce a security record
-whose evidence had been quietly altered, and would move the failure away from
-the only place a caller can still fix it.
+The two guards do not behave alike, and the difference is deliberate rather
+than an inconsistency. A non-finite trust input is resolved fail-closed
+inside `trust.Compute`, before the `Result` is returned: `Analyze` succeeds
+and hands back conservative finite numbers. An unencodable timestamp is
+rejected by `Event.Validate()`: `Analyze` fails with an error wrapping
+`event.ErrInvalidTimestamp`, and no `Result` exists at all.
+
+```text
+non-finite trust input          invalid timestamp
+        ↓                               ↓
+  trust.Compute                  Event.Validate
+        ↓                               ↓
+ fail-closed finite         ErrInvalidTimestamp
+   normalization                        ↓
+        ↓                        Analyze fails
+ successful Analyze
+```
+
+What separates them is whether a safe substitute exists. Risk has a
+direction, so an unusable reading still has an honest answer — assume the
+worst — and refusing to decide would be the more dangerous response to a
+caller's arithmetic bug. A timestamp has no direction: every replacement
+value is a claim about when something happened, and a security record
+asserting a time nobody observed is worse than no record. So the timestamp is
+refused at the input, where the caller still holds the event and can correct
+it.
+
+**`DecisionRecord()` itself sanitizes nothing** either way — it copies, and
+that is the whole of its contract. A projection that clamped a score or
+rewrote a timestamp would produce a security record whose evidence had been
+quietly altered, and would move the failure away from the only place a caller
+can still fix it.
 
 ### Placement
 
