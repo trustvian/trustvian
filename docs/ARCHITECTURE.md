@@ -656,10 +656,13 @@ reconnect behavior as part of its design — not after its first outage.
 
 ### Module boundary
 
-The platform is expected to live in a **separate Go module inside this
-repository**, the same arrangement `processor/` and `examples/` already use.
-That choice and its trade-offs are argued in
-[ADR 0022](adr/0022-core-platform-boundary.md).
+The platform lives in a **separate Go module inside this repository** —
+`platform/`, module path `trustvian-platform` — the same arrangement
+`processor/` and `examples/` already use. That choice and its trade-offs are
+argued in [ADR 0022](adr/0022-core-platform-boundary.md).
+
+It imports no core package today. The dependency is permitted and expected;
+it simply does not exist yet, because the domain has no use for one.
 
 One thing the module boundary does **not** buy, stated here because it is easy
 to assume otherwise: it does not enforce rule 2. Go's `internal/` restriction

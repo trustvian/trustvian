@@ -297,15 +297,33 @@ func TestCandidateIdentityIsEncapsulated(t *testing.T) {
 	}
 }
 
-// TestPlatformEntitiesExposeNoSetters is a reflective audit of the exported
-// method set. It exists because the invariants in this package are enforced
-// by *absence* — no setter, no exported field — and absence is exactly what a
-// behavioral test cannot notice being removed.
+// TestPlatformEntitiesExposeNoMutationPath is a reflective audit of the
+// exported API surface. It exists because the invariants in this package are
+// enforced by *absence* — no exported field, no setter, no pointer-only
+// method — and absence is exactly what a behavioral test cannot notice being
+// removed.
 //
-// A future change that adds SetStatus, or re-exports a field, fails here
-// rather than silently making every other test in this file a description of
-// something that is no longer true.
-func TestPlatformEntitiesExposeNoSetters(t *testing.T) {
+// The pointer half is the part worth explaining, because an earlier version
+// of this test got it wrong in a way that looked right.
+//
+// Go's method sets: the method set of T contains only methods declared with a
+// value receiver, while the method set of *T contains both. So iterating
+// reflect.TypeOf(entity) and asking whether a receiver is a pointer can never
+// be true — a pointer-receiver method is not in the value type's method set
+// at all. That check was unreachable, and it would have passed forever while
+//
+//	func (r *EvaluationRun) SetStatus(s RunStatus) { r.status = s }
+//
+// quietly reintroduced the mutation path this package exists to remove.
+//
+// The real question is a set difference: which exported methods appear on *T
+// but not on T? Those are the pointer-only ones, and a pointer receiver is
+// the only way an exported method can mutate an entity in place.
+//
+// Start, Complete, Fail and Cancel are value-receiver methods, so they appear
+// in *both* sets and are correctly not flagged — which is the distinction
+// that makes this check usable rather than merely strict.
+func TestPlatformEntitiesExposeNoMutationPath(t *testing.T) {
 	entities := map[string]any{
 		"Project":       platform.Project{},
 		"Agent":         platform.Agent{},
@@ -313,35 +331,74 @@ func TestPlatformEntitiesExposeNoSetters(t *testing.T) {
 		"EvaluationRun": platform.EvaluationRun{},
 	}
 
-	// The lifecycle transitions are the only exported methods that produce a
-	// changed value, and they do it by returning a new one.
-	allowedMutators := map[string]bool{"Start": true, "Complete": true, "Fail": true, "Cancel": true}
+	// The lifecycle transitions produce a changed value by returning a new
+	// one. They are allowed to look like mutators by name; they are not
+	// allowed to be pointer-only, which the set difference below enforces
+	// independently of what anything is called.
+	namedTransitions := map[string]bool{"Start": true, "Complete": true, "Fail": true, "Cancel": true}
 
 	for name, entity := range entities {
 		t.Run(name, func(t *testing.T) {
-			typ := reflect.TypeOf(entity)
+			valueType := reflect.TypeOf(entity)
+			pointerType := reflect.PointerTo(valueType)
 
-			// No exported fields: every one would be an assignment that
-			// bypasses the constructor.
-			for i := range typ.NumField() {
-				if f := typ.Field(i); f.IsExported() {
+			// 1. No exported field: each would be an assignment that
+			//    bypasses the constructor.
+			for i := range valueType.NumField() {
+				if f := valueType.Field(i); f.IsExported() {
 					t.Errorf("%s.%s is exported; domain state must not be assignable from outside the package", name, f.Name)
 				}
 			}
 
-			for i := range typ.NumMethod() {
-				m := typ.Method(i)
-				if strings.HasPrefix(m.Name, "Set") && !allowedMutators[m.Name] {
-					t.Errorf("%s.%s looks like a setter; use a constructor or a transition instead", name, m.Name)
+			// 2. No pointer-only exported method. reflect's Method/NumMethod
+			//    on a non-interface type report only exported methods, so
+			//    this compares exactly the public surface.
+			onValue := make(map[string]bool, valueType.NumMethod())
+			for i := range valueType.NumMethod() {
+				onValue[valueType.Method(i).Name] = true
+			}
+			for i := range pointerType.NumMethod() {
+				m := pointerType.Method(i).Name
+				if !onValue[m] {
+					t.Errorf("%s has the pointer-only exported method %s: a *%s receiver can mutate in place, "+
+						"which the value-returning API exists to prevent", name, m, name)
 				}
-				// A method on the value receiver cannot mutate the entity. A
-				// pointer-receiver method could, so the value type must not
-				// have one in its method set.
-				if m.Type.In(0).Kind() == reflect.Pointer {
-					t.Errorf("%s.%s has a pointer receiver and could mutate in place", name, m.Name)
+			}
+
+			// 3. A setter by name, for the case where someone adds a
+			//    value-receiver method that only *looks* like it mutates.
+			//    Weaker than the check above and kept as a readability guard,
+			//    not as the invariant.
+			for i := range valueType.NumMethod() {
+				if m := valueType.Method(i).Name; strings.HasPrefix(m, "Set") && !namedTransitions[m] {
+					t.Errorf("%s.%s reads as a setter; use a constructor or a transition instead", name, m)
 				}
 			}
 		})
+	}
+}
+
+// TestLifecycleTransitionsAreValueMethods is the positive half of the audit
+// above: the four transitions must be present on both method sets, which is
+// what proves they are value-receiver methods rather than being tolerated by
+// an exception list.
+func TestLifecycleTransitionsAreValueMethods(t *testing.T) {
+	valueType := reflect.TypeOf(platform.EvaluationRun{})
+
+	for _, name := range []string{"Start", "Complete", "Fail", "Cancel"} {
+		method, ok := valueType.MethodByName(name)
+		if !ok {
+			t.Errorf("EvaluationRun.%s is not in the value method set, so it must have a pointer receiver", name)
+			continue
+		}
+		// Each returns (EvaluationRun, error): a new value, not a mutation.
+		if got := method.Type.NumOut(); got != 2 {
+			t.Errorf("EvaluationRun.%s returns %d values, want 2 (EvaluationRun, error)", name, got)
+			continue
+		}
+		if out := method.Type.Out(0); out != valueType {
+			t.Errorf("EvaluationRun.%s returns %s first, want EvaluationRun", name, out)
+		}
 	}
 }
 
