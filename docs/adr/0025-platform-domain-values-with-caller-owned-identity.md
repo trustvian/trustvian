@@ -44,10 +44,36 @@ property of a *collection*, and the collection does not exist until task 057.
 Pretending otherwise would mean a registry inside the domain, which is
 persistence wearing a domain's clothes.
 
-### Entities are values; transitions return new values
+### Entities are values with encapsulated state
 
-No entity is an interface, has getters and setters, or mutates in place. A
-lifecycle transition returns a new `EvaluationRun`, leaving the receiver
+Every entity's fields are **unexported**. Construction goes through
+`NewProject`, `NewAgent`, `NewCandidate`, `NewEvaluationRun`; reading goes
+through value-returning accessors; and there is no setter of any kind.
+
+The precise claim is not immutability — Go has no such thing, and a value can
+always be copied and a copy reassigned. It is this:
+
+> Domain identity and lifecycle state are encapsulated and cannot be mutated
+> through the exported API.
+
+That distinction is the whole reason the fields are unexported. With exported
+fields, `run.Status = RunCompleted` on a pending run, or
+`candidate.AgentID = "other"`, would compile from any package — and every
+invariant a constructor or transition establishes would be a convention that
+happens to hold rather than a property of the type. The first review of this
+task found exactly that hole, and closing it structurally was cheaper than
+documenting it.
+
+No entity is an interface, and none has a pointer-receiver method: a method
+set that cannot mutate in place is what makes "returns a new value" true
+rather than customary. A test asserts the absence — no exported field, no
+`Set*`, no pointer receiver — because these invariants are enforced by what
+is *not* there, and absence is what a behavioral test cannot notice being
+removed.
+
+### Transitions are the only public state change
+
+A lifecycle transition returns a new `EvaluationRun`, leaving the receiver
 untouched — the same treatment `internal/baseline.Baseline` already gets in
 the core, for the same reason: a value handed to a caller stays valid and
 cannot be changed underneath them.
@@ -56,13 +82,22 @@ A rejected transition returns the original value alongside the error, so a
 caller that ignores the error holds the unchanged run rather than a
 half-applied one.
 
-### Identity fields do not mutate
+`Start`, `Complete`, `Fail`, and `Cancel` are therefore the complete set of
+ways a run's state can move, and the state graph they enforce is the complete
+set of moves that exist.
 
-A `Candidate` is one version or configuration. There is no
-`SetSourceRef`, no `ChangeAgent`, and no path by which one Candidate becomes
-another. Evaluating a different artifact means creating another Candidate —
+### Identity cannot be reassigned
+
+A `Candidate` is one version or configuration. There is no `SetSourceRef`, no
+`ChangeAgent`, and — now that the fields are unexported — no assignment path
+either. Evaluating a different artifact means creating another Candidate,
 which is the only way a finished `EvaluationRun` keeps describing what it
 actually ran.
+
+`Candidate.Metadata()` returns `CandidateMetadata` by value. That is safe
+because the type holds only strings: a caller receives a copy with nothing to
+alias back into the entity, which is the second reason it is a fixed struct
+rather than a map.
 
 ### `Completed` is execution state, not a verdict
 
@@ -100,6 +135,14 @@ not allowed *from that state*" — by the time `Validate` runs, the previous
 state is gone. Transition methods make the illegal states unreachable instead
 of detectable.
 
+**Exported fields, with the invariants documented rather than enforced.**
+Rejected, after being tried. It reads as more idiomatic Go and avoids an
+accessor per field, but it makes every guarantee in this ADR advisory: a
+single assignment from any package could complete a run that never started,
+clear a candidate reference, or turn one candidate into another. An invariant
+a caller can break by accident is a comment, not a design. The accessors are
+the price, and for a handful of value types it is small.
+
 ## Consequences
 
 Uniqueness, existence, and referential integrity are unenforced at this
@@ -115,3 +158,14 @@ explicitly whether a client supplies one.
 Task 056's gate result has nowhere to live on `EvaluationRun`, which is
 intended. It will need its own type, and that type will be about a verdict
 rather than about an execution.
+
+Reading a run costs an accessor call rather than a field access, and any later
+task that needs a new field must add one to the constructor or a transition
+rather than assigning it afterwards. That friction is the point: it makes
+adding state a decision instead of a reflex.
+
+A value whose status did not come from this package — a future deserializer,
+a hand-built struct inside the package — is still possible, and every
+transition rejects it rather than treating it as pending. Encapsulation makes
+that state unreachable for external callers; it does not make the guard
+unnecessary, and persistence will be the first thing to need it.

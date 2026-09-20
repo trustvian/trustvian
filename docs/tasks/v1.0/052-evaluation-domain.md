@@ -82,8 +82,8 @@ Multi-tenancy is not implemented and no field anticipates it: no owner,
 organization, subscription, region, or access control.
 
 ```text
-Project.ID    ProjectID
-Project.Name  string
+Project.ID()    ProjectID
+Project.Name()  string
 ```
 
 ### Agent
@@ -98,9 +98,9 @@ actor, which is the same mistake [ADR 0022](../../adr/0022-core-platform-boundar
 rules out for fingerprints, one layer up.
 
 ```text
-Agent.ID         AgentID
-Agent.ProjectID  ProjectID
-Agent.Name       string
+Agent.ID()         AgentID
+Agent.ProjectID()  ProjectID
+Agent.Name()       string
 ```
 
 ### Candidate
@@ -111,7 +111,12 @@ one Agent.
 Candidate identity is **platform identity, never behavioral identity**. None
 of its metadata reaches a fingerprint, `StableFeatures`, or a baseline key.
 
-Metadata is a fixed set of optional descriptive fields rather than a map:
+`Candidate.ID()`, `Candidate.AgentID()`, and `Candidate.Metadata()` read it.
+
+Metadata is a fixed set of optional descriptive fields rather than a map.
+`CandidateMetadata` stays a plain exported struct of strings — it is the one
+type here with no invariant to protect, and returning it by value hands a
+caller a copy with nothing to alias:
 
 ```text
 CandidateMetadata.Label           human version label
@@ -138,15 +143,15 @@ One bounded execution assessing exactly one Candidate against one environment
 reference and one behavioral profile reference.
 
 ```text
-EvaluationRun.ID           EvaluationRunID
-EvaluationRun.CandidateID  CandidateID
-EvaluationRun.Environment  EnvironmentRef
-EvaluationRun.Profile      BehavioralProfileRef
-EvaluationRun.Status       RunStatus
-EvaluationRun.CreatedAt    time.Time
-EvaluationRun.StartedAt    time.Time  zero until started
-EvaluationRun.FinishedAt   time.Time  zero until terminal
-EvaluationRun.FailureReason string    non-empty only when failed
+EvaluationRun.ID()                 EvaluationRunID
+EvaluationRun.CandidateID()        CandidateID
+EvaluationRun.Environment()        EnvironmentRef
+EvaluationRun.BehavioralProfile()  BehavioralProfileRef
+EvaluationRun.Status()             RunStatus
+EvaluationRun.CreatedAt()          time.Time
+EvaluationRun.StartedAt()          time.Time  zero until started
+EvaluationRun.FinishedAt()         time.Time  zero until terminal
+EvaluationRun.FailureReason()      string     non-empty only when failed
 ```
 
 It holds **no results**: no `[]DecisionRecord`, no events, no scorecard, no
@@ -198,6 +203,14 @@ and embeds no database identity. See
 [ADR 0025](../../adr/0025-platform-domain-values-with-caller-owned-identity.md)
 for why generation belongs to whatever adapter creates the entity.
 
+**Entity state is unexported.** Construction goes through the four `New*`
+functions, reading goes through value-returning accessors, and there is no
+setter. The claim is precise rather than grand: Go has no immutability, and a
+caller can always copy a value — but *domain identity and lifecycle state
+cannot be mutated through the exported API*. With exported fields,
+`run.Status = RunCompleted` on a pending run would compile from any package,
+and every rule below would be a convention rather than a property.
+
 **Ownership is carried, not verified.** An `Agent` records its `ProjectID`
 and a `Candidate` records its `AgentID`, so a later service can check that
 those targets exist — but a constructor validates only the entity in front of
@@ -219,11 +232,14 @@ Completed, Failed, Cancelled ──X▶ anything
 A terminal run is historical evidence. Re-running means creating a new run,
 which is what keeps a run's record of what happened true afterwards.
 
-Transitions are methods that **return a new value** rather than mutating the
-receiver, matching how `internal/baseline.Baseline` already treats a domain
-value in this repository. A rejected transition returns the original value
-unchanged along with the error, so a caller that ignores the error does not
-silently hold a half-applied state.
+`Start`, `Complete`, `Fail`, and `Cancel` are the **only** public way a run's
+state moves. They **return a new value** rather than mutating the receiver,
+matching how `internal/baseline.Baseline` already treats a domain value in
+this repository, and no entity has a pointer-receiver method — a method set
+that cannot mutate in place is what makes that guarantee structural. A
+rejected transition returns the original value unchanged along with the error,
+so a caller that ignores the error does not silently hold a half-applied
+state.
 
 ### `Completed` is not a verdict
 
@@ -305,6 +321,17 @@ compile-time test rather than prose.
 Lifecycle: every allowed transition, every rejected one, terminal
 immutability, and that a rejected transition returns the run unchanged.
 
+Encapsulation: a reflective audit asserts that no entity has an exported
+field, a `Set*` method, or a pointer receiver. These invariants are enforced
+by *absence*, and absence is what a behavioral test cannot notice being
+removed. Mutating a `CandidateMetadata` a caller received does not reach the
+candidate.
+
+One internal-package test covers the case the exported API cannot construct:
+an `EvaluationRun` whose status is not one this package produces — reachable
+the moment something deserializes a run — must fail closed rather than be
+treated as pending.
+
 Chronology: normal ordering, start before creation rejected, finish before
 start rejected.
 
@@ -354,6 +381,8 @@ Historical `CHANGELOG.md` entries and archived task documents keep their
 - [ ] `EnvironmentRef` is a reference; no environment model exists.
 - [ ] `BehavioralProfileRef` is distinct from `CandidateID` and
       `EvaluationRunID` at the type level.
+- [ ] Entity state is unexported; no setter and no pointer-receiver method
+      exists, and no invariant can be bypassed through the exported API.
 - [ ] The run lifecycle rejects every disallowed transition, and terminal
       states are final.
 - [ ] `Completed` means execution finished, proven not to mean "passed".

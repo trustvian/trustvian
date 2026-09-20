@@ -105,9 +105,14 @@ type BehavioralProfileRef string
 // billing boundary, and carries no field anticipating one. Multi-tenancy is
 // an access-control concern for a different product surface; a speculative
 // OwnerID here would be a shape nothing reads and everything has to keep.
+// Its state is unexported and reachable only through the accessors below.
+// That is not ceremony: with exported fields, every invariant a constructor
+// establishes could be undone by one assignment from outside the package, and
+// the guarantee this type offers would be a convention rather than a
+// property. See docs/adr/0025-platform-domain-values-with-caller-owned-identity.md.
 type Project struct {
-	ID   ProjectID
-	Name string
+	id   ProjectID
+	name string
 }
 
 // NewProject validates and returns a Project.
@@ -118,8 +123,14 @@ func NewProject(id ProjectID, name string) (Project, error) {
 	if err := validateName("project name", name); err != nil {
 		return Project{}, err
 	}
-	return Project{ID: id, Name: name}, nil
+	return Project{id: id, name: name}, nil
 }
+
+// ID returns the project's identifier.
+func (p Project) ID() ProjectID { return p.id }
+
+// Name returns the project's human-facing name.
+func (p Project) Name() string { return p.name }
 
 // Agent is the stable logical identity of an agentic application across every
 // version of it. It belongs to exactly one Project.
@@ -129,9 +140,9 @@ func NewProject(id ProjectID, name string) (Project, error) {
 // changed identity per commit would make every deployment a new actor, which
 // is the same mistake ADR 0022 rules out for fingerprints, one layer up.
 type Agent struct {
-	ID        AgentID
-	ProjectID ProjectID
-	Name      string
+	id        AgentID
+	projectID ProjectID
+	name      string
 }
 
 // NewAgent validates and returns an Agent owned by projectID.
@@ -149,8 +160,17 @@ func NewAgent(id AgentID, projectID ProjectID, name string) (Agent, error) {
 	if err := validateName("agent name", name); err != nil {
 		return Agent{}, err
 	}
-	return Agent{ID: id, ProjectID: projectID, Name: name}, nil
+	return Agent{id: id, projectID: projectID, name: name}, nil
 }
+
+// ID returns the agent's identifier — stable across every Candidate.
+func (a Agent) ID() AgentID { return a.id }
+
+// ProjectID returns the project this agent belongs to.
+func (a Agent) ProjectID() ProjectID { return a.projectID }
+
+// Name returns the agent's human-facing name.
+func (a Agent) Name() string { return a.name }
 
 // CandidateMetadata describes which version or configuration a Candidate is.
 // Every field is optional, bounded, and **descriptive only** — nothing in
@@ -213,9 +233,9 @@ func (m CandidateMetadata) validate() error {
 // creating another Candidate — which is the only thing that keeps a finished
 // EvaluationRun describing what it actually ran.
 type Candidate struct {
-	ID       CandidateID
-	AgentID  AgentID
-	Metadata CandidateMetadata
+	id       CandidateID
+	agentID  AgentID
+	metadata CandidateMetadata
 }
 
 // NewCandidate validates and returns a Candidate owned by agentID.
@@ -229,8 +249,21 @@ func NewCandidate(id CandidateID, agentID AgentID, meta CandidateMetadata) (Cand
 	if err := meta.validate(); err != nil {
 		return Candidate{}, err
 	}
-	return Candidate{ID: id, AgentID: agentID, Metadata: meta}, nil
+	return Candidate{id: id, agentID: agentID, metadata: meta}, nil
 }
+
+// ID returns the candidate's identifier.
+func (c Candidate) ID() CandidateID { return c.id }
+
+// AgentID returns the agent this candidate is a version of.
+func (c Candidate) AgentID() AgentID { return c.agentID }
+
+// Metadata returns the candidate's descriptive metadata.
+//
+// Returned by value, which is safe precisely because CandidateMetadata holds
+// only strings: a caller receives a copy and there is nothing to alias. This
+// is the second reason the type is a fixed set of fields rather than a map.
+func (c Candidate) Metadata() CandidateMetadata { return c.metadata }
 
 // RunStatus is the state of an execution, and only of an execution.
 //
@@ -289,25 +322,30 @@ func (s RunStatus) valid() bool {
 // Transitions return a new EvaluationRun rather than mutating the receiver,
 // matching how the core already treats a domain value — a run handed to a
 // caller stays valid and cannot change underneath them.
+// Its state is unexported, which is what makes the lifecycle above a
+// guarantee rather than a description. With exported fields a caller could
+// write `run.Status = RunCompleted` on a pending run, or clear its candidate,
+// and every rule this type enforces would be advisory. The transition methods
+// are the only way to move a run, and there is deliberately no setter.
 type EvaluationRun struct {
-	ID          EvaluationRunID
-	CandidateID CandidateID
-	Environment EnvironmentRef
-	Profile     BehavioralProfileRef
+	id          EvaluationRunID
+	candidateID CandidateID
+	environment EnvironmentRef
+	profile     BehavioralProfileRef
 
-	Status RunStatus
+	status RunStatus
 
-	// CreatedAt is when the run was recorded. StartedAt and FinishedAt are
+	// createdAt is when the run was recorded. startedAt and finishedAt are
 	// zero until the corresponding transition happens.
-	CreatedAt  time.Time
-	StartedAt  time.Time
-	FinishedAt time.Time
+	createdAt  time.Time
+	startedAt  time.Time
+	finishedAt time.Time
 
-	// FailureReason is operator context explaining why an execution ended,
+	// failureReason is operator context explaining why an execution ended,
 	// non-empty only for a failed run. Bounded and control-free: this is not
 	// an error-log model, and it carries no error object, stack trace, or
 	// agent payload.
-	FailureReason string
+	failureReason string
 }
 
 // NewEvaluationRun returns a run in RunPending. Every reference is required:
@@ -341,25 +379,59 @@ func NewEvaluationRun(
 	}
 
 	return EvaluationRun{
-		ID:          id,
-		CandidateID: candidateID,
-		Environment: environment,
-		Profile:     profile,
-		Status:      RunPending,
-		CreatedAt:   createdAt,
+		id:          id,
+		candidateID: candidateID,
+		environment: environment,
+		profile:     profile,
+		status:      RunPending,
+		createdAt:   createdAt,
 	}, nil
 }
+
+// ID returns the run's identifier.
+func (r EvaluationRun) ID() EvaluationRunID { return r.id }
+
+// CandidateID returns the candidate this run assessed.
+func (r EvaluationRun) CandidateID() CandidateID { return r.candidateID }
+
+// Environment returns the environment reference this run targeted.
+func (r EvaluationRun) Environment() EnvironmentRef { return r.environment }
+
+// BehavioralProfile returns the profile reference this run was evaluated
+// against. Named for what it is rather than after the field, because
+// `run.Profile()` would leave a reader guessing which kind of profile.
+func (r EvaluationRun) BehavioralProfile() BehavioralProfileRef { return r.profile }
+
+// Status returns the state of the execution — not a verdict. See RunStatus.
+func (r EvaluationRun) Status() RunStatus { return r.status }
+
+// CreatedAt returns when the run was recorded.
+func (r EvaluationRun) CreatedAt() time.Time { return r.createdAt }
+
+// StartedAt returns when the execution began, or the zero time if it never
+// did — a run cancelled while pending has no start.
+func (r EvaluationRun) StartedAt() time.Time { return r.startedAt }
+
+// FinishedAt returns when the run reached a terminal state, or the zero time
+// if it has not.
+func (r EvaluationRun) FinishedAt() time.Time { return r.finishedAt }
+
+// FailureReason returns operator context for a failed run, and "" for every
+// other state.
+func (r EvaluationRun) FailureReason() string { return r.failureReason }
 
 // Start moves a pending run to RunRunning.
 func (r EvaluationRun) Start(at time.Time) (EvaluationRun, error) {
 	if err := r.transitionAllowed(RunRunning); err != nil {
 		return r, err
 	}
-	if err := notBefore("started_at", at, "created_at", r.CreatedAt); err != nil {
+	if err := notBefore("started_at", at, "created_at", r.createdAt); err != nil {
 		return r, err
 	}
-	r.Status = RunRunning
-	r.StartedAt = at
+	// r is a value receiver: these assignments mutate this function's own
+	// copy, and the caller's run is untouched.
+	r.status = RunRunning
+	r.startedAt = at
 	return r, nil
 }
 
@@ -394,40 +466,40 @@ func (r EvaluationRun) finish(to RunStatus, at time.Time, reason string) (Evalua
 
 	// A cancelled run may never have started, in which case the only
 	// ordering that exists to check is against creation.
-	after, afterName := r.StartedAt, "started_at"
+	after, afterName := r.startedAt, "started_at"
 	if after.IsZero() {
-		after, afterName = r.CreatedAt, "created_at"
+		after, afterName = r.createdAt, "created_at"
 	}
 	if err := notBefore("finished_at", at, afterName, after); err != nil {
 		return r, err
 	}
 
-	r.Status = to
-	r.FinishedAt = at
-	r.FailureReason = reason
+	r.status = to
+	r.finishedAt = at
+	r.failureReason = reason
 	return r, nil
 }
 
 // transitionAllowed encodes the whole state machine in one place, so a new
 // state cannot be added without deciding what may reach it.
 func (r EvaluationRun) transitionAllowed(to RunStatus) error {
-	if !r.Status.valid() {
-		return fmt.Errorf("%w: run is in an unrecognized state %q", ErrInvalidTransition, r.Status)
+	if !r.status.valid() {
+		return fmt.Errorf("%w: run is in an unrecognized state %q", ErrInvalidTransition, r.status)
 	}
-	if r.Status.IsTerminal() {
+	if r.status.IsTerminal() {
 		return fmt.Errorf("%w: %s -> %s: a terminal run is historical evidence; create a new run instead",
-			ErrInvalidTransition, r.Status, to)
+			ErrInvalidTransition, r.status, to)
 	}
 
 	allowed := false
-	switch r.Status {
+	switch r.status {
 	case RunPending:
 		allowed = to == RunRunning || to == RunCancelled
 	case RunRunning:
 		allowed = to == RunCompleted || to == RunFailed || to == RunCancelled
 	}
 	if !allowed {
-		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, r.Status, to)
+		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, r.status, to)
 	}
 	return nil
 }

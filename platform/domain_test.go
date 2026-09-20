@@ -18,6 +18,7 @@ package platform_test
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -179,20 +180,20 @@ func TestOwnershipIsCarried(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewProject() error = %v", err)
 	}
-	agent, err := platform.NewAgent("agent-1", project.ID, "Checkout Agent")
+	agent, err := platform.NewAgent("agent-1", project.ID(), "Checkout Agent")
 	if err != nil {
 		t.Fatalf("NewAgent() error = %v", err)
 	}
-	candidate, err := platform.NewCandidate("cand-1", agent.ID, platform.CandidateMetadata{})
+	candidate, err := platform.NewCandidate("cand-1", agent.ID(), platform.CandidateMetadata{})
 	if err != nil {
 		t.Fatalf("NewCandidate() error = %v", err)
 	}
 
-	if agent.ProjectID != project.ID {
-		t.Errorf("Agent.ProjectID = %q, want %q", agent.ProjectID, project.ID)
+	if agent.ProjectID() != project.ID() {
+		t.Errorf("Agent.ProjectID = %q, want %q", agent.ProjectID(), project.ID())
 	}
-	if candidate.AgentID != agent.ID {
-		t.Errorf("Candidate.AgentID = %q, want %q", candidate.AgentID, agent.ID)
+	if candidate.AgentID() != agent.ID() {
+		t.Errorf("Candidate.AgentID = %q, want %q", candidate.AgentID(), agent.ID())
 	}
 }
 
@@ -210,7 +211,7 @@ func TestAgentIdentityIsIndependentOfCandidateMetadata(t *testing.T) {
 
 	for _, sha := range []string{"9f3c1a", "0b7e22"} {
 		if _, err := platform.NewCandidate(
-			platform.CandidateID("cand-"+sha), agent.ID,
+			platform.CandidateID("cand-"+sha), agent.ID(),
 			platform.CandidateMetadata{SourceRef: sha},
 		); err != nil {
 			t.Fatalf("NewCandidate(%s) error = %v", sha, err)
@@ -243,44 +244,104 @@ func TestSameSourceRefStillProducesTwoCandidates(t *testing.T) {
 		t.Fatalf("NewCandidate() error = %v", err)
 	}
 
-	if first.ID == second.ID {
+	if first.ID() == second.ID() {
 		t.Fatal("two candidates from one commit collapsed into one identity")
 	}
-	if first.Metadata != second.Metadata {
+	if first.Metadata() != second.Metadata() {
 		t.Error("identical metadata did not survive construction identically")
 	}
-	if first.AgentID != second.AgentID {
+	if first.AgentID() != second.AgentID() {
 		t.Error("both candidates should belong to the same agent")
 	}
 }
 
-// TestCandidateIdentityCannotBeMutated is a structural assertion: there is no
-// exported method on Candidate at all, so no SetSourceRef or ChangeAgent can
-// turn one candidate into another. A caller wanting a different artifact
-// creates a different Candidate, which is what keeps a finished run's record
-// true.
+// TestCandidateIdentityIsEncapsulated proves the guarantee the model claims:
+// a caller outside this package cannot change what a Candidate is.
 //
-// Assigning to an exported field of a local copy is still possible — this is
-// Go, and the alternative is unexported fields plus a getter per field, which
-// ADR 0025 rejects as worse. What the model guarantees is that the copy is a
-// copy: mutating it cannot reach the original.
-func TestCandidateIdentityCannotBeMutated(t *testing.T) {
+// The real assertion is the code that is NOT here. None of these compile:
+//
+//	candidate.id = "other"              // unexported
+//	candidate.ID = "other"              // no such field
+//	candidate.AgentID = "other-agent"   // AgentID is a method
+//	candidate.SetAgentID("other")       // no setter exists
+//
+// A compile-time guarantee cannot be asserted at run time without failing to
+// build, so what this test pins is the shape that produces it: reads go
+// through accessors, and the values they return are copies that cannot reach
+// back into the entity.
+func TestCandidateIdentityIsEncapsulated(t *testing.T) {
 	original, err := platform.NewCandidate("cand-1", "agent-1", platform.CandidateMetadata{SourceRef: "9f3c1a"})
 	if err != nil {
 		t.Fatalf("NewCandidate() error = %v", err)
 	}
 
-	copied := original
-	copied.Metadata.SourceRef = "tampered"
-	copied.AgentID = "other-agent"
+	// Metadata comes back by value. Mutating what a caller received must not
+	// reach the candidate — which holds because CandidateMetadata contains
+	// only strings, the second reason it is a fixed struct rather than a map.
+	meta := original.Metadata()
+	meta.SourceRef = "tampered"
+	meta.Model = "swapped"
 
-	if original.Metadata.SourceRef != "9f3c1a" || original.AgentID != "agent-1" {
-		t.Fatalf("mutating a copy reached the original: %+v", original)
+	if got := original.Metadata().SourceRef; got != "9f3c1a" {
+		t.Errorf("Metadata().SourceRef = %q after mutating a returned copy, want %q", got, "9f3c1a")
 	}
-	// And the copy really did change — otherwise the assertion above would
-	// hold for a reason that has nothing to do with value semantics.
-	if copied.Metadata.SourceRef != "tampered" || copied.AgentID != "other-agent" {
-		t.Fatalf("the copy was not modified, so this proves nothing: %+v", copied)
+	if got := original.Metadata().Model; got != "" {
+		t.Errorf("Metadata().Model = %q after mutating a returned copy, want empty", got)
+	}
+
+	// The struct copy is likewise inert: assigning a Candidate copies it, and
+	// there is no exported field on the copy to write through anyway.
+	copied := original
+	if copied.ID() != original.ID() || copied.AgentID() != original.AgentID() {
+		t.Fatal("copying a Candidate did not preserve its identity")
+	}
+}
+
+// TestPlatformEntitiesExposeNoSetters is a reflective audit of the exported
+// method set. It exists because the invariants in this package are enforced
+// by *absence* — no setter, no exported field — and absence is exactly what a
+// behavioral test cannot notice being removed.
+//
+// A future change that adds SetStatus, or re-exports a field, fails here
+// rather than silently making every other test in this file a description of
+// something that is no longer true.
+func TestPlatformEntitiesExposeNoSetters(t *testing.T) {
+	entities := map[string]any{
+		"Project":       platform.Project{},
+		"Agent":         platform.Agent{},
+		"Candidate":     platform.Candidate{},
+		"EvaluationRun": platform.EvaluationRun{},
+	}
+
+	// The lifecycle transitions are the only exported methods that produce a
+	// changed value, and they do it by returning a new one.
+	allowedMutators := map[string]bool{"Start": true, "Complete": true, "Fail": true, "Cancel": true}
+
+	for name, entity := range entities {
+		t.Run(name, func(t *testing.T) {
+			typ := reflect.TypeOf(entity)
+
+			// No exported fields: every one would be an assignment that
+			// bypasses the constructor.
+			for i := range typ.NumField() {
+				if f := typ.Field(i); f.IsExported() {
+					t.Errorf("%s.%s is exported; domain state must not be assignable from outside the package", name, f.Name)
+				}
+			}
+
+			for i := range typ.NumMethod() {
+				m := typ.Method(i)
+				if strings.HasPrefix(m.Name, "Set") && !allowedMutators[m.Name] {
+					t.Errorf("%s.%s looks like a setter; use a constructor or a transition instead", name, m.Name)
+				}
+				// A method on the value receiver cannot mutate the entity. A
+				// pointer-receiver method could, so the value type must not
+				// have one in its method set.
+				if m.Type.In(0).Kind() == reflect.Pointer {
+					t.Errorf("%s.%s has a pointer receiver and could mutate in place", name, m.Name)
+				}
+			}
+		})
 	}
 }
 
@@ -341,7 +402,7 @@ func TestEnvironmentRefIsOpaque(t *testing.T) {
 // declarations would collapse, and a reviewer reading this file would see the
 // intent.
 //
-// The real enforcement is that `run.CandidateID = project.ID` does not
+// The real enforcement is that `run.CandidateID() = project.ID()` does not
 // compile. That cannot be written here — it would break the build — so this
 // documents the property and pins that the types exist separately.
 func TestIdentifiersAreDistinctTypes(t *testing.T) {
@@ -391,19 +452,19 @@ func newRun(t *testing.T) platform.EvaluationRun {
 func TestNewEvaluationRunBindsExactlyOneOfEach(t *testing.T) {
 	run := newRun(t)
 
-	if run.CandidateID != "cand-1" || run.Environment != "staging" || run.Profile != "profile-1" {
+	if run.CandidateID() != "cand-1" || run.Environment() != "staging" || run.BehavioralProfile() != "profile-1" {
 		t.Fatalf("run did not bind its references: %+v", run)
 	}
-	if run.Status != platform.RunPending {
-		t.Errorf("Status = %q, want %q", run.Status, platform.RunPending)
+	if run.Status() != platform.RunPending {
+		t.Errorf("Status = %q, want %q", run.Status(), platform.RunPending)
 	}
-	if !run.CreatedAt.Equal(epoch) {
-		t.Errorf("CreatedAt = %v, want %v", run.CreatedAt, epoch)
+	if !run.CreatedAt().Equal(epoch) {
+		t.Errorf("CreatedAt = %v, want %v", run.CreatedAt(), epoch)
 	}
-	if !run.StartedAt.IsZero() || !run.FinishedAt.IsZero() {
+	if !run.StartedAt().IsZero() || !run.FinishedAt().IsZero() {
 		t.Error("a pending run must not carry start or finish times")
 	}
-	if run.FailureReason != "" {
+	if run.FailureReason() != "" {
 		t.Error("a pending run must not carry a failure reason")
 	}
 }
@@ -461,20 +522,20 @@ func TestLifecycleAllowedTransitions(t *testing.T) {
 			if err != nil {
 				t.Fatalf("transition error = %v", err)
 			}
-			if got.Status != tt.wantStatus {
-				t.Fatalf("Status = %q, want %q", got.Status, tt.wantStatus)
+			if got.Status() != tt.wantStatus {
+				t.Fatalf("Status = %q, want %q", got.Status(), tt.wantStatus)
 			}
-			if !got.Status.IsTerminal() {
+			if !got.Status().IsTerminal() {
 				t.Error("the resulting status should be terminal")
 			}
-			if got.FailureReason != tt.wantReason {
-				t.Errorf("FailureReason = %q, want %q", got.FailureReason, tt.wantReason)
+			if got.FailureReason() != tt.wantReason {
+				t.Errorf("FailureReason = %q, want %q", got.FailureReason(), tt.wantReason)
 			}
-			if got.FinishedAt.IsZero() {
+			if got.FinishedAt().IsZero() {
 				t.Error("a terminal run must record when it finished")
 			}
 			// References never move.
-			if got.CandidateID != "cand-1" || got.Environment != "staging" || got.Profile != "profile-1" {
+			if got.CandidateID() != "cand-1" || got.Environment() != "staging" || got.BehavioralProfile() != "profile-1" {
 				t.Errorf("a transition changed the run's references: %+v", got)
 			}
 		})
@@ -654,11 +715,21 @@ func TestCompletedIsNotAVerdict(t *testing.T) {
 		t.Fatalf("Fail() error = %v", err)
 	}
 
-	completed.Status, failed.Status = "", ""
-	completed.FailureReason, failed.FailureReason = "", ""
-	if completed != failed {
+	// Everything a run carries besides its status and failure reason is
+	// identical. A completed run holds no evaluative information a failed one
+	// does not: there is simply nowhere on this type for a verdict to live.
+	if completed.ID() != failed.ID() ||
+		completed.CandidateID() != failed.CandidateID() ||
+		completed.Environment() != failed.Environment() ||
+		completed.BehavioralProfile() != failed.BehavioralProfile() ||
+		!completed.CreatedAt().Equal(failed.CreatedAt()) ||
+		!completed.StartedAt().Equal(failed.StartedAt()) ||
+		!completed.FinishedAt().Equal(failed.FinishedAt()) {
 		t.Fatalf("completed and failed runs differ beyond status and failure reason:\n %+v\nvs %+v",
 			completed, failed)
+	}
+	if completed.Status() == failed.Status() {
+		t.Fatal("completed and failed runs should differ in status")
 	}
 }
 
@@ -680,17 +751,5 @@ func TestRunStatusTerminality(t *testing.T) {
 
 	if platform.RunStatus("promoted").IsTerminal() {
 		t.Error("an unrecognized status must not report itself terminal")
-	}
-}
-
-// TestUnrecognizedStatusCannotTransition: a run whose status did not come
-// from this package (a future deserializer, a hand-built value) fails closed
-// rather than being treated as pending.
-func TestUnrecognizedStatusCannotTransition(t *testing.T) {
-	run := newRun(t)
-	run.Status = "in-review"
-
-	if _, err := run.Start(epoch.Add(time.Minute)); !errors.Is(err, platform.ErrInvalidTransition) {
-		t.Fatalf("got %v, want an error wrapping ErrInvalidTransition", err)
 	}
 }

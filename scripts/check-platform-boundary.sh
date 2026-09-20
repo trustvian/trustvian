@@ -99,8 +99,25 @@ fi
 # field, a const, a var, or a func — in non-test core source, and ignores
 # comments, documentation, and tests, which legitimately discuss these
 # concepts precisely because the boundary exists.
+#
+# The cost of a false positive here is a blocked pull request on a legitimate
+# change, so the match is tuned to be specific rather than exhaustive. It is a
+# tripwire for the obvious mistake, not a proof of absence; the reviewable
+# guarantee remains the module boundary above.
 # ---------------------------------------------------------------------
-readonly PLATFORM_NAMES='ProjectID|AgentID|CandidateID|EvaluationRunID|BehavioralProfileRef|EnvironmentRef|Scorecard|Promotion'
+# Two families, matched differently on purpose.
+#
+# PLATFORM_IDENTIFIERS are distinctive enough that any Go declaration using
+# one is a violation: nothing in a behavioral engine legitimately declares a
+# CandidateID.
+#
+# PLATFORM_TYPES are ordinary English words. "Agent" and "Candidate" appear
+# constantly in this repository's prose, and `candidate` is a reasonable local
+# variable in generic code — so these are matched ONLY as type declarations
+# (`type Candidate struct`, `type Agent interface`, …), which is the shape
+# that would actually mean the core had grown a platform concept.
+readonly PLATFORM_IDENTIFIERS='ProjectID|AgentID|CandidateID|EvaluationRunID|BehavioralProfileRef|EnvironmentRef'
+readonly PLATFORM_TYPES='Project|Agent|Candidate|EvaluationRun|Scorecard|Promotion'
 
 core_go_files() {
     find . -name "*.go" -not -name "*_test.go" \
@@ -123,7 +140,17 @@ while IFS= read -r f; do
         !inblock { print }
         /\*\// { inblock = 0 }
     ')"
-    if hit="$(printf '%s\n' "$stripped" | grep -nE "(^|[[:space:]])($PLATFORM_NAMES)([[:space:]]+[A-Za-z*\[]|[[:space:]]*[:=]|\()" || true)"; [ -n "$hit" ]; then
+    hit="$(printf '%s\n' "$stripped" | grep -nE "(^|[[:space:]])($PLATFORM_IDENTIFIERS)([[:space:]]+[A-Za-z*\[]|[[:space:]]*[:=]|\()" || true)"
+
+    # Type declarations only, for the ordinary-word family. Matches
+    # `type Candidate struct{...}`, `type Agent interface{...}`, and the
+    # grouped form's `\tCandidate struct{...}` inside a `type (` block.
+    types="$(printf '%s\n' "$stripped" | grep -nE "^[[:space:]]*(type[[:space:]]+)?($PLATFORM_TYPES)[[:space:]]+(struct|interface)[[:space:]]*[{]" || true)"
+    if [ -n "$types" ]; then
+        hit="$hit$types"
+    fi
+
+    if [ -n "$hit" ]; then
         leaks="$leaks$f:$hit"$'\n'
     fi
 done < <(core_go_files)

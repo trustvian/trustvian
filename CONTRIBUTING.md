@@ -182,11 +182,20 @@ rewrites your code.
 ## Modules and releases
 
 This repository publishes exactly one Go module — the root,
-`github.com/trustvian/trustvian`. The `processor` and `examples` modules
-are repository-internal: their module paths are not resolvable and they are
-built from a clone. `make check-modules` enforces the invariants that keeps
-true; [docs/release-guide.md](docs/release-guide.md) explains the model and
-what promoting a module would require.
+`github.com/trustvian/trustvian`. The `processor`, `examples`, and `platform`
+modules are repository-internal: their module paths are not resolvable and
+they are built from a clone.
+
+`processor` and `examples` resolve the core through a local `replace`;
+`platform` does not depend on the core at all yet, so it declares neither a
+`require` nor a `replace`. Its module path also sits outside
+`github.com/trustvian/trustvian` on purpose, which is what makes a core
+`internal/*` import a compile error rather than a convention —
+`make check-platform-boundary` enforces that and the reverse direction.
+
+`make check-modules` enforces the publication invariants;
+[docs/release-guide.md](docs/release-guide.md) explains the model and what
+promoting a module would require.
 
 To build the release artifact matrix locally — no tag, credentials, or
 upload:
