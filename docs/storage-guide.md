@@ -272,7 +272,8 @@ environment variable your config loader expands, not a committed file.
 Two tables, both created automatically on first connection:
 
 ```
-trustvian_baseline          one row per {actor_id, environment}
+trustvian_baseline          one row per {scope, actor_id, environment}
+  scope             text        NOT NULL   -- learning scope; '' is the default
   actor_id          text        NOT NULL
   environment       text        NOT NULL
   baseline          jsonb       NOT NULL   -- authoritative state
@@ -281,10 +282,19 @@ trustvian_baseline          one row per {actor_id, environment}
   observation_count bigint      NOT NULL   -- derived
   last_observed     timestamptz            -- derived
   updated_at        timestamptz NOT NULL   -- derived
-  PRIMARY KEY (actor_id, environment)
+  PRIMARY KEY (scope, actor_id, environment)
 
 trustvian_schema_version   exactly one row: the version this DB is at
 ```
+
+`scope` is the learning scope (`v1.0`, [ADR
+0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md)): an opaque
+namespace letting one actor in one environment hold several independent
+learned histories. `''` is the default scope, and every baseline written
+before schema version 2 is in it. It is part of the primary key on purpose —
+storing it only inside the jsonb would let a second scope's insert collide
+with the first scope's row, and would leave the authoritative row identity
+disagreeing with the `Key` inside the value it holds.
 
 `baseline` is the single source of truth, and it uses the **identical**
 `encoding/json` representation `FileStore` already writes — which is what
@@ -333,7 +343,8 @@ a live system.
 |---|---|
 | Matches `SchemaVersion` | proceeds |
 | **Newer** than this build | `ErrSchemaVersionMismatch` — startup fails |
-| Older / unrecognized | `ErrSchemaVersionMismatch` — startup fails |
+| Version 1 (pre-learning-scope) | upgraded in place to version 2 |
+| Any other older / unrecognized version | `ErrSchemaVersionMismatch` — startup fails |
 | Absent, **and no baseline data** | treated as a fresh database; version recorded |
 | Absent, **but baseline data exists** | `ErrAmbiguousSchemaState` — startup fails |
 | More than one version row | `ErrAmbiguousSchemaState` — startup fails |
@@ -365,13 +376,41 @@ only read the version row, so they need no DDL rights. A runtime role
 lacking the privileges it needs fails startup with PostgreSQL's own
 permission error — actionable, and carrying no credentials.
 
-Multi-version evolution has no upgrade path yet because there has only
-ever been one schema version; what is exercised today is re-migration
-against a populated database, which is what every process restart does.
-Inventing a v1→v2 upgrade to demonstrate the machinery would test a
-fiction. What *is* tested is upgrading a database written by the real
-`v0.8.0` release in place, and that both releases refuse a newer recorded
-version — see [Operations § Upgrade](operations.md#upgrade).
+### The version 1 → 2 upgrade
+
+Schema version 2 (`v1.0`) added `scope` and made it part of the primary key.
+A version-1 database upgrades automatically on the next startup, inside the
+same transaction and advisory lock the initial migration already used, so it
+is atomic and safe against a racing process:
+
+1. `scope text NOT NULL DEFAULT ''` is added — every existing row backfills
+   to the default scope, which is what those baselines already are;
+2. the default is dropped, so a later insert that omits scope fails loudly
+   instead of landing in the default profile by accident;
+3. the primary key becomes `(scope, actor_id, environment)`;
+4. every row's derived `schema_version` is restamped to 2 — not cosmetic,
+   since `restore-postgres.sh` verifies no row disagrees with the recorded
+   version;
+5. the version row becomes 2.
+
+**No learned state is read, rewritten, or discarded.** Each row keeps its
+jsonb exactly as it was; the `Baseline` inside has a `Key` with no `Scope`
+field, which deserializes to the default scope and so already agrees with
+the backfilled column.
+
+There is no downgrade. An older binary refuses version 2 through the
+newer-than-this-build row above, which is the intended outcome — it cannot
+see the `scope` column and would merge distinct profiles if it proceeded.
+Downgrading means restoring a pre-upgrade backup.
+
+Version 0, or any version other than 1 or 2, is still refused outright: an
+unrecognized version is not an older release, it is state this build has no
+upgrade path for.
+
+Re-migration against an already-upgraded database is a no-op, which is what
+every process restart does. Upgrading a database written by the real
+`v0.8.0` release in place is also tested, as is both releases refusing a
+newer recorded version — see [Operations § Upgrade](operations.md#upgrade).
 
 ### What is *not* stored
 

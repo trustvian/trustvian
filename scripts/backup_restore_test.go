@@ -128,6 +128,12 @@ func writeSums(t *testing.T, dir string, files ...string) {
 	}
 }
 
+// currentSchemaManifestLine is the MANIFEST line a backup taken by this
+// build carries. Derived from postgres.SchemaVersion rather than written as
+// a literal: task 051 moved the schema from 1 to 2, and every hardcoded copy
+// of that number became a false assertion at once.
+var currentSchemaManifestLine = fmt.Sprintf("trustvian_schema_version=%d", postgres.SchemaVersion)
+
 const validManifest = `format=trustvian-postgres-backup
 format_version=1
 created_at=2026-09-17T04:00:00Z
@@ -681,7 +687,12 @@ func TestBackupRestorePreservesLearnedBehavior(t *testing.T) {
 	}
 
 	manifest, _ := os.ReadFile(filepath.Join(dir, "MANIFEST"))
-	for _, want := range []string{"format=trustvian-postgres-backup", "trustvian_schema_version=1", "trustvian_version=v0.0.0-test", "dump_format=custom"} {
+	for _, want := range []string{
+		"format=trustvian-postgres-backup",
+		currentSchemaManifestLine,
+		"trustvian_version=v0.0.0-test",
+		"dump_format=custom",
+	} {
 		if !bytes.Contains(manifest, []byte(want)) {
 			t.Errorf("MANIFEST lacks %q:\n%s", want, manifest)
 		}
@@ -970,7 +981,9 @@ func TestBackupRestoreFailClosed(t *testing.T) {
 		mismatched := copyBackup(t, good)
 		p := filepath.Join(mismatched, "MANIFEST")
 		data, _ := os.ReadFile(p)
-		mustWrite(t, p, bytes.Replace(data, []byte("trustvian_schema_version=1"), []byte("trustvian_schema_version=2"), 1))
+		mustWrite(t, p, bytes.Replace(data,
+			[]byte(currentSchemaManifestLine),
+			fmt.Appendf(nil, "trustvian_schema_version=%d", postgres.SchemaVersion+1), 1))
 		writeSums(t, mismatched, "trustvian.dump", "MANIFEST")
 
 		target := pg.createDatabase(t, "mism")
@@ -988,7 +1001,7 @@ func TestBackupRestoreFailClosed(t *testing.T) {
 		if got := pg.restore(t, good, target); got.code != 0 {
 			t.Fatalf("restore exit %d:\n%s", got.code, got.output)
 		}
-		pg.psql(t, target, "UPDATE trustvian_schema_version SET version = 2")
+		pg.psql(t, target, fmt.Sprintf("UPDATE trustvian_schema_version SET version = %d", postgres.SchemaVersion+1))
 
 		_, err := openStore(t, pg.dsnFor(target))
 		if !errors.Is(err, postgres.ErrSchemaVersionMismatch) {
@@ -1136,10 +1149,22 @@ func TestUpgradeFromPreviousReleasePreservesLearnedState(t *testing.T) {
 		t.Fatal("upgraded analysis equals cold-start analysis — the comparison is vacuous")
 	}
 
-	// 4. Binary-only downgrade on the SAME schema version: the old release
-	// still reads the database the new one has opened.
-	if got := mustCLI(oldBin, prod, "analyze", probes); got != preUpgrade {
-		t.Errorf("previous release analyzes differently after the upgrade touched its database:\n got:\n%s\nwant:\n%s", got, preUpgrade)
+	// 4. Binary-only downgrade, now that the upgrade crosses a schema
+	// version. Until task 051 both releases sat on schema version 1, so the
+	// old binary could still read a database the new one had opened and this
+	// step asserted exactly that. Learning scopes moved the schema to
+	// version 2, and the old binary must now refuse it.
+	//
+	// That refusal is the feature, not a regression: `v0.8.0` cannot see the
+	// `scope` column, so proceeding would mean reading a table whose row
+	// identity it does not understand. Asserting it here is what keeps step 6
+	// honest — restoring the pre-upgrade backup is the *only* rollback path
+	// across this change, which is why that backup is mandatory rather than
+	// advisory (see docs/operations.md § Upgrading into v1.0).
+	if got := cli(oldBin, prod, "analyze", probes); got.code == 0 {
+		t.Errorf("previous release accepted a database upgraded past its schema version:\n%s", got.output)
+	} else if !strings.Contains(got.output, "schema version mismatch") {
+		t.Errorf("previous release failed for the wrong reason: exit %d:\n%s", got.code, got.output)
 	}
 
 	// 5. The new release keeps learning on top of the old state.
@@ -1167,7 +1192,7 @@ func TestUpgradeFromPreviousReleasePreservesLearnedState(t *testing.T) {
 	if got := pg.restore(t, preUpgradeBackup, future); got.code != 0 {
 		t.Fatalf("restore exit %d:\n%s", got.code, got.output)
 	}
-	pg.psql(t, future, "UPDATE trustvian_schema_version SET version = 2")
+	pg.psql(t, future, fmt.Sprintf("UPDATE trustvian_schema_version SET version = %d", postgres.SchemaVersion+1))
 	for _, bin := range []string{oldBin, newBin} {
 		got := cli(bin, future, "analyze", probes)
 		if got.code == 0 || !strings.Contains(got.output, "schema version mismatch") {

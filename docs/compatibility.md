@@ -38,7 +38,7 @@ here and in its own documentation.
 | `event.Event` and its field shapes | STABLE | Fields are not removed, renamed, or redefined | New optional fields whose zero value means "unset" | Major |
 | `Result` and its field shapes | STABLE | Field presence and meaning | New fields | Major |
 | `Engine`, `NewEngine`, `Analyze`, `Observe` signatures | STABLE | Signatures hold | New `Option` functions | Major |
-| `Option` functions | STABLE | Existing options keep working | Additional options | Major |
+| `Option` functions | STABLE | Existing options keep working; `WithLearningScope`'s default `""` is the pre-`v1.0` behavior | Additional options | Major |
 | `alert` package exports | STABLE | `Alert`, `Severity`, `Rule`, `Condition`, `Evaluate`, `Sink`, `WebhookSink` | Additive fields and options | Major |
 | `config` exported types and `Compile*` functions | STABLE | Existing documents keep compiling | New optional fields, new document types | Major |
 | `StableFeatures` (root package) | STABLE | Field shapes; handed to a `WithContextRisk` callback | New fields | Major |
@@ -55,7 +55,7 @@ here and in its own documentation.
 | Collector processor type name and config fields | OPERATIONALLY STABLE | `policy`, `storage`, `health` keys and their meaning | New optional keys | Major |
 | Policy rule semantics | STABLE | First-match-wins ordering; fail-closed to `BLOCK` on invalid policy | New condition fields; new decisions | Major |
 | PostgreSQL schema | OPERATIONALLY STABLE | Forward-only, version-gated; see [persisted state](#persisted-state) | Additive columns or tables with a schema-version bump | Major for a destructive change |
-| File-store snapshot format | OPERATIONALLY STABLE | Version-tagged; a `v1.x` binary reads what `v1.x` wrote | Additive fields | Major |
+| File-store snapshot format | OPERATIONALLY STABLE | Version-tagged; a `v1.x` binary reads what `v1.x` wrote | Additive fields that do not change what a record identifies | Major |
 | Persisted `Baseline` JSON | OPERATIONALLY STABLE | Field names are not removed or repurposed within `v1` | Additive fields | Major |
 | Metric names and types | OPERATIONALLY STABLE WITH DEPRECATION | Existing metrics keep their name, type, and meaning | New metrics | Deprecation, then a minor to remove |
 | Metric label keys | OPERATIONALLY STABLE | Label keys keep their meaning; cardinality stays bounded | New labels — **consumers must tolerate unknown label values** | Major to remove or rename a key |
@@ -268,14 +268,31 @@ on `Decision` needs a default branch.
 | Are migrations forward-only? | **Yes** |
 
 Storage carries its own version independently of the release number:
-PostgreSQL `SchemaVersion = 1`, file snapshot `version: 1`. **Any change
+PostgreSQL `SchemaVersion = 2`, file snapshot `version: 2`. **Any change
 to the stored `Baseline` shape bumps the storage schema version whatever
 the release number does.**
 
-A schema-version mismatch is deliberately fatal. It is not
-auto-upgraded, because silently rewriting a layout written by another
-version is how state gets corrupted. `ErrSchemaVersionMismatch` and
-`ErrAmbiguousSchemaState` exist to make the operator decide.
+Both moved from 1 to 2 for learning scopes
+([ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md)).
+Version 1 is read and upgraded in both backends, and every pre-scope
+baseline lands in the default scope with its learned state unchanged —
+nothing is invented and nothing moves between scopes.
+
+The bump was required even though the change looks additive, and the reason
+generalizes: `Scope` changes what a persisted record *identifies*. One
+version-2 snapshot can hold `(scope A, actor X, prod)` and `(scope B, actor
+X, prod)`; a version-1 reader ignores the unknown field, sees two baselines
+with the same key, and keeps whichever it loads last. **An "additive field"
+that can make two distinct logical identities look like one is not
+additive**, and a version that only *might* be misread is treated as one
+that will be.
+
+An unrecognized version is still fatal and is not auto-upgraded, because
+silently rewriting a layout written by another version is how state gets
+corrupted. `ErrSchemaVersionMismatch` and `ErrAmbiguousSchemaState` exist to
+make the operator decide. Downgrade is not supported: an older binary
+refuses version-2 state rather than collapsing scopes, which is the intended
+outcome — recovery is restoring a pre-upgrade backup.
 
 One consequence of bounded fingerprint admission
 ([ADR 0019](adr/0019-bounded-fingerprint-admission.md)) belongs here: a
@@ -361,6 +378,8 @@ users feel.
 | A new signal enabled by default | Breaking semantic change | Major |
 | A documented default threshold or weight changing | Compatible tuning, if called out in CHANGELOG | Minor |
 | Learning eligibility changing which decisions train the baseline | Breaking semantic change | Major |
+| `Engine.Observe` reporting `learned` more accurately for the same input | Bug fix — it reported learning that did not happen | Minor, called out in CHANGELOG |
+| Learned-state identity gaining a dimension whose default preserves existing lookups | Additive, with a storage-version bump | Minor |
 | Fail-closed behavior becoming less strict | Never permitted without a major, and only with explicit security review | Major |
 | `Event.Validate()` rejecting input it previously accepted | Breaking for a producer that sent it | Major, unless the input could not be processed correctly in the first place |
 

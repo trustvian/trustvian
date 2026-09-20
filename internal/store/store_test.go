@@ -46,7 +46,7 @@ func TestInMemoryObserveThenGet(t *testing.T) {
 	fp := testFingerprint()
 	ctx := context.Background()
 
-	observed, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{HasLatency: true, Latency: 10 * time.Millisecond}, time.Now())
+	observed, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{HasLatency: true, Latency: 10 * time.Millisecond}, time.Now())
 	if err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
@@ -68,13 +68,13 @@ func TestInMemoryGetSnapshotUnaffectedByLaterObserve(t *testing.T) {
 	fp := testFingerprint()
 	ctx := context.Background()
 
-	if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 
 	snapshot, _ := s.Get(ctx, testKey)
 
-	if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 
@@ -97,7 +97,7 @@ func TestInMemoryObserveConcurrentSameKey(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range perGoroutine {
-				if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+				if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 					t.Errorf("Observe() error = %v", err)
 				}
 			}
@@ -127,7 +127,7 @@ func TestInMemoryObserveConcurrentDistinctKeys(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			key := baseline.Key{ActorID: fmt.Sprintf("actor-%d", i), Environment: "production"}
-			if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+			if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 				t.Errorf("Observe() error = %v", err)
 			}
 		}(i)
@@ -151,7 +151,7 @@ func TestInMemoryFreezeMakesObserveANoOp(t *testing.T) {
 	fp := testFingerprint()
 	ctx := context.Background()
 
-	if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 
@@ -161,7 +161,7 @@ func TestInMemoryFreezeMakesObserveANoOp(t *testing.T) {
 	}
 
 	before, _ := s.Get(ctx, testKey)
-	got, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now())
+	got, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now())
 	if err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
@@ -186,7 +186,7 @@ func TestInMemoryUnfreezeResumesLearning(t *testing.T) {
 	ctx := context.Background()
 
 	s.Freeze(ctx, testKey)
-	if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 	if b, _ := s.Get(ctx, testKey); b.Fingerprints[fp.ID].Count != 0 {
@@ -197,7 +197,7 @@ func TestInMemoryUnfreezeResumesLearning(t *testing.T) {
 	if s.IsFrozen(ctx, testKey) {
 		t.Fatalf("IsFrozen() = true after Unfreeze()")
 	}
-	if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 	if b, _ := s.Get(ctx, testKey); b.Fingerprints[fp.ID].Count != 1 {
@@ -222,7 +222,7 @@ func TestInMemoryFreezeIsPerKey(t *testing.T) {
 
 	s.Freeze(ctx, testKey)
 
-	if _, err := s.Observe(ctx, otherKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+	if _, _, err := s.Observe(ctx, otherKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 	if b, _ := s.Get(ctx, otherKey); b.Fingerprints[fp.ID].Count != 1 {
@@ -274,10 +274,10 @@ func TestInMemoryObserveConcurrentTransitionTracking(t *testing.T) {
 				Environment:       "production",
 			})
 			now := time.Now()
-			if _, err := s.Observe(ctx, testKey, pred, features.VolatileFeatures{}, now); err != nil {
+			if _, _, err := s.Observe(ctx, testKey, pred, features.VolatileFeatures{}, now); err != nil {
 				t.Errorf("Observe(predecessor) error = %v", err)
 			}
-			if _, err := s.Observe(ctx, testKey, dest, features.VolatileFeatures{}, now.Add(time.Millisecond)); err != nil {
+			if _, _, err := s.Observe(ctx, testKey, dest, features.VolatileFeatures{}, now.Add(time.Millisecond)); err != nil {
 				t.Errorf("Observe(destination) error = %v", err)
 			}
 		}(i)
@@ -351,13 +351,13 @@ func TestInMemoryObserveConcurrentTrigramTracking(t *testing.T) {
 				OperationName: fmt.Sprintf("grandparent-%d", i), TargetName: "customer-db", Environment: "production",
 			})
 			now := time.Now()
-			if _, err := s.Observe(ctx, testKey, grandparent, features.VolatileFeatures{}, now); err != nil {
+			if _, _, err := s.Observe(ctx, testKey, grandparent, features.VolatileFeatures{}, now); err != nil {
 				t.Errorf("Observe(grandparent) error = %v", err)
 			}
-			if _, err := s.Observe(ctx, testKey, predecessor, features.VolatileFeatures{}, now.Add(time.Millisecond)); err != nil {
+			if _, _, err := s.Observe(ctx, testKey, predecessor, features.VolatileFeatures{}, now.Add(time.Millisecond)); err != nil {
 				t.Errorf("Observe(predecessor) error = %v", err)
 			}
-			if _, err := s.Observe(ctx, testKey, dest, features.VolatileFeatures{}, now.Add(2*time.Millisecond)); err != nil {
+			if _, _, err := s.Observe(ctx, testKey, dest, features.VolatileFeatures{}, now.Add(2*time.Millisecond)); err != nil {
 				t.Errorf("Observe(dest) error = %v", err)
 			}
 		}(i)

@@ -46,7 +46,7 @@ func TestFileStoreObserveThenGet(t *testing.T) {
 	fp := testFingerprint()
 	ctx := context.Background()
 
-	observed, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{HasLatency: true, Latency: 10 * time.Millisecond}, time.Now())
+	observed, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{HasLatency: true, Latency: 10 * time.Millisecond}, time.Now())
 	if err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
@@ -68,12 +68,12 @@ func TestFileStoreGetSnapshotUnaffectedByLaterObserve(t *testing.T) {
 	fp := testFingerprint()
 	ctx := context.Background()
 
-	if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 	snapshot, _ := s.Get(ctx, testKey)
 
-	if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 
@@ -96,7 +96,7 @@ func TestFileStoreObserveConcurrentSameKey(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for range perGoroutine {
-				if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+				if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 					t.Errorf("Observe() error = %v", err)
 				}
 			}
@@ -126,7 +126,7 @@ func TestFileStoreObserveConcurrentDistinctKeys(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			key := baseline.Key{ActorID: fmt.Sprintf("actor-%d", i), Environment: "production"}
-			if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+			if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 				t.Errorf("Observe() error = %v", err)
 			}
 		}(i)
@@ -155,7 +155,7 @@ func TestFileStoreSurvivesRestart(t *testing.T) {
 		t.Fatalf("NewFileStore() error = %v", err)
 	}
 	for range 5 {
-		if _, err := first.Observe(ctx, testKey, fp, features.VolatileFeatures{HasLatency: true, Latency: 20 * time.Millisecond}, time.Now()); err != nil {
+		if _, _, err := first.Observe(ctx, testKey, fp, features.VolatileFeatures{HasLatency: true, Latency: 20 * time.Millisecond}, time.Now()); err != nil {
 			t.Fatalf("Observe() error = %v", err)
 		}
 	}
@@ -204,15 +204,15 @@ func TestFileStoreSurvivesRestartWithTrigramState(t *testing.T) {
 	}
 	now := time.Now()
 	for range 3 {
-		if _, err := first.Observe(ctx, testKey, fpA, features.VolatileFeatures{}, now); err != nil {
+		if _, _, err := first.Observe(ctx, testKey, fpA, features.VolatileFeatures{}, now); err != nil {
 			t.Fatalf("Observe(A) error = %v", err)
 		}
 		now = now.Add(time.Second)
-		if _, err := first.Observe(ctx, testKey, fpB, features.VolatileFeatures{}, now); err != nil {
+		if _, _, err := first.Observe(ctx, testKey, fpB, features.VolatileFeatures{}, now); err != nil {
 			t.Fatalf("Observe(B) error = %v", err)
 		}
 		now = now.Add(time.Second)
-		if _, err := first.Observe(ctx, testKey, fpC, features.VolatileFeatures{}, now); err != nil {
+		if _, _, err := first.Observe(ctx, testKey, fpC, features.VolatileFeatures{}, now); err != nil {
 			t.Fatalf("Observe(C) error = %v", err)
 		}
 		now = now.Add(time.Second)
@@ -259,7 +259,7 @@ func TestFileStoreWritesAreAtomic(t *testing.T) {
 	fp := testFingerprint()
 	ctx := context.Background()
 
-	if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 
@@ -282,7 +282,7 @@ func TestFileStoreFreezeMakesObserveANoOp(t *testing.T) {
 	fp := testFingerprint()
 	ctx := context.Background()
 
-	if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 	s.Freeze(ctx, testKey)
@@ -290,7 +290,7 @@ func TestFileStoreFreezeMakesObserveANoOp(t *testing.T) {
 		t.Fatalf("IsFrozen() = false after Freeze()")
 	}
 
-	if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 	b, _ := s.Get(ctx, testKey)
@@ -308,7 +308,7 @@ func TestFileStoreFreezeStateNotPersisted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFileStore() error = %v", err)
 	}
-	if _, err := first.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+	if _, _, err := first.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 	first.Freeze(ctx, testKey)
@@ -321,7 +321,7 @@ func TestFileStoreFreezeStateNotPersisted(t *testing.T) {
 		t.Fatalf("IsFrozen() = true after restart, want freeze state to reset (documented as not persisted)")
 	}
 	// And learning should work again post-restart.
-	if _, err := second.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
+	if _, _, err := second.Observe(ctx, testKey, fp, features.VolatileFeatures{}, time.Now()); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 	b, _ := second.Get(ctx, testKey)

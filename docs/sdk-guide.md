@@ -258,8 +258,48 @@ trustvian.NewEngine(
 	trustvian.WithAnomalyConfig(anomalyCfg), // config.CompileAnomaly
 	trustvian.WithTrustConfig(trustCfg),     // config.CompileTrust
 	trustvian.WithContextRisk(contextRisk),  // a func(trustvian.StableFeatures) float64
+	trustvian.WithLearningScope("reference"),// partitions learned state
 )
 ```
+
+### `WithLearningScope`
+
+By default every Engine shares one learned history per actor and
+environment. `WithLearningScope` partitions it:
+
+```go
+a := trustvian.NewEngine(trustvian.WithStore(store), trustvian.WithLearningScope("candidate-a"))
+b := trustvian.NewEngine(trustvian.WithStore(store), trustvian.WithLearningScope("candidate-b"))
+```
+
+Over one store, `a` and `b` never share a `Baseline` — even for the same
+actor in the same environment. Each accumulates its own history and each
+starts cold. Two engines given the *same* scope share one profile; the scope
+is the identity, not the Engine instance.
+
+Use it wherever learned history must stay separate under one actor identity:
+replaying a corpus without disturbing production learning, holding a
+reference profile beside a live one, or evaluating two builds of the same
+agent.
+
+The default is `""`. Omitting the option changes nothing — that is the scope
+every Engine used before this option existed, and where every baseline
+persisted before it already lives.
+
+Three properties are worth knowing:
+
+- **A scope is opaque.** Trustvian never parses it. `"candidate/9f3c1a"` is
+  fine, and means nothing to the engine.
+- **It is not behavioral identity.** The same event under two scopes
+  produces the same `Fingerprint.ID` and the same `StableFeatures`. Only the
+  learned evidence differs.
+- **It cannot come from an event.** Scope is Engine configuration and is
+  never derived from `SessionID`, `TraceID`, or `Attributes`, so an event
+  producer cannot choose which profile it trains. See
+  [SECURITY.md § learning-scope selection](SECURITY.md#learning-scope-selection).
+
+Each scoped baseline carries its own independent fingerprint capacity:
+filling one scope does not consume another's.
 
 ### Configuring from outside the module
 

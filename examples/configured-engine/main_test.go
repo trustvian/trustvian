@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -185,5 +186,96 @@ func TestBuiltInPersistenceNeedsNoCustomStore(t *testing.T) {
 			}
 			_ = trustvian.NewEngine(trustvian.WithStore(store))
 		})
+	}
+}
+
+// TestExternalConsumerCanIsolateLearningScopes is task 051's boundary proof.
+// A separate module configures two learning scopes over one shared store —
+// the exact shape a platform uses to evaluate two candidates under one actor
+// identity — and gets independent learned history without naming an internal
+// type.
+//
+// The store is built through the public config facade, because supplying a
+// custom Store implementation is not a supported extension point. That is
+// the whole point of running this from outside the module: if the public
+// path could not express this, the capability would not exist for anyone.
+func TestExternalConsumerCanIsolateLearningScopes(t *testing.T) {
+	shared, err := config.CompileStorage(config.StorageConfig{
+		Version: config.StorageSchemaVersionV1,
+		Type:    config.StorageTypeMemory,
+	})
+	if err != nil {
+		t.Fatalf("CompileStorage() error = %v", err)
+	}
+
+	newScoped := func(scope string) *trustvian.Engine {
+		return trustvian.NewEngine(
+			trustvian.WithStore(shared),
+			trustvian.WithLearningScope(scope),
+		)
+	}
+
+	ctx := context.Background()
+	clock := time.Date(2026, 5, 4, 9, 0, 0, 0, time.UTC)
+	nextEvent := func(id string) event.Event {
+		clock = clock.Add(90 * time.Second)
+		ev := secretsRead()
+		ev.ID = id
+		ev.Timestamp = clock
+		return ev
+	}
+
+	// 1. Train scope A.
+	trained := newScoped("candidate-a")
+	for i := range 20 {
+		res, err := trained.Analyze(ctx, nextEvent(fmt.Sprintf("evt-a-%d", i)))
+		if err != nil {
+			t.Fatalf("Analyze() error = %v", err)
+		}
+		learned, err := trained.Observe(ctx, res)
+		if err != nil {
+			t.Fatalf("Observe() error = %v", err)
+		}
+		if !learned {
+			t.Fatalf("Observe() learned = false for observation %d", i)
+		}
+	}
+
+	matured, err := trained.Analyze(ctx, nextEvent("evt-a-final"))
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+
+	// 2. The same event in scope B sees no history at all.
+	fresh, err := newScoped("candidate-b").Analyze(ctx, nextEvent("evt-b-1"))
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if fresh.Anomaly.Confidence != 0 {
+		t.Errorf("scope B confidence = %v, want 0 — the scopes share learned state", fresh.Anomaly.Confidence)
+	}
+	if matured.Anomaly.Confidence <= fresh.Anomaly.Confidence {
+		t.Fatalf("scope A confidence %v is not above scope B's %v", matured.Anomaly.Confidence, fresh.Anomaly.Confidence)
+	}
+
+	// 3. Behavioral identity is untouched: same event, same fingerprint,
+	//    whatever the scope. Isolating learning by changing what the
+	//    behavior *is* would be the wrong fix, and this is what rules it out.
+	if matured.Fingerprint.ID != fresh.Fingerprint.ID {
+		t.Fatalf("FingerprintID differs across scopes (%q vs %q): scope has entered behavioral identity",
+			matured.Fingerprint.ID, fresh.Fingerprint.ID)
+	}
+	if matured.DecisionRecord().Behavior != fresh.DecisionRecord().Behavior {
+		t.Error("StableFeatures differ across scopes")
+	}
+
+	// 4. A third engine reusing scope A's name finds scope A's history —
+	//    the scope is the identity, not the Engine instance.
+	rejoined, err := newScoped("candidate-a").Analyze(ctx, nextEvent("evt-a-rejoin"))
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if rejoined.Anomaly.Confidence == 0 {
+		t.Error("a new engine with scope A saw a cold baseline")
 	}
 }

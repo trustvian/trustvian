@@ -98,7 +98,7 @@ func TestObserveFailureLeavesPreviousBaselineIntact(t *testing.T) {
 	const committed = 5
 	now := testTime
 	for range committed {
-		if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
+		if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
 			t.Fatalf("Observe() error = %v", err)
 		}
 		now = now.Add(time.Second)
@@ -129,7 +129,7 @@ func TestObserveFailureLeavesPreviousBaselineIntact(t *testing.T) {
 		t.Fatalf("create trigger: %v", err)
 	}
 
-	if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err == nil {
+	if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err == nil {
 		t.Fatal("Observe() error = nil with a failing UPDATE trigger, want an error")
 	}
 
@@ -154,7 +154,7 @@ func TestObserveFailureLeavesPreviousBaselineIntact(t *testing.T) {
 
 	// And the store is still usable afterwards: a failed transaction must
 	// not poison the pool.
-	if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
+	if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
 		t.Errorf("Observe() error = %v after a recovered failure, want nil", err)
 	}
 	if got := observationCount(t, s, key); got != committed+1 {
@@ -193,7 +193,7 @@ func TestCorruptStoredBaselineFailsExplicitlyAndIsNotReset(t *testing.T) {
 	fp := testFingerprint()
 	key := hardeningKey("corrupt-actor")
 
-	if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
+	if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 
@@ -225,7 +225,7 @@ func TestCorruptStoredBaselineFailsExplicitlyAndIsNotReset(t *testing.T) {
 				t.Fatalf("inject corrupt payload: %v", err)
 			}
 
-			_, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime)
+			_, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime)
 			if !errors.Is(err, postgres.ErrCorruptState) {
 				t.Errorf("Observe() err = %v, want ErrCorruptState", err)
 			}
@@ -299,7 +299,7 @@ func TestObserveSurfacesContextErrors(t *testing.T) {
 			ctx, cancel := tt.ctx()
 			defer cancel()
 
-			_, err := s.Observe(ctx, hardeningKey("ctx-"+tt.name), fp, features.VolatileFeatures{}, testTime)
+			_, _, err := s.Observe(ctx, hardeningKey("ctx-"+tt.name), fp, features.VolatileFeatures{}, testTime)
 			if err == nil {
 				t.Fatal("Observe() error = nil, want an error")
 			}
@@ -335,7 +335,7 @@ func TestObserveWaitingOnRowLockIsCancellable(t *testing.T) {
 	key := hardeningKey("lock-wait-actor")
 
 	// Materialize the row so the holder has something to lock.
-	if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
+	if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 	countBefore := observationCount(t, s, key)
@@ -370,7 +370,7 @@ func TestObserveWaitingOnRowLockIsCancellable(t *testing.T) {
 	done := make(chan result, 1)
 	go func() {
 		start := time.Now()
-		_, err := s.Observe(waiterCtx, key, fp, features.VolatileFeatures{}, testTime)
+		_, _, err := s.Observe(waiterCtx, key, fp, features.VolatileFeatures{}, testTime)
 		done <- result{err: err, elapsed: time.Since(start)}
 	}()
 
@@ -465,7 +465,7 @@ func assertStoreStillServes(t *testing.T, s *postgres.Store, key baseline.Key) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if _, err := s.Observe(ctx, key, testFingerprint(), features.VolatileFeatures{}, testTime); err != nil {
+	if _, _, err := s.Observe(ctx, key, testFingerprint(), features.VolatileFeatures{}, testTime); err != nil {
 		t.Errorf("Observe() error = %v after earlier operations completed — a connection was not returned to the pool", err)
 	}
 }
@@ -504,7 +504,7 @@ func TestConnectionsAreReleasedOnEveryPath(t *testing.T) {
 		s, _ := singleConnStore(t, dsn)
 		key := hardeningKey("release-ok")
 		for range 10 {
-			if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
+			if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
 				t.Fatalf("Observe() error = %v", err)
 			}
 			s.Get(ctx, key)
@@ -517,7 +517,7 @@ func TestConnectionsAreReleasedOnEveryPath(t *testing.T) {
 		for range 10 {
 			cctx, cancel := context.WithCancel(ctx)
 			cancel()
-			_, _ = s.Observe(cctx, hardeningKey("release-cancelled"), fp, features.VolatileFeatures{}, testTime)
+			_, _, _ = s.Observe(cctx, hardeningKey("release-cancelled"), fp, features.VolatileFeatures{}, testTime)
 		}
 		assertStoreStillServes(t, s, hardeningKey("release-cancelled"))
 	})
@@ -535,13 +535,13 @@ func TestConnectionsAreReleasedOnEveryPath(t *testing.T) {
 	t.Run("Observe failing on corrupt state", func(t *testing.T) {
 		s, iso := singleConnStore(t, dsn)
 		key := hardeningKey("release-corrupt")
-		if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
+		if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
 			t.Fatalf("Observe() error = %v", err)
 		}
 		corruptRow(t, iso, key)
 
 		for range 10 {
-			if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); !errors.Is(err, postgres.ErrCorruptState) {
+			if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); !errors.Is(err, postgres.ErrCorruptState) {
 				t.Fatalf("Observe() err = %v, want ErrCorruptState", err)
 			}
 			s.Get(ctx, key)
@@ -553,7 +553,7 @@ func TestConnectionsAreReleasedOnEveryPath(t *testing.T) {
 	t.Run("Observe failing on a rolled-back transaction", func(t *testing.T) {
 		s, iso := singleConnStore(t, dsn)
 		key := hardeningKey("release-rollback")
-		if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
+		if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
 			t.Fatalf("Observe() error = %v", err)
 		}
 
@@ -578,7 +578,7 @@ func TestConnectionsAreReleasedOnEveryPath(t *testing.T) {
 		}
 
 		for range 10 {
-			if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err == nil {
+			if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err == nil {
 				t.Fatal("Observe() error = nil with a failing trigger, want an error")
 			}
 		}
@@ -632,7 +632,7 @@ func TestPoolExhaustionIsBoundedAndContextAware(t *testing.T) {
 	fp := testFingerprint()
 	key := hardeningKey("pool-actor")
 
-	if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
+	if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 	countBefore := observationCount(t, s, key)
@@ -665,7 +665,7 @@ func TestPoolExhaustionIsBoundedAndContextAware(t *testing.T) {
 	go func() {
 		defer close(occupierDone)
 		close(occupied)
-		_, _ = s.Observe(occupierCtx, key, fp, features.VolatileFeatures{}, testTime)
+		_, _, _ = s.Observe(occupierCtx, key, fp, features.VolatileFeatures{}, testTime)
 	}()
 	<-occupied
 	waitForBlockedLock(t, iso) // the database confirms the connection is pinned
@@ -684,7 +684,7 @@ func TestPoolExhaustionIsBoundedAndContextAware(t *testing.T) {
 	waitCtx, cancelWait := context.WithTimeout(ctx, deadline)
 	defer cancelWait()
 
-	_, err = s.Observe(waitCtx, hardeningKey("pool-other-actor"), fp, features.VolatileFeatures{}, testTime)
+	_, _, err = s.Observe(waitCtx, hardeningKey("pool-other-actor"), fp, features.VolatileFeatures{}, testTime)
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -729,7 +729,7 @@ func TestCloseSemantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore() error = %v", err)
 	}
-	if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
+	if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 
@@ -742,7 +742,7 @@ func TestCloseSemantics(t *testing.T) {
 	// Operations after Close must fail rather than silently appearing to
 	// work. A closed store that accepted writes would be the worst
 	// outcome available: the caller would believe state was persisted.
-	if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err == nil {
+	if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err == nil {
 		t.Error("Observe() error = nil after Close(), want an error")
 	}
 	if _, ok := s.Get(ctx, key); ok {
@@ -806,7 +806,7 @@ func TestConnectionLossDuringOperationFailsExplicitly(t *testing.T) {
 	const committed = 4
 	now := testTime
 	for range committed {
-		if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
+		if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
 			t.Fatalf("Observe() error = %v", err)
 		}
 		now = now.Add(time.Second)
@@ -836,7 +836,7 @@ func TestConnectionLossDuringOperationFailsExplicitly(t *testing.T) {
 
 	acknowledged := 0
 	for range 3 {
-		_, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now)
+		_, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now)
 		if err == nil {
 			acknowledged++
 			now = now.Add(time.Second)
@@ -946,7 +946,7 @@ func TestMigrateSchemaVersionCompatibility(t *testing.T) {
 				t.Fatalf("initial NewStore() error = %v", err)
 			}
 			if tt.seedBaseline {
-				if _, err := first.Observe(ctx, hardeningKey("schema-actor"), testFingerprint(), features.VolatileFeatures{}, testTime); err != nil {
+				if _, _, err := first.Observe(ctx, hardeningKey("schema-actor"), testFingerprint(), features.VolatileFeatures{}, testTime); err != nil {
 					t.Fatalf("seed Observe() error = %v", err)
 				}
 			}
@@ -1019,7 +1019,7 @@ func TestMigratePreservesExistingBaselineData(t *testing.T) {
 	now := testTime
 	for _, key := range keys {
 		for range observations {
-			if _, err := first.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
+			if _, _, err := first.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
 				t.Fatalf("Observe() error = %v", err)
 			}
 			now = now.Add(time.Second)
@@ -1231,7 +1231,7 @@ func TestLargeBoundedBaselineRoundTrips(t *testing.T) {
 	now := testTime
 	for round := range 3 {
 		for i, fp := range fps {
-			if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{
+			if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{
 				Timestamp:  now,
 				Latency:    time.Duration(10+round+i%7) * time.Millisecond,
 				HasLatency: true,

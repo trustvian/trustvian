@@ -190,7 +190,7 @@ func TestConcurrentFirstObservationRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start // maximize the chance all writers race on the absent row
-			if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
+			if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err != nil {
 				errs <- err
 			}
 		}()
@@ -244,7 +244,7 @@ func TestRestartDurabilityAcrossStoreInstances(t *testing.T) {
 	const observations = 7
 	now := testTime
 	for range observations {
-		if _, err := first.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
+		if _, _, err := first.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
 			t.Fatalf("Observe() error = %v", err)
 		}
 		now = now.Add(time.Second)
@@ -283,7 +283,7 @@ func TestObserveHonorsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled
 
-	if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err == nil {
+	if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, testTime); err == nil {
 		t.Fatal("Observe() error = nil for a cancelled context, want an error")
 	}
 
@@ -299,7 +299,7 @@ func TestGetHonorsContextCancellation(t *testing.T) {
 	fp := testFingerprint()
 	key := baseline.Key{ActorID: "cancel-get-actor", Environment: "production"}
 
-	if _, err := s.Observe(context.Background(), key, fp, features.VolatileFeatures{}, testTime); err != nil {
+	if _, _, err := s.Observe(context.Background(), key, fp, features.VolatileFeatures{}, testTime); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 
@@ -327,7 +327,7 @@ func TestInspectionColumnsArePopulated(t *testing.T) {
 	const observations = 4
 	now := testTime
 	for range observations {
-		if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
+		if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
 			t.Fatalf("Observe() error = %v", err)
 		}
 		now = now.Add(time.Second)
@@ -479,7 +479,7 @@ func TestDifferentKeysDoNotSerializeGlobally(t *testing.T) {
 			key := baseline.Key{ActorID: fmt.Sprintf("parallel-actor-%d", i), Environment: "production"}
 			now := testTime
 			for range observationsEach {
-				if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
+				if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, now); err != nil {
 					errs <- err
 					return
 				}

@@ -43,7 +43,7 @@ func matureBaseline(fp fingerprint.Fingerprint, count int, latencyMS float64) ba
 	b := baseline.New(testKey)
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for range count {
-		b = b.Observe(fp, features.VolatileFeatures{
+		b, _ = b.Observe(fp, features.VolatileFeatures{
 			HasLatency: true,
 			Latency:    time.Duration(latencyMS * float64(time.Millisecond)),
 		}, now)
@@ -185,7 +185,7 @@ func baselineWithStableInterval(fp fingerprint.Fingerprint, interval time.Durati
 	b := baseline.New(testKey)
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for range count {
-		b = b.Observe(fp, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fp, features.VolatileFeatures{}, now)
 		now = now.Add(interval)
 	}
 	return b
@@ -209,7 +209,7 @@ func baselineWithJitteredInterval(fp fingerprint.Fingerprint, nominal time.Durat
 	b := baseline.New(testKey)
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i := range count {
-		b = b.Observe(fp, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fp, features.VolatileFeatures{}, now)
 		now = now.Add(nominal + time.Duration(jitterPatternMS[i%len(jitterPatternMS)])*time.Millisecond)
 	}
 	return b
@@ -417,7 +417,7 @@ func TestScoreErrorAgainstCleanBaselineIsAnomalous(t *testing.T) {
 	b := baseline.New(testKey)
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for range 50 {
-		b = b.Observe(fp, features.VolatileFeatures{Error: false}, now)
+		b, _ = b.Observe(fp, features.VolatileFeatures{Error: false}, now)
 		now = now.Add(matureBaselineInterval)
 	}
 
@@ -441,7 +441,7 @@ func TestScoreErrorAgainstErrorProneBaselineIsNotAnomalous(t *testing.T) {
 	b := baseline.New(testKey)
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for range 50 {
-		b = b.Observe(fp, features.VolatileFeatures{Error: true}, now)
+		b, _ = b.Observe(fp, features.VolatileFeatures{Error: true}, now)
 		now = now.Add(matureBaselineInterval)
 	}
 
@@ -577,7 +577,7 @@ func baselineAtHour(fp fingerprint.Fingerprint, hour, count int) baseline.Baseli
 	b := baseline.New(testKey)
 	day := time.Date(2026, 1, 1, hour, 0, 0, 0, time.UTC)
 	for i := range count {
-		b = b.Observe(fp, features.VolatileFeatures{}, day.AddDate(0, 0, i))
+		b, _ = b.Observe(fp, features.VolatileFeatures{}, day.AddDate(0, 0, i))
 	}
 	return b
 }
@@ -590,7 +590,7 @@ func baselineUniformAcrossHours(fp fingerprint.Fingerprint, days int) baseline.B
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for day := range days {
 		for hour := range 24 {
-			b = b.Observe(fp, features.VolatileFeatures{}, start.AddDate(0, 0, day).Add(time.Duration(hour)*time.Hour))
+			b, _ = b.Observe(fp, features.VolatileFeatures{}, start.AddDate(0, 0, day).Add(time.Duration(hour)*time.Hour))
 		}
 	}
 	return b
@@ -753,13 +753,13 @@ func TestScoreTransitionDeviation(t *testing.T) {
 		b := baseline.New(testKey)
 		now := base
 		for range 20 {
-			b = b.Observe(fpRead, features.VolatileFeatures{}, now)
+			b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
 			now = now.Add(time.Second)
-			b = b.Observe(fpUpdate, features.VolatileFeatures{}, now)
+			b, _ = b.Observe(fpUpdate, features.VolatileFeatures{}, now)
 			now = now.Add(time.Second)
 		}
 		// One more read, then score the next update as the event under test.
-		b = b.Observe(fpRead, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 
 		feat := features.Features{Stable: fpUpdate.Stable, Volatile: features.VolatileFeatures{Timestamp: now}}
@@ -776,12 +776,12 @@ func TestScoreTransitionDeviation(t *testing.T) {
 		b := baseline.New(testKey)
 		now := base
 		for range 20 {
-			b = b.Observe(fpRead, features.VolatileFeatures{}, now)
+			b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
 			now = now.Add(time.Second)
-			b = b.Observe(fpUpdate, features.VolatileFeatures{}, now)
+			b, _ = b.Observe(fpUpdate, features.VolatileFeatures{}, now)
 			now = now.Add(time.Second)
 		}
-		b = b.Observe(fpRead, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 
 		feat := features.Features{Stable: fpDelete.Stable, Volatile: features.VolatileFeatures{Timestamp: now}}
@@ -804,7 +804,7 @@ func TestScoreTransitionDeviation(t *testing.T) {
 
 	t.Run("out-of-order event does not fire", func(t *testing.T) {
 		b := baseline.New(testKey)
-		b = b.Observe(fpRead, features.VolatileFeatures{}, base.Add(2*time.Second))
+		b, _ = b.Observe(fpRead, features.VolatileFeatures{}, base.Add(2*time.Second))
 
 		// A backdated event, timestamped before fpRead's own arrival,
 		// does not validly follow it — see baseline.Baseline.Observe's
@@ -842,7 +842,7 @@ func TestScoreDelegationDeviation(t *testing.T) {
 		b := baseline.New(testKey)
 		now := base
 		for range 20 {
-			b = b.Observe(fp, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now)
+			b, _ = b.Observe(fp, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now)
 			now = now.Add(time.Second)
 		}
 
@@ -858,7 +858,7 @@ func TestScoreDelegationDeviation(t *testing.T) {
 		b := baseline.New(testKey)
 		now := base
 		for range 20 {
-			b = b.Observe(fp, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now)
+			b, _ = b.Observe(fp, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now)
 			now = now.Add(time.Second)
 		}
 
@@ -941,7 +941,7 @@ func TestScoreMatchesDocumentedNoisyOrFormulaWithDelegationSignal(t *testing.T) 
 	b := baseline.New(testKey)
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for range int(cfg.MinObservations) + 10 {
-		b = b.Observe(fp, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now)
+		b, _ = b.Observe(fp, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now)
 		now = now.Add(matureBaselineInterval)
 	}
 
@@ -977,7 +977,7 @@ func TestScoreMatchesDocumentedNoisyOrFormulaWithTransitionSignal(t *testing.T) 
 	// Overwrite the predecessor with fpRead just before the event under
 	// test, at a time strictly after the baseline's own last write.
 	last := now.Add(time.Duration(int(cfg.MinObservations)+10) * matureBaselineInterval)
-	b = b.Observe(fpRead, features.VolatileFeatures{}, last)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, last)
 
 	eventTime := last.Add(matureBaselineInterval)
 	feat := features.Features{Stable: fpDelete.Stable, Volatile: features.VolatileFeatures{Timestamp: eventTime}}
@@ -1013,13 +1013,13 @@ func transitionRarityBaseline(predecessor fingerprint.Fingerprint, dests []finge
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i, dest := range dests {
 		for range counts[i] {
-			b = b.Observe(predecessor, features.VolatileFeatures{}, now)
+			b, _ = b.Observe(predecessor, features.VolatileFeatures{}, now)
 			now = now.Add(time.Second)
-			b = b.Observe(dest, features.VolatileFeatures{}, now)
+			b, _ = b.Observe(dest, features.VolatileFeatures{}, now)
 			now = now.Add(time.Second)
 		}
 	}
-	b = b.Observe(predecessor, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(predecessor, features.VolatileFeatures{}, now)
 	return b
 }
 
@@ -1297,17 +1297,17 @@ func ngramBaseline(grandparent, predecessor fingerprint.Fingerprint, dests []fin
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i, dest := range dests {
 		for range counts[i] {
-			b = b.Observe(grandparent, features.VolatileFeatures{}, now)
+			b, _ = b.Observe(grandparent, features.VolatileFeatures{}, now)
 			now = now.Add(time.Second)
-			b = b.Observe(predecessor, features.VolatileFeatures{}, now)
+			b, _ = b.Observe(predecessor, features.VolatileFeatures{}, now)
 			now = now.Add(time.Second)
-			b = b.Observe(dest, features.VolatileFeatures{}, now)
+			b, _ = b.Observe(dest, features.VolatileFeatures{}, now)
 			now = now.Add(time.Second)
 		}
 	}
-	b = b.Observe(grandparent, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(grandparent, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
-	b = b.Observe(predecessor, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(predecessor, features.VolatileFeatures{}, now)
 	return b
 }
 
@@ -1341,7 +1341,7 @@ func TestScoreNoNGramSignalBeforeTrigramHistoryExists(t *testing.T) {
 	if hasSignal(got1.Contributors, "ngram_deviation") || hasSignal(got1.Contributors, "ngram_rarity") {
 		t.Fatalf("event #1: Contributors = %+v, want no ngram signal (no history)", got1.Contributors)
 	}
-	b = b.Observe(fpAuth, features.VolatileFeatures{}, base)
+	b, _ = b.Observe(fpAuth, features.VolatileFeatures{}, base)
 
 	// Event #2: one prior observation — a predecessor exists, but no
 	// grandparent yet, so still insufficient for a 3-gram.
@@ -1351,7 +1351,7 @@ func TestScoreNoNGramSignalBeforeTrigramHistoryExists(t *testing.T) {
 	if hasSignal(got2.Contributors, "ngram_deviation") || hasSignal(got2.Contributors, "ngram_rarity") {
 		t.Fatalf("event #2: Contributors = %+v, want no ngram signal (only one prior observation)", got2.Contributors)
 	}
-	b = b.Observe(fpRead, features.VolatileFeatures{}, t2)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, t2)
 
 	// Event #3: both a predecessor and a grandparent now exist — the
 	// first complete 3-gram.
@@ -1467,11 +1467,11 @@ func TestScoreNGramDeviationDetectsNovelTrigramDespiteFamiliarPairwiseTransition
 	// Make authenticate -> read_customer familiar, via
 	// authenticate -> read_customer -> other_end (never export_customer).
 	for range 20 {
-		b = b.Observe(fpAuth, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fpAuth, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		b = b.Observe(fpRead, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		b = b.Observe(fpOtherEnd, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fpOtherEnd, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
 
@@ -1479,20 +1479,20 @@ func TestScoreNGramDeviationDetectsNovelTrigramDespiteFamiliarPairwiseTransition
 	// other_start -> read_customer -> export_customer (never
 	// preceded by authenticate).
 	for range 20 {
-		b = b.Observe(fpOtherStart, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fpOtherStart, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		b = b.Observe(fpRead, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		b = b.Observe(fpExport, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fpExport, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
 
 	// Position the history window at (authenticate, read_customer) —
 	// the real sequence under test — without ever having observed
 	// export_customer as its continuation.
-	b = b.Observe(fpAuth, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpAuth, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
 
 	cfg := anomaly.DefaultConfig()

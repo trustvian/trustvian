@@ -47,11 +47,13 @@ as long as its own decision holds.
 | [0021](0021-public-stable-features-boundary.md) | A public stable-features view for the context-risk callback | Accepted |
 | [0022](0022-core-platform-boundary.md) | Core and platform are two layers, one direction | Accepted |
 | [0023](0023-interfaces-are-adapters.md) | Interfaces, transports, and stores are adapters over control-plane services | Accepted |
+| [0024](0024-learning-scope-is-a-baseline-key-dimension.md) | Learning scope is a baseline-key dimension, not behavioral identity | Accepted |
 
 No ADR is currently Superseded or Deprecated. Several later ADRs build on
 earlier ones — 0006 and 0018 on 0004's narrow port, 0007/0008/0017 on 0002's
 public-API test, 0013 on 0011's minimum-support floor, 0019 on the bounded-state
-mandate 0010/0011/0012/0016 established — and each cites the earlier decision as
+mandate 0010/0011/0012/0016 established, 0024 on the mechanism 0022 deliberately
+left open — and each cites the earlier decision as
 still governing rather than replacing it.
 
 ## Writing one

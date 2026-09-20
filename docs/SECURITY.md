@@ -208,6 +208,45 @@ the intended fix for the "every restart quietly forgets an attacker's
 prior flagged behavior" gap an in-memory-only store would otherwise
 leave.
 
+### Learning-scope selection
+
+**Threat:** an event producer chooses which learned behavioral history it
+trains — appending benign behavior to a profile a later policy decision
+depends on, or steering its own traffic into a fresh profile to escape an
+established baseline. Either is [baseline
+poisoning](#baseline-poisoning) reached by a different route: not by
+wearing down a profile, but by picking a different one.
+
+**Status: prevented structurally.** `v1.0`'s learning scope
+([ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md)) is
+`Engine` configuration, supplied once at construction through
+`trustvian.WithLearningScope`. There is no path from event content to
+`baseline.Key.Scope`:
+
+- `Event` has no scope field, and none is planned. An event describes an
+  observed action; a scope describes how one Engine organizes history.
+- No scope is derived from `Context.SessionID`, `Context.TraceID`,
+  `Context.DelegatedFrom`, or `Attributes` — explicitly ruled out in
+  [ADR 0022](adr/0022-core-platform-boundary.md) before the mechanism was
+  designed, and asserted by `TestEventContentCannotSelectScope` in
+  [`learning_scope_test.go`](../learning_scope_test.go), which submits
+  attacker-shaped events carrying `learning_scope`, `candidate_id`, and a
+  forged session and trace, and checks the analysis still lands in the
+  engine's configured scope with its trained history intact.
+- `Engine.Observe` writes to `Result.BaselineKey` — the key `Analyze`
+  actually read — rather than recomputing a scope from event metadata, so
+  the write cannot be redirected after the fact either.
+
+The trust boundary is therefore between *whoever configures the engine* and
+*whoever emits events*, which is the same boundary
+[telemetry spoofing](#telemetry-spoofing) already assumes. A caller that can
+construct the `Engine` can already choose everything else about it.
+
+**What this is not:** an authorization boundary. A scope carries no access
+control, and any code holding an `Engine` can name any scope. It partitions
+learning, not permission — see [future multi-tenant
+isolation](#future-multi-tenant-isolation).
+
 ### Sequence state
 
 **Threat:** `v0.6`'s [transition-deviation
@@ -943,7 +982,7 @@ space. See
 [PERFORMANCE.md § measured results](PERFORMANCE.md#measured-results).
 
 **What remains unbounded, stated plainly:** the number of distinct
-*actors* a store holds. One entry per `{ActorID, Environment}`, with no
+*actors* a store holds. One entry per `{Scope, ActorID, Environment}`, with no
 TTL and no eviction — a deliberate property, since evicting an actor's
 baseline silently resets it to "never seen". That is a capacity-planning
 dimension owned by whoever provisions the deployment, not a per-request
@@ -967,10 +1006,13 @@ or policy decisions leak into or influence another's.
 Trustvian's OSS core is explicitly single-tenant (multi-tenancy, RBAC,
 and centralized management are Trustvian Control/Cloud concerns — see
 [ARCHITECTURE.md § relationship to the platform layer](ARCHITECTURE.md#relationship-to-the-platform-layer)).
-However, `baseline.Key`'s composite `(ActorID, Environment)` shape
+However, `baseline.Key`'s composite `(Scope, ActorID, Environment)` shape
 means the data is already scoped in a way a future `TenantID` addition
 extends rather than restructures — a deliberate choice to make that
-future work an access-control addition, not a data migration.
+future work an access-control addition, not a data migration. A learning
+scope is **not** a tenant boundary and must not be used as one: it carries
+no authorization, and nothing prevents a caller that can reach the engine
+from naming any scope. It partitions learning, not access.
 
 ### Alert/notification delivery integrity
 

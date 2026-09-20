@@ -214,12 +214,33 @@ func (k *TrigramKey) UnmarshalText(text []byte) error {
 	return nil
 }
 
-// Key scopes a Baseline to a single actor within a single deployment
-// environment. Scoping by environment from the start — even though the
-// OSS engine is single-tenant — keeps the data model tenant-shaped, so a
+// Key identifies exactly one learned behavioral history: a single actor,
+// within a single deployment environment, within a single learning
+// scope. Scoping by environment from the start — even though the OSS
+// engine is single-tenant — keeps the data model tenant-shaped, so a
 // future multi-tenant Enterprise feature is an access-control addition,
 // not a data migration.
+//
+// Scope is the outermost partition: an opaque namespace that lets one
+// actor in one environment hold several independent histories. Nothing
+// here parses it, and it carries no meaning the engine can act on — a
+// caller chooses it, and identical events in different scopes produce
+// identical Fingerprints and differ only in the learned evidence they
+// are compared against. The empty string is the default scope, which is
+// what every Key deserialized from a pre-scope snapshot or database row
+// already is.
+//
+// Scope describes *which history an observation belongs to*, never
+// *what the actor did*. That separation is the whole of
+// docs/adr/0024-learning-scope-is-a-baseline-key-dimension.md: a scope
+// that leaked into behavioral identity would make an actor's entire
+// repertoire look brand new every time a caller opened a new one.
+//
+// It also never comes from an Event. Scope is Engine configuration, so
+// whoever emits telemetry cannot choose which learned profile they
+// train — see docs/SECURITY.md § Learning scope is a trust boundary.
 type Key struct {
+	Scope       string
 	ActorID     string
 	Environment string
 }
@@ -721,7 +742,18 @@ func New(key Key) Baseline {
 // unconditionally — unlike the sequence state above, delegation
 // provenance carries no ordering dependency, so it is not subject to
 // the same now-must-strictly-follow guard.
-func (b Baseline) Observe(fp fingerprint.Fingerprint, vol features.VolatileFeatures, now time.Time) Baseline {
+//
+// The returned admitted bool reports whether fp's own FingerprintStats
+// were updated — that is, whether this baseline actually learned
+// anything about the behavior it was handed. It is false exactly when
+// admission control refused an unknown fingerprint at capacity. This is
+// deliberately narrower than "did any field change": an observation at
+// capacity still advances LastObserved and DelegatorCounts, but a
+// caller asking whether the behavior was learned is not asking about
+// those. Reporting it is what lets Engine.Observe stop claiming
+// learning that did not happen — see
+// docs/adr/0024-learning-scope-is-a-baseline-key-dimension.md.
+func (b Baseline) Observe(fp fingerprint.Fingerprint, vol features.VolatileFeatures, now time.Time) (updated Baseline, admitted bool) {
 	advances := b.LastFingerprintID == "" || now.After(b.LastFingerprintTime)
 	validTransition := b.LastFingerprintID != "" && now.After(b.LastFingerprintTime)
 	predecessor := ""
@@ -808,5 +840,5 @@ func (b Baseline) Observe(fp fingerprint.Fingerprint, vol features.VolatileFeatu
 		LastFingerprintTime:   lastFingerprintTime,
 		PreviousFingerprintID: previousFingerprintID,
 		DelegatorCounts:       delegatorCounts,
-	}
+	}, admit
 }

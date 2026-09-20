@@ -32,7 +32,7 @@ func TestBaselineObserveTracksMaturityCount(t *testing.T) {
 	const maturityThreshold = 20
 
 	for i := 1; i <= observations; i++ {
-		b = b.Observe(fp, features.VolatileFeatures{}, time.Now())
+		b, _ = b.Observe(fp, features.VolatileFeatures{}, time.Now())
 
 		stats, ok := b.Fingerprints[fp.ID]
 		if !ok {
@@ -54,7 +54,7 @@ func TestBaselineObserveIsImmutable(t *testing.T) {
 	fp := testFingerprint()
 	before := baseline.New(testKey)
 
-	after := before.Observe(fp, features.VolatileFeatures{}, time.Now())
+	after, _ := before.Observe(fp, features.VolatileFeatures{}, time.Now())
 
 	if len(before.Fingerprints) != 0 {
 		t.Fatalf("Observe mutated the receiver: before.Fingerprints = %v, want empty", before.Fingerprints)
@@ -65,7 +65,7 @@ func TestBaselineObserveIsImmutable(t *testing.T) {
 
 	// A second Observe on `after` must not reach back and affect the
 	// first snapshot either.
-	again := after.Observe(fp, features.VolatileFeatures{}, time.Now())
+	again, _ := after.Observe(fp, features.VolatileFeatures{}, time.Now())
 	if after.Fingerprints[fp.ID].Count != 1 {
 		t.Fatalf("second Observe mutated an earlier snapshot: Count = %d, want 1", after.Fingerprints[fp.ID].Count)
 	}
@@ -78,7 +78,7 @@ func TestFingerprintStatsColdStart(t *testing.T) {
 	fp := testFingerprint()
 	b := baseline.New(testKey)
 
-	b = b.Observe(fp, features.VolatileFeatures{HasLatency: true, Latency: 100 * time.Millisecond, Error: true}, time.Now())
+	b, _ = b.Observe(fp, features.VolatileFeatures{HasLatency: true, Latency: 100 * time.Millisecond, Error: true}, time.Now())
 
 	stats := b.Fingerprints[fp.ID]
 	if stats.Count != 1 {
@@ -104,7 +104,7 @@ func TestFingerprintStatsLatencyConvergesToStableValue(t *testing.T) {
 
 	const target = 100 * time.Millisecond
 	for range 200 {
-		b = b.Observe(fp, features.VolatileFeatures{HasLatency: true, Latency: target}, time.Now())
+		b, _ = b.Observe(fp, features.VolatileFeatures{HasLatency: true, Latency: target}, time.Now())
 	}
 
 	stats := b.Fingerprints[fp.ID]
@@ -125,7 +125,7 @@ func TestFingerprintStatsIntervalConvergesToStableValue(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	now := start
 	for range 50 {
-		b = b.Observe(fp, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fp, features.VolatileFeatures{}, now)
 		now = now.Add(interval)
 	}
 
@@ -147,7 +147,7 @@ func TestFingerprintStatsIntervalObservationsIsCountMinusOne(t *testing.T) {
 	b := baseline.New(testKey)
 
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	b = b.Observe(fp, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fp, features.VolatileFeatures{}, now)
 
 	stats := b.Fingerprints[fp.ID]
 	if stats.IntervalObservations != 0 {
@@ -155,7 +155,7 @@ func TestFingerprintStatsIntervalObservationsIsCountMinusOne(t *testing.T) {
 	}
 
 	now = now.Add(5 * time.Second)
-	b = b.Observe(fp, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fp, features.VolatileFeatures{}, now)
 	stats = b.Fingerprints[fp.ID]
 	if stats.IntervalObservations != 1 {
 		t.Fatalf("IntervalObservations = %d after a second observation, want 1", stats.IntervalObservations)
@@ -172,7 +172,7 @@ func observeStableCadence(fp fingerprint.Fingerprint, start time.Time, interval 
 	b := baseline.New(testKey)
 	now := start
 	for i := range count {
-		b = b.Observe(fp, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fp, features.VolatileFeatures{}, now)
 		if i < count-1 {
 			now = now.Add(interval)
 		}
@@ -206,7 +206,7 @@ func TestFingerprintStatsIgnoresNonPositiveInterval(t *testing.T) {
 			b, last := observeStableCadence(fp, start, cadence, 20)
 			before := b.Fingerprints[fp.ID]
 
-			b = b.Observe(fp, features.VolatileFeatures{}, last.Add(tt.offset))
+			b, _ = b.Observe(fp, features.VolatileFeatures{}, last.Add(tt.offset))
 			after := b.Fingerprints[fp.ID]
 
 			if after.IntervalMean != before.IntervalMean {
@@ -247,8 +247,8 @@ func TestFingerprintStatsOutOfOrderObservationDoesNotDistortNextInterval(t *test
 	fp := testFingerprint()
 	b, last := observeStableCadence(fp, start, cadence, 20)
 
-	b = b.Observe(fp, features.VolatileFeatures{}, last.Add(-5*time.Second)) // out of order
-	b = b.Observe(fp, features.VolatileFeatures{}, last.Add(cadence))        // back on cadence
+	b, _ = b.Observe(fp, features.VolatileFeatures{}, last.Add(-5*time.Second)) // out of order
+	b, _ = b.Observe(fp, features.VolatileFeatures{}, last.Add(cadence))        // back on cadence
 
 	stats := b.Fingerprints[fp.ID]
 	gotMean := time.Duration(stats.IntervalMean)
@@ -264,8 +264,8 @@ func TestFingerprintStatsSkipsLatencyWhenAbsent(t *testing.T) {
 	fp := testFingerprint()
 	b := baseline.New(testKey)
 
-	b = b.Observe(fp, features.VolatileFeatures{HasLatency: true, Latency: 50 * time.Millisecond}, time.Now())
-	b = b.Observe(fp, features.VolatileFeatures{HasLatency: false}, time.Now())
+	b, _ = b.Observe(fp, features.VolatileFeatures{HasLatency: true, Latency: 50 * time.Millisecond}, time.Now())
+	b, _ = b.Observe(fp, features.VolatileFeatures{HasLatency: false}, time.Now())
 
 	stats := b.Fingerprints[fp.ID]
 	if stats.Count != 2 {
@@ -284,14 +284,14 @@ func TestFingerprintStatsErrorRateTracksDirection(t *testing.T) {
 	b := baseline.New(testKey)
 
 	for range 50 {
-		b = b.Observe(fp, features.VolatileFeatures{Error: false}, time.Now())
+		b, _ = b.Observe(fp, features.VolatileFeatures{Error: false}, time.Now())
 	}
 	if rate := b.Fingerprints[fp.ID].ErrorRate; rate > 0.01 {
 		t.Fatalf("ErrorRate = %v after 50 clean observations, want ~0", rate)
 	}
 
 	for range 50 {
-		b = b.Observe(fp, features.VolatileFeatures{Error: true}, time.Now())
+		b, _ = b.Observe(fp, features.VolatileFeatures{Error: true}, time.Now())
 	}
 	if rate := b.Fingerprints[fp.ID].ErrorRate; rate < 0.99 {
 		t.Fatalf("ErrorRate = %v after 50 errored observations, want ~1", rate)
@@ -309,9 +309,9 @@ func TestBaselineObserveDistinctFingerprintsDoNotInterfere(t *testing.T) {
 	})
 
 	b := baseline.New(testKey)
-	b = b.Observe(fpA, features.VolatileFeatures{}, time.Now())
-	b = b.Observe(fpA, features.VolatileFeatures{}, time.Now())
-	b = b.Observe(fpB, features.VolatileFeatures{}, time.Now())
+	b, _ = b.Observe(fpA, features.VolatileFeatures{}, time.Now())
+	b, _ = b.Observe(fpA, features.VolatileFeatures{}, time.Now())
+	b, _ = b.Observe(fpB, features.VolatileFeatures{}, time.Now())
 
 	if got := b.Fingerprints[fpA.ID].Count; got != 2 {
 		t.Fatalf("fpA Count = %d, want 2", got)
@@ -330,7 +330,7 @@ func TestFingerprintStatsLatencyStdDevIsNonNegative(t *testing.T) {
 
 	latencies := []time.Duration{10 * time.Millisecond, 200 * time.Millisecond, 15 * time.Millisecond, 5 * time.Millisecond}
 	for _, l := range latencies {
-		b = b.Observe(fp, features.VolatileFeatures{HasLatency: true, Latency: l}, time.Now())
+		b, _ = b.Observe(fp, features.VolatileFeatures{HasLatency: true, Latency: l}, time.Now())
 	}
 
 	stats := b.Fingerprints[fp.ID]
@@ -352,7 +352,7 @@ func TestFingerprintStatsIsStale(t *testing.T) {
 	b := baseline.New(testKey)
 
 	observedAt := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	b = b.Observe(fp, features.VolatileFeatures{}, observedAt)
+	b, _ = b.Observe(fp, features.VolatileFeatures{}, observedAt)
 	stats := b.Fingerprints[fp.ID]
 
 	tests := []struct {
@@ -392,7 +392,7 @@ func baselineAtHour(fp fingerprint.Fingerprint, hour, count int) baseline.Baseli
 	b := baseline.New(testKey)
 	day := time.Date(2026, 1, 1, hour, 0, 0, 0, time.UTC)
 	for i := range count {
-		b = b.Observe(fp, features.VolatileFeatures{}, day.AddDate(0, 0, i))
+		b, _ = b.Observe(fp, features.VolatileFeatures{}, day.AddDate(0, 0, i))
 	}
 	return b
 }
@@ -429,7 +429,7 @@ func TestFingerprintStatsHourActivityConverges(t *testing.T) {
 func TestFingerprintStatsHourActivityFirstObservationIsOneHot(t *testing.T) {
 	fp := testFingerprint()
 	b := baseline.New(testKey)
-	b = b.Observe(fp, features.VolatileFeatures{}, time.Date(2026, 1, 1, 14, 0, 0, 0, time.UTC))
+	b, _ = b.Observe(fp, features.VolatileFeatures{}, time.Date(2026, 1, 1, 14, 0, 0, 0, time.UTC))
 
 	stats := b.Fingerprints[fp.ID]
 	if stats.TimePatternObservations != 1 {
@@ -453,7 +453,7 @@ func TestFingerprintStatsHourActivityUniformTraffic(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for day := range 10 {
 		for hour := range 24 {
-			b = b.Observe(fp, features.VolatileFeatures{}, start.AddDate(0, 0, day).Add(time.Duration(hour)*time.Hour))
+			b, _ = b.Observe(fp, features.VolatileFeatures{}, start.AddDate(0, 0, day).Add(time.Duration(hour)*time.Hour))
 		}
 	}
 
@@ -491,7 +491,7 @@ func TestBaselineObserveFirstEventHasNoPredecessor(t *testing.T) {
 	fpRead := readFingerprint()
 	b := baseline.New(testKey)
 
-	b = b.Observe(fpRead, features.VolatileFeatures{}, time.Now())
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, time.Now())
 
 	if b.LastFingerprintID != fpRead.ID {
 		t.Fatalf("LastFingerprintID = %q, want %q", b.LastFingerprintID, fpRead.ID)
@@ -506,8 +506,8 @@ func TestBaselineObserveRecordsTransitionBetweenDistinctFingerprints(t *testing.
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now)
-	b = b.Observe(fpUpdate, features.VolatileFeatures{}, now.Add(time.Second))
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpUpdate, features.VolatileFeatures{}, now.Add(time.Second))
 
 	if b.LastFingerprintID != fpUpdate.ID {
 		t.Fatalf("LastFingerprintID = %q, want %q", b.LastFingerprintID, fpUpdate.ID)
@@ -526,7 +526,7 @@ func TestBaselineObserveRecordsRepeatedSelfTransition(t *testing.T) {
 	// predecessor (a repeated action), and each transition into it
 	// should count.
 	for i := range 3 {
-		b = b.Observe(fpRead, features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second))
+		b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second))
 	}
 
 	if got := b.Fingerprints[fpRead.ID].PredecessorCounts[fpRead.ID]; got != 2 {
@@ -539,15 +539,15 @@ func TestBaselineObserveOutOfOrderEventDoesNotRecordOrCorruptTransition(t *testi
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now)
-	b = b.Observe(fpUpdate, features.VolatileFeatures{}, now.Add(2*time.Second))
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpUpdate, features.VolatileFeatures{}, now.Add(2*time.Second))
 
 	// A backdated event, timestamped before fpUpdate's own arrival,
 	// must not be treated as following fpUpdate (it doesn't, in real
 	// time), and must not overwrite LastFingerprintID/Time with its
 	// own, earlier timestamp — that would corrupt the ordering for
 	// whatever legitimately follows next.
-	b = b.Observe(fpDelete, features.VolatileFeatures{}, now.Add(1*time.Second))
+	b, _ = b.Observe(fpDelete, features.VolatileFeatures{}, now.Add(1*time.Second))
 
 	if got := b.Fingerprints[fpDelete.ID].PredecessorCounts; got != nil {
 		t.Fatalf("out-of-order delete recorded a predecessor: %v, want nil", got)
@@ -559,7 +559,7 @@ func TestBaselineObserveOutOfOrderEventDoesNotRecordOrCorruptTransition(t *testi
 	// The next legitimate, forward-timestamped event must still form
 	// its transition from fpUpdate (the real predecessor), not fpDelete.
 	fpRead2 := readFingerprint()
-	b = b.Observe(fpRead2, features.VolatileFeatures{}, now.Add(3*time.Second))
+	b, _ = b.Observe(fpRead2, features.VolatileFeatures{}, now.Add(3*time.Second))
 	if got := b.Fingerprints[fpRead2.ID].PredecessorCounts[fpUpdate.ID]; got != 1 {
 		t.Fatalf("PredecessorCounts[update] for read = %d, want 1 (must follow the real predecessor, not the out-of-order delete)", got)
 	}
@@ -576,8 +576,8 @@ func TestBaselineObservePredecessorCountsIsImmutable(t *testing.T) {
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now)
-	snapshot := b.Observe(fpUpdate, features.VolatileFeatures{}, now.Add(time.Second))
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
+	snapshot, _ := b.Observe(fpUpdate, features.VolatileFeatures{}, now.Add(time.Second))
 
 	if got := snapshot.Fingerprints[fpUpdate.ID].PredecessorCounts[fpRead.ID]; got != 1 {
 		t.Fatalf("snapshot PredecessorCounts[read] = %d, want 1", got)
@@ -585,7 +585,7 @@ func TestBaselineObservePredecessorCountsIsImmutable(t *testing.T) {
 
 	// A further Observe on top of snapshot must not reach back and
 	// mutate snapshot's own PredecessorCounts map.
-	_ = snapshot.Observe(fpUpdate, features.VolatileFeatures{}, now.Add(2*time.Second))
+	_, _ = snapshot.Observe(fpUpdate, features.VolatileFeatures{}, now.Add(2*time.Second))
 	if got := snapshot.Fingerprints[fpUpdate.ID].PredecessorCounts[fpRead.ID]; got != 1 {
 		t.Fatalf("a later Observe mutated an earlier snapshot's PredecessorCounts: got %d, want 1", got)
 	}
@@ -603,8 +603,8 @@ func TestBaselineObservePredecessorCountsIsBounded(t *testing.T) {
 			ActorType: event.ActorTypeService, OperationCategory: event.OperationCategoryHTTP,
 			OperationName: fmt.Sprintf("predecessor-%d", i), TargetName: "customer-db", Environment: "production",
 		})
-		b = b.Observe(pred, features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second))
-		b = b.Observe(fpDest, features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second+time.Millisecond))
+		b, _ = b.Observe(pred, features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second))
+		b, _ = b.Observe(fpDest, features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second+time.Millisecond))
 	}
 
 	if got := len(b.Fingerprints[fpDest.ID].PredecessorCounts); got != 64 {
@@ -620,11 +620,11 @@ func TestBaselineObserveTracksDelegatorCounts(t *testing.T) {
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpRead, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now)
 	now = now.Add(time.Second)
-	b = b.Observe(fpRead, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now)
 	now = now.Add(time.Second)
-	b = b.Observe(fpRead, features.VolatileFeatures{DelegatedFrom: "agent-b"}, now)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{DelegatedFrom: "agent-b"}, now)
 
 	if got := b.DelegatorCounts["agent-a"]; got != 2 {
 		t.Fatalf("DelegatorCounts[agent-a] = %d, want 2", got)
@@ -646,9 +646,9 @@ func TestBaselineObserveMissingDelegationDoesNotUpdateDelegatorCounts(t *testing
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
 
 	if got := len(b.DelegatorCounts); got != 0 {
 		t.Fatalf("len(DelegatorCounts) = %d, want 0 for events with no DelegatedFrom", got)
@@ -660,8 +660,8 @@ func TestBaselineObserveDelegatorCountsIsImmutable(t *testing.T) {
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpRead, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now)
-	snapshot := b.Observe(fpRead, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now.Add(time.Second))
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now)
+	snapshot, _ := b.Observe(fpRead, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now.Add(time.Second))
 
 	if got := snapshot.DelegatorCounts["agent-a"]; got != 2 {
 		t.Fatalf("snapshot DelegatorCounts[agent-a] = %d, want 2", got)
@@ -669,7 +669,7 @@ func TestBaselineObserveDelegatorCountsIsImmutable(t *testing.T) {
 
 	// A further Observe on top of snapshot must not reach back and
 	// mutate snapshot's own DelegatorCounts map.
-	_ = snapshot.Observe(fpRead, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now.Add(2*time.Second))
+	_, _ = snapshot.Observe(fpRead, features.VolatileFeatures{DelegatedFrom: "agent-a"}, now.Add(2*time.Second))
 	if got := snapshot.DelegatorCounts["agent-a"]; got != 2 {
 		t.Fatalf("a later Observe mutated an earlier snapshot's DelegatorCounts: got %d, want 2", got)
 	}
@@ -693,7 +693,7 @@ func TestBaselineObserveDelegatorCountsIsBounded(t *testing.T) {
 	// guidance).
 	const distinctDelegators = 200
 	for i := range distinctDelegators {
-		b = b.Observe(fpRead, features.VolatileFeatures{DelegatedFrom: fmt.Sprintf("delegator-%d", i)}, now.Add(time.Duration(i)*time.Second))
+		b, _ = b.Observe(fpRead, features.VolatileFeatures{DelegatedFrom: fmt.Sprintf("delegator-%d", i)}, now.Add(time.Duration(i)*time.Second))
 	}
 
 	if got := len(b.DelegatorCounts); got != 64 {
@@ -714,17 +714,17 @@ func TestBaselineObserveTracksOutgoingTransitionTotal(t *testing.T) {
 	// transition as read -> update), not a test artifact to avoid; the
 	// assertions below account for it explicitly rather than assuming
 	// update is never a predecessor.
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
-	b = b.Observe(fpUpdate, features.VolatileFeatures{}, now) // read -> update
+	b, _ = b.Observe(fpUpdate, features.VolatileFeatures{}, now) // read -> update
 	now = now.Add(time.Second)
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now) // update -> read
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now) // update -> read
 	now = now.Add(time.Second)
-	b = b.Observe(fpUpdate, features.VolatileFeatures{}, now) // read -> update
+	b, _ = b.Observe(fpUpdate, features.VolatileFeatures{}, now) // read -> update
 	now = now.Add(time.Second)
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now) // update -> read
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now) // update -> read
 	now = now.Add(time.Second)
-	b = b.Observe(fpDelete, features.VolatileFeatures{}, now) // read -> delete
+	b, _ = b.Observe(fpDelete, features.VolatileFeatures{}, now) // read -> delete
 
 	if got := b.Fingerprints[fpRead.ID].OutgoingTransitionTotal; got != 3 {
 		t.Fatalf("read.OutgoingTransitionTotal = %d, want 3 (read -> update twice, read -> delete once)", got)
@@ -753,7 +753,7 @@ func TestBaselineObserveOutgoingTransitionTotalSelfTransition(t *testing.T) {
 
 	// read -> read -> read: two valid self-transitions.
 	for i := range 3 {
-		b = b.Observe(fpRead, features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second))
+		b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second))
 	}
 
 	stats := b.Fingerprints[fpRead.ID]
@@ -770,12 +770,12 @@ func TestBaselineObserveOutOfOrderEventDoesNotIncrementOutgoingTotal(t *testing.
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now)
-	b = b.Observe(fpUpdate, features.VolatileFeatures{}, now.Add(2*time.Second))
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpUpdate, features.VolatileFeatures{}, now.Add(2*time.Second))
 
 	// Backdated relative to fpUpdate's own arrival: not a valid
 	// transition from fpUpdate.
-	b = b.Observe(fpDelete, features.VolatileFeatures{}, now.Add(1*time.Second))
+	b, _ = b.Observe(fpDelete, features.VolatileFeatures{}, now.Add(1*time.Second))
 
 	if got := b.Fingerprints[fpUpdate.ID].OutgoingTransitionTotal; got != 0 {
 		t.Fatalf("update.OutgoingTransitionTotal = %d, want 0 (the out-of-order delete must not count as a valid outgoing transition from update)", got)
@@ -796,14 +796,14 @@ func TestBaselineObserveOutgoingTransitionTotalIsImmutable(t *testing.T) {
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now)
-	snapshot := b.Observe(fpUpdate, features.VolatileFeatures{}, now.Add(time.Second))
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
+	snapshot, _ := b.Observe(fpUpdate, features.VolatileFeatures{}, now.Add(time.Second))
 
 	if got := snapshot.Fingerprints[fpRead.ID].OutgoingTransitionTotal; got != 1 {
 		t.Fatalf("snapshot read.OutgoingTransitionTotal = %d, want 1", got)
 	}
 
-	_ = snapshot.Observe(fpRead, features.VolatileFeatures{}, now.Add(2*time.Second))
+	_, _ = snapshot.Observe(fpRead, features.VolatileFeatures{}, now.Add(2*time.Second))
 	if got := snapshot.Fingerprints[fpRead.ID].OutgoingTransitionTotal; got != 1 {
 		t.Fatalf("a later Observe mutated an earlier snapshot's OutgoingTransitionTotal: got %d, want 1", got)
 	}
@@ -839,8 +839,8 @@ func TestBaselineObserveManyDistinctTransitionsStayBounded(t *testing.T) {
 			ActorType: event.ActorTypeService, OperationCategory: event.OperationCategoryHTTP,
 			OperationName: fmt.Sprintf("predecessor-%d", i), TargetName: "customer-db", Environment: "production",
 		})
-		b = b.Observe(pred, features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second))
-		b = b.Observe(fpDest, features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second+time.Millisecond))
+		b, _ = b.Observe(pred, features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second))
+		b, _ = b.Observe(fpDest, features.VolatileFeatures{}, now.Add(time.Duration(i)*time.Second+time.Millisecond))
 
 		// Every predecessor this baseline actually admitted has
 		// OutgoingTransitionTotal exactly 1, regardless of whether the
@@ -892,7 +892,7 @@ func TestBaselineObserveTracksPreviousFingerprintIDWindow(t *testing.T) {
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpAuth, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpAuth, features.VolatileFeatures{}, now)
 	if b.PreviousFingerprintID != "" {
 		t.Fatalf("after 1st observation: PreviousFingerprintID = %q, want \"\" (this actor's first-ever observation)", b.PreviousFingerprintID)
 	}
@@ -901,7 +901,7 @@ func TestBaselineObserveTracksPreviousFingerprintIDWindow(t *testing.T) {
 	}
 
 	now = now.Add(time.Second)
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
 	if b.PreviousFingerprintID != fpAuth.ID {
 		t.Fatalf("after 2nd observation: PreviousFingerprintID = %q, want %q (the window shifted: old Last becomes the new Previous)", b.PreviousFingerprintID, fpAuth.ID)
 	}
@@ -910,7 +910,7 @@ func TestBaselineObserveTracksPreviousFingerprintIDWindow(t *testing.T) {
 	}
 
 	now = now.Add(time.Second)
-	b = b.Observe(fpExport, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpExport, features.VolatileFeatures{}, now)
 	if b.PreviousFingerprintID != fpRead.ID {
 		t.Fatalf("after 3rd observation: PreviousFingerprintID = %q, want %q (window shifted forward again)", b.PreviousFingerprintID, fpRead.ID)
 	}
@@ -924,9 +924,9 @@ func TestBaselineObserveNoTrigramBeforeThirdObservation(t *testing.T) {
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpAuth, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpAuth, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
 
 	if got := b.Fingerprints[fpRead.ID].TrigramCounts; got != nil {
 		t.Fatalf("TrigramCounts after only 2 observations = %v, want nil (not enough history for a 3-gram yet)", got)
@@ -941,11 +941,11 @@ func TestBaselineObserveRecordsTrigram(t *testing.T) {
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpAuth, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpAuth, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
-	b = b.Observe(fpExport, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpExport, features.VolatileFeatures{}, now)
 
 	key := baseline.TrigramKey{First: fpAuth.ID, Second: fpRead.ID}
 	if got := b.Fingerprints[fpExport.ID].TrigramCounts[key]; got != 1 {
@@ -962,11 +962,11 @@ func TestBaselineObserveRecordsRepeatedTrigram(t *testing.T) {
 	now := time.Now()
 
 	for range 5 {
-		b = b.Observe(fpAuth, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fpAuth, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		b = b.Observe(fpRead, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		b = b.Observe(fpExport, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fpExport, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
 
@@ -990,7 +990,7 @@ func TestBaselineObserveRepeatedFingerprintTrigram(t *testing.T) {
 
 	// A -> A -> A
 	for range 3 {
-		b = b.Observe(fpA, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fpA, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
 	selfKey := baseline.TrigramKey{First: fpA.ID, Second: fpA.ID}
@@ -1000,7 +1000,7 @@ func TestBaselineObserveRepeatedFingerprintTrigram(t *testing.T) {
 
 	// Continue: A -> A -> A -> B (the 4th observation completes a
 	// second, different 3-gram: A,A -> B).
-	b = b.Observe(fpB, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpB, features.VolatileFeatures{}, now)
 	abKey := baseline.TrigramKey{First: fpA.ID, Second: fpA.ID}
 	if got := b.Fingerprints[fpB.ID].TrigramCounts[abKey]; got != 1 {
 		t.Fatalf("A->A->A->B: TrigramCounts[{A,A}] for B = %d, want 1", got)
@@ -1021,11 +1021,11 @@ func TestBaselineObserveOutOfOrderEventDoesNotRecordOrCorruptTrigram(t *testing.
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpAuth, features.VolatileFeatures{}, now)
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now.Add(2*time.Second))
+	b, _ = b.Observe(fpAuth, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now.Add(2*time.Second))
 
 	// Backdated relative to fpRead's own arrival.
-	b = b.Observe(fpDelete, features.VolatileFeatures{}, now.Add(1*time.Second))
+	b, _ = b.Observe(fpDelete, features.VolatileFeatures{}, now.Add(1*time.Second))
 
 	if b.PreviousFingerprintID != fpAuth.ID || b.LastFingerprintID != fpRead.ID {
 		t.Fatalf("out-of-order event corrupted the history window: Previous=%q, Last=%q, want Previous=%q, Last=%q",
@@ -1038,7 +1038,7 @@ func TestBaselineObserveOutOfOrderEventDoesNotRecordOrCorruptTrigram(t *testing.
 	// The next legitimate event must complete its 3-gram from
 	// (fpAuth, fpRead) — the real history — not from the out-of-order
 	// fpDelete.
-	b = b.Observe(fpExport, features.VolatileFeatures{}, now.Add(3*time.Second))
+	b, _ = b.Observe(fpExport, features.VolatileFeatures{}, now.Add(3*time.Second))
 	key := baseline.TrigramKey{First: fpAuth.ID, Second: fpRead.ID}
 	if got := b.Fingerprints[fpExport.ID].TrigramCounts[key]; got != 1 {
 		t.Fatalf("TrigramCounts[{auth,read}] for export = %d, want 1 (must follow the real history, not the out-of-order delete)", got)
@@ -1056,8 +1056,8 @@ func TestBaselineObserveEqualTimestampsDoNotAdvanceHistory(t *testing.T) {
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpAuth, features.VolatileFeatures{}, now)
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now) // same timestamp as fpAuth
+	b, _ = b.Observe(fpAuth, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now) // same timestamp as fpAuth
 
 	if b.LastFingerprintID != fpAuth.ID {
 		t.Fatalf("LastFingerprintID = %q, want %q (an equal timestamp must not advance the window)", b.LastFingerprintID, fpAuth.ID)
@@ -1075,9 +1075,9 @@ func TestBaselineObserveTrigramCountsIsImmutable(t *testing.T) {
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpAuth, features.VolatileFeatures{}, now)
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now.Add(time.Second))
-	snapshot := b.Observe(fpExport, features.VolatileFeatures{}, now.Add(2*time.Second))
+	b, _ = b.Observe(fpAuth, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now.Add(time.Second))
+	snapshot, _ := b.Observe(fpExport, features.VolatileFeatures{}, now.Add(2*time.Second))
 
 	key := baseline.TrigramKey{First: fpAuth.ID, Second: fpRead.ID}
 	if got := snapshot.Fingerprints[fpExport.ID].TrigramCounts[key]; got != 1 {
@@ -1086,7 +1086,7 @@ func TestBaselineObserveTrigramCountsIsImmutable(t *testing.T) {
 
 	// A further Observe on top of snapshot must not reach back and
 	// mutate snapshot's own TrigramCounts map.
-	_ = snapshot.Observe(fpExport, features.VolatileFeatures{}, now.Add(3*time.Second))
+	_, _ = snapshot.Observe(fpExport, features.VolatileFeatures{}, now.Add(3*time.Second))
 	if got := snapshot.Fingerprints[fpExport.ID].TrigramCounts[key]; got != 1 {
 		t.Fatalf("a later Observe mutated an earlier snapshot's TrigramCounts: got %d, want 1", got)
 	}
@@ -1099,15 +1099,15 @@ func TestBaselineObserveTrigramContinuationTotalIsImmutable(t *testing.T) {
 	b := baseline.New(testKey)
 	now := time.Now()
 
-	b = b.Observe(fpAuth, features.VolatileFeatures{}, now)
-	b = b.Observe(fpRead, features.VolatileFeatures{}, now.Add(time.Second))
-	snapshot := b.Observe(fpExport, features.VolatileFeatures{}, now.Add(2*time.Second))
+	b, _ = b.Observe(fpAuth, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(fpRead, features.VolatileFeatures{}, now.Add(time.Second))
+	snapshot, _ := b.Observe(fpExport, features.VolatileFeatures{}, now.Add(2*time.Second))
 
 	if got := snapshot.Fingerprints[fpRead.ID].TrigramContinuationTotal[fpAuth.ID]; got != 1 {
 		t.Fatalf("snapshot TrigramContinuationTotal[auth] = %d, want 1", got)
 	}
 
-	_ = snapshot.Observe(fpExport, features.VolatileFeatures{}, now.Add(3*time.Second))
+	_, _ = snapshot.Observe(fpExport, features.VolatileFeatures{}, now.Add(3*time.Second))
 	if got := snapshot.Fingerprints[fpRead.ID].TrigramContinuationTotal[fpAuth.ID]; got != 1 {
 		t.Fatalf("a later Observe mutated an earlier snapshot's TrigramContinuationTotal: got %d, want 1", got)
 	}
@@ -1131,11 +1131,11 @@ func TestBaselineObserveTrigramCountsIsBounded(t *testing.T) {
 			ActorType: event.ActorTypeService, OperationCategory: event.OperationCategoryHTTP,
 			OperationName: fmt.Sprintf("grandparent-%d", i), TargetName: "customer-db", Environment: "production",
 		})
-		b = b.Observe(grandparent, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(grandparent, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		b = b.Observe(predecessor, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(predecessor, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		b = b.Observe(fpDest, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(fpDest, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
 
@@ -1166,11 +1166,11 @@ func TestBaselineObserveTrigramContinuationTotalIsBounded(t *testing.T) {
 			ActorType: event.ActorTypeService, OperationCategory: event.OperationCategoryHTTP,
 			OperationName: fmt.Sprintf("grandparent-%d", i), TargetName: "customer-db", Environment: "production",
 		})
-		b = b.Observe(grandparent, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(grandparent, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		b = b.Observe(predecessor, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(predecessor, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		b = b.Observe(dest, features.VolatileFeatures{}, now)
+		b, _ = b.Observe(dest, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
 

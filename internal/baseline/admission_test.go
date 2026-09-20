@@ -50,7 +50,7 @@ func distinctFingerprint(i int) fingerprint.Fingerprint {
 // second apart so every observation is a valid, ordered advance.
 func observeN(b baseline.Baseline, n int, start time.Time) baseline.Baseline {
 	for i := range n {
-		b = b.Observe(distinctFingerprint(i), features.VolatileFeatures{}, start.Add(time.Duration(i)*time.Second))
+		b, _ = b.Observe(distinctFingerprint(i), features.VolatileFeatures{}, start.Add(time.Duration(i)*time.Second))
 	}
 	return b
 }
@@ -93,7 +93,7 @@ func TestRejectsOneBeyondCapacity(t *testing.T) {
 	}
 
 	extra := distinctFingerprint(wantMaxFingerprints)
-	b = b.Observe(extra, features.VolatileFeatures{}, now.Add(time.Hour))
+	b, _ = b.Observe(extra, features.VolatileFeatures{}, now.Add(time.Hour))
 
 	if got := len(b.Fingerprints); got != wantMaxFingerprints {
 		t.Fatalf("len(Fingerprints) = %d, want %d after one observation past capacity", got, wantMaxFingerprints)
@@ -142,9 +142,9 @@ func TestKnownFingerprintKeepsLearningAtCapacity(t *testing.T) {
 	// the rejections nor the full map may stop the known one learning.
 	at := now.Add(time.Hour)
 	for i := range 10 {
-		b = b.Observe(distinctFingerprint(wantMaxFingerprints+i), features.VolatileFeatures{}, at)
+		b, _ = b.Observe(distinctFingerprint(wantMaxFingerprints+i), features.VolatileFeatures{}, at)
 		at = at.Add(time.Second)
-		b = b.Observe(known, features.VolatileFeatures{}, at)
+		b, _ = b.Observe(known, features.VolatileFeatures{}, at)
 		at = at.Add(time.Second)
 	}
 
@@ -169,7 +169,7 @@ func TestRejectionDoesNotMoveTheHistoryWindow(t *testing.T) {
 	lastAdmitted := b.LastFingerprintID
 
 	rejected := distinctFingerprint(wantMaxFingerprints)
-	b = b.Observe(rejected, features.VolatileFeatures{}, now.Add(time.Hour))
+	b, _ = b.Observe(rejected, features.VolatileFeatures{}, now.Add(time.Hour))
 
 	if b.LastFingerprintID != lastAdmitted {
 		t.Fatalf("LastFingerprintID = %q, want %q — the window advanced to a fingerprint that was never learned", b.LastFingerprintID, lastAdmitted)
@@ -177,7 +177,7 @@ func TestRejectionDoesNotMoveTheHistoryWindow(t *testing.T) {
 
 	// The following observation must not resurrect the rejected ID as a
 	// predecessor entry.
-	b = b.Observe(distinctFingerprint(0), features.VolatileFeatures{}, now.Add(2*time.Hour))
+	b, _ = b.Observe(distinctFingerprint(0), features.VolatileFeatures{}, now.Add(2*time.Hour))
 	if _, ok := b.Fingerprints[rejected.ID]; ok {
 		t.Fatal("a rejected fingerprint was admitted through the predecessor path")
 	}
@@ -251,7 +251,7 @@ func TestLegacyOversizedBaselineIsNotTruncated(t *testing.T) {
 	// An ordinary observation of a known fingerprint must not trigger a
 	// cleanup pass.
 	known := distinctFingerprint(0)
-	b = b.Observe(known, features.VolatileFeatures{}, now)
+	b, _ = b.Observe(known, features.VolatileFeatures{}, now)
 
 	if got := len(b.Fingerprints); got != legacySize {
 		t.Fatalf("len(Fingerprints) = %d after observing a known fingerprint, want %d — legacy state must not be truncated", got, legacySize)
@@ -267,7 +267,7 @@ func TestLegacyOversizedBaselineKeepsLearningKnownFingerprints(t *testing.T) {
 	known := distinctFingerprint(5)
 	before := b.Fingerprints[known.ID].Count
 
-	b = b.Observe(known, features.VolatileFeatures{}, now.Add(time.Second))
+	b, _ = b.Observe(known, features.VolatileFeatures{}, now.Add(time.Second))
 
 	if got := b.Fingerprints[known.ID].Count; got != before+1 {
 		t.Fatalf("known fingerprint Count = %d, want %d", got, before+1)
@@ -286,10 +286,73 @@ func TestLegacyOversizedBaselineAdmitsNothingNew(t *testing.T) {
 	at := now
 	for i := range 50 {
 		at = at.Add(time.Second)
-		b = b.Observe(distinctFingerprint(legacySize+i), features.VolatileFeatures{}, at)
+		b, _ = b.Observe(distinctFingerprint(legacySize+i), features.VolatileFeatures{}, at)
 	}
 
 	if got := len(b.Fingerprints); got != legacySize {
 		t.Fatalf("len(Fingerprints) = %d, want %d — an oversized legacy baseline must neither shrink nor grow", got, legacySize)
 	}
+}
+
+// TestObserveReportsWhetherItAdmitted is task 051's addition to this
+// contract. The bound itself is unchanged — refuse, never evict — but the
+// refusal used to be invisible above this package: the store call succeeded,
+// so Engine.Observe reported learning that had not happened. Task 049
+// recorded that as an open conflict, and a learning scope that exists to be
+// measured cannot silently stop learning while reporting that it did.
+//
+// The bool reports whether *this fingerprint's* statistics were updated,
+// which is deliberately narrower than "did any field change": an observation
+// at capacity still advances LastObserved and DelegatorCounts, and a caller
+// asking whether the behavior was learned is not asking about those.
+func TestObserveReportsWhetherItAdmitted(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	b := baseline.New(baseline.Key{ActorID: "svc-payment", Environment: "production"})
+
+	for i := range wantMaxFingerprints {
+		var admitted bool
+		b, admitted = b.Observe(distinctFingerprint(i), features.VolatileFeatures{}, start.Add(time.Duration(i)*time.Second))
+		if !admitted {
+			t.Fatalf("observation %d reported admitted = false below the bound", i)
+		}
+	}
+	if len(b.Fingerprints) != wantMaxFingerprints {
+		t.Fatalf("premise broken: %d fingerprints held, want %d", len(b.Fingerprints), wantMaxFingerprints)
+	}
+
+	t.Run("unknown fingerprint at capacity", func(t *testing.T) {
+		next, admitted := b.Observe(distinctFingerprint(wantMaxFingerprints), features.VolatileFeatures{}, start.Add(time.Hour))
+		if admitted {
+			t.Error("admitted = true for a fingerprint the bound refused")
+		}
+		if len(next.Fingerprints) != wantMaxFingerprints {
+			t.Errorf("held %d fingerprints after refusal, want %d — the bound must refuse, never evict",
+				len(next.Fingerprints), wantMaxFingerprints)
+		}
+		// Refusal is not an error and does not stop the rest of the
+		// observation: whole-baseline recency still advances.
+		if !next.LastObserved.Equal(start.Add(time.Hour)) {
+			t.Errorf("LastObserved = %v, want the refused observation's timestamp", next.LastObserved)
+		}
+	})
+
+	t.Run("known fingerprint at capacity", func(t *testing.T) {
+		known := distinctFingerprint(0)
+		before := b.Fingerprints[known.ID].Count
+
+		next, admitted := b.Observe(known, features.VolatileFeatures{}, start.Add(2*time.Hour))
+		if !admitted {
+			t.Error("admitted = false for a fingerprint the baseline already knows")
+		}
+		if got := next.Fingerprints[known.ID].Count; got != before+1 {
+			t.Errorf("Count = %d, want %d — a known fingerprint keeps learning at capacity", got, before+1)
+		}
+	})
+
+	t.Run("fresh baseline admits", func(t *testing.T) {
+		fresh := baseline.New(baseline.Key{Scope: "other", ActorID: "svc-payment", Environment: "production"})
+		if _, admitted := fresh.Observe(distinctFingerprint(0), features.VolatileFeatures{}, start); !admitted {
+			t.Error("admitted = false on an empty baseline")
+		}
+	})
 }

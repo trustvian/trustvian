@@ -64,15 +64,15 @@ func BenchmarkScoreTransitionDeviation(b *testing.B) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i := range 60 { // near maxPredecessors (64), without exceeding it
 		pred := fingerprint.Compute(stable(fmt.Sprintf("predecessor-%d", i)))
-		bl = bl.Observe(pred, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(pred, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		bl = bl.Observe(fp, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(fp, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
 	// The predecessor for the event under test: never before observed
 	// leading to fp, so transition_deviation actually fires.
 	unseenPredecessor := fingerprint.Compute(stable("unseen-predecessor"))
-	bl = bl.Observe(unseenPredecessor, features.VolatileFeatures{}, now)
+	bl, _ = bl.Observe(unseenPredecessor, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
 	// This benchmark's own loop leaves bl.PreviousFingerprintID
 	// populated (task 027 added the field; it now shifts on every
@@ -134,15 +134,15 @@ func BenchmarkScoreTransitionRarity(b *testing.B) {
 	// signal fires instead of degenerating to Value == 0.
 	for i := range 50 {
 		filler := fingerprint.Compute(stable(fmt.Sprintf("filler-%d", i)))
-		bl = bl.Observe(predecessor, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(predecessor, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		bl = bl.Observe(filler, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(filler, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
 	for range 2 {
-		bl = bl.Observe(predecessor, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(predecessor, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		bl = bl.Observe(fp, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(fp, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
 	// One final, unpaired predecessor observation: without it,
@@ -150,7 +150,7 @@ func BenchmarkScoreTransitionRarity(b *testing.B) {
 	// Observe), making the Score call below a never-seen fp->fp
 	// self-transition instead of the intended, well-established
 	// predecessor->fp transition.
-	bl = bl.Observe(predecessor, features.VolatileFeatures{}, now)
+	bl, _ = bl.Observe(predecessor, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
 
 	feat := features.Features{Stable: stable("payment-db"), Volatile: features.VolatileFeatures{Timestamp: now}}
@@ -179,18 +179,18 @@ func BenchmarkScoreMarkovSurprisal(b *testing.B) {
 	predecessor := fingerprint.Compute(stable("predecessor"))
 	for i := range 50 {
 		filler := fingerprint.Compute(stable(fmt.Sprintf("filler-%d", i)))
-		bl = bl.Observe(predecessor, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(predecessor, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		bl = bl.Observe(filler, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(filler, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
 	for range 2 {
-		bl = bl.Observe(predecessor, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(predecessor, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		bl = bl.Observe(fp, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(fp, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
-	bl = bl.Observe(predecessor, features.VolatileFeatures{}, now)
+	bl, _ = bl.Observe(predecessor, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
 
 	feat := features.Features{Stable: stable("payment-db"), Volatile: features.VolatileFeatures{Timestamp: now}}
@@ -218,12 +218,12 @@ func BenchmarkScoreMarkovLookup(b *testing.B) {
 	// MinTransitionObservations (20), so the cold-start gate — not the
 	// arithmetic — is what this benchmark measures.
 	for range 5 {
-		bl = bl.Observe(predecessor, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(predecessor, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		bl = bl.Observe(fp, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(fp, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
-	bl = bl.Observe(predecessor, features.VolatileFeatures{}, now)
+	bl, _ = bl.Observe(predecessor, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
 
 	feat := features.Features{Stable: stable("payment-db"), Volatile: features.VolatileFeatures{Timestamp: now}}
@@ -251,20 +251,20 @@ func BenchmarkScoreNGramDeviation(b *testing.B) {
 	predecessor := fingerprint.Compute(stable("predecessor"))
 	for i := range 60 { // near maxTrigramPredecessors (64), without exceeding it
 		grandparent := fingerprint.Compute(stable(fmt.Sprintf("grandparent-%d", i)))
-		bl = bl.Observe(grandparent, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(grandparent, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		bl = bl.Observe(predecessor, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(predecessor, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		bl = bl.Observe(fp, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(fp, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
 	// The (grandparent, predecessor) pair for the event under test:
 	// never before observed leading to fp, so ngram_deviation actually
 	// fires.
 	unseenGrandparent := fingerprint.Compute(stable("unseen-grandparent"))
-	bl = bl.Observe(unseenGrandparent, features.VolatileFeatures{}, now)
+	bl, _ = bl.Observe(unseenGrandparent, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
-	bl = bl.Observe(predecessor, features.VolatileFeatures{}, now)
+	bl, _ = bl.Observe(predecessor, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
 
 	feat := features.Features{Stable: stable("payment-db"), Volatile: features.VolatileFeatures{Timestamp: now}}
@@ -295,28 +295,28 @@ func BenchmarkScoreNGramRarity(b *testing.B) {
 	// signal fires instead of degenerating to Value == 0.
 	for i := range 50 {
 		filler := fingerprint.Compute(stable(fmt.Sprintf("filler-%d", i)))
-		bl = bl.Observe(grandparent, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(grandparent, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		bl = bl.Observe(predecessor, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(predecessor, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		bl = bl.Observe(filler, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(filler, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
 	for range 2 {
-		bl = bl.Observe(grandparent, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(grandparent, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		bl = bl.Observe(predecessor, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(predecessor, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
-		bl = bl.Observe(fp, features.VolatileFeatures{}, now)
+		bl, _ = bl.Observe(fp, features.VolatileFeatures{}, now)
 		now = now.Add(time.Second)
 	}
 	// Two final, unpaired observations (grandparent, then predecessor):
 	// without them, the history window would not be positioned at
 	// (grandparent, predecessor) for the Score call below — see
 	// ngramBaseline's identical technique in anomaly_test.go.
-	bl = bl.Observe(grandparent, features.VolatileFeatures{}, now)
+	bl, _ = bl.Observe(grandparent, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
-	bl = bl.Observe(predecessor, features.VolatileFeatures{}, now)
+	bl, _ = bl.Observe(predecessor, features.VolatileFeatures{}, now)
 	now = now.Add(time.Second)
 
 	feat := features.Features{Stable: stable("payment-db"), Volatile: features.VolatileFeatures{Timestamp: now}}

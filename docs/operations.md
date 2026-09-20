@@ -389,6 +389,29 @@ downtime: an online backup is consistent, but observations committed between
 it and the stop would be lost by a rollback. If you cannot stop first, take
 the backup, then stop, and accept that window.
 
+### Upgrading into `v1.0`: the schema moves
+
+`v1.0` is the first release that changes the PostgreSQL schema — version 1 to
+version 2, adding the learning-scope column
+([ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md)). The
+procedure above is unchanged, and `Migrate` performs the upgrade on first
+startup, atomically, inside its existing transaction and advisory lock. Every
+existing baseline is preserved and lands in the default scope; no learned
+state is discarded. The file-store snapshot moves from `version: 1` to
+`version: 2` on the same terms.
+
+**The mandatory backup above is load-bearing here, not ceremonial.** There is
+no downgrade across this change: a `v0.9.x` binary refuses version-2 state and
+fails startup, which is the intended behavior — it cannot see the scope column
+and would merge distinct learned profiles if it proceeded. Rolling back to
+`v0.9.x` means restoring the pre-upgrade backup, so take it and verify it
+before you start.
+
+Expect the first startup after the upgrade to take slightly longer than a
+restart: the migration rewrites the baseline table's primary key and restamps
+each row's `schema_version`. It is proportional to the number of actors you
+track, which is bounded by your deployment, not by traffic.
+
 **Several replicas.** If the target release changes the schema version, stop
 **all** old replicas before starting any new one. If it does not (see the
 [matrix](#compatibility-matrix)), a rolling replacement is safe: old and new
@@ -489,12 +512,20 @@ after the backup are lost.
 Running the previous binary against the database the new one has used is
 safe **only when both releases share the same schema version**:
 
-- **Same schema version** (`v0.8.0` ↔ this release; tested): the previous
-  release reads the upgraded database and produces identical analysis.
+- **Same schema version**: the previous release reads the upgraded database
+  and produces identical analysis.
 - **Different schema version**: the previous release refuses to start with
   `database schema version mismatch` (tested). That refusal is the safety
   mechanism — an older binary never mutates state whose layout it does not
   understand — and it means the backup is the only way back.
+
+**`v0.8.0` ↔ `v1.0` is now the second case.** Both releases sat on schema
+version 1 until `v1.0` moved it to 2 for learning scopes, so a binary-only
+downgrade from `v1.0` to `v0.8.0` is refused. `v0.8.0` cannot see the `scope`
+column, and proceeding would mean reading a table whose row identity it does
+not understand. Restoring the pre-upgrade backup is the only rollback path
+across this upgrade — which is why that backup is mandatory above, not
+advisory.
 
 Do not "fix" a refused downgrade by editing `trustvian_schema_version`. That
 is the one action that turns a clean refusal into silent misinterpretation of
@@ -508,16 +539,18 @@ silently resets or reinterprets learned state.
 
 | Path | Supported | Basis |
 |---|---|---|
-| `v0.8.0` → this release | **Yes, in place** | Same schema version (1); automated test from the real `v0.8.0` tag |
+| `v0.8.0` → this release | **Yes, in place** | Automatic schema upgrade 1 → 2; automated test from the real `v0.8.0` tag |
 | Patch → patch, same minor | Yes, if the schema version is unchanged | Startup schema check |
-| Minor → next minor | As that release's notes state | No multi-version migration exists yet |
+| Minor → next minor | As that release's notes state | One migration exists (1 → 2); multi-step chains do not |
 | Skipping minor versions | **No**, unless release notes say so | — |
-| Downgrade, same schema version | Binary-only is safe | Tested for `v0.8.0` ↔ this release |
-| Downgrade, different schema version | **Restore the pre-upgrade backup** | Older binary refuses newer schema (tested) |
+| Downgrade, same schema version | Binary-only is safe | Startup schema check |
+| Downgrade from this release to `v0.8.0` | **Restore the pre-upgrade backup** | Schema moved 1 → 2; `v0.8.0` refuses version 2 (tested) |
 | `memory` store, any version | Nothing survives to upgrade | — |
 | PostgreSQL major upgrade | Via dump/restore into the new server, or `pg_upgrade` | PostgreSQL's own mechanisms; tested only on 17 |
 
-The schema version today is `1` and has never changed.
+The schema version today is `2`. It was `1` from `v0.8.0` through `v0.9.x`
+and moved once, in `v1.0`, to add the learning-scope column
+([ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md)).
 
 ## Recovery drill
 

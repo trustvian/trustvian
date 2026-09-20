@@ -68,7 +68,7 @@ Event → Features → Fingerprint → Baseline(read) → Anomaly → Trust → 
 |---|---|---|
 | Features | `internal/features` | `event.Event` → `Features` (stable + volatile dimensions) |
 | Fingerprint | `internal/fingerprint` | `Features.Stable` → a deterministic `Fingerprint.ID` |
-| Baseline | `internal/baseline`, `internal/store` | statistical history per `(ActorID, Environment, Fingerprint)` |
+| Baseline | `internal/baseline`, `internal/store` | statistical history per `(Scope, ActorID, Environment, Fingerprint)` |
 | Anomaly | `internal/anomaly` | `Features` + `Baseline` → `Anomaly{Score, Confidence, Contributors}` |
 | Trust | `internal/trust` | `Anomaly` + identity + context → `Trust{Score, Risk}` |
 | Policy | `internal/policy` | `Trust` + `Features.Stable` → `Decision` + `Explanation` |
@@ -109,7 +109,7 @@ Every stage but `Baseline` is a pure function. `Baseline` is
 immutable-value-with-copy-on-write: `Baseline.Observe(...)` never
 mutates its receiver, it returns a new `Baseline`. Concurrency-safe
 storage of "the current `Baseline` for this key" is `internal/store`'s
-job — it shards a lock per `(ActorID, Environment)` key so unrelated
+job — it shards a lock per `(Scope, ActorID, Environment)` key so unrelated
 actors never contend with each other.
 
 ## Analyze is read-only; Observe is the only write path
@@ -557,7 +557,7 @@ boundary is affordable. It builds on properties that already exist:
 | `Analyze` is read-only; `Observe` is the only write path | An evaluation can score behavior without teaching the baseline |
 | Learning is gated against unsafe decisions | A candidate cannot train its way out of being blocked |
 | Behavioral state is bounded | An evaluation's cost is predictable |
-| Baselines are keyed `{ActorID, Environment}` | Scoping already exists to build isolation on |
+| Baselines are keyed `{Scope, ActorID, Environment}` | Learning isolation is a key dimension, not a platform concept the engine knows about |
 | `ActorTypeAIAgent`, and agents reuse the normal pipeline | No second engine for agents |
 | `Context.SessionID` correlates without entering the fingerprint | Runs can group events without creating behavioral identity |
 | `Context.DelegatedFrom`, bounded, behavioral | Delegation stability is measurable evidence |

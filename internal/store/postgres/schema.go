@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -18,10 +19,21 @@ import (
 //
 // Bump this only when the persisted representation changes in a way a
 // previous version's loader could misread. `Migrate` refuses to run
-// against a database whose recorded version differs, rather than
-// guessing — mirroring store.FileStore's own refusal to read an unknown
-// fileSnapshotVersion instead of silently misparsing it.
-const SchemaVersion = 1
+// against a database whose recorded version it has no upgrade path for,
+// rather than guessing — mirroring store.FileStore's own refusal to read
+// an unknown fileSnapshotVersion instead of silently misparsing it.
+//
+// Version 2 added the `scope` column and made it part of the primary
+// key, so one actor in one environment can hold several independent
+// learned histories. See
+// docs/adr/0024-learning-scope-is-a-baseline-key-dimension.md.
+const SchemaVersion = 2
+
+// schemaVersionUnscoped is the pre-learning-scope layout: one row per
+// (actor_id, environment), with no scope column. It is the one older
+// version Migrate can upgrade from; every other unrecognized version
+// still fails closed.
+const schemaVersionUnscoped = 1
 
 // Table names, exported because operational inspection through plain
 // SQL is an explicit goal of choosing PostgreSQL at all (see
@@ -72,9 +84,17 @@ const migrationAdvisoryLockKey int64 = 0x7275737476696E00 // "trustvin\0"
 // Writes recompute them from the same value they write to `baseline`,
 // inside the same transaction.
 //
+// The primary key is the *complete* learned-state identity, scope
+// included. Storing scope only inside the jsonb while leaving SQL
+// uniqueness on (actor_id, environment) would make the second scope's
+// insert collide with the first scope's row, and would leave the
+// authoritative row identity disagreeing with the Key inside the value
+// it holds. `scope` is ” for the default scope, which is what every
+// row written before version 2 already was.
+//
 // Deliberately NOT normalized into per-fingerprint / per-transition /
 // per-delegator tables. Baseline is a bounded, self-contained value
-// keyed by {ActorID, Environment}; splitting its internal maps across
+// keyed by {Scope, ActorID, Environment}; splitting its internal maps across
 // tables would (a) reshape the domain model to suit SQL, which ADR 0018
 // rules out, (b) turn every single-row atomic update into a multi-table
 // write needing its own consistency argument, and (c) invite the
@@ -83,6 +103,7 @@ const migrationAdvisoryLockKey int64 = 0x7275737476696E00 // "trustvin\0"
 // queryable in SQL if one appears.
 const createBaselineTable = `
 CREATE TABLE IF NOT EXISTS ` + baselineTable + ` (
+	scope             text        NOT NULL,
 	actor_id          text        NOT NULL,
 	environment       text        NOT NULL,
 	baseline          jsonb       NOT NULL,
@@ -91,8 +112,53 @@ CREATE TABLE IF NOT EXISTS ` + baselineTable + ` (
 	observation_count bigint      NOT NULL,
 	last_observed     timestamptz,
 	updated_at        timestamptz NOT NULL,
-	PRIMARY KEY (actor_id, environment)
+	PRIMARY KEY (scope, actor_id, environment)
 )`
+
+// unscopedUpgradeSteps rewrites a version-1 table in place, one
+// statement at a time so each failure names itself rather than hiding
+// inside a multi-statement batch.
+//
+// Order matters and each step earns its place:
+//
+//  1. `scope` is added NOT NULL DEFAULT ” so every existing row
+//     backfills to the default scope — which is what those baselines
+//     already are, semantically. Nothing is invented and no learned
+//     state moves between scopes.
+//  2. The default is then dropped, so a future insert that forgets
+//     scope fails loudly instead of silently landing in the default
+//     profile.
+//  3. The old primary key is dropped. Its name is read from
+//     pg_constraint rather than assumed to be `<table>_pkey`: a table
+//     restored from a dump, or created by an older tool, may carry a
+//     different name, and guessing would leave the table with two
+//     primary keys or none.
+//  4. The scoped primary key replaces it.
+//
+// Restamping each row's derived schema_version is step 5, and lives in
+// Migrate because it binds SchemaVersion as a parameter rather than
+// interpolating it into a constant. It is not cosmetic:
+// scripts/restore-postgres.sh verifies that no row's schema_version
+// differs from the recorded version, so leaving old rows at 1 would
+// make every post-migration backup fail its own restore check.
+//
+// All of it runs inside Migrate's existing transaction and advisory
+// lock, so it is atomic and safe against a racing process.
+var unscopedUpgradeSteps = []struct{ what, sql string }{
+	{"add scope column", `ALTER TABLE ` + baselineTable + ` ADD COLUMN IF NOT EXISTS scope text NOT NULL DEFAULT ''`},
+	{"drop scope default", `ALTER TABLE ` + baselineTable + ` ALTER COLUMN scope DROP DEFAULT`},
+	{"drop unscoped primary key", `
+DO $$
+DECLARE pk text;
+BEGIN
+	SELECT conname INTO pk FROM pg_constraint
+	 WHERE conrelid = '` + baselineTable + `'::regclass AND contype = 'p';
+	IF pk IS NOT NULL THEN
+		EXECUTE format('ALTER TABLE ` + baselineTable + ` DROP CONSTRAINT %I', pk);
+	END IF;
+END $$`},
+	{"add scoped primary key", `ALTER TABLE ` + baselineTable + ` ADD PRIMARY KEY (scope, actor_id, environment)`},
+}
 
 // createVersionTable holds exactly one row: the schema version this
 // database was initialized at. A table rather than a comment or a
@@ -217,13 +283,58 @@ func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		if err := tx.QueryRow(ctx, `SELECT version FROM `+versionTable).Scan(&recorded); err != nil {
 			return fmt.Errorf("store/postgres: read schema version: %w", err)
 		}
-		if recorded != SchemaVersion {
+		switch recorded {
+		case SchemaVersion:
+			// Already current.
+		case schemaVersionUnscoped:
+			if err := upgradeUnscoped(ctx, tx); err != nil {
+				return err
+			}
+		default:
 			return fmt.Errorf("%w: database is at version %d, this build expects %d", ErrSchemaVersionMismatch, recorded, SchemaVersion)
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("store/postgres: commit migration: %w", err)
+	}
+	return nil
+}
+
+// upgradeUnscoped performs the version 1 -> 2 upgrade: give every
+// existing baseline the default scope and make scope part of the row's
+// identity.
+//
+// It runs inside Migrate's transaction and advisory lock, so it is
+// atomic — a failure at any step rolls the whole thing back, leaving a
+// version-1 database untouched rather than half-converted — and a
+// second process starting concurrently blocks, then observes the
+// committed result instead of repeating the work.
+//
+// No learned state is read, rewritten, or discarded. Every existing row
+// keeps its jsonb exactly as it was; the Baseline inside it has a Key
+// with no Scope field, which deserializes to the default scope and so
+// already agrees with the column the upgrade backfills.
+func upgradeUnscoped(ctx context.Context, tx pgx.Tx) error {
+	for _, step := range unscopedUpgradeSteps {
+		if _, err := tx.Exec(ctx, step.sql); err != nil {
+			return fmt.Errorf("store/postgres: upgrade %d -> %d: %s: %w", schemaVersionUnscoped, SchemaVersion, step.what, err)
+		}
+	}
+
+	// Derived column, recomputed rather than interpolated — see
+	// unscopedUpgradeSteps.
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+baselineTable+` SET schema_version = $1 WHERE schema_version <> $1`, SchemaVersion,
+	); err != nil {
+		return fmt.Errorf("store/postgres: upgrade %d -> %d: restamp schema_version: %w", schemaVersionUnscoped, SchemaVersion, err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+versionTable+` SET version = $1, applied_at = now() WHERE version = $2`,
+		SchemaVersion, schemaVersionUnscoped,
+	); err != nil {
+		return fmt.Errorf("store/postgres: upgrade %d -> %d: record new version: %w", schemaVersionUnscoped, SchemaVersion, err)
 	}
 	return nil
 }

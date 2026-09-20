@@ -26,7 +26,18 @@ type Store interface {
 
 	// Observe applies one observation of fp and vol to the Baseline for
 	// key at time now, and returns the resulting Baseline.
-	Observe(ctx context.Context, key baseline.Key, fp fingerprint.Fingerprint, vol features.VolatileFeatures, now time.Time) (baseline.Baseline, error)
+	//
+	// learned reports whether the observation actually reached fp's
+	// learned statistics. It is false when Baseline.Observe's admission
+	// control refused an unknown fingerprint at capacity, and false when
+	// an implementation declined the write for its own reasons (a frozen
+	// key — see Freezer). An implementation must never report true for a
+	// write that did not happen: Engine.Observe passes this straight to
+	// its caller, and a caller measuring how much a baseline learned
+	// gets a wrong answer rather than a missing one.
+	//
+	// A returned error always accompanies learned == false.
+	Observe(ctx context.Context, key baseline.Key, fp fingerprint.Fingerprint, vol features.VolatileFeatures, now time.Time) (bl baseline.Baseline, learned bool, err error)
 }
 
 // Freezer is an optional capability a Store implementation may provide:
@@ -59,7 +70,8 @@ type Freezer interface {
 // lock. Scoping the lock to a single Key rather than a fixed hash bucket
 // means concurrent Observe/Get calls for different actors never contend
 // with each other — contention only exists between calls for the same
-// actor.
+// actor. Key includes the learning scope, so two scopes over one actor
+// are two shards and do not contend either.
 type shard struct {
 	mu       sync.RWMutex
 	baseline baseline.Baseline
@@ -90,15 +102,19 @@ func (s *InMemory) Get(ctx context.Context, key baseline.Key) (baseline.Baseline
 	return sh.baseline, true
 }
 
-func (s *InMemory) Observe(ctx context.Context, key baseline.Key, fp fingerprint.Fingerprint, vol features.VolatileFeatures, now time.Time) (baseline.Baseline, error) {
+func (s *InMemory) Observe(ctx context.Context, key baseline.Key, fp fingerprint.Fingerprint, vol features.VolatileFeatures, now time.Time) (baseline.Baseline, bool, error) {
 	sh := s.getOrCreate(key)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if sh.frozen {
-		return sh.baseline, nil
+		// Frozen is a deliberate no-op, and reporting it as learning
+		// would make an analyst's own inspection freeze look like
+		// continued drift.
+		return sh.baseline, false, nil
 	}
-	sh.baseline = sh.baseline.Observe(fp, vol, now)
-	return sh.baseline, nil
+	updated, learned := sh.baseline.Observe(fp, vol, now)
+	sh.baseline = updated
+	return sh.baseline, learned, nil
 }
 
 // Freeze implements Freezer.

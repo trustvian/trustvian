@@ -218,7 +218,7 @@ func TestAnalyzeSensitiveTargetFloorEndToEnd(t *testing.T) {
 	key := baseline.Key{ActorID: sample.Actor.ID, Environment: sample.Context.Environment}
 	seededStore := store.NewInMemory()
 	for range 50 {
-		if _, err := seededStore.Observe(ctx, key, fp, feat.Volatile, time.Now()); err != nil {
+		if _, _, err := seededStore.Observe(ctx, key, fp, feat.Volatile, time.Now()); err != nil {
 			t.Fatalf("seed Observe() error = %v", err)
 		}
 	}

@@ -1049,8 +1049,12 @@ exists, for a caller (e.g. a future OTel Collector processor,
 [task 009](archive/tasks/v0.2/009-otel-collector.md)) choosing to export it.
 
 **`store.InMemory`'s per-`Observe` cost does not grow with the number
-of distinct keys it holds — allocation-wise, at least.** Across 100,
-1,000, and 10,000 pre-populated distinct `(ActorID, Environment)` keys
+of distinct keys it holds — allocation-wise, at least.** (A key is
+`{Scope, ActorID, Environment}` as of `v1.0`; the learning scope is an
+additional key dimension, so the figures below describe one *baseline*, and
+a deployment using several scopes per actor holds correspondingly more of
+them.) Across 100,
+1,000, and 10,000 pre-populated distinct baseline keys
 (each with its own distinct `Fingerprint`), `B/op` and `allocs/op` are
 *exactly* identical at every key count (464 B, 3 allocs — the same
 copy-on-write `Fingerprints`-map rebuild `baseline.Observe` always

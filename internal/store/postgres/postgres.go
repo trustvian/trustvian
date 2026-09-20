@@ -246,8 +246,8 @@ func (s *Store) Ping(ctx context.Context) error {
 func (s *Store) Get(ctx context.Context, key baseline.Key) (baseline.Baseline, bool) {
 	var raw []byte
 	err := s.pool.QueryRow(ctx,
-		`SELECT baseline FROM `+baselineTable+` WHERE actor_id = $1 AND environment = $2`,
-		key.ActorID, key.Environment,
+		`SELECT baseline FROM `+baselineTable+` WHERE scope = $1 AND actor_id = $2 AND environment = $3`,
+		key.Scope, key.ActorID, key.Environment,
 	).Scan(&raw)
 	if err != nil {
 		return baseline.New(key), false
@@ -284,55 +284,55 @@ func (s *Store) Get(ctx context.Context, key baseline.Key) (baseline.Baseline, b
 //
 // Transaction scope is exactly this and nothing more: no scoring, policy
 // evaluation, or alert delivery happens inside it.
-func (s *Store) Observe(ctx context.Context, key baseline.Key, fp fingerprint.Fingerprint, vol features.VolatileFeatures, now time.Time) (baseline.Baseline, error) {
+func (s *Store) Observe(ctx context.Context, key baseline.Key, fp fingerprint.Fingerprint, vol features.VolatileFeatures, now time.Time) (baseline.Baseline, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return baseline.New(key), fmt.Errorf("%w: begin: %w", ErrUnavailable, err)
+		return baseline.New(key), false, fmt.Errorf("%w: begin: %w", ErrUnavailable, err)
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // no-op once Commit succeeds
 
 	empty, err := json.Marshal(baseline.New(key))
 	if err != nil {
-		return baseline.New(key), fmt.Errorf("store/postgres: encode empty baseline: %w", err)
+		return baseline.New(key), false, fmt.Errorf("store/postgres: encode empty baseline: %w", err)
 	}
 
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO `+baselineTable+`
-			(actor_id, environment, baseline, schema_version, fingerprint_count, observation_count, last_observed, updated_at)
-		 VALUES ($1, $2, $3, $4, 0, 0, NULL, now())
-		 ON CONFLICT (actor_id, environment) DO NOTHING`,
-		key.ActorID, key.Environment, empty, SchemaVersion,
+			(scope, actor_id, environment, baseline, schema_version, fingerprint_count, observation_count, last_observed, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, 0, 0, NULL, now())
+		 ON CONFLICT (scope, actor_id, environment) DO NOTHING`,
+		key.Scope, key.ActorID, key.Environment, empty, SchemaVersion,
 	); err != nil {
-		return baseline.New(key), fmt.Errorf("%w: ensure row: %w", ErrUnavailable, err)
+		return baseline.New(key), false, fmt.Errorf("%w: ensure row: %w", ErrUnavailable, err)
 	}
 
 	var raw []byte
 	if err := tx.QueryRow(ctx,
 		`SELECT baseline FROM `+baselineTable+`
-		 WHERE actor_id = $1 AND environment = $2
+		 WHERE scope = $1 AND actor_id = $2 AND environment = $3
 		 FOR UPDATE`,
-		key.ActorID, key.Environment,
+		key.Scope, key.ActorID, key.Environment,
 	).Scan(&raw); err != nil {
 		// pgx.ErrNoRows is unreachable here: the insert above
 		// guarantees the row exists and the lock holds it for this
 		// transaction. Reported rather than ignored so a future change
 		// that breaks that invariant fails loudly.
 		if errors.Is(err, pgx.ErrNoRows) {
-			return baseline.New(key), fmt.Errorf("%w: row vanished after insert for actor %q", ErrCorruptState, key.ActorID)
+			return baseline.New(key), false, fmt.Errorf("%w: row vanished after insert for actor %q", ErrCorruptState, key.ActorID)
 		}
-		return baseline.New(key), fmt.Errorf("%w: lock row: %w", ErrUnavailable, err)
+		return baseline.New(key), false, fmt.Errorf("%w: lock row: %w", ErrUnavailable, err)
 	}
 
 	var bl baseline.Baseline
 	if err := json.Unmarshal(raw, &bl); err != nil {
-		return baseline.New(key), fmt.Errorf("%w: actor %q: %w", ErrCorruptState, key.ActorID, err)
+		return baseline.New(key), false, fmt.Errorf("%w: actor %q: %w", ErrCorruptState, key.ActorID, err)
 	}
 
-	updated := bl.Observe(fp, vol, now)
+	updated, learned := bl.Observe(fp, vol, now)
 
 	encoded, err := json.Marshal(updated)
 	if err != nil {
-		return baseline.New(key), fmt.Errorf("store/postgres: encode baseline: %w", err)
+		return baseline.New(key), false, fmt.Errorf("store/postgres: encode baseline: %w", err)
 	}
 
 	// The derived columns are recomputed from the very value written to
@@ -343,19 +343,19 @@ func (s *Store) Observe(ctx context.Context, key baseline.Key, fp fingerprint.Fi
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE `+baselineTable+`
-		 SET baseline = $3, schema_version = $4, fingerprint_count = $5,
-		     observation_count = $6, last_observed = $7, updated_at = now()
-		 WHERE actor_id = $1 AND environment = $2`,
-		key.ActorID, key.Environment, encoded, SchemaVersion,
+		 SET baseline = $4, schema_version = $5, fingerprint_count = $6,
+		     observation_count = $7, last_observed = $8, updated_at = now()
+		 WHERE scope = $1 AND actor_id = $2 AND environment = $3`,
+		key.Scope, key.ActorID, key.Environment, encoded, SchemaVersion,
 		len(updated.Fingerprints), totalObservations(updated), lastObserved,
 	); err != nil {
-		return baseline.New(key), fmt.Errorf("%w: update row: %w", ErrUnavailable, err)
+		return baseline.New(key), false, fmt.Errorf("%w: update row: %w", ErrUnavailable, err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return baseline.New(key), fmt.Errorf("%w: commit: %w", ErrUnavailable, err)
+		return baseline.New(key), false, fmt.Errorf("%w: commit: %w", ErrUnavailable, err)
 	}
-	return updated, nil
+	return updated, learned, nil
 }
 
 // totalObservations sums Count across every Fingerprint — the

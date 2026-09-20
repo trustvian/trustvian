@@ -169,6 +169,12 @@ func TestStoreContract(t *testing.T) {
 			t.Run("SequenceStateSurvivesThePort", func(t *testing.T) {
 				contractSequenceStateSurvives(t, newStore)
 			})
+			t.Run("LearningScopesAreIsolated", func(t *testing.T) {
+				contractLearningScopesIsolated(t, newStore)
+			})
+			t.Run("ObserveReportsAdmissionRefusal", func(t *testing.T) {
+				contractObserveReportsAdmission(t, newStore)
+			})
 		})
 	}
 }
@@ -198,7 +204,7 @@ func contractObserveThenGet(t *testing.T, newStore storeFactory) {
 	ctx := context.Background()
 	fp := testFingerprint()
 
-	if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, contractTime); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, contractTime); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 
@@ -219,7 +225,7 @@ func contractObserveReturnValueMatchesGet(t *testing.T, newStore storeFactory) {
 	ctx := context.Background()
 	fp := testFingerprint()
 
-	returned, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, contractTime)
+	returned, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, contractTime)
 	if err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
@@ -246,7 +252,7 @@ func contractObserveIsIncremental(t *testing.T, newStore storeFactory) {
 
 	const observations = 5
 	for range observations {
-		if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, now); err != nil {
+		if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, now); err != nil {
 			t.Fatalf("Observe() error = %v", err)
 		}
 		now = now.Add(time.Second)
@@ -268,13 +274,13 @@ func contractGetIsImmutableSnapshot(t *testing.T, newStore storeFactory) {
 	ctx := context.Background()
 	fp := testFingerprint()
 
-	if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, contractTime); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, contractTime); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 	snapshot, _ := s.Get(ctx, testKey)
 	countAtSnapshot := snapshot.Fingerprints[fp.ID].Count
 
-	if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, contractTime.Add(time.Second)); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, contractTime.Add(time.Second)); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 
@@ -289,7 +295,7 @@ func contractDistinctKeysIsolated(t *testing.T, newStore storeFactory) {
 	fp := testFingerprint()
 
 	other := baseline.Key{ActorID: "svc-other", Environment: "production"}
-	if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, contractTime); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, contractTime); err != nil {
 		t.Fatalf("Observe() error = %v", err)
 	}
 
@@ -337,7 +343,7 @@ func contractConcurrentSameKeyLosesNoUpdates(t *testing.T, newStore storeFactory
 		go func() {
 			defer wg.Done()
 			for range observationsEach {
-				if _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, contractTime); err != nil {
+				if _, _, err := s.Observe(ctx, testKey, fp, features.VolatileFeatures{}, contractTime); err != nil {
 					errs <- err
 					return
 				}
@@ -378,7 +384,7 @@ func contractConcurrentDistinctKeysLoseNoUpdates(t *testing.T, newStore storeFac
 			defer wg.Done()
 			key := baseline.Key{ActorID: fmt.Sprintf("actor-%d", i), Environment: "production"}
 			for range observationsEach {
-				if _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, contractTime); err != nil {
+				if _, _, err := s.Observe(ctx, key, fp, features.VolatileFeatures{}, contractTime); err != nil {
 					errs <- err
 					return
 				}
@@ -415,11 +421,11 @@ func contractSequenceStateSurvives(t *testing.T, newStore storeFactory) {
 	first, second := testFingerprint(), otherContractFingerprint()
 	now := contractTime
 
-	if _, err := s.Observe(ctx, testKey, first, features.VolatileFeatures{}, now); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, first, features.VolatileFeatures{}, now); err != nil {
 		t.Fatalf("Observe(first) error = %v", err)
 	}
 	now = now.Add(time.Second)
-	if _, err := s.Observe(ctx, testKey, second, features.VolatileFeatures{}, now); err != nil {
+	if _, _, err := s.Observe(ctx, testKey, second, features.VolatileFeatures{}, now); err != nil {
 		t.Fatalf("Observe(second) error = %v", err)
 	}
 
@@ -454,11 +460,11 @@ func TestStoreContractImplementationsAgreeOnLogicalState(t *testing.T) {
 		t.Helper()
 		now := contractTime
 		for range 3 {
-			if _, err := s.Observe(ctx, testKey, first, features.VolatileFeatures{HasLatency: true, Latency: 10 * time.Millisecond}, now); err != nil {
+			if _, _, err := s.Observe(ctx, testKey, first, features.VolatileFeatures{HasLatency: true, Latency: 10 * time.Millisecond}, now); err != nil {
 				t.Fatalf("Observe(first) error = %v", err)
 			}
 			now = now.Add(time.Second)
-			if _, err := s.Observe(ctx, testKey, second, features.VolatileFeatures{Error: true}, now); err != nil {
+			if _, _, err := s.Observe(ctx, testKey, second, features.VolatileFeatures{Error: true}, now); err != nil {
 				t.Fatalf("Observe(second) error = %v", err)
 			}
 			now = now.Add(time.Second)
@@ -482,5 +488,126 @@ func TestStoreContractImplementationsAgreeOnLogicalState(t *testing.T) {
 			t.Errorf("%s and %s diverge on logical state for an identical operation sequence:\n%s: %+v\n%s: %+v",
 				name, referenceName, name, got, referenceName, reference)
 		}
+	}
+}
+
+// contractLearningScopesIsolated is task 051's guarantee, asserted here
+// rather than per-backend so no implementation can differ on it. Two
+// keys that agree on actor and environment but differ only in Scope are
+// two separate learned histories, and a backend that keys rows or map
+// entries on actor+environment alone fails this immediately.
+//
+// The reverse direction is checked too: the same scope must still find
+// the same baseline, so an implementation cannot pass by isolating
+// everything from everything.
+func contractLearningScopesIsolated(t *testing.T, newStore storeFactory) {
+	s := newStore(t)
+	ctx := context.Background()
+	fp := testFingerprint()
+
+	scopeA := baseline.Key{Scope: "scope-a", ActorID: testKey.ActorID, Environment: testKey.Environment}
+	scopeB := baseline.Key{Scope: "scope-b", ActorID: testKey.ActorID, Environment: testKey.Environment}
+
+	const observations = 3
+	for i := range observations {
+		if _, _, err := s.Observe(ctx, scopeA, fp, features.VolatileFeatures{}, contractTime.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("Observe(scope-a) error = %v", err)
+		}
+	}
+
+	// Scope B has never been written and must be empty, even though its
+	// actor and environment have plenty of history in scope A.
+	blB, ok := s.Get(ctx, scopeB)
+	if ok {
+		t.Errorf("Get(scope-b) ok = true, want false — scope-a's observations created scope-b's Baseline")
+	}
+	if len(blB.Fingerprints) != 0 {
+		t.Errorf("Get(scope-b) len(Fingerprints) = %d, want 0 — learned state crossed a scope boundary", len(blB.Fingerprints))
+	}
+
+	// The default scope is a third, equally separate identity.
+	if blDefault, ok := s.Get(ctx, testKey); ok || len(blDefault.Fingerprints) != 0 {
+		t.Errorf("Get(default scope) = %+v, ok = %v; want an empty, unknown Baseline", blDefault.Fingerprints, ok)
+	}
+
+	// Writing scope B must not disturb scope A.
+	if _, _, err := s.Observe(ctx, scopeB, fp, features.VolatileFeatures{}, contractTime); err != nil {
+		t.Fatalf("Observe(scope-b) error = %v", err)
+	}
+	blA, ok := s.Get(ctx, scopeA)
+	if !ok {
+		t.Fatal("Get(scope-a) ok = false after writing scope-b")
+	}
+	if got := blA.Fingerprints[fp.ID].Count; got != observations {
+		t.Errorf("scope-a Count = %d, want %d — scope-b's write reached scope-a", got, observations)
+	}
+	if blA.Key != scopeA {
+		t.Errorf("scope-a Baseline.Key = %+v, want %+v — the stored key must agree with the key it was written under", blA.Key, scopeA)
+	}
+	blB, ok = s.Get(ctx, scopeB)
+	if !ok {
+		t.Fatal("Get(scope-b) ok = false after writing it")
+	}
+	if got := blB.Fingerprints[fp.ID].Count; got != 1 {
+		t.Errorf("scope-b Count = %d, want 1 — scope-a's history bled into scope-b", got)
+	}
+}
+
+// contractObserveReportsAdmission pins the learned bool every
+// implementation must return. Driving a baseline to the fingerprint cap
+// through the port is slow-ish but it is the only way to reach the
+// refusal path honestly — and the point of the contract suite is that
+// PostgreSQL answers exactly as InMemory does.
+func contractObserveReportsAdmission(t *testing.T, newStore storeFactory) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// maxFingerprints is internal/baseline's own constant and not
+	// exported; 512 is its documented value (ADR 0019). If it ever
+	// changes, this loop's premise check below fails loudly rather than
+	// asserting nothing.
+	const capacity = 512
+	distinct := func(i int) fingerprint.Fingerprint {
+		return fingerprint.Compute(features.StableFeatures{
+			ActorType:         event.ActorTypeService,
+			OperationCategory: event.OperationCategoryHTTP,
+			OperationName:     fmt.Sprintf("GET /r/%d", i),
+			TargetName:        "api",
+			Environment:       testKey.Environment,
+		})
+	}
+
+	for i := range capacity {
+		_, learned, err := s.Observe(ctx, testKey, distinct(i), features.VolatileFeatures{}, contractTime.Add(time.Duration(i)*time.Second))
+		if err != nil {
+			t.Fatalf("Observe(%d) error = %v", i, err)
+		}
+		if !learned {
+			t.Fatalf("Observe(%d) learned = false below capacity", i)
+		}
+	}
+
+	bl, _, err := s.Observe(ctx, testKey, distinct(capacity), features.VolatileFeatures{}, contractTime.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Observe(at capacity) error = %v — refusal must not be an error", err)
+	}
+	if len(bl.Fingerprints) != capacity {
+		t.Fatalf("premise broken: baseline holds %d fingerprints, expected the documented cap of %d", len(bl.Fingerprints), capacity)
+	}
+
+	_, learned, err := s.Observe(ctx, testKey, distinct(capacity+1), features.VolatileFeatures{}, contractTime.Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("Observe(unknown at capacity) error = %v", err)
+	}
+	if learned {
+		t.Error("Observe(unknown at capacity) learned = true, want false — admission was refused")
+	}
+
+	_, learned, err = s.Observe(ctx, testKey, distinct(0), features.VolatileFeatures{}, contractTime.Add(3*time.Hour))
+	if err != nil {
+		t.Fatalf("Observe(known at capacity) error = %v", err)
+	}
+	if !learned {
+		t.Error("Observe(known at capacity) learned = false, want true — a known fingerprint keeps learning")
 	}
 }
