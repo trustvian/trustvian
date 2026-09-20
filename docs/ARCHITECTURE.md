@@ -537,8 +537,8 @@ than a preference:
 
 1. **The platform may depend on the core. The core must never depend on the
    platform.** Not by import, not by interface, not by configuration.
-2. **The platform must not import `internal/*`.** Go enforces this across a
-   module boundary; a test asserts it regardless.
+2. **The platform must not import `internal/*`.** Enforced by an explicit
+   automated check, not by the module boundary — see below.
 3. **No platform-aware branches in the engine.** There is no
    `if runningUnderControl`, no `EvaluationRunID` field on `Event`, and no
    mode flag. An engine that behaves differently under the platform is an
@@ -631,10 +631,21 @@ reconnect behavior as part of its design — not after its first outage.
 The platform is expected to live in a **separate Go module inside this
 repository**, the same arrangement `processor/` and `examples/` already use.
 That choice and its trade-offs are argued in
-[ADR 0022](adr/0022-core-platform-boundary.md); the short version is that a
-module boundary makes rule 2 a compiler error rather than a code-review habit,
-and this repository already runs the `GOWORK=off` discipline that keeps such a
-boundary honest.
+[ADR 0022](adr/0022-core-platform-boundary.md).
+
+One thing the module boundary does **not** buy, stated here because it is easy
+to assume otherwise: it does not enforce rule 2. Go's `internal/` restriction
+turns on import-path ancestry rather than module membership, so a nested module
+whose path is `github.com/trustvian/trustvian/platform` could import
+`…/internal/store` and compile. That is why `processor/` and `examples/` are
+named `trustvian-processor` and `trustvian-examples` — their compiler
+enforcement comes from the module *path*, not from being modules.
+
+Rule 2 is therefore enforced by an explicit check in CI that no platform
+source imports `github.com/trustvian/trustvian/internal/…`. A non-prefixed
+module path is recommended alongside it as a second line of defence.
+`GOWORK=off` verification remains for a different purpose: proving the
+module's declared dependencies actually resolve, which a workspace hides.
 
 ## Relationship to a future Alert & Notification layer
 

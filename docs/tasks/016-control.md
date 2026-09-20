@@ -4,7 +4,7 @@
 nothing · **Blocks:** nothing · **Status:** the constraint below stands;
 the *scheduling* assumption in it does not.
 
-> **Superseded in part by [task 049](049-platform-architecture-alignment.md).**
+> **Superseded in part by [task 049](v1.0/049-platform-architecture-alignment.md).**
 > This task was written when a control plane was a post-`v1.0`,
 > enterprise-scale idea gated on external adoption. The product direction
 > changed: a **local-first** control plane is now `v1.0` scope, decomposed

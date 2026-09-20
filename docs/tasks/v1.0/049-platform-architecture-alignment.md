@@ -36,22 +36,22 @@ major version.
 ## Scope
 
 - Record the product lifecycle and the two-layer model in
-  [ADR 0022](../adr/0022-core-platform-boundary.md), including the
+  [ADR 0022](../../adr/0022-core-platform-boundary.md), including the
   module-boundary choice and its trade-offs.
-- Restructure [ROADMAP.md](../ROADMAP.md)'s `v1.0` into two tracks —
+- Restructure [ROADMAP.md](../../ROADMAP.md)'s `v1.0` into two tracks —
   engine production readiness, unchanged, and the platform — and publish
   the milestone sequence.
-- Replace [ARCHITECTURE.md](../ARCHITECTURE.md)'s Control/Cloud section
+- Replace [ARCHITECTURE.md](../../ARCHITECTURE.md)'s Control/Cloud section
   with the platform boundary: the four invariants, what the core already
   provides, and the one core change the platform requires.
-- Update [task 016](016-control.md): its constraint stands, its
+- Update [task 016](../016-control.md): its constraint stands, its
   scheduling assumption does not.
 - Name the platform domain vocabulary — Project, Agent, Candidate,
   Evaluation Run, Behavioral Profile, Scorecard, Promotion — so later
   tasks share it.
 - State the learning-isolation problem and the constraints on solving
   it, without solving it.
-- Record in [ADR 0023](../adr/0023-interfaces-are-adapters.md) that CLI,
+- Record in [ADR 0023](../../adr/0023-interfaces-are-adapters.md) that CLI,
   TUI, and WebUI are adapters over one set of control-plane services,
   that the realtime bus is defined by its abstraction rather than its
   transport, and that persistence is a set of capabilities rather than
@@ -160,22 +160,22 @@ full WebUI.
 validation · 070 platform security hardening · 071 platform backup, restore
 and upgrade · 072 OSS platform `v1.0` release gate.
 
-Two core-touching tasks is the budget. A third is a signal that the boundary
-is being violated, and the response is to re-examine the design rather than
-extend the engine.
+Tasks 050 and 051 are the only core changes currently expected. Any
+additional core change requires explicit architectural review and must remain
+generic rather than platform-aware.
 
 ## Conflicts this task surfaced
 
 Neither blocks planning; both are cheaper to decide than to discover.
 
 **CLI exit codes.** The CLI ships `0`/`1`/`2` meaning success, run failure,
-usage error, and [the compatibility contract](../compatibility.md#cli) treats
+usage error, and [the compatibility contract](../../compatibility.md#cli) treats
 them as automation-facing. The evaluation direction wants `1` to mean *gate
 failed*. Task 060 owns the choice: separate codes for `eval`, or a
 contract-level change that costs a major version.
 
 **Fingerprint admission during long evaluations.** A baseline admits at most
-512 identities ([ADR 0019](../adr/0019-bounded-fingerprint-admission.md)). A
+512 identities ([ADR 0019](../../adr/0019-bounded-fingerprint-admission.md)). A
 long evaluation of a wide-surface agent could reach it and silently stop
 learning while still reporting. Task 051 owns it, since learning-scope
 isolation changes what counts toward the bound.

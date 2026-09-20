@@ -42,7 +42,8 @@ violable and each violation is quiet:
 1. The platform may depend on the core. **The core must never depend on
    the platform** — not by import, not by interface, not by
    configuration.
-2. **The platform must not import `internal/*`.**
+2. **The platform must not import `internal/*`.** Enforced by an explicit
+   CI check, not by the module boundary alone — see below.
 3. **No platform-aware branches in the engine.** No
    `if runningUnderControl`, no mode flag, no `EvaluationRunID` on
    `Event`.
@@ -71,14 +72,37 @@ easiest to erode. Nothing but review discipline stops a platform package
 importing `internal/`, and the failure is silent — the code compiles,
 the tests pass, and the boundary is gone before anyone notices.
 
-**A separate module inside this repository** is chosen. Go's `internal/`
-rule is enforced across a module boundary by the compiler, so invariant
-2 becomes a build failure rather than a review habit. Cross-cutting
+**A separate module inside this repository** is chosen. Cross-cutting
 changes stay in one repository, one pull request, one CI run. The
 repository already runs exactly this arrangement twice — `processor/`
 and `examples/` are separate modules resolving the core through a
 `replace` directive, and CI verifies both with `GOWORK=off` precisely
 because a workspace hides broken module boundaries.
+
+**A module boundary does not, on its own, enforce invariant 2.** Go's
+`internal/` rule turns on *import-path ancestry*, not on module
+membership: a package may import `github.com/trustvian/trustvian/internal/…`
+whenever its own import path sits under `github.com/trustvian/trustvian/`.
+So a nested module whose path is `github.com/trustvian/trustvian/platform`
+would compile such an import happily, module boundary or not. Verified
+rather than assumed: a throwaway module at that path builds a core
+`internal/store` import successfully, while the same file under the
+module path `trustvian-platform` is rejected with *"use of internal
+package … not allowed"*.
+
+That is why `processor/` and `examples/` are named `trustvian-processor`
+and `trustvian-examples` rather than repository-prefixed paths — they
+get compiler enforcement as a consequence of their module path, not of
+being modules.
+
+Invariant 2 is therefore enforced **explicitly**, by an automated check
+in CI that no platform source imports
+`github.com/trustvian/trustvian/internal/…`. Choosing a non-prefixed
+module path for the platform is recommended as a second line of defence,
+since it makes the violation a build failure too — but the check is the
+enforcement, and the path is the belt to its braces. `GOWORK=off`
+verification stays in place for a different property: that the module's
+declared dependencies actually resolve, which a workspace hides.
 
 The trade-off accepted: a `replace` directive is not how an external
 consumer resolves the module, so the platform module's dependency on
@@ -146,8 +170,10 @@ raised one level.
   for results, and learning-scope isolation. Both are additive. If a
   third appears, the boundary is being violated and the design should be
   re-examined rather than the engine extended.
-- Invariants 2 and 3 are release gates for `v1.0`, asserted by test
-  rather than by review, because both fail silently.
+- Invariants 2 and 3 are release gates for `v1.0`, asserted by an
+  automated check rather than by review, because both fail silently —
+  and, for invariant 2, because the module boundary alone would not
+  catch it.
 - No analytical store — ClickHouse or otherwise — ever becomes a
   dependency of the engine. The platform may adopt one when measured
   volume justifies it.

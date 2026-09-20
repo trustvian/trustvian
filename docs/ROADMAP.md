@@ -1,7 +1,12 @@
 # Roadmap
 
-Where Trustvian is going, and what has to be true before the open-source core
-is called `v1.0`.
+Where Trustvian is going, and what has to be true before the open-source
+product is called `v1.0`.
+
+`v1.0` means the OSS **platform**: the behavioral engine, held to its existing
+production-readiness and compatibility commitments, plus the local-first
+control plane that makes it usable as a product. The engine's contract is not
+weakened to get there — the platform requirements are additive.
 
 This document is deliberately forward-looking. What already shipped is in
 [CHANGELOG.md](../CHANGELOG.md); how the system works is in
@@ -9,8 +14,19 @@ This document is deliberately forward-looking. What already shipped is in
 decisions were made is in [`adr/`](adr/); the specifications behind completed
 work are in [`archive/tasks/`](archive/tasks/README.md).
 
-Status vocabulary: **SHIPPED**, **CURRENT**, **NEXT**, **FUTURE**. Nothing
-marked FUTURE is scoped, designed, committed, or dated.
+Status vocabulary:
+
+| Status | Meaning |
+|---|---|
+| **SHIPPED** | Released and in use |
+| **CURRENT** | The stable line today |
+| **NEXT** | The milestone being worked toward |
+| **PLANNED** | Approved and decomposed into tasks, not implemented |
+| **FUTURE** | A direction, not scoped, designed, committed, or dated |
+
+`v1.0` Track B is PLANNED: the architecture is decided and the work is broken
+into numbered tasks, but none of it exists. Everything under
+[Beyond v1.0](#beyond-v10) is FUTURE.
 
 ## Product Direction
 
@@ -147,10 +163,23 @@ It has two tracks, and both must land:
 Track A is a gate over work that already exists. Track B is new construction,
 decomposed into small milestones rather than one "build Control" task.
 
-**Neither track changes the engine's behavior.** No scoring formula, no
-fingerprint, no baseline key, and no storage schema changes to make the
-platform possible. If a platform requirement appears to need one, that is a
-signal to redesign the boundary, not the engine.
+**Neither track changes what the engine decides.** No scoring formula and no
+fingerprint composition changes to make the platform possible.
+
+The invariant is about *behavioral identity*, not about the engine being
+frozen. Platform concepts — Project, Agent, Candidate, EvaluationRun,
+Scorecard, Promotion — must never enter behavioral identity or appear in the
+core as types, fields, or options. Learning-scope isolation, by contrast, may
+require a **generic, additive** change to the core or its persistence. Task
+051 owns that design — see the
+[milestone sequence](#milestone-sequence) — and whatever it chooses must stay
+generic rather than becoming platform-aware. If such a change
+alters the persisted `Baseline` shape, the existing storage-versioning and
+migration requirements apply unchanged — see
+[Compatibility Contract § persisted state](compatibility.md#persisted-state).
+
+A platform requirement that appears to need a *platform-aware* engine change
+is a signal to redesign the boundary, not the engine.
 
 ## Track A — Engine production readiness
 
@@ -249,9 +278,9 @@ the public documentation.
 
 ## Track B — Platform
 
-Everything here is **FUTURE**: approved direction, no implementation. The
-concepts below are named so that later tasks share one vocabulary, not because
-any of them exists.
+Everything here is **PLANNED**: approved direction, decomposed into tasks,
+none implemented. The concepts below are named so that later tasks share one
+vocabulary, not because any of them exists.
 
 ### The domain the platform owns
 
