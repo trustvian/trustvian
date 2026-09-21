@@ -1113,6 +1113,38 @@ processed a million records writes the same rows as one that processed ten:
 one aggregate, one header, and at most 512 entries. Raw event history is a
 separate capability with its own volume question.
 
+### v1.0 task 058 (Local Control-Plane API and Ingest)
+
+Service-level operations over local SQLite.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `IngestDecisionRecord` | 1,523,510 | 448,419 | 8,965 |
+| `CompareEvaluations32` | 362,977 | 131,112 | 2,361 |
+| `CompareEvaluations512` | 1,411,803 | 1,480,610 | 22,555 |
+
+Five runs each, darwin/arm64, Apple M3 Pro, Go 1.27, file-backed SQLite with
+crash durability on. `ns/op` is machine- and session-specific — see
+[reading the numbers](#reading-the-numbers).
+
+**No latency gate is asserted, and durability was not weakened for these.**
+
+**Ingest cost is dominated by persistence, not by the reducers.** One accepted
+record rewrites the run's whole evidence — aggregate row, snapshot header and
+every behavior entry — inside one transaction, because the cursor and the
+evidence must become durable together. So ingest tracks the *bounded* snapshot
+it rewrites rather than the record it accepted, which is why a single record
+costs about what task 057 measured for a full evidence save.
+
+That is a deliberate trade. Batching would amortize it, and would also mean a
+window where the sequence and the evidence disagree.
+
+**Comparison cost tracks behavioral cardinality, not history length.** The 16×
+step from 32 to 512 behaviors a side costs under 4×: two bounded evidence
+loads plus a diff of at most 512 behaviors per side. A run that ingested a
+million records compares exactly as fast as one that ingested a thousand,
+because no table grows per event.
+
 ## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —

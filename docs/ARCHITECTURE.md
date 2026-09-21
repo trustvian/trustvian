@@ -538,9 +538,41 @@ driver dependency in that package; the boundary check still holds, and the
 core's build graph contains none of it. See
 [ADR 0030](adr/0030-local-persistence-stores-authoritative-bounded-state.md).
 
-Still absent: transport, an API, realtime, promotion, and event history. A
-gate verdict has no side effect — it is evidence about acceptance, not an
-action. This section records the boundary all of it respects, decided in
+Task 058 added the first service layer and a transport over it:
+
+```text
+producer / future CLI · TUI · WebUI
+              │
+              ▼
+        HTTP / JSON  ← adapter only, in platform/httpapi
+              │
+              ▼
+         ControlPlane ← authoritative services
+              │
+              ▼
+     store capabilities → SQLite
+```
+
+`ControlPlane` owns every rule about what an evaluation is; the handler
+decodes, calls one method, and maps the result. The adapter lives in a
+subpackage so it cannot reach package-private state, and a source-scanning
+test fails if it ever references `CompareBehaviorSnapshots`,
+`NewEvaluationScorecard`, `EvaluateEvaluationGate` or a store type directly.
+
+Ingest consumes the public `DecisionRecord` and nothing else — the control
+plane is not a second engine host, and no route analyzes a raw `Event`. Since
+a duplicate record counts twice by design, retries are made safe by a
+monotonic per-run sequence plus the digest of the last accepted record: O(1)
+durable state, with gaps, stale numbers and divergent retries all failing
+closed. The schema moved to version 2 for that cursor, with a real migration
+from version 1. See
+[ADR 0031](adr/0031-control-plane-owns-ingest-and-http-is-an-adapter.md).
+
+Still absent: realtime, the developer CLI and TUI, the WebUI, promotion, and
+event history. The API binds no listener — composing one is a later task, and
+it must default to loopback. A gate verdict still has no side effect: it is
+evidence about acceptance, not an action. This section records the boundary
+all of it respects, decided in
 [ADR 0022](adr/0022-core-platform-boundary.md).
 
 The two reducers are deliberately separate. An aggregate is O(1) in the record

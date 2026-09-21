@@ -33,6 +33,11 @@ here and in its own documentation.
 
 ## Compatibility matrix
 
+The platform `/v1` rows describe the **intended** `v1` contract. That surface
+ships with `v1.0` and may still change through reviewed work before the
+release; the rows are here so the intent is recorded now rather than
+reconstructed later. Everything else in this table is already released.
+
 | Surface | Class | v1 guarantee | Allowed in a minor | Breaking change requires |
 |---|---|---|---|---|
 | `event.Event` and its field shapes | STABLE | Fields are not removed, renamed, or redefined | New optional fields whose zero value means "unset" | Major |
@@ -62,6 +67,13 @@ here and in its own documentation.
 | Health and readiness endpoints | OPERATIONALLY STABLE | `/livez` and `/readyz` paths, and their HTTP status semantics | New endpoints, new response fields | Major |
 | Health response body | OBSERVATIONAL | Status code is the contract; the body is diagnostic | Any change | None |
 | Webhook payload envelope | STABLE | `version` field, currently `"1"`; `alert` object field names | Additive fields inside `alert` | New envelope version |
+| Platform `/v1` control-plane route shapes | STABLE | Path, method and path-parameter shape of each documented `/v1` route | New routes; new optional request fields | Major, or a new path version |
+| Platform `/v1` JSON field names | STABLE | A published request or response field name keeps its meaning | New fields — **consumers must tolerate unknown fields** | Major, or a new path version |
+| Platform ingest envelope | STABLE | `version` field, currently `"1"`; `sequence`, `behavioral_profile`, `record` | Additive envelope fields | New envelope version |
+| Platform error `code` values and HTTP statuses | STABLE | A code and its status keep the condition they name | New codes | Major |
+| Platform error `message` text | OBSERVATIONAL | The code and status are the contract; wording is diagnostic | Any change | None |
+| Platform ingest sequence semantics | STABLE | Monotonic from 1; expected applies, identical retry of the last replays, gap and stale fail | — | Major |
+| Platform SQLite schema | OPERATIONALLY STABLE | Forward-only, version-gated; currently version 2 | Additive tables or columns with a schema-version bump and a migration | Major for a destructive change |
 | Container entrypoint and ports | OPERATIONALLY STABLE | `trustvian-collector` entrypoint; `4317`, `4318`, `13133`; runs as `nonroot` | New ports | Major |
 | Image name and immutable tags | OPERATIONALLY STABLE | `ghcr.io/trustvian/trustvian-collector:vX.Y.Z` is immutable | — | Major |
 | Floating image tags (`latest`, `X.Y`) | OBSERVATIONAL | Convenience aliases; they move by design | Move on every stable release | None |

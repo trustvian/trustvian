@@ -35,7 +35,7 @@ import (
 // schema version. They change for different reasons, and coupling them would
 // force a migration on an unrelated release or hide a real one behind an
 // unchanged number.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // Table names. Compile-time constants: these are the only identifiers that
 // ever appear in assembled SQL. Every caller-supplied value is a bound
@@ -49,6 +49,9 @@ const (
 	tableAggregates    = "platform_evaluation_aggregates"
 	tableSnapshots     = "platform_behavior_snapshots"
 	tableEntries       = "platform_behavior_entries"
+
+	// Added by schema v2: one ingest cursor row per run.
+	tableIngestState = "platform_evaluation_ingest_state"
 )
 
 // schemaTables is every table this schema owns, and the allowlist a test
@@ -57,6 +60,7 @@ const (
 var schemaTables = []string{
 	tableSchemaVersion, tableProjects, tableAgents, tableCandidates,
 	tableRuns, tableAggregates, tableSnapshots, tableEntries,
+	tableIngestState,
 }
 
 // SQLiteStore is the local persistence adapter.
@@ -186,24 +190,92 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 // partial v1 schema is operator-visible damage, and silently rebuilding a
 // table would discard whatever else went missing with it.
 func (s *SQLiteStore) verifySchema(ctx context.Context) error {
-	if err := s.verifySchemaVersion(ctx); err != nil {
+	version, err := s.storedSchemaVersion(ctx)
+	if err != nil {
 		return err
 	}
 
+	switch version {
+	case SchemaVersion:
+		return s.requireTables(ctx, SchemaVersion, schemaTables)
+
+	case schemaVersionV1:
+		// A task 057 database. Its own schema must be complete before it is
+		// migrated: a partial v1 is damage, and migrating on top of damage
+		// would bury it under a version number claiming everything is fine.
+		if err := s.requireTables(ctx, schemaVersionV1, schemaTablesV1); err != nil {
+			return err
+		}
+		return s.migrateV1ToV2(ctx)
+
+	default:
+		// No path from anything else. Newer is refused too: this binary
+		// cannot know what a future schema means.
+		return fmt.Errorf("%w: database reports version %d, this build supports %d",
+			ErrStoreSchemaVersion, version, SchemaVersion)
+	}
+}
+
+// requireTables refuses a version claim the schema does not actually back.
+//
+// A version row is a claim, not proof. A partial restore or a manual DROP can
+// leave metadata saying v2 beside a schema missing tables, and accepting it
+// moves the failure from open to the first write. Nothing is recreated: there
+// is no repair migration, and rebuilding one table would discard whatever
+// else went missing with it.
+func (s *SQLiteStore) requireTables(ctx context.Context, version int, required []string) error {
 	present, err := s.tablesPresent(ctx)
 	if err != nil {
 		return err
 	}
 	var missing []string
-	for _, required := range schemaTables {
-		if !slices.Contains(present, required) {
-			missing = append(missing, required)
+	for _, name := range required {
+		if !slices.Contains(present, name) {
+			missing = append(missing, name)
 		}
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf(
 			"%w: schema reports version %d but required tables are missing: %v",
-			ErrStoreSchemaVersion, SchemaVersion, missing)
+			ErrStoreSchemaVersion, version, missing)
+	}
+	return nil
+}
+
+// migrateV1ToV2 adds the ingest cursor table and stamps version 2.
+//
+// Both in one transaction, so a failure leaves a readable v1 rather than a
+// half-stamped hybrid — the same fail-closed discipline initialization uses.
+// Existing rows are not touched: the migration adds a table and changes a
+// number, and every project, agent, candidate, run and piece of evidence is
+// preserved exactly.
+//
+// Runs that already hold evidence get no cursor row here. Their sequence is
+// derived from the aggregate's record count on first read, because one ingest
+// is one record — and no digest is invented for a record this code never saw.
+func (s *SQLiteStore) migrateV1ToV2(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: migrate schema v1 to v2: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	if _, err := tx.ExecContext(ctx, ingestStateTableStatement()); err != nil {
+		return fmt.Errorf("platform: migrate schema v1 to v2: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`, SchemaVersion); err != nil {
+		return fmt.Errorf("platform: migrate schema v1 to v2: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		// Another opener may have migrated first. The durable schema decides,
+		// as it does for initialization: rollback has already happened, so
+		// re-inspection cannot deadlock against the single connection.
+		if version, verr := s.storedSchemaVersion(ctx); verr == nil && version == SchemaVersion {
+			return s.requireTables(ctx, SchemaVersion, schemaTables)
+		}
+		return fmt.Errorf("platform: migrate schema v1 to v2: %w", err)
 	}
 	return nil
 }
@@ -232,23 +304,27 @@ func (s *SQLiteStore) tablesPresent(ctx context.Context) ([]string, error) {
 	return present, nil
 }
 
-func (s *SQLiteStore) verifySchemaVersion(ctx context.Context) error {
+// schemaVersionV1 is task 057's schema: everything v2 has except the ingest
+// cursor table. Named so the migration path reads as a version, not a number.
+const schemaVersionV1 = 1
+
+// schemaTablesV1 is what a complete v1 database holds.
+var schemaTablesV1 = []string{
+	tableSchemaVersion, tableProjects, tableAgents, tableCandidates,
+	tableRuns, tableAggregates, tableSnapshots, tableEntries,
+}
+
+func (s *SQLiteStore) storedSchemaVersion(ctx context.Context) (int, error) {
 	var version int
 	err := s.db.QueryRowContext(ctx,
 		`SELECT version FROM `+tableSchemaVersion+` WHERE id = 1`).Scan(&version)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return fmt.Errorf("%w: version table holds no version row", ErrStoreSchemaVersion)
+		return 0, fmt.Errorf("%w: version table holds no version row", ErrStoreSchemaVersion)
 	case err != nil:
-		return fmt.Errorf("platform: read schema version: %w", err)
-	case version != SchemaVersion:
-		// No previous platform SQLite version exists, so there is nothing to
-		// migrate from and no v0 to invent. Newer is equally refused: this
-		// binary cannot know what a future schema means.
-		return fmt.Errorf("%w: database reports version %d, this build supports %d",
-			ErrStoreSchemaVersion, version, SchemaVersion)
+		return 0, fmt.Errorf("platform: read schema version: %w", err)
 	}
-	return nil
+	return version, nil
 }
 
 // createSchema creates every table and stamps the version in one transaction,
@@ -427,7 +503,24 @@ func schemaStatements() []string {
 			observations       TEXT NOT NULL,
 			PRIMARY KEY (run_id, fingerprint_id)
 		)`,
+
+		ingestStateTableStatement(),
 	}
+}
+
+// ingestStateTableStatement is schema v2's only addition, kept separate
+// because the v1 -> v2 migration applies exactly this and nothing else.
+//
+// next_sequence is canonical uint64 text for the same reason every other
+// counter here is: SQLite INTEGER is signed 64-bit. last_digest is hex
+// SHA-256, empty when a migrated run has evidence whose digest was never
+// recorded — nothing fabricates one.
+func ingestStateTableStatement() string {
+	return `CREATE TABLE ` + tableIngestState + ` (
+			run_id        TEXT PRIMARY KEY REFERENCES ` + tableRuns + `(id),
+			next_sequence TEXT NOT NULL,
+			last_digest   TEXT NOT NULL
+		)`
 }
 
 // ---------------------------------------------------------------------
@@ -1784,6 +1877,188 @@ func validateRestoredSnapshot(s BehaviorSnapshot, storedDistinctCount int) error
 	if observed != s.observations {
 		return fmt.Errorf("entries account for %d observations, header records %d",
 			observed, s.observations)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------
+// Evaluation ingest cursor
+// ---------------------------------------------------------------------
+
+var _ EvaluationIngestStore = (*SQLiteStore)(nil)
+
+// EvaluationIngestState returns a run's ingest cursor.
+//
+// Three durable shapes reach here, and they mean different things:
+//
+//	cursor row present      → the recorded sequence and digest
+//	no cursor, no evidence  → a fresh run; next sequence is 1
+//	no cursor, has evidence → a task 057 database; next sequence is
+//	                          RecordCount+1, with no digest to replay against
+//
+// The last is the migration edge. One ingest is one aggregate record, so the
+// arithmetic is what lets ingest continue against legacy evidence instead of
+// restarting the count and double-aggregating everything already stored.
+func (s *SQLiteStore) EvaluationIngestState(
+	ctx context.Context, id EvaluationRunID,
+) (EvaluationIngestState, error) {
+	return s.ingestState(ctx, s.db, id)
+}
+
+func (s *SQLiteStore) ingestState(
+	ctx context.Context, q evidenceQuerier, id EvaluationRunID,
+) (EvaluationIngestState, error) {
+	// The run must exist: a cursor for a run that does not is not a fresh
+	// start, it is a dangling reference.
+	if _, err := s.loadRun(ctx, q, id); err != nil {
+		return EvaluationIngestState{}, err
+	}
+
+	var nextSequence, lastDigest string
+	err := q.QueryRowContext(ctx,
+		`SELECT next_sequence, last_digest FROM `+tableIngestState+` WHERE run_id = ?`,
+		string(id)).Scan(&nextSequence, &lastDigest)
+
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return s.derivedIngestState(ctx, q, id)
+	case err != nil:
+		return EvaluationIngestState{}, fmt.Errorf("platform: load ingest state: %w", err)
+	}
+
+	sequence, err := parseUint64Text("next_sequence", nextSequence)
+	if err != nil {
+		return EvaluationIngestState{}, err
+	}
+	if sequence == 0 {
+		return EvaluationIngestState{}, fmt.Errorf(
+			"%w: run %s has ingest sequence 0", ErrStoreCorrupt, preview(string(id)))
+	}
+	if err := validateDigest("last_digest", lastDigest); err != nil {
+		return EvaluationIngestState{}, err
+	}
+
+	// The cursor and the evidence it describes must agree. Disagreement means
+	// one of them was written without the other, and there is no principled
+	// way to choose which is right.
+	aggregate, _, err := s.loadEvidence(ctx, q, id)
+	switch {
+	case errors.Is(err, ErrStoreNotFound):
+		return EvaluationIngestState{}, fmt.Errorf(
+			"%w: run %s has an ingest cursor but no evidence", ErrStoreCorrupt, preview(string(id)))
+	case err != nil:
+		return EvaluationIngestState{}, err
+	}
+	expected, err := initialSequenceFor(aggregate.RecordCount())
+	if err != nil {
+		return EvaluationIngestState{}, fmt.Errorf("%w: run %s: %w",
+			ErrStoreCorrupt, preview(string(id)), err)
+	}
+	if sequence != expected {
+		return EvaluationIngestState{}, fmt.Errorf(
+			"%w: run %s cursor expects sequence %d but holds %d records",
+			ErrStoreCorrupt, preview(string(id)), sequence, aggregate.RecordCount())
+	}
+
+	return EvaluationIngestState{nextSequence: sequence, lastDigest: lastDigest}, nil
+}
+
+// derivedIngestState computes a cursor for a run that has none.
+func (s *SQLiteStore) derivedIngestState(
+	ctx context.Context, q evidenceQuerier, id EvaluationRunID,
+) (EvaluationIngestState, error) {
+	aggregate, _, err := s.loadEvidence(ctx, q, id)
+	switch {
+	case errors.Is(err, ErrStoreNotFound):
+		return EvaluationIngestState{nextSequence: 1}, nil
+	case err != nil:
+		return EvaluationIngestState{}, err
+	}
+
+	next, err := initialSequenceFor(aggregate.RecordCount())
+	if err != nil {
+		return EvaluationIngestState{}, err
+	}
+	// No digest: this code never saw the record that produced the evidence,
+	// and inventing one would manufacture proof a retry is identical.
+	return EvaluationIngestState{nextSequence: next}, nil
+}
+
+// CommitEvaluationIngest writes evidence and cursor in one transaction.
+func (s *SQLiteStore) CommitEvaluationIngest(
+	ctx context.Context, commit EvaluationIngestCommit,
+) error {
+	if err := validateEvidencePair(commit.Aggregate, commit.Snapshot); err != nil {
+		return err
+	}
+	if err := validateDigest("record digest", commit.RecordDigest); err != nil {
+		return err
+	}
+	if commit.RecordDigest == "" {
+		return fmt.Errorf("%w: commit carries no record digest", ErrStoreCorrupt)
+	}
+	next, err := nextSequenceAfter(commit.Sequence)
+	if err != nil {
+		return err
+	}
+
+	runID := commit.Aggregate.RunID()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: commit evaluation ingest: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	// Re-read the cursor inside the transaction. Two requests racing the same
+	// sequence both computed against the same view; only the one whose view
+	// still matches durable state may apply.
+	current, err := s.ingestState(ctx, tx, runID)
+	if err != nil {
+		return err
+	}
+	if current.NextSequence() != commit.PreviousNextSequence {
+		return fmt.Errorf("%w: run %s now expects sequence %d, not %d",
+			ErrIngestSequence, preview(string(runID)),
+			current.NextSequence(), commit.PreviousNextSequence)
+	}
+	if commit.Sequence != commit.PreviousNextSequence {
+		return fmt.Errorf("%w: commit carries sequence %d against cursor %d",
+			ErrIngestSequence, commit.Sequence, commit.PreviousNextSequence)
+	}
+
+	// The run must exist and agree, exactly as a direct evidence save requires.
+	run, err := s.loadRun(ctx, tx, runID)
+	if err != nil {
+		return err
+	}
+	if run.CandidateID() != commit.Aggregate.CandidateID() ||
+		run.Environment() != commit.Aggregate.Environment() ||
+		run.BehavioralProfile() != commit.Aggregate.BehavioralProfile() {
+		return fmt.Errorf("%w: evidence identity does not match stored run %s",
+			ErrStoreConflict, preview(string(runID)))
+	}
+
+	if err := s.checkEvidenceNotStale(ctx, tx, commit.Aggregate, commit.Snapshot); err != nil {
+		return err
+	}
+	if err := s.writeEvidence(ctx, tx, commit.Aggregate, commit.Snapshot); err != nil {
+		return err
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO `+tableIngestState+` (run_id, next_sequence, last_digest)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(run_id) DO UPDATE SET
+			next_sequence = excluded.next_sequence,
+			last_digest = excluded.last_digest`,
+		string(runID), uint64Text(next), commit.RecordDigest); err != nil {
+		return fmt.Errorf("platform: commit ingest cursor: %w", err)
+	}
+
+	// Evidence and cursor become durable together, or neither does.
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: commit evaluation ingest: %w", err)
 	}
 	return nil
 }
