@@ -15,16 +15,14 @@
 // trustvian-platform is rejected by the compiler instead. See
 // docs/adr/0022-core-platform-boundary.md.
 //
-// The dependency direction is one-way: the platform may depend on the core's
-// public API, and the core never depends on the platform. Today this package
-// does not import the core at all. That is not an oversight — the domain has
-// no use for a DecisionRecord yet, and adding the dependency to demonstrate
-// the relationship would be exactly the speculative coupling the boundary
-// exists to prevent. Task 053 introduces it when aggregation needs it.
+// The dependency direction is one-way: the platform depends on the core's
+// **public API only** — today DecisionRecord, StableFeatures, and the public
+// event types — and the core never depends on the platform. An internal/*
+// import is a compile error here, and a check in CI enforces both directions.
 //
-// What this package is not: persistence, transport, aggregation, behavioral
-// diff, scorecard, gate, or promotion. Those are separate tasks, and each
-// would be easier to add here than to remove later.
+// What this package is not: persistence, transport, scorecard, gate,
+// promotion, or event history. Those are separate tasks, and each would be
+// easier to add here than to remove later.
 package platform
 
 import (

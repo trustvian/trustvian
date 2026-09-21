@@ -954,6 +954,60 @@ aggregate has already seen many*. The aggregate is fixed-size and retains no
 record, so per-record cost is constant in the number of records — see
 [ADR 0026](adr/0026-evaluation-aggregation-is-bounded-evidence.md).
 
+### v1.0 task 054 (Behavioral Diff)
+
+A second per-record platform reducer, plus a comparison path.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `BehaviorCollectorObserveExisting` | 60.9 | 0 | 0 |
+| `BehaviorCollectorObserveNew` | 413 | 1,116 | 3 |
+| `CompareBehaviorSnapshotsTypical` (32 × 32) | 6,510 | 30,456 | 10 |
+| `CompareBehaviorSnapshotsFull` (512 × 512, disjoint) | 103,700 | 469,752 | 10 |
+
+Three to five runs each, darwin/arm64, Apple M3 Pro, Go 1.27.
+
+**What enforcing one-to-one identity cost.** The table above is current; the
+figures in this paragraph are superseded and recorded only to show the price.
+
+An earlier revision checked one direction only — that a fingerprint described
+a single behavior — and measured roughly 190 ns for new-fingerprint admission
+and 57 µs for the full comparison. Adding the reverse check, that a behavior
+has a single fingerprint, about doubled both: it needs a bounded reverse index
+in the collector and a descriptor map in the comparison. The hot path is
+untouched — repeat observation is still ~61 ns and allocation-free.
+
+A bounded linear scan was tried before the index and measured first: 3.2 µs
+per newly admitted fingerprint, because the scan averages half of a 512-entry
+map. The index is 7.7× better for one more bounded map written in a single
+place. The measurement is what chose between them.
+
+**Three properties, none of them "fast":**
+
+*Observing a behavior already seen allocates nothing.* This is the common case
+by a wide margin — an evaluation observes the same shapes repeatedly — and it
+is what makes per-record cost independent of how many records came before.
+
+*Admitting a new behavior allocates 3 times,* covering the entry and the
+growth of the two bounded indexes. Both are capped at 512 per collector, so
+the total is bounded however long the evaluation runs.
+
+*Comparison allocates 10 times* in both the representative and the full
+bounded case — 32 × 32 and 512 × 512 measure the same count. That is the
+invariant worth reading: the allocation *count* does not grow with the number
+of historical observations, and bytes scale only with the bounded number of
+behaviors and deltas. The worst case, two full disjoint snapshots producing
+the maximum 1,024 deltas, is ~104 µs and ~470 KB on the machine recorded
+above.
+
+Treat the `ns/op` figures as machine- and session-specific; the allocation
+counts are structurally stable and are what these rows are really for — see
+[reading the numbers](#reading-the-numbers).
+
+Zero allocations was not a goal here and would have been the wrong one: two
+bounded maps and a defensive snapshot copy legitimately allocate, and removing
+any of them would trade a real invariant for a number.
+
 ## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —

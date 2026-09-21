@@ -867,6 +867,36 @@ Three properties define it:
 
 See [ADR 0026](adr/0026-evaluation-aggregation-is-bounded-evidence.md).
 
+### Behavioral comparison
+
+`BehaviorCollector`, `BehaviorSnapshot` and `BehaviorDiff` (task 054) answer a
+different question from the aggregate: not *what happened*, but *which
+behaviors happened*, and how that changed between two evaluations.
+
+```text
+DecisionRecord ──▶ BehaviorCollector ──▶ BehaviorSnapshot ──▶ BehaviorDiff
+```
+
+The comparison key is `FingerprintID` — the core's stable behavioral-shape
+identity, and nothing else. Not the actor, session, trace, candidate, run,
+profile, commit, or artifact digest. A diff keyed by any of those would report
+change every time a candidate was rebuilt.
+
+Each behavior is classified `Added`, `Removed` or `Shared`, with counts and
+rates normalized within each snapshot so a long reference is comparable to a
+short candidate. Rates are derived from integer counts at comparison time, so
+equal counts give identical rates whatever order records arrived in.
+
+Two refusals define the type as much as its output. A collector that observes
+more than 512 distinct behaviors is **permanently incomplete**, and an
+incomplete snapshot **cannot be compared** — the alternative is a confident,
+specific, wrong answer to "what is new". And one fingerprint claiming two
+different shapes fails closed rather than merging them.
+
+Like the aggregate, it reports facts and no verdict: no score, severity,
+threshold, or promotability. See
+[ADR 0027](adr/0027-behavioral-diff-compares-bounded-snapshots.md).
+
 See [ADR 0025](adr/0025-platform-domain-values-with-caller-owned-identity.md)
 and [task 052](tasks/v1.0/052-evaluation-domain.md).
 
