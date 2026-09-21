@@ -1012,6 +1012,43 @@ baseline state stays in the engine's own stores.
 
 See [ADR 0030](adr/0030-local-persistence-stores-authoritative-bounded-state.md).
 
+### The control plane
+
+Task 058 adds `ControlPlane`, the authoritative service over those
+capabilities. It creates and reads the hierarchy, drives a run's lifecycle,
+ingests evidence, reports progress, and derives a comparison. Transports call
+it; they decide nothing.
+
+**Ingest is sequenced.** A `DecisionRecord` arrives with an explicit
+per-run sequence and the behavioral profile it was produced under — the
+profile travels beside the record because `DecisionRecord` carries no learning
+scope, and ADR 0024 kept it that way.
+
+```text
+expected sequence            → applied
+last sequence, same record   → replayed, no re-aggregation
+last sequence, different     → conflict
+older, or a gap              → conflict
+```
+
+Durable state is two values per run: the next sequence and the digest of the
+last accepted record. Task 053 made duplicates count twice on purpose, so
+something had to own retry semantics; this does, in O(1), without keeping any
+record.
+
+**Saturation degrades rather than fails.** The 513th distinct behavior is
+still applied to the aggregate; the snapshot stops being the whole truth and
+reports `behavior_complete = false`. Later records keep advancing aggregate
+evidence, and a comparison over incomplete evidence is refused rather than
+manufactured.
+
+**Comparison needs completed runs.** A running evaluation has mutable
+evidence; a failed or cancelled one is not a completed evaluation.
+`CompareEvaluations` loads both evidence pairs and derives the diff, scorecard
+and gate result — once, in one place — and stores none of it.
+
+See [ADR 0031](adr/0031-control-plane-owns-ingest-and-http-is-an-adapter.md).
+
 See [ADR 0025](adr/0025-platform-domain-values-with-caller-owned-identity.md)
 and [task 052](tasks/v1.0/052-evaluation-domain.md).
 

@@ -40,6 +40,57 @@ actually depend on.
 
 ### Added
 
+- **Local control-plane API and sequenced ingest.** `platform.ControlPlane`
+  is the authoritative service layer — it creates and reads the
+  project/agent/candidate/run hierarchy, drives a run's lifecycle, ingests
+  evidence, reports progress, and derives a comparison. `platform/httpapi`
+  serves a local `/v1` HTTP surface over it and computes nothing: a
+  source-scanning test fails if the adapter ever references the comparison,
+  scorecard or gate constructors, or a store type.
+
+  Ingest consumes the public `trustvian.DecisionRecord` and nothing else. No
+  route analyzes a raw `Event` — the producer's engine already made the
+  decision, and a second engine host would train a second baseline. The
+  behavioral profile travels beside the record rather than inside it, because
+  `DecisionRecord` carries no learning scope, and it must match the run's.
+
+  **Retries are safe without retaining history.** Task 053 made a duplicate
+  record count twice on purpose, so an ordinary HTTP retry would corrupt the
+  evidence. Each accepted record carries an explicit monotonic per-run
+  sequence; durable state is that sequence plus the digest of the last
+  accepted record — two values, whatever the run ingested. The expected
+  sequence applies, an identical retry of the previous one replays without
+  re-aggregating, and a divergent retry, a stale number or a gap all fail
+  closed. Sequences travel as canonical decimal strings so a browser client
+  cannot round them.
+
+  Evidence and cursor commit in one transaction, so neither can advance
+  without the other. A restarted process resumes a running evaluation from
+  stored evidence through a package-private snapshot-to-collector
+  restoration — no public constructor was added, because one would let any
+  caller forge collector state.
+
+  Behavioral saturation degrades rather than fails: the 513th distinct
+  behavior is still applied to the aggregate, the snapshot reports
+  `behavior_complete = false`, and a later comparison refuses the incomplete
+  evidence instead of manufacturing a scorecard from it.
+
+  **SQLite schema version 2**, with a real forward migration from version 1
+  that preserves every row. A migrated run with `N` records starts at
+  sequence `N+1`; no digest is invented for a record this code never saw, so a
+  retry of `N` conflicts rather than guessing.
+
+  Request bodies are bounded at 256 KiB before decoding; internal errors are
+  sanitized, with storage corruption reported as `500` rather than a
+  client-fixable `400`. Gate limits are required inputs with zero distinct
+  from omitted, because zero is a strict limit. Domain types still carry no
+  JSON tags — the DTOs own the wire.
+
+  No realtime, no listener (composing one is a later task and must default to
+  loopback), no CORS, no authentication or access-control model, no promotion,
+  no raw event history, no new binary, and no core runtime change. See [ADR
+  0031](docs/adr/0031-control-plane-owns-ingest-and-http-is-an-adapter.md).
+
 - **Local platform persistence: evaluation state survives a restart.**
   `platform.OpenSQLiteStore` provides a local SQLite adapter behind two narrow
   capabilities — `ControlStore` for projects, agents and candidates, and

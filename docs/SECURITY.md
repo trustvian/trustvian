@@ -591,6 +591,95 @@ narrow capabilities — there is no generic `Database` interface, and no
 - **There is no listener.** Task 057 adds no network surface, no server, no
   port, and no background goroutine. It is a file.
 
+### The local control-plane API bounds what it accepts and reveals
+
+**Threat:** a network-facing surface becomes a way to smuggle payloads past
+the privacy boundary, corrupt evidence through ordinary retries, learn about
+the server from its errors, or quietly acquire capabilities nobody reviewed.
+
+**Status: every path is bounded or refused.**
+[Task 058](tasks/v1.0/058-local-control-plane-api-and-ingest.md) adds a
+service layer and an HTTP adapter over it.
+
+- **The body is bounded before it is decoded.** 256 KiB, applied with
+  `MaxBytesReader` ahead of parsing — a limit checked afterwards has already
+  spent the memory it was meant to protect. Oversized requests are `413`, and
+  both the boundary and one byte past it are tested.
+- **Raw event payloads are impossible by schema.** Ingest accepts
+  `DecisionRecord`, which structurally excludes event attributes, tool
+  arguments, prompts and completions. There is deliberately no
+  `metadata map[string]any` on the envelope: that field would undo task 050's
+  privacy boundary on its first use.
+- **No route analyzes a raw `Event`.** The control plane is not a second
+  engine host, so it trains no baseline and makes no behavioral decision.
+- **The behavioral profile is bound to the run.** It travels beside the
+  record and must match the run's profile, so evidence produced under one
+  learning scope cannot be folded into an evaluation of another.
+- **Evidence is accepted only while a run is `Running`, checked inside the
+  commit transaction.** A pending run has not started, and a terminal one's
+  evidence is what a comparison reads. The service also prechecks, but a
+  completion committing between that check and the write would otherwise let
+  evidence land after the run ended — so the transactional check is the
+  authoritative one, and a completed evaluation's evidence can never grow.
+- **A monotonic sequence prevents duplicate aggregation.** Task 053 made a
+  duplicate record count twice, so an ordinary HTTP retry would otherwise
+  corrupt the evidence. Only the expected sequence applies; an identical retry
+  of the previous one replays without re-aggregating.
+- **Identical concurrent retries all succeed.** A client retrying a slow
+  request sends the same sequence and record, and several may pass preflight
+  before any commits. The commit transaction distinguishes "the cursor moved
+  because somebody committed *this* record" from "the cursor moved for another
+  reason": the first replays, the second conflicts. One applies, the aggregate
+  advances once, and the counts in every reply come from the transaction that
+  decided it.
+- **Every ambiguous retry fails closed.** The same sequence with a different
+  record, a stale sequence, and a gap are all conflicts. A migrated task 057
+  run has no recorded digest, so nothing can be proven identical and a retry
+  of its last sequence conflicts rather than guessing.
+- **Sequence and evidence commit in one transaction.** Split, the failure
+  modes are silent: evidence without the cursor makes the next retry
+  double-count, and the cursor without evidence loses a record the protocol
+  believes arrived.
+- **The cursor is O(1) per run**, not history: a next sequence and a digest.
+  There is no EventID set, no idempotency table, and no stored record — raw
+  event history remains a separate capability with its own retention and
+  privacy questions.
+- **Cursor and evidence must agree**, and a read cannot invent a
+  disagreement. A cursor that disagrees with the aggregate's record count, or
+  exists without evidence, is refused as corruption rather than reconciled by
+  guessing which side is right — and multi-query reads run in one transaction,
+  so they never observe a snapshot from after a write beside an aggregate from
+  before it.
+- **A persisted cursor always records a digest.** An empty one is legitimate
+  only for a run migrated from task 057, which has evidence but no cursor row
+  and no digest to derive. A row with an empty digest could not have been
+  written by this code, so it is corruption. Persisted digests are exactly 64
+  lowercase hex characters, refused rather than normalized.
+- **Internal errors are sanitized.** Storage corruption is a `500` with a
+  generic message, never a `400` a client might try to "correct". No SQL text,
+  database path, driver message or stack trace reaches a response body, and a
+  test asserts the absence of each.
+- **A zero-record evaluation fails its gates rather than disappearing.** Such
+  a run persists no evidence, and reporting its comparison as "not found"
+  would hide the one candidate shape task 056's mandatory minimum-evidence
+  gates exist to catch — one that satisfies every maximum because it observed
+  nothing. The service materializes empty evidence and the ordinary gate logic
+  produces the FAIL. It does so only when the durable cursor agrees nothing
+  was written: a cursor reporting records beside missing evidence, or a
+  partial pair, remains corruption.
+- **HTTP computes no business logic.** Handlers call one service method and
+  map the result; a source-scanning test fails if the adapter ever references
+  the comparison, scorecard or gate constructors, or a store type.
+- **No realtime, and no listener.** No SSE, WebSocket, pub/sub or polling
+  loop; requests are synchronous. The adapter binds no port — composing a
+  server is a later task, and it must default to loopback.
+- **No CORS wildcard**, because there is no browser caller yet. A permissive
+  origin with no consumer is a permission granted to nobody in particular.
+- **No authentication or access control is claimed.** Local `v1` mode does not
+  require it, and inventing users, tokens, sessions or roles here would be a
+  security model nobody reviewed. That is a later task's decision, and this
+  API should not be exposed beyond loopback until it is made.
+
 ### Platform identity cannot become behavioral identity
 
 **Threat:** an evaluation concept leaks into the engine — a candidate becomes
