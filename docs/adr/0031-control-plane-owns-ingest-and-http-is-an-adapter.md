@@ -162,6 +162,26 @@ digest* is looking at its own record, already committed by somebody else. That
 is the retry contract working, so the store reports a disposition rather than
 an error and the losers replay instead of failing.
 
+### 10a. Empty evidence is a result, not an absence
+
+A run that ingested nothing persists no evidence, because rows appear on first
+ingest and completing a run deliberately writes none. The store therefore
+reports no evidence, and only the service knows that means zero observations
+rather than a missing evaluation.
+
+It matters which one the caller is told. Task 056 made minimum-evidence gates
+mandatory because a candidate that ran nothing satisfies every maximum and
+would otherwise look perfect; answering "not found" would hide exactly that
+candidate rather than failing it. So the service materializes the empty
+bounded values through the ordinary constructors and lets task 056 produce the
+FAIL — no special case decides the verdict here.
+
+The fallback is gated on durable state rather than on the absence alone. A
+cursor reporting records beside missing evidence is impossible, and stays
+corruption; so does a partial pair. Nothing is written to represent emptiness,
+because a persisted cursor with an empty digest is itself corruption by the
+rule above.
+
 ### 11. The schema moves v1 → v2
 
 The ingest cursor is durable state, so it is a schema change, and

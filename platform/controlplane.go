@@ -469,11 +469,11 @@ func (c *ControlPlane) CompareEvaluations(
 		return EvaluationComparison{}, err
 	}
 
-	referenceAggregate, referenceSnapshot, err := c.evaluations.EvaluationEvidence(ctx, referenceRunID)
+	referenceAggregate, referenceSnapshot, err := c.comparisonEvidence(ctx, reference)
 	if err != nil {
 		return EvaluationComparison{}, err
 	}
-	candidateAggregate, candidateSnapshot, err := c.evaluations.EvaluationEvidence(ctx, candidateRunID)
+	candidateAggregate, candidateSnapshot, err := c.comparisonEvidence(ctx, candidate)
 	if err != nil {
 		return EvaluationComparison{}, err
 	}
@@ -504,6 +504,78 @@ func (c *ControlPlane) CompareEvaluations(
 		Scorecard: scorecard,
 		Gate:      gate,
 	}, nil
+}
+
+// comparisonEvidence resolves the evidence a completed run should be compared
+// on, materializing the empty case rather than reporting it as absent.
+//
+// A run that ingested nothing persists no aggregate and no snapshot — rows
+// appear on first ingest, and task 058 deliberately does not write evidence
+// as a side effect of completing a run. So the store correctly reports no
+// evidence, and only this layer knows what that absence means: the run
+// exists, it completed, and it observed zero records.
+//
+// That distinction is security-relevant. Task 056 made minimum-evidence gates
+// mandatory precisely because a candidate that ran nothing satisfies every
+// maximum and would otherwise look perfect. Turning its comparison into a
+// "not found" would hide that candidate instead of failing it — the exact
+// outcome ADR 0029 exists to prevent.
+//
+// This is not a public evidence constructor and must not become one. It
+// resolves comparison evidence for a run this service has already loaded and
+// verified.
+func (c *ControlPlane) comparisonEvidence(
+	ctx context.Context, run EvaluationRun,
+) (EvaluationAggregate, BehaviorSnapshot, error) {
+	aggregate, snapshot, err := c.evaluations.EvaluationEvidence(ctx, run.ID())
+	switch {
+	case err == nil:
+		return aggregate, snapshot, nil
+	case !errors.Is(err, ErrStoreNotFound):
+		// Corruption, including a partial pair, stays corruption. Only a
+		// clean absence is a candidate for the empty case.
+		return EvaluationAggregate{}, BehaviorSnapshot{}, err
+	}
+
+	// Absence is not proof of emptiness. A cursor without its evidence is
+	// impossible durable state, and the ingest capability already knows how
+	// to tell that apart — asking it is what keeps this fallback from
+	// silently healing corruption into an empty evaluation.
+	state, err := c.ingest.EvaluationIngestState(ctx, run.ID())
+	if err != nil {
+		return EvaluationAggregate{}, BehaviorSnapshot{}, err
+	}
+	if !isGenuinelyEmpty(state) {
+		return EvaluationAggregate{}, BehaviorSnapshot{}, fmt.Errorf(
+			"%w: run %s has no evidence but reports %d records at sequence %d",
+			ErrStoreCorrupt, preview(string(run.ID())), state.RecordCount(), state.NextSequence())
+	}
+
+	// Built through the ordinary constructors, so these are bound values with
+	// the run's identity and nothing hand-assembled.
+	empty, err := NewEvaluationAggregate(run)
+	if err != nil {
+		return EvaluationAggregate{}, BehaviorSnapshot{}, err
+	}
+	collector, err := NewBehaviorCollector(run)
+	if err != nil {
+		return EvaluationAggregate{}, BehaviorSnapshot{}, err
+	}
+	return empty, collector.Snapshot(), nil
+}
+
+// isGenuinelyEmpty reports whether a run's durable state is untouched.
+//
+// Every field, not just the record count: a run that never ingested has no
+// cursor row, so its derived state is exactly this shape. Anything else means
+// something was written and something else is missing.
+func isGenuinelyEmpty(state EvaluationIngestState) bool {
+	return state.NextSequence() == 1 &&
+		state.LastDigest() == "" &&
+		state.RecordCount() == 0 &&
+		state.BehaviorObservationCount() == 0 &&
+		state.DistinctBehaviorCount() == 0 &&
+		state.BehaviorComplete()
 }
 
 // completedRun loads a run and requires it to have finished successfully.

@@ -659,6 +659,14 @@ service layer and an HTTP adapter over it.
   generic message, never a `400` a client might try to "correct". No SQL text,
   database path, driver message or stack trace reaches a response body, and a
   test asserts the absence of each.
+- **A zero-record evaluation fails its gates rather than disappearing.** Such
+  a run persists no evidence, and reporting its comparison as "not found"
+  would hide the one candidate shape task 056's mandatory minimum-evidence
+  gates exist to catch — one that satisfies every maximum because it observed
+  nothing. The service materializes empty evidence and the ordinary gate logic
+  produces the FAIL. It does so only when the durable cursor agrees nothing
+  was written: a cursor reporting records beside missing evidence, or a
+  partial pair, remains corruption.
 - **HTTP computes no business logic.** Handlers call one service method and
   map the result; a source-scanning test fails if the adapter ever references
   the comparison, scorecard or gate constructors, or a store type.

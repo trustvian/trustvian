@@ -410,6 +410,40 @@ those functions directly.
 **Completed runs only.** A running evaluation has mutable evidence; a failed
 or cancelled one is not a completed evaluation. Anything else is a conflict.
 
+### A zero-record evaluation is empty evidence, not a missing one
+
+Evidence rows appear on first ingest, and completing a run writes none — the
+lifecycle transition stays a lifecycle transition. So a run that ingested
+nothing has a row of its own and no evidence pair, and the store correctly
+reports no evidence.
+
+Only this layer knows what that absence means: the run exists, it completed,
+and it observed zero records. `comparisonEvidence` resolves it by
+materializing an empty aggregate and an empty complete snapshot through the
+ordinary constructors, and comparison proceeds normally.
+
+That distinction is security-relevant rather than cosmetic. Task 056 made the
+minimum-evidence gates mandatory precisely because a candidate that ran
+nothing satisfies every maximum; reporting its comparison as "not found" would
+hide that candidate instead of failing it — the outcome ADR 0029 exists to
+prevent. The FAIL comes from task 056's ordinary logic, never from a
+special case here.
+
+**The fallback never masks corruption.** Absence is only emptiness when the
+durable cursor agrees nothing was written:
+
+```text
+evidence present                      → use it
+evidence absent, cursor genuinely empty → materialize empty values
+evidence absent, cursor reports records → ErrStoreCorrupt
+partial evidence pair                   → ErrStoreCorrupt
+```
+
+Genuinely empty means every field: sequence 1, no digest, and zero records,
+observations and distinct behaviors. Nothing is persisted to represent the
+empty case — no evidence rows, and no cursor row, since a stored cursor with
+an empty digest is itself corruption.
+
 **Incomplete evidence refuses comparison** through task 054's existing
 semantics. No scorecard or gate result is manufactured. The API says the
 behavioral comparison is unavailable because evidence saturated — not

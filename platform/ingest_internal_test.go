@@ -1046,3 +1046,126 @@ func TestConcurrentMigrationConvergesOnValidV2(t *testing.T) {
 		t.Errorf("LastDigest() = %q, want empty: a digest was invented", state.LastDigest())
 	}
 }
+
+// ---------------------------------------------------------------------
+// The empty-evidence fallback must not heal corruption
+// ---------------------------------------------------------------------
+
+// A completed run whose evidence rows were deleted while its cursor survives
+// is impossible durable state, not an empty evaluation.
+//
+// This is the test the zero-record fallback exists to not break: absence of
+// evidence is only emptiness when nothing was ever written, and the cursor
+// row is the proof that something was.
+func TestZeroEvidenceFallbackDoesNotMaskMissingEvidence(t *testing.T) {
+	store, _ := testStore(t)
+	ctx := t.Context()
+	run := seedRunningRun(t, store)
+
+	plane, err := NewControlPlane(store, store, store)
+	if err != nil {
+		t.Fatalf("NewControlPlane() error = %v", err)
+	}
+	if _, err := plane.IngestDecisionRecord(ctx, IngestRequest{
+		RunID: run.ID(), Sequence: 1, BehavioralProfile: run.BehavioralProfile(),
+		Record: internalRecord("evt-0", "fp-0", "op-0"),
+	}); err != nil {
+		t.Fatalf("ingest error = %v", err)
+	}
+	completed, err := plane.CompleteEvaluationRun(ctx, run.ID(), run.CreatedAt().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("CompleteEvaluationRun() error = %v", err)
+	}
+	_ = completed
+
+	// A second completed run to compare against.
+	reference := seedSecondCompletedRun(t, store, plane)
+
+	// Delete the evidence, keep the cursor.
+	exec(t, store.db, `PRAGMA foreign_keys = OFF`)
+	exec(t, store.db, `DELETE FROM `+tableEntries+` WHERE run_id = ?`, string(run.ID()))
+	exec(t, store.db, `DELETE FROM `+tableSnapshots+` WHERE run_id = ?`, string(run.ID()))
+	exec(t, store.db, `DELETE FROM `+tableAggregates+` WHERE run_id = ?`, string(run.ID()))
+
+	_, err = plane.CompareEvaluations(ctx, reference, run.ID(), EvaluationGateLimits{
+		MaxAddedBehaviors:           math.MaxUint64,
+		MaxBlockDecisions:           math.MaxUint64,
+		MaxCriticalRiskObservations: math.MaxUint64,
+	})
+	if !errors.Is(err, ErrStoreCorrupt) {
+		t.Fatalf("CompareEvaluations() error = %v, want ErrStoreCorrupt; "+
+			"a cursor without evidence was treated as an empty evaluation", err)
+	}
+}
+
+// Partial evidence stays corruption through the comparison path too.
+func TestZeroEvidenceFallbackDoesNotMaskPartialEvidence(t *testing.T) {
+	store, _ := testStore(t)
+	ctx := t.Context()
+	run := seedRunningRun(t, store)
+
+	plane, err := NewControlPlane(store, store, store)
+	if err != nil {
+		t.Fatalf("NewControlPlane() error = %v", err)
+	}
+	if _, err := plane.IngestDecisionRecord(ctx, IngestRequest{
+		RunID: run.ID(), Sequence: 1, BehavioralProfile: run.BehavioralProfile(),
+		Record: internalRecord("evt-0", "fp-0", "op-0"),
+	}); err != nil {
+		t.Fatalf("ingest error = %v", err)
+	}
+	if _, err := plane.CompleteEvaluationRun(ctx, run.ID(), run.CreatedAt().Add(time.Hour)); err != nil {
+		t.Fatalf("CompleteEvaluationRun() error = %v", err)
+	}
+	reference := seedSecondCompletedRun(t, store, plane)
+
+	// Aggregate survives, snapshot does not.
+	exec(t, store.db, `PRAGMA foreign_keys = OFF`)
+	exec(t, store.db, `DELETE FROM `+tableEntries+` WHERE run_id = ?`, string(run.ID()))
+	exec(t, store.db, `DELETE FROM `+tableSnapshots+` WHERE run_id = ?`, string(run.ID()))
+
+	_, err = plane.CompareEvaluations(ctx, reference, run.ID(), EvaluationGateLimits{
+		MaxAddedBehaviors:           math.MaxUint64,
+		MaxBlockDecisions:           math.MaxUint64,
+		MaxCriticalRiskObservations: math.MaxUint64,
+	})
+	if !errors.Is(err, ErrStoreCorrupt) {
+		t.Fatalf("CompareEvaluations() error = %v, want ErrStoreCorrupt", err)
+	}
+}
+
+// seedSecondCompletedRun creates another completed run with one record.
+func seedSecondCompletedRun(t *testing.T, store *SQLiteStore, plane *ControlPlane) EvaluationRunID {
+	t.Helper()
+	ctx := t.Context()
+	const id EvaluationRunID = "run-reference"
+
+	candidate, err := NewCandidate("cand-ref", "agent-1", CandidateMetadata{})
+	if err != nil {
+		t.Fatalf("NewCandidate() error = %v", err)
+	}
+	if err := store.CreateCandidate(ctx, candidate); err != nil {
+		t.Fatalf("CreateCandidate() error = %v", err)
+	}
+	epoch := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	run, err := NewEvaluationRun(id, "cand-ref", "staging", "profile-1", epoch)
+	if err != nil {
+		t.Fatalf("NewEvaluationRun() error = %v", err)
+	}
+	if err := store.CreateEvaluationRun(ctx, run); err != nil {
+		t.Fatalf("CreateEvaluationRun() error = %v", err)
+	}
+	if _, err := plane.StartEvaluationRun(ctx, id, epoch.Add(time.Minute)); err != nil {
+		t.Fatalf("StartEvaluationRun() error = %v", err)
+	}
+	if _, err := plane.IngestDecisionRecord(ctx, IngestRequest{
+		RunID: id, Sequence: 1, BehavioralProfile: "profile-1",
+		Record: internalRecord("ref-evt-0", "ref-fp-0", "ref-op-0"),
+	}); err != nil {
+		t.Fatalf("ingest error = %v", err)
+	}
+	if _, err := plane.CompleteEvaluationRun(ctx, id, epoch.Add(time.Hour)); err != nil {
+		t.Fatalf("CompleteEvaluationRun() error = %v", err)
+	}
+	return id
+}

@@ -1222,3 +1222,304 @@ func TestProgressStaysCoherentUnderConcurrentIngest(t *testing.T) {
 	close(done)
 	stop.Wait()
 }
+
+// ---------------------------------------------------------------------
+// Zero-record evaluations
+// ---------------------------------------------------------------------
+
+// completeEmptyRun drives a run to Completed without ingesting anything.
+func (f *controlPlaneFixture) completeEmptyRun(
+	t *testing.T, runID platform.EvaluationRunID, candidateID platform.CandidateID,
+) {
+	t.Helper()
+	ctx := t.Context()
+
+	project, _ := platform.NewProject("proj-1", "Checkout")
+	agent, _ := platform.NewAgent("agent-1", "proj-1", "Deploy agent")
+	candidate, _ := platform.NewCandidate(candidateID, "agent-1", platform.CandidateMetadata{Label: "v1"})
+	for _, err := range []error{
+		f.plane.CreateProject(ctx, project),
+		f.plane.CreateAgent(ctx, agent),
+		f.plane.CreateCandidate(ctx, candidate),
+	} {
+		if err != nil && !errors.Is(err, platform.ErrStoreAlreadyExists) {
+			t.Fatalf("seed error = %v", err)
+		}
+	}
+
+	run, err := platform.NewEvaluationRun(runID, candidateID, fixtureEnvironment, fixtureProfile, aggEpoch)
+	if err != nil {
+		t.Fatalf("NewEvaluationRun() error = %v", err)
+	}
+	if err := f.plane.CreateEvaluationRun(ctx, run); err != nil {
+		t.Fatalf("CreateEvaluationRun() error = %v", err)
+	}
+	mustStart(t, f, runID)
+	if _, err := f.plane.CompleteEvaluationRun(ctx, runID, aggEpoch.Add(time.Hour)); err != nil {
+		t.Fatalf("CompleteEvaluationRun() error = %v", err)
+	}
+}
+
+// permissiveLimits accepts anything a maximum gate could measure, so only the
+// mandatory minimum-evidence gates can fail.
+func permissiveLimits() platform.EvaluationGateLimits {
+	return platform.EvaluationGateLimits{
+		MaxAddedBehaviors:           math.MaxUint64,
+		MaxBlockDecisions:           math.MaxUint64,
+		MaxCriticalRiskObservations: math.MaxUint64,
+	}
+}
+
+// A run that ingested nothing persists no evidence rows, but it is a real
+// completed evaluation that observed zero records — not a missing one.
+//
+// Task 056 made the minimum-evidence gates mandatory precisely because such a
+// candidate satisfies every maximum. Reporting it as absent would hide it
+// instead of failing it.
+func TestBothEmptyEvaluationsCompareAndFailEvidenceGates(t *testing.T) {
+	f := newFixture(t)
+	f.completeEmptyRun(t, "run-ref", "cand-ref")
+	f.completeEmptyRun(t, "run-can", "cand-can")
+
+	comparison, err := f.plane.CompareEvaluations(t.Context(), "run-ref", "run-can", permissiveLimits())
+	if err != nil {
+		t.Fatalf("CompareEvaluations() error = %v; empty evidence is not absence", err)
+	}
+
+	t.Run("scorecard reports zero on both sides", func(t *testing.T) {
+		if got := comparison.Scorecard.ReferenceRecordCount(); got != 0 {
+			t.Errorf("ReferenceRecordCount() = %d, want 0", got)
+		}
+		if got := comparison.Scorecard.CandidateRecordCount(); got != 0 {
+			t.Errorf("CandidateRecordCount() = %d, want 0", got)
+		}
+	})
+
+	t.Run("diff is empty in every direction", func(t *testing.T) {
+		if comparison.Diff.AddedCount() != 0 || comparison.Diff.RemovedCount() != 0 ||
+			comparison.Diff.SharedCount() != 0 {
+			t.Errorf("diff = added %d, removed %d, shared %d; want 0/0/0",
+				comparison.Diff.AddedCount(), comparison.Diff.RemovedCount(),
+				comparison.Diff.SharedCount())
+		}
+	})
+
+	t.Run("both evidence gates fail at zero", func(t *testing.T) {
+		for _, g := range []struct {
+			name string
+			gate platform.MinimumCountGate
+		}{
+			{"ReferenceEvidence", comparison.Gate.ReferenceEvidence()},
+			{"CandidateEvidence", comparison.Gate.CandidateEvidence()},
+		} {
+			if g.gate.Actual != 0 || g.gate.Minimum != 1 || g.gate.Passed {
+				t.Errorf("%s = actual %d, minimum %d, passed %v; want 0/1/false",
+					g.name, g.gate.Actual, g.gate.Minimum, g.gate.Passed)
+			}
+		}
+	})
+
+	t.Run("satisfied maximums do not compensate", func(t *testing.T) {
+		// Each maximum gate is trivially satisfied by an evaluation that
+		// observed nothing. That is exactly the fail-open shape task 056
+		// exists to prevent, so the verdict must still be FAIL.
+		for _, g := range []struct {
+			name string
+			gate platform.MaximumCountGate
+		}{
+			{"AddedBehaviors", comparison.Gate.AddedBehaviors()},
+			{"BlockDecisions", comparison.Gate.BlockDecisions()},
+			{"CriticalRiskObservations", comparison.Gate.CriticalRiskObservations()},
+		} {
+			if !g.gate.Passed {
+				t.Errorf("precondition: %s should be satisfied by empty evidence", g.name)
+			}
+		}
+		if comparison.Gate.Verdict() != platform.GateVerdictFail {
+			t.Fatalf("Verdict() = %q, want fail: an evaluation that ran nothing passed",
+				comparison.Gate.Verdict())
+		}
+	})
+}
+
+// Empty evidence participates in the diff rather than being treated as
+// absence: every candidate behavior is Added against an empty reference.
+func TestEmptyReferenceAgainstPopulatedCandidate(t *testing.T) {
+	f := newFixture(t)
+	f.completeEmptyRun(t, "run-ref", "cand-ref")
+	f.completeEvaluation(t, "run-can", "cand-can", []string{"read"})
+
+	comparison, err := f.plane.CompareEvaluations(t.Context(), "run-ref", "run-can", permissiveLimits())
+	if err != nil {
+		t.Fatalf("CompareEvaluations() error = %v", err)
+	}
+
+	if comparison.Diff.AddedCount() != 1 || comparison.Diff.RemovedCount() != 0 ||
+		comparison.Diff.SharedCount() != 0 {
+		t.Errorf("diff = added %d, removed %d, shared %d; want 1/0/0",
+			comparison.Diff.AddedCount(), comparison.Diff.RemovedCount(), comparison.Diff.SharedCount())
+	}
+	if comparison.Gate.ReferenceEvidence().Passed {
+		t.Error("ReferenceEvidence passed with zero records")
+	}
+	if !comparison.Gate.CandidateEvidence().Passed {
+		t.Error("CandidateEvidence failed with one record")
+	}
+	if comparison.Gate.Verdict() != platform.GateVerdictFail {
+		t.Errorf("Verdict() = %q, want fail", comparison.Gate.Verdict())
+	}
+}
+
+// And the reverse direction: an empty candidate removes everything.
+func TestPopulatedReferenceAgainstEmptyCandidate(t *testing.T) {
+	f := newFixture(t)
+	f.completeEvaluation(t, "run-ref", "cand-ref", []string{"read", "list"})
+	f.completeEmptyRun(t, "run-can", "cand-can")
+
+	comparison, err := f.plane.CompareEvaluations(t.Context(), "run-ref", "run-can", permissiveLimits())
+	if err != nil {
+		t.Fatalf("CompareEvaluations() error = %v", err)
+	}
+
+	if comparison.Diff.RemovedCount() != 2 || comparison.Diff.AddedCount() != 0 ||
+		comparison.Diff.SharedCount() != 0 {
+		t.Errorf("diff = added %d, removed %d, shared %d; want 0/2/0",
+			comparison.Diff.AddedCount(), comparison.Diff.RemovedCount(), comparison.Diff.SharedCount())
+	}
+	if !comparison.Gate.ReferenceEvidence().Passed {
+		t.Error("ReferenceEvidence failed with two records")
+	}
+	if comparison.Gate.CandidateEvidence().Passed {
+		t.Error("CandidateEvidence passed with zero records")
+	}
+	if comparison.Gate.Verdict() != platform.GateVerdictFail {
+		t.Errorf("Verdict() = %q, want fail", comparison.Gate.Verdict())
+	}
+}
+
+// The empty interpretation comes from durable state, not from anything the
+// process remembered.
+func TestEmptyComparisonSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "platform.db")
+	f := openFixture(t, path)
+	f.completeEmptyRun(t, "run-ref", "cand-ref")
+	f.completeEmptyRun(t, "run-can", "cand-can")
+	if err := f.store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened := openFixture(t, path)
+	comparison, err := reopened.plane.CompareEvaluations(
+		t.Context(), "run-ref", "run-can", permissiveLimits())
+	if err != nil {
+		t.Fatalf("CompareEvaluations() after restart error = %v", err)
+	}
+	if comparison.Gate.Verdict() != platform.GateVerdictFail {
+		t.Errorf("Verdict() = %q, want fail", comparison.Gate.Verdict())
+	}
+	if comparison.Gate.ReferenceEvidence().Passed || comparison.Gate.CandidateEvidence().Passed {
+		t.Error("an evidence gate passed for a zero-record run after restart")
+	}
+}
+
+// misreportingIngestStore claims a run has ingested records while the
+// evidence store reports none.
+//
+// The real SQLite store cannot produce that pair — its own cursor read
+// already refuses a cursor without evidence — which is correct defence in
+// depth and also means the service's own check is never exercised against it.
+// Task 064's PostgreSQL backend need not validate identically, so the service
+// must not depend on a store catching this.
+type misreportingIngestStore struct {
+	state platform.EvaluationIngestState
+}
+
+func (s *misreportingIngestStore) EvaluationIngestState(
+	ctx context.Context, id platform.EvaluationRunID,
+) (platform.EvaluationIngestState, error) {
+	return s.state, nil // no error, and not an empty state
+}
+
+func (s *misreportingIngestStore) CommitEvaluationIngest(
+	ctx context.Context, commit platform.EvaluationIngestCommit,
+) (platform.EvaluationIngestCommitResult, error) {
+	return platform.EvaluationIngestCommitResult{}, errors.New("not used")
+}
+
+// missingEvidenceStore reports no evidence for every run.
+type missingEvidenceStore struct {
+	platform.EvaluationStore
+}
+
+func (s *missingEvidenceStore) EvaluationEvidence(
+	ctx context.Context, id platform.EvaluationRunID,
+) (platform.EvaluationAggregate, platform.BehaviorSnapshot, error) {
+	return platform.EvaluationAggregate{}, platform.BehaviorSnapshot{}, platform.ErrStoreNotFound
+}
+
+// Absence of evidence is emptiness only when the durable cursor agrees
+// nothing was ever written. A cursor reporting records beside missing
+// evidence is impossible state, and the service must refuse it on its own.
+func TestComparisonRefusesEmptyWhenCursorReportsRecords(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "platform.db")
+	store, err := platform.OpenSQLiteStore(t.Context(), path)
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	// Two completed runs, seeded through a real plane.
+	seeder := &controlPlaneFixture{plane: mustPlane(t, store), store: store, path: path}
+	seeder.completeEmptyRun(t, "run-ref", "cand-ref")
+	seeder.completeEmptyRun(t, "run-can", "cand-can")
+
+	// A store pair that reports no evidence while the cursor claims records.
+	plane, err := platform.NewControlPlane(
+		store,
+		&missingEvidenceStore{EvaluationStore: store},
+		&misreportingIngestStore{state: nonEmptyIngestState(t, store)},
+	)
+	if err != nil {
+		t.Fatalf("NewControlPlane() error = %v", err)
+	}
+
+	_, err = plane.CompareEvaluations(t.Context(), "run-ref", "run-can", permissiveLimits())
+	if !errors.Is(err, platform.ErrStoreCorrupt) {
+		t.Fatalf("CompareEvaluations() error = %v, want ErrStoreCorrupt; "+
+			"the service synthesized empty evidence for a run whose cursor reports records", err)
+	}
+}
+
+// nonEmptyIngestState produces a state that is valid but not empty, by
+// ingesting into a throwaway run and reading its cursor.
+func nonEmptyIngestState(t *testing.T, store *platform.SQLiteStore) platform.EvaluationIngestState {
+	t.Helper()
+	ctx := t.Context()
+	plane := mustPlane(t, store)
+
+	candidate, _ := platform.NewCandidate("cand-cursor", "agent-1", platform.CandidateMetadata{})
+	if err := store.CreateCandidate(ctx, candidate); err != nil {
+		t.Fatalf("CreateCandidate() error = %v", err)
+	}
+	run, _ := platform.NewEvaluationRun("run-cursor", "cand-cursor", fixtureEnvironment, fixtureProfile, aggEpoch)
+	if err := store.CreateEvaluationRun(ctx, run); err != nil {
+		t.Fatalf("CreateEvaluationRun() error = %v", err)
+	}
+	if _, err := plane.StartEvaluationRun(ctx, "run-cursor", aggEpoch.Add(time.Minute)); err != nil {
+		t.Fatalf("StartEvaluationRun() error = %v", err)
+	}
+	if _, err := plane.IngestDecisionRecord(ctx, platform.IngestRequest{
+		RunID: "run-cursor", Sequence: 1, BehavioralProfile: fixtureProfile,
+		Record: ingestRecord("evt-0", "fp-0", "read"),
+	}); err != nil {
+		t.Fatalf("ingest error = %v", err)
+	}
+	state, err := store.EvaluationIngestState(ctx, "run-cursor")
+	if err != nil {
+		t.Fatalf("EvaluationIngestState() error = %v", err)
+	}
+	if state.RecordCount() == 0 {
+		t.Fatal("precondition: the fixture state should report records")
+	}
+	return state
+}

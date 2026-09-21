@@ -978,3 +978,154 @@ func TestCompareResponseIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------
+// Zero-record evaluations over HTTP
+// ---------------------------------------------------------------------
+
+// completeEmptyRun drives a run to Completed without posting any record.
+func (a *api) completeEmptyRun(runID, candidateID string) {
+	a.t.Helper()
+	a.seedHierarchy()
+	if candidateID != "cand-1" {
+		a.mustStatus(a.do("POST", "/v1/candidates", map[string]any{
+			"id": candidateID, "agent_id": "agent-1", "metadata": map[string]string{"label": candidateID},
+		}), 201, "create candidate")
+	}
+	a.mustStatus(a.do("POST", "/v1/evaluation-runs", map[string]string{
+		"id": runID, "candidate_id": candidateID,
+		"environment": testEnvironment, "behavioral_profile": testProfile,
+	}), 201, "create run")
+	a.mustStatus(a.do("POST", "/v1/evaluation-runs/"+runID+"/start", nil), 200, "start")
+	a.mustStatus(a.do("POST", "/v1/evaluation-runs/"+runID+"/complete", nil), 200, "complete")
+}
+
+type compareGateBody struct {
+	Gate struct {
+		Verdict           string `json:"verdict"`
+		ReferenceEvidence struct {
+			Actual  string `json:"actual"`
+			Minimum string `json:"minimum"`
+			Passed  bool   `json:"passed"`
+		} `json:"reference_evidence"`
+		CandidateEvidence struct {
+			Actual  string `json:"actual"`
+			Minimum string `json:"minimum"`
+			Passed  bool   `json:"passed"`
+		} `json:"candidate_evidence"`
+	} `json:"gate"`
+	Diff struct {
+		AddedCount   int `json:"added_count"`
+		RemovedCount int `json:"removed_count"`
+		SharedCount  int `json:"shared_count"`
+	} `json:"behavior_diff"`
+}
+
+// An evaluation that ran nothing is a valid comparison with a FAIL verdict,
+// not a missing resource. Returning 404 would hide the very candidate task
+// 056's mandatory evidence gates exist to catch.
+func TestCompareTwoEmptyEvaluationsReturnsFailNotNotFound(t *testing.T) {
+	a := newAPI(t)
+	a.completeEmptyRun("run-ref", "cand-1")
+	a.completeEmptyRun("run-can", "cand-2")
+
+	maxUint := platform.FormatSequence(math.MaxUint64)
+	r := a.do("POST", "/v1/evaluations/compare", map[string]any{
+		"reference_run_id": "run-ref",
+		"candidate_run_id": "run-can",
+		"gate_limits":      limitsBody(maxUint, maxUint, maxUint),
+	})
+	a.mustStatus(r, 200, "compare two empty evaluations")
+
+	var body compareGateBody
+	if err := json.Unmarshal(r.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Gate.Verdict != "fail" {
+		t.Errorf("Verdict = %q, want fail", body.Gate.Verdict)
+	}
+	for _, g := range []struct {
+		name    string
+		actual  string
+		minimum string
+		passed  bool
+	}{
+		{"reference_evidence", body.Gate.ReferenceEvidence.Actual,
+			body.Gate.ReferenceEvidence.Minimum, body.Gate.ReferenceEvidence.Passed},
+		{"candidate_evidence", body.Gate.CandidateEvidence.Actual,
+			body.Gate.CandidateEvidence.Minimum, body.Gate.CandidateEvidence.Passed},
+	} {
+		if g.actual != "0" || g.minimum != "1" || g.passed {
+			t.Errorf("%s = actual %q, minimum %q, passed %v; want \"0\"/\"1\"/false",
+				g.name, g.actual, g.minimum, g.passed)
+		}
+	}
+	if body.Diff.AddedCount != 0 || body.Diff.RemovedCount != 0 || body.Diff.SharedCount != 0 {
+		t.Errorf("diff = %+v, want zeros", body.Diff)
+	}
+
+	// It is a result, not an error: no error envelope, no invented code.
+	if strings.Contains(r.Body.String(), `"error"`) {
+		t.Errorf("empty comparison returned an error envelope: %s", r.Body.String())
+	}
+}
+
+// Empty evidence participates in the diff over the wire too.
+func TestCompareEmptyReferenceAgainstPopulatedCandidate(t *testing.T) {
+	a := newAPI(t)
+	a.completeEmptyRun("run-ref", "cand-1")
+	a.completeRun("run-can", "cand-2", []string{"read"})
+
+	maxUint := platform.FormatSequence(math.MaxUint64)
+	r := a.do("POST", "/v1/evaluations/compare", map[string]any{
+		"reference_run_id": "run-ref",
+		"candidate_run_id": "run-can",
+		"gate_limits":      limitsBody(maxUint, maxUint, maxUint),
+	})
+	a.mustStatus(r, 200, "compare empty reference")
+
+	var body compareGateBody
+	if err := json.Unmarshal(r.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Diff.AddedCount != 1 || body.Diff.RemovedCount != 0 || body.Diff.SharedCount != 0 {
+		t.Errorf("diff = %+v, want added 1", body.Diff)
+	}
+	if body.Gate.ReferenceEvidence.Passed {
+		t.Error("reference evidence passed with zero records")
+	}
+	if !body.Gate.CandidateEvidence.Passed {
+		t.Error("candidate evidence failed with one record")
+	}
+	if body.Gate.Verdict != "fail" {
+		t.Errorf("Verdict = %q, want fail", body.Gate.Verdict)
+	}
+}
+
+// Progress on a zero-record run is the same factual empty state.
+func TestProgressOfEmptyCompletedRun(t *testing.T) {
+	a := newAPI(t)
+	a.completeEmptyRun("run-1", "cand-1")
+
+	r := a.do("GET", "/v1/evaluation-runs/run-1/progress", nil)
+	a.mustStatus(r, 200, "progress")
+
+	var progress map[string]any
+	if err := json.Unmarshal(r.Body.Bytes(), &progress); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for field, want := range map[string]any{
+		"record_count":               "0",
+		"behavior_observation_count": "0",
+		"next_ingest_sequence":       "1",
+		"behavior_complete":          true,
+		"status":                     "completed",
+	} {
+		if progress[field] != want {
+			t.Errorf("%s = %v, want %v", field, progress[field], want)
+		}
+	}
+	if count, ok := progress["distinct_behavior_count"].(float64); !ok || count != 0 {
+		t.Errorf("distinct_behavior_count = %v, want 0", progress["distinct_behavior_count"])
+	}
+}
