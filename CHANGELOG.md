@@ -66,8 +66,15 @@ actually depend on.
   merge because a name was shortened. A 513th distinct behavior marks the
   collector **permanently incomplete**, and an incomplete snapshot **cannot be
   compared** — silently comparing the first 512 would produce a confident,
-  specific, wrong "new behavior" count. One fingerprint claiming two shapes
-  fails closed in both the collector and the comparison.
+  specific, wrong "new behavior" count.
+
+  Fingerprint identity and behavior descriptor must agree **one-to-one, both
+  ways**. One fingerprint with two shapes would merge two behaviors; one shape
+  under two fingerprints would be reported as removed-and-added, claiming
+  behavior changed when only its encoding did. Both fail closed, in the
+  collector and again during comparison. The platform never recomputes the
+  core's hash to check this, so the fingerprint algorithm stays free to
+  change.
 
   Rates are derived from integer counts at comparison time, so equal counts
   give identical rates whatever order records arrived in. Environments must
@@ -146,10 +153,11 @@ actually depend on.
   `github.com/trustvian/trustvian`: Go's `internal/` rule turns on
   import-path ancestry rather than module membership, so a repository-prefixed
   path would be allowed to import the engine's internal packages, and this one
-  is a compile error instead. It does not import the core at all yet — the
-  domain has no use for a `DecisionRecord`, and adding the dependency to
-  demonstrate the relationship would be exactly the speculative coupling the
-  boundary exists to prevent.
+  is a compile error instead. The domain itself needed nothing from the core,
+  and adding a dependency to demonstrate the relationship would have been the
+  speculative coupling the boundary exists to prevent — so the module began
+  with none. Aggregation introduced one, on its own merits, in the entry
+  above.
 
   Identifiers are typed, opaque, and caller-owned: the domain generates none,
   reads no clock, and requires no UUID format. Candidate metadata is a fixed

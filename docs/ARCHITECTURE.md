@@ -531,10 +531,12 @@ turns on import-path ancestry rather than module membership, so a
 repository-prefixed path would be permitted to import the engine's internal
 packages, and this one is a compile error instead.
 
-It does not import the core at all today. The domain has no use for a
-`DecisionRecord` yet, and adding the dependency to demonstrate the
-relationship would be the speculative coupling the boundary exists to
-prevent. Aggregation introduces it when it needs it.
+It depends on the core's **public API only**. Task 053 introduced the
+dependency when aggregation needed `DecisionRecord`; task 054 also consumes
+`StableFeatures` and the public `event` types. Nothing under `internal/` is
+imported — the module path makes that a compile error, and
+`scripts/check-platform-boundary.sh` enforces it along with the reverse
+direction.
 
 Trustvian is becoming a two-layer product: the behavioral engine described
 above, and a platform that evaluates *candidates* — versions of an agent —

@@ -294,9 +294,19 @@ the public documentation.
 
 ## Track B — Platform
 
-Everything here is **PLANNED**: approved direction, decomposed into tasks,
-none implemented. The concepts below are named so that later tasks share one
-vocabulary, not because any of them exists.
+**Partly implemented.** The foundations exist; nothing built on them does.
+
+Implemented: generic learning-scope isolation in the core (051), the
+evaluation domain (052), evaluation result aggregation (053), and behavioral
+diff (054).
+
+Still planned: scorecards (055), deterministic gates (056), local persistence
+(057), the control-plane API and ingest (058), and everything from realtime
+(059) onward. The platform can describe an evaluation, summarize what it
+observed, and compare bounded behavioral snapshots. It cannot yet score,
+gate, persist, serve, or promote — so it is not usable end to end.
+
+The concepts below are named so that every task shares one vocabulary.
 
 ### The domain the platform owns
 
@@ -310,14 +320,18 @@ vocabulary, not because any of them exists.
 | **Scorecard** | An evaluation-level aggregation of evidence | **Distinct from `Trust.Score`**, which stays event-level and is not redefined or overloaded |
 | **Promotion** | A platform workflow moving a candidate between environments | The engine promotes nothing; it supplies evidence |
 
-### Behavioral profile: the one unsolved problem
+### Behavioral profile
 
 Two candidates evaluated against the same actor identity would train the same
 baseline, so one candidate's behavior would teach another's — and an
 evaluation would measure a baseline it had itself polluted. Learning isolation
-is therefore a prerequisite for evaluation, and it is not solved today.
+is therefore a prerequisite for evaluation, and **task 051 solved it
+generically**: a learning scope is a `baseline.Key` dimension, selected by
+`trustvian.WithLearningScope`, absent from behavioral identity, and knowing
+nothing about evaluations. See
+[ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md).
 
-What is already decided:
+The constraints that shaped it, all still binding:
 
 - `SessionID` must **not** become baseline identity. It is correlation, and
   making it identity would create a new baseline per session, learning nothing.
@@ -328,11 +342,17 @@ What is already decided:
 - The solution must be **generic**, not evaluation-aware. The engine must not
   learn what a Candidate or an Evaluation Run is.
 
-What is not decided: the mechanism. Today `baseline.Key` is
-`{ActorID, Environment}`, which was deliberately made composite in `v0.4`
-against exactly this kind of future need. Whether isolation extends that key,
-scopes the store, or takes some third shape is a design task of its own, and
-it is the first real engineering decision the platform requires.
+The mechanism is decided. `baseline.Key` was made composite in `v0.4`
+against exactly this kind of future need, and task 051 extended it:
+`{Scope, ActorID, Environment}`. The platform's `BehavioralProfileRef` maps
+onto that opaque core scope from outside; the core never learns why a caller
+chose one.
+
+What remains platform work: how profiles are **allocated and reused** —
+whether two runs of one candidate share a profile, when a profile is retired,
+who owns that lifecycle. Task 054 deliberately does not require two snapshots
+to share a profile ref, precisely because the allocation policy is still
+open.
 
 ### Hard gates, not averages
 

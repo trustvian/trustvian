@@ -960,12 +960,25 @@ A second per-record platform reducer, plus a comparison path.
 
 | Benchmark | ns/op | B/op | allocs/op |
 |---|---|---|---|
-| `BehaviorCollectorObserveExisting` | 60.7 | 0 | 0 |
-| `BehaviorCollectorObserveNew` | 189 | 595 | 1 |
-| `CompareBehaviorSnapshotsTypical` (32 × 32) | 3,320 | 22,224 | 7 |
-| `CompareBehaviorSnapshotsFull` (512 × 512, disjoint) | 57,400 | 346,832 | 7 |
+| `BehaviorCollectorObserveExisting` | 60.9 | 0 | 0 |
+| `BehaviorCollectorObserveNew` | 413 | 1,116 | 3 |
+| `CompareBehaviorSnapshotsTypical` (32 × 32) | 6,510 | 30,456 | 10 |
+| `CompareBehaviorSnapshotsFull` (512 × 512, disjoint) | 103,700 | 469,752 | 10 |
 
-Five runs each, darwin/arm64, Apple M3 Pro, Go 1.27.
+Three to five runs each, darwin/arm64, Apple M3 Pro, Go 1.27.
+
+**What enforcing one-to-one identity cost.** An earlier revision checked only
+that one fingerprint described one behavior, and measured 189 ns / 57 µs for
+the last two rows. Adding the reverse check — one behavior describes one
+fingerprint — roughly doubled new-fingerprint admission and comparison, for a
+bounded reverse index in the collector and a descriptor map in the
+comparison. The hot path is untouched: repeat observation is still 61 ns and
+allocation-free.
+
+A bounded linear scan was tried before the index and measured first: 3.2 µs
+per newly admitted fingerprint, because the scan averages half of a 512-entry
+map. The index is 7.7× better for one more bounded map written in a single
+place. The measurement is what chose between them.
 
 **Three properties, none of them "fast":**
 

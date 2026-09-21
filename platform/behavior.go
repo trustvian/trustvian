@@ -60,9 +60,11 @@ var (
 	// environment than the collector's, or a comparison across environments.
 	ErrBehaviorEnvironmentMismatch = errors.New("platform: behavioral evidence environment does not match")
 
-	// ErrFingerprintConflict reports one fingerprint claiming two different
-	// behavior shapes.
-	ErrFingerprintConflict = errors.New("platform: fingerprint describes two different behaviors")
+	// ErrFingerprintConflict reports evidence where fingerprint identity and
+	// stable behavior descriptor disagree, in either direction: one
+	// fingerprint claiming two shapes, or one shape claiming two
+	// fingerprints.
+	ErrFingerprintConflict = errors.New("platform: fingerprint identity and behavior descriptor are inconsistent")
 
 	// ErrBehaviorCapacity reports a distinct behavior beyond the collector's
 	// capacity. The collector is incomplete from this point on.
@@ -128,6 +130,17 @@ type BehaviorCollector struct {
 	observations uint64
 	entries      map[string]BehaviorEntry
 
+	// byBehavior is the reverse index: descriptor -> fingerprint. It exists
+	// so the one-to-one identity relation can be checked in both directions
+	// without scanning.
+	//
+	// A bounded linear scan over entries was tried first and measured: it
+	// cost 3.2 us per newly admitted fingerprint against 189 ns, because the
+	// scan averages half of a 512-entry map per admission. This index makes
+	// it a single lookup at the cost of one more bounded map — the same 512
+	// ceiling, and written in exactly one place, so the two cannot drift.
+	byBehavior map[trustvian.StableFeatures]string
+
 	// complete goes false the first time a distinct behavior is refused for
 	// capacity, and never goes back. See Observe.
 	complete bool
@@ -150,6 +163,7 @@ func NewBehaviorCollector(run EvaluationRun) (*BehaviorCollector, error) {
 		environment: run.Environment(),
 		profile:     run.BehavioralProfile(),
 		entries:     make(map[string]BehaviorEntry),
+		byBehavior:  make(map[trustvian.StableFeatures]string),
 		complete:    true,
 	}, nil
 }
@@ -228,15 +242,37 @@ func (c *BehaviorCollector) Observe(record trustvian.DecisionRecord) error {
 			return fmt.Errorf("%w: fingerprint %s already at %d observations",
 				ErrBehaviorOverflow, preview(record.FingerprintID), existing.Observations)
 		}
-	} else if len(c.entries) >= maxBehaviorEntries {
-		// The one state change on a failure path, and the reason it exists:
-		// a diff's headline output is which behaviors are new, and evidence
-		// that stopped collecting at 512 yields a confident, specific, wrong
-		// answer to exactly that question. Marking the collector incomplete
-		// is what makes a later comparison refuse rather than under-report.
-		c.complete = false
-		return fmt.Errorf("%w: %d distinct behaviors already admitted, event %s brought another",
-			ErrBehaviorCapacity, maxBehaviorEntries, preview(record.EventID))
+	} else {
+		// The reverse direction, and the one a single-direction check
+		// misses entirely: this fingerprint is new, but its *shape* may
+		// already be here under a different identity.
+		//
+		// Left unchecked, two snapshots built from such evidence report the
+		// same behavior as Removed under the old id and Added under the new
+		// one — a diff claiming behavior changed when only its identity
+		// encoding did. That is the most damaging output this type can
+		// produce, because it is specific, confident, and wrong.
+		//
+		// A bounded scan rather than a second index: entries is capped at
+		// maxBehaviorEntries, this runs only when admitting a *new*
+		// fingerprint, and one source of truth cannot fall out of sync with
+		// itself. Repeat observations — the common path — never reach here.
+		if id, clash := c.byBehavior[record.Behavior]; clash && id != record.FingerprintID {
+			return fmt.Errorf("%w: behavior %s/%s is already fingerprint %s, event %s calls it %s",
+				ErrFingerprintConflict,
+				preview(string(record.Behavior.OperationCategory)), preview(record.Behavior.OperationName),
+				preview(id), preview(record.EventID), preview(record.FingerprintID))
+		}
+		if len(c.entries) >= maxBehaviorEntries {
+			// The one state change on a failure path, and the reason it exists:
+			// a diff's headline output is which behaviors are new, and evidence
+			// that stopped collecting at 512 yields a confident, specific, wrong
+			// answer to exactly that question. Marking the collector incomplete
+			// is what makes a later comparison refuse rather than under-report.
+			c.complete = false
+			return fmt.Errorf("%w: %d distinct behaviors already admitted, event %s brought another",
+				ErrBehaviorCapacity, maxBehaviorEntries, preview(record.EventID))
+		}
 	}
 
 	// Past this point nothing can fail.
@@ -245,11 +281,16 @@ func (c *BehaviorCollector) Observe(record trustvian.DecisionRecord) error {
 		existing.Observations++
 		c.entries[record.FingerprintID] = existing
 	} else {
+		// The only place an entry is created, so the two indexes are written
+		// together and cannot fall out of step. Both writes happen after
+		// every check above has passed, so no failure path leaves one
+		// updated without the other.
 		c.entries[record.FingerprintID] = BehaviorEntry{
 			FingerprintID: record.FingerprintID,
 			Behavior:      record.Behavior,
 			Observations:  1,
 		}
+		c.byBehavior[record.Behavior] = record.FingerprintID
 	}
 	return nil
 }
@@ -472,8 +513,18 @@ func CompareBehaviorSnapshots(reference, candidate BehaviorSnapshot) (BehaviorDi
 	}
 
 	refByID := make(map[string]BehaviorEntry, len(reference.entries))
+	refByBehavior := make(map[trustvian.StableFeatures]string, len(reference.entries))
 	for _, e := range reference.entries {
 		refByID[e.FingerprintID] = e
+		refByBehavior[e.Behavior] = e.FingerprintID
+	}
+
+	// Identity consistency across the combined evidence, both directions,
+	// before anything is classified. Each snapshot is internally consistent
+	// by construction, but two built independently can still disagree — and
+	// no partial diff is returned when they do.
+	if err := assertConsistentIdentity(refByID, refByBehavior, candidate.entries); err != nil {
+		return BehaviorDiff{}, err
 	}
 
 	diff := BehaviorDiff{
@@ -503,17 +554,9 @@ func CompareBehaviorSnapshots(reference, candidate BehaviorSnapshot) (BehaviorDi
 			Presence:       BehaviorAdded,
 			CandidateCount: cand.Observations,
 		}
+		// Consistency was established above, so a shared fingerprint is
+		// known to describe the same behavior on both sides.
 		if ref, ok := refByID[cand.FingerprintID]; ok {
-			// The same conflict check the collector applies, enforced again
-			// here: two snapshots may have been built independently, and
-			// reporting two different behaviors as one shared behavior would
-			// be worse than refusing.
-			if ref.Behavior != cand.Behavior {
-				return BehaviorDiff{}, fmt.Errorf("%w: fingerprint %s is %s/%s in the reference and %s/%s in the candidate",
-					ErrFingerprintConflict, preview(cand.FingerprintID),
-					preview(string(ref.Behavior.OperationCategory)), preview(ref.Behavior.OperationName),
-					preview(string(cand.Behavior.OperationCategory)), preview(cand.Behavior.OperationName))
-			}
 			delta.Presence = BehaviorShared
 			delta.ReferenceCount = ref.Observations
 		}
@@ -658,4 +701,47 @@ func validTargetCategory(c event.TargetCategory) bool {
 	default:
 		return false
 	}
+}
+
+// assertConsistentIdentity checks the one-to-one relation between fingerprint
+// identity and behavior descriptor across two snapshots.
+//
+//	same fingerprint, different descriptor  → conflict
+//	same descriptor, different fingerprint  → conflict
+//
+// The second direction is the one a naive check misses, and it is the more
+// damaging of the two. Two snapshots whose fingerprints were produced under
+// different identity encodings — a changed hash, mismatched namespaces,
+// assembled evidence — describe the same behavior under different ids, and a
+// diff would report it as Removed under the old id and Added under the new
+// one. That is a specific, confident claim that behavior changed when only
+// its encoding did, and "added behavior" is the output most likely to be
+// acted on.
+//
+// This deliberately does *not* recompute the core's hash. The platform must
+// not freeze the choice of algorithm, its version prefix, or its
+// serialization — it checks that the evidence it was handed is
+// self-consistent, and the real-Engine test is what shows healthy core output
+// satisfies the relation naturally.
+func assertConsistentIdentity(
+	refByID map[string]BehaviorEntry,
+	refByBehavior map[trustvian.StableFeatures]string,
+	candidateEntries []BehaviorEntry,
+) error {
+	for _, cand := range candidateEntries {
+		if ref, ok := refByID[cand.FingerprintID]; ok && ref.Behavior != cand.Behavior {
+			return fmt.Errorf("%w: fingerprint %s is %s/%s in the reference and %s/%s in the candidate",
+				ErrFingerprintConflict, preview(cand.FingerprintID),
+				preview(string(ref.Behavior.OperationCategory)), preview(ref.Behavior.OperationName),
+				preview(string(cand.Behavior.OperationCategory)), preview(cand.Behavior.OperationName))
+		}
+		if id, ok := refByBehavior[cand.Behavior]; ok && id != cand.FingerprintID {
+			return fmt.Errorf("%w: behavior %s/%s is fingerprint %s in the reference and %s in the candidate; "+
+				"reporting this as removed and added would claim behavior changed when only its identity did",
+				ErrFingerprintConflict,
+				preview(string(cand.Behavior.OperationCategory)), preview(cand.Behavior.OperationName),
+				preview(id), preview(cand.FingerprintID))
+		}
+	}
+	return nil
 }

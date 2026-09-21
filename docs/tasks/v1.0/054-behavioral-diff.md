@@ -236,16 +236,39 @@ needs both entities loaded, and this task has no collection to load them from
 — a later service will enforce it. No package-global registry, and no change
 to `EvaluationRun`.
 
-### Fingerprint/descriptor conflict
+### Identity and descriptor are one-to-one, both ways
 
-One `FingerprintID` identifies exactly one behavior shape. A second record
-claiming the same fingerprint with different `StableFeatures` fails closed
-with `ErrFingerprintConflict`, in the collector and again during comparison.
+```text
+same FingerprintID, different StableFeatures  → conflict
+same StableFeatures, different FingerprintID  → conflict
+```
 
-The alternative — overwriting, or merging the counts — would silently report
-two different behaviors as one. The cause is a tampered or corrupted record,
-or an identity collision, and all three deserve refusal rather than a
-plausible-looking merge.
+Both directions fail closed with `ErrFingerprintConflict`, in the collector
+and again during comparison.
+
+The first direction prevents two behaviors being reported as one — the cause
+is a tampered record, corruption, or a collision, and all three deserve
+refusal rather than a plausible-looking merge.
+
+**The second direction is the one a single-sided check misses, and the more
+damaging.** Two snapshots whose fingerprints came from different identity
+encodings — a changed hash, mismatched namespaces, assembled evidence —
+describe the same behavior under different ids. Classified naively that is
+`Removed(old)` + `Added(new)`: a specific, confident claim that behavior
+changed when only its encoding did. "Added behavior" is the output most likely
+to be acted on, which makes this the worst thing this type could get wrong.
+
+The collector keeps a bounded reverse index (descriptor → fingerprint) for the
+check. A linear scan over the ≤512 entries was implemented first and measured
+at 3.2 µs per newly admitted fingerprint against 189 ns; the index makes it a
+single lookup for one more bounded map, written in exactly one place so the
+two cannot drift. Repeat observations — the hot path — touch neither.
+
+**The platform never recomputes the core's hash.** It does not check
+`hash(StableFeatures) == FingerprintID`, because that would freeze the choice
+of algorithm, its version prefix, and its serialization. It checks only that
+the evidence it was handed is self-consistent; the real-Engine test is what
+shows healthy core output satisfies the relation naturally.
 
 ## Capacity / Saturation
 
@@ -305,7 +328,7 @@ reordering.
 |---|---|---|
 | `ErrInvalidBehaviorRecord` | the record | a consumed field is missing, unrecognized, or over-long |
 | `ErrBehaviorEnvironmentMismatch` | the record, or the pairing | evidence from a different environment |
-| `ErrFingerprintConflict` | the evidence | one fingerprint, two different behavior shapes |
+| `ErrFingerprintConflict` | the evidence | fingerprint identity and behavior descriptor disagree, in either direction |
 | `ErrBehaviorCapacity` | neither | a 513th distinct behavior arrived |
 | `ErrIncompleteSnapshot` | the snapshot | saturated evidence cannot be compared |
 | `ErrUnboundCollector` | the receiver | not created by `NewBehaviorCollector` |
@@ -320,14 +343,20 @@ than reimplemented.
 Retained state, stated completely:
 
 ```text
-collector/snapshot ≤ 512 entries × (256-byte fingerprint
+collector          ≤ 512 entries × (256-byte fingerprint
                                   + 256-byte operation name
                                   + 256-byte target name
                                   + bounded enums
                                   + uint64)
+                   + ≤ 512 reverse-index entries (descriptor -> fingerprint)
                    + fixed counters and run identity
+snapshot           ≤ 512 entries (no reverse index; it is a build-time aid)
 diff               ≤ 1024 deltas
 ```
+
+The reverse index doubles the collector's index memory and is bounded by the
+same 512 ceiling. It exists only while collecting; a snapshot does not carry
+it.
 
 Nothing grows with event count, `EventID` cardinality, actor cardinality,
 session cardinality, policy-rule cardinality, or contributor count.
@@ -337,6 +366,17 @@ Counters are guarded against `uint64` wrap — total and per-entry — and retur
 an error rather than saturating.
 
 ## Tests
+
+**Identity:** all four combinations of (same/different id) × (same/different
+descriptor), asserting that exactly the two inconsistent ones conflict; both
+directions tested in the collector and across snapshots; and an explicit
+assertion that a same-behavior/different-id comparison does **not** return
+`AddedCount = 1, RemovedCount = 1`.
+
+**Overflow:** the total and per-entry counters each refused at `MaxUint64`
+with state unchanged, and the last representable observation still counted.
+Driven from an internal test, since neither boundary is reachable through the
+public API.
 
 **Collector:** construction from a valid run; zero-value run refused;
 zero-value collector refuses evidence. One fingerprint, repeats, several

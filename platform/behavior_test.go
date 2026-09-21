@@ -809,11 +809,16 @@ func TestCompareOutputIsDeterministic(t *testing.T) {
 // TestCompareIsBounded: two disjoint full snapshots produce exactly 1024
 // deltas and no more.
 func TestCompareIsBounded(t *testing.T) {
+	// Genuinely disjoint: the operation names differ too, not just the
+	// fingerprints. Reusing the same behavior under two id prefixes would be
+	// an identity conflict rather than a disjoint pair — which is exactly
+	// what this fixture did before the reverse-consistency check existed,
+	// and what that check caught.
 	fill := func(runID platform.EvaluationRunID, prefix string) platform.BehaviorSnapshot {
 		c := newCollector(t, behaviorRun(t, runID, "cand-1", testEnvironment, testProfile))
 		for i := range behaviorCapacity {
 			observe(t, c, behaviorRecord(fmt.Sprintf("evt-%d", i), fmt.Sprintf("%s-%04d", prefix, i),
-				fmt.Sprintf("tool.%d", i), "build-host", testEnvironment))
+				fmt.Sprintf("tool.%s.%d", prefix, i), "build-host", testEnvironment))
 		}
 		return c.Snapshot()
 	}
@@ -1008,8 +1013,12 @@ func BenchmarkBehaviorCollectorObserveNew(b *testing.B) {
 			c = benchCollector(b)
 			b.StartTimer()
 		}
-		rec := behaviorRecord("evt", fmt.Sprintf("fp-%04d", i%behaviorCapacity),
-			"shell.execute", "build-host", testEnvironment)
+		// The operation name varies with the fingerprint: a distinct id must
+		// describe a distinct behavior, or the identity-consistency check
+		// refuses it — as it did when this fixture reused one name.
+		n := i % behaviorCapacity
+		rec := behaviorRecord("evt", fmt.Sprintf("fp-%04d", n),
+			fmt.Sprintf("shell.execute.%d", n), "build-host", testEnvironment)
 		if err := c.Observe(rec); err != nil {
 			b.Fatalf("Observe() error = %v", err)
 		}
@@ -1029,7 +1038,7 @@ func benchSnapshot(b *testing.B, runID platform.EvaluationRunID, prefix string, 
 	}
 	for i := range entries {
 		rec := behaviorRecord(fmt.Sprintf("evt-%d", i), fmt.Sprintf("%s-%04d", prefix, i),
-			fmt.Sprintf("tool.%d", i), "build-host", testEnvironment)
+			fmt.Sprintf("tool.%s.%d", prefix, i), "build-host", testEnvironment)
 		if err := c.Observe(rec); err != nil {
 			b.Fatalf("Observe() error = %v", err)
 		}
@@ -1059,5 +1068,108 @@ func BenchmarkCompareBehaviorSnapshotsFull(b *testing.B) {
 		if _, err := platform.CompareBehaviorSnapshots(ref, cand); err != nil {
 			b.Fatalf("Compare() error = %v", err)
 		}
+	}
+}
+
+// TestSameBehaviorUnderTwoFingerprintsFailsClosed is the reverse of
+// TestFingerprintConflictFailsClosed, and the direction a single-sided check
+// misses.
+//
+// Two snapshots whose fingerprints came from different identity encodings — a
+// changed hash, mismatched namespaces, assembled evidence — describe the same
+// behavior under different ids. Reported naively that is Removed(old) +
+// Added(new): a specific, confident claim that behavior changed when only its
+// encoding did. "Added behavior" is the output most likely to be acted on,
+// which makes this the most damaging thing this type could get wrong.
+func TestSameBehaviorUnderTwoFingerprintsFailsClosed(t *testing.T) {
+	t.Run("within one collector", func(t *testing.T) {
+		c := newCollector(t, behaviorRun(t, "run-1", "cand-1", testEnvironment, testProfile))
+		observe(t, c, behaviorRecord("evt-1", "fp-a", "shell.read", "build-host", testEnvironment))
+		before := c.Snapshot()
+
+		err := c.Observe(behaviorRecord("evt-2", "fp-b", "shell.read", "build-host", testEnvironment))
+		if !errors.Is(err, platform.ErrFingerprintConflict) {
+			t.Fatalf("Observe() error = %v, want one wrapping ErrFingerprintConflict", err)
+		}
+
+		after := c.Snapshot()
+		if after.DistinctBehaviorCount() != before.DistinctBehaviorCount() {
+			t.Errorf("a second entry was admitted: %d -> %d",
+				before.DistinctBehaviorCount(), after.DistinctBehaviorCount())
+		}
+		if after.ObservationCount() != before.ObservationCount() {
+			t.Errorf("the rejected record was counted: %d -> %d",
+				before.ObservationCount(), after.ObservationCount())
+		}
+		if after.Entries()[0].FingerprintID != "fp-a" || after.Entries()[0].Observations != 1 {
+			t.Errorf("the existing entry changed: %+v", after.Entries()[0])
+		}
+		// Capacity was not exceeded — this is evidence conflict, not
+		// saturation — so the collector stays usable.
+		if !after.Complete() {
+			t.Error("an identity conflict marked the collector incomplete; capacity was not the problem")
+		}
+		if err := c.Observe(behaviorRecord("evt-3", "fp-c", "db.query", "customer-db", testEnvironment)); err != nil {
+			t.Errorf("the collector stopped accepting unrelated behavior: %v", err)
+		}
+	})
+
+	t.Run("across two snapshots", func(t *testing.T) {
+		refC := newCollector(t, behaviorRun(t, "run-1", "cand-1", testEnvironment, testProfile))
+		observe(t, refC, behaviorRecord("evt-1", "fp-old", "shell.read", "build-host", testEnvironment))
+
+		candC := newCollector(t, behaviorRun(t, "run-2", "cand-2", testEnvironment, testProfile))
+		observe(t, candC, behaviorRecord("evt-2", "fp-new", "shell.read", "build-host", testEnvironment))
+
+		diff, err := platform.CompareBehaviorSnapshots(refC.Snapshot(), candC.Snapshot())
+		if !errors.Is(err, platform.ErrFingerprintConflict) {
+			t.Fatalf("Compare() error = %v, want one wrapping ErrFingerprintConflict", err)
+		}
+
+		// The specific wrong answer this prevents.
+		if diff.AddedCount() == 1 && diff.RemovedCount() == 1 {
+			t.Error("the diff reported identical behavior as Added + Removed")
+		}
+		if len(diff.Deltas()) != 0 {
+			t.Errorf("a refused comparison returned %d deltas", len(diff.Deltas()))
+		}
+	})
+}
+
+// TestIdentityRelationIsOneToOne states the whole invariant in one place:
+// both directions conflict, and only genuinely different evidence compares.
+func TestIdentityRelationIsOneToOne(t *testing.T) {
+	snap := func(id, operation string) platform.BehaviorSnapshot {
+		c := newCollector(t, behaviorRun(t, "run-x", "cand-x", testEnvironment, testProfile))
+		observe(t, c, behaviorRecord("evt-1", id, operation, "build-host", testEnvironment))
+		return c.Snapshot()
+	}
+
+	tests := map[string]struct {
+		refID, refOp   string
+		candID, candOp string
+		wantConflict   bool
+	}{
+		"same id, same behavior":           {"fp-a", "shell.read", "fp-a", "shell.read", false},
+		"different id, different behavior": {"fp-a", "shell.read", "fp-b", "shell.execute", false},
+		"same id, different behavior":      {"fp-a", "shell.read", "fp-a", "shell.execute", true},
+		"different id, same behavior":      {"fp-a", "shell.read", "fp-b", "shell.read", true},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			_, err := platform.CompareBehaviorSnapshots(
+				snap(tt.refID, tt.refOp), snap(tt.candID, tt.candOp))
+
+			if tt.wantConflict {
+				if !errors.Is(err, platform.ErrFingerprintConflict) {
+					t.Fatalf("error = %v, want ErrFingerprintConflict", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("error = %v, want nil", err)
+			}
+		})
 	}
 }

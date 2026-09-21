@@ -369,10 +369,15 @@ whose behavioral surface is widest.
 - **An incomplete snapshot cannot produce a diff.** Comparison refuses it
   outright. An error a caller must handle is strictly better than a plausible
   wrong number nobody questions.
-- **One fingerprint, two shapes fails closed**, in the collector and again
-  during comparison. Overwriting or merging would report two distinct
-  behaviors as one, and the realistic causes — tampering, corruption, a
-  collision — all warrant refusal.
+- **Fingerprint identity and behavior descriptor must agree one-to-one, both
+  ways**, in the collector and again during comparison. One fingerprint with
+  two shapes would report two behaviors as one. One shape under two
+  fingerprints is worse: classified naively it becomes `Removed(old)` +
+  `Added(new)`, a specific and confident claim that behavior changed when only
+  its identity encoding did — and "added behavior" is the output most likely
+  to be acted on. The platform never recomputes the core's hash to check this;
+  it verifies only that the evidence it was handed is self-consistent, so the
+  fingerprint algorithm stays free to change.
 - **Comparison requires matching environments.** Environment is a stable
   fingerprint dimension, so a cross-environment diff would classify every
   behavior as simultaneously added and removed.
