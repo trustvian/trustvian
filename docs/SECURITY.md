@@ -507,6 +507,90 @@ scorecard with explicit caller-owned limits and returns PASS or FAIL.
   056 gates passed. It is not an approval, a promotion, or a deployment, no
   field is named for one, and nothing acts on the result.
 
+### Local persistence fails closed and stores no raw history
+
+**Threat:** durable platform state becomes a way to forge evidence, adopt a
+database nobody vetted, silently rewrite what a finished run was evaluated
+against, or accumulate the event history this design deliberately does not
+keep.
+
+**Status: every path is closed at the adapter boundary.**
+[Task 057](tasks/v1.0/057-local-platform-persistence.md) adds SQLite behind
+narrow capabilities — there is no generic `Database` interface, and no
+`Query`/`Exec`/`Put(any)` a caller could aim anywhere.
+
+- **Caller input reaches SQL only as a bound parameter.** Every identifier,
+  name, metadata string, failure reason, environment, profile, fingerprint,
+  operation and target name is a parameter; only compile-time table and column
+  names appear in assembled SQL. A project named
+  `agent'; DROP TABLE platform_projects; --` round-trips as data.
+- **Foreign keys enforce ownership** — agent→project, candidate→agent,
+  run→candidate, evidence→run. `PRAGMA foreign_keys` is per-connection, so the
+  connection model is constrained to make that true for every statement rather
+  than for whichever connection happened to run a pragma, and a test asserts
+  the database itself refuses an orphan.
+- **Create never overwrites.** A duplicate identity returns an error and
+  leaves the stored row untouched, even when the incoming value differs. The
+  case that matters is a `CandidateID` arriving with a different artifact
+  digest: silently rewriting it would change what a finished run was evaluated
+  against.
+- **The store generates no platform identity.** No autoincrement domain ID, no
+  `last_insert_rowid`, no generated UUID. An identity minted by storage is one
+  nobody chose, and it would differ between two backends holding the same
+  logical data.
+- **Unknown, ambiguous and incomplete schema states fail closed.** A version
+  this build does not support is refused. So are recognized tables with no
+  version metadata — stamping those as fresh would silently adopt data this
+  code has never seen. So is metadata claiming v1 beside a schema missing
+  required tables: a version row is a claim, not proof, and accepting a
+  partial restore moves the failure from open to the first write. Nothing is
+  recreated; there is no repair migration. Schema creation and version
+  recording commit together, and a racing initializer is resolved by
+  re-inspecting the committed schema rather than by matching an error string.
+- **Aggregate and snapshot update atomically.** They are two views of one run;
+  written separately, an aggregate from observation N could commit beside a
+  snapshot from N−1 and become durable truth. One transaction covers the
+  aggregate, the header and every entry.
+- **Restored evidence is validated before it is trusted, and bound back to
+  its run.** Category totals, metric counts and ranges, finite floats, entry
+  uniqueness, the behavior-to-fingerprint relation in both directions,
+  environment agreement and exact observation sums are all re-proved before
+  the private bound marker is set — and the restored pair must then match the
+  persisted `EvaluationRun`. Two halves agreeing with each other proves only
+  that they were edited consistently. Half a pair present is corruption, never
+  "no evidence yet": treating it as first-write state would let the next save
+  complete the record and erase every trace that anything went wrong, so it is
+  refused on read and on save alike. The stored completeness flag is parsed as
+  exactly 0 or 1, because reading it as `== 1` would normalize a corrupt value
+  into the safer-looking answer.
+  Corrupt rows return an error and no partial value; nothing is clamped or
+  repaired, because a patched metric produces evidence that looks measured and
+  is invented. Runs are rebuilt by replaying their domain transitions, so a
+  corrupt chronology fails the same invariant a live value would.
+- **Full `uint64` counters are never narrowed.** SQLite `INTEGER` is signed
+  64-bit, so `int64(value)` would corrupt everything above `MaxInt64` —
+  silently, and only for large values. Counters are canonical base-10 text,
+  round-tripped across the whole `0 … MaxUint64` domain and tested at the
+  boundary.
+- **Raw event history is intentionally absent.** No table grows per event. No
+  `DecisionRecord`, `Event`, diff, scorecard, gate result or gate policy is
+  stored; the derived values are recomputed from evidence so there is one
+  source of truth. An allowlist test fails if such a table ever appears.
+- **Core baseline state is not duplicated.** `baseline.Key`, learned
+  fingerprints, sequence and delegation state stay in the engine's own stores.
+  Two learned-state authorities would silently change the engine's durability
+  model.
+- **Snapshot capacity stays 512**, and **incomplete evidence stays
+  incomplete**: a saturated snapshot persists as a diagnostic, restores with
+  `Complete() == false`, is still refused by `CompareBehaviorSnapshots`, and
+  cannot be rewritten as complete by a later write. Saturation is a fact about
+  what was observed.
+- **Stale evidence cannot overwrite newer evidence.** A lower observation
+  count is refused, an identical rewrite is idempotent, and two divergent
+  views at the same count are refused rather than silently resolved.
+- **There is no listener.** Task 057 adds no network surface, no server, no
+  port, and no background goroutine. It is a file.
+
 ### Platform identity cannot become behavioral identity
 
 **Threat:** an evaluation concept leaks into the engine — a candidate becomes

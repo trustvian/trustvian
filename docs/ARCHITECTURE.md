@@ -519,9 +519,28 @@ fixed-shape comparison of two evaluations. Task 056 added the first layer
 allowed to judge one: `EvaluateEvaluationGate` pairs a card with explicit
 caller-owned integer limits and returns a PASS/FAIL `EvaluationGateResult`.
 
-Still absent: persistence, transport, promotion, and event history. A gate
-verdict has no side effect — it is evidence about acceptance, not an action.
-This section records the boundary all of it respects, decided in
+Task 057 added the first persistence adapter: a local SQLite store behind two
+narrow capabilities — `ControlStore` for projects, agents and candidates, and
+`EvaluationStore` for runs and their evidence. There is no generic `Database`
+interface; ADR 0023's rule that a store is an adapter expressed in domain
+terms is what the capability shape follows.
+
+It persists what cannot be rebuilt — the entities, the aggregate and the
+behavioral snapshot — and recomputes what can: diff, scorecard and gate result
+are deterministic functions of stored evidence, so storing them too would
+create a second thing that can be true. No table grows per event; raw history
+remains a separate future capability.
+
+The adapter lives inside package `platform` rather than a subpackage, because
+the aggregate and snapshot carry private bound markers and restoring them from
+outside would require a public evidence-forging constructor. The cost is a
+driver dependency in that package; the boundary check still holds, and the
+core's build graph contains none of it. See
+[ADR 0030](adr/0030-local-persistence-stores-authoritative-bounded-state.md).
+
+Still absent: transport, an API, realtime, promotion, and event history. A
+gate verdict has no side effect — it is evidence about acceptance, not an
+action. This section records the boundary all of it respects, decided in
 [ADR 0022](adr/0022-core-platform-boundary.md).
 
 The two reducers are deliberately separate. An aggregate is O(1) in the record

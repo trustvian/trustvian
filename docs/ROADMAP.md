@@ -25,9 +25,9 @@ Status vocabulary:
 | **FUTURE** | A direction, not scoped, designed, committed, or dated |
 
 `v1.0` is NEXT. Track B is **partly implemented**: its evaluation foundation
-(tasks 051–056) exists, while persistence, the API, realtime, the UI,
-promotion and the remaining numbered work are still PLANNED. The foundation
-is not usable end to end on its own. Everything under
+and local persistence (tasks 051–057) exist, while the API, realtime, the UI,
+promotion and the remaining numbered work are still PLANNED. What exists is
+not usable end to end on its own. Everything under
 [Beyond v1.0](#beyond-v10) is FUTURE.
 
 ## Product Direction
@@ -132,18 +132,21 @@ It now holds the evaluation foundation, and nothing built on top of it:
   construction-time validation and an explicit run lifecycle (task 052);
   evaluation result aggregation over the core's public `DecisionRecord`
   (task 053); behavioral diff over bounded behavioral snapshots (task 054);
-  fixed-shape comparative scorecards (task 055); and deterministic
-  evidence-backed hard gates over those scorecards (task 056);
-- not implemented: platform persistence, the control-plane API and ingest,
-  realtime, the CLI evaluation workflow, the TUI, the WebUI, the full
-  environment model, promotion, and the event-history capability.
+  fixed-shape comparative scorecards (task 055); deterministic
+  evidence-backed hard gates over those scorecards (task 056); and local
+  SQLite persistence for control and evaluation state (task 057);
+- not implemented: the control-plane API and ingest, realtime, the CLI
+  evaluation workflow, the TUI, the WebUI, the full environment model,
+  promotion, and the event-history capability.
 
 So the platform can now describe an evaluation, aggregate bounded result
 evidence, compare bounded behavioral snapshots, build a comparative scorecard
-from the two, and apply deterministic evidence-backed hard gates to it.
-Nothing yet persists, serves, or promotes — a gate returns a verdict and has
-no side effect. Everything else about the platform in this document remains
-approved direction rather than shipped behavior.
+from the two, apply deterministic evidence-backed hard gates to it, and keep
+all of that across a restart. Nothing yet serves an API, ingests over a
+transport, streams realtime, or promotes — a gate returns a verdict and has no
+side effect. Raw event history is deliberately still absent. Everything else
+about the platform in this document remains approved direction rather than
+shipped behavior.
 
 Also not implemented: multi-tenancy, access control, an MCP server surface, a
 machine-learning detection path, and prompt- or content-level analysis.
@@ -301,14 +304,16 @@ the public documentation.
 
 Implemented: generic learning-scope isolation in the core (051), the
 evaluation domain (052), evaluation result aggregation (053), behavioral
-diff (054), evaluation scorecards (055), and deterministic hard gates (056).
+diff (054), evaluation scorecards (055), deterministic hard gates (056), and
+local SQLite persistence (057).
 
-Still planned: local persistence (057), the control-plane API and ingest
-(058), and everything from realtime (059) onward. The platform can describe an
-evaluation, aggregate bounded result evidence, compare bounded behavioral
-snapshots, produce fixed-shape comparative scorecards, and apply deterministic
-evidence-backed hard gates to them. It cannot yet persist, serve, or promote —
-so it is not usable end to end.
+Still planned: the control-plane API and ingest (058), and everything from
+realtime (059) onward. The platform can describe an evaluation, aggregate
+bounded result evidence, compare bounded behavioral snapshots, produce
+fixed-shape comparative scorecards, apply deterministic evidence-backed hard
+gates to them, and persist local control and evaluation state across a
+restart. It cannot yet serve an API, ingest over a transport, stream realtime,
+promote, or retain raw event history — so it is not usable end to end.
 
 The scorecard itself carries no verdict and no threshold; acceptance lives in
 [task 056](tasks/v1.0/056-deterministic-hard-gates.md), which pairs a card
@@ -558,7 +563,7 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**None is implemented.**
+**Partly implemented:** tasks 049–057 are done; 058 onward remain PLANNED.
 
 **Architecture and core boundary** — the only tasks that touch the engine:
 

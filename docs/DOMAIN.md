@@ -976,6 +976,42 @@ reported as zero**.
 
 See [ADR 0029](adr/0029-hard-gates-use-explicit-integer-evidence.md).
 
+### Local persistence
+
+Task 057 makes the values above survive a restart, behind two narrow
+capabilities rather than a generic database:
+
+```text
+ControlStore     Project, Agent, Candidate
+EvaluationStore  EvaluationRun, and one run's evidence
+```
+
+What is persisted is what cannot be rebuilt: the entities, the
+`EvaluationAggregate`, and the `BehaviorSnapshot` with its bounded entries.
+`BehaviorDiff`, `EvaluationScorecard` and `EvaluationGateResult` are
+deterministic functions of those, so they are recomputed on demand — storing
+them would create a second thing that can be true, and the first disagreement
+would have no principled resolution.
+
+Four rules shape the adapter:
+
+- **Create means create.** A duplicate identity is refused, never upserted.
+  The same `CandidateID` with a different artifact digest must not rewrite
+  what a finished run was evaluated against.
+- **Identity stays caller-owned.** The store generates no `ProjectID`,
+  `AgentID`, `CandidateID`, `EvaluationRunID` or profile reference.
+- **Runs update by compare-and-swap**, and are rebuilt by replaying their
+  domain transitions rather than by writing private fields — so a corrupt
+  chronology fails the same invariant a live value would.
+- **Evidence is one transaction.** The aggregate and snapshot commit together
+  or not at all, evidence never moves backwards, and saturation is sticky: an
+  incomplete snapshot stays incomplete across a restart.
+
+Raw event history is deliberately absent — no table grows per event. Core
+baseline state stays in the engine's own stores.
+
+See [ADR 0030](adr/0030-local-persistence-stores-authoritative-bounded-state.md).
+
 See [ADR 0025](adr/0025-platform-domain-values-with-caller-owned-identity.md)
 and [task 052](tasks/v1.0/052-evaluation-domain.md).
 

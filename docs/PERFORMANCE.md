@@ -1067,6 +1067,52 @@ Zero allocations because nothing is built: the result is a fixed struct of
 counters, identifiers and booleans, and no deltas, records or evidence
 objects are retained.
 
+### v1.0 task 057 (Local Platform Persistence)
+
+Saving and loading one evaluation run's evidence through the local SQLite
+adapter.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `SaveEvaluationEvidence32` | 692,539 | 97,928 | 2,081 |
+| `SaveEvaluationEvidence512` | 4,686,661 | 1,127,251 | 23,668 |
+| `LoadEvaluationEvidence32` | 157,493 | 47,429 | 1,105 |
+| `LoadEvaluationEvidence512` | 598,297 | 494,855 | 11,202 |
+
+Five runs each, darwin/arm64, Apple M3 Pro, Go 1.27, on a temporary
+file-backed database with crash durability left on. As everywhere in this
+document, `ns/op` is a machine- and session-specific measurement rather than
+an architectural constant — see [reading the numbers](#reading-the-numbers).
+
+**This is I/O, and no latency gate is asserted on it.** The numbers exist for
+regression tracking; durability settings were not weakened to improve them.
+
+The read path costs more than it first did, and visibly so at the small end:
+`LoadEvaluationEvidence32` moved from ~118 µs to ~157 µs when loading gained
+two existence probes and a read of the owning `EvaluationRun`. Those are fixed
+per-call costs, so they show up as roughly a third at 32 behaviors and under a
+tenth at 512. They buy the read-path trust boundary — partial evidence is
+detected rather than mistaken for absent evidence, and restored values are
+bound back to the run they claim to describe — which is not a trade worth
+reversing for 39 µs.
+
+**The shape is the claim, not the speed.** Persistence here is:
+
+```text
+O(1) in event-history length
+O(B) in retained behavior cardinality, where B <= 512
+```
+
+Not "O(1) persistence" — storing a snapshot necessarily writes up to 512
+entry rows, and the 16× step from 32 to 512 behaviors costs roughly 7× on
+write and 4.7× on read. Fixed per-transaction overhead is why it is
+sub-linear rather than proportional.
+
+The important half is the first line. No table grows per event, so a run that
+processed a million records writes the same rows as one that processed ten:
+one aggregate, one header, and at most 512 entries. Raw event history is a
+separate capability with its own volume question.
+
 ## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —
