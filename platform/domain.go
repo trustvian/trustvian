@@ -20,9 +20,20 @@
 // event types — and the core never depends on the platform. An internal/*
 // import is a compile error here, and a check in CI enforces both directions.
 //
-// What this package is not: persistence, transport, scorecard, gate,
-// promotion, or event history. Those are separate tasks, and each would be
-// easier to add here than to remove later.
+// Beyond the domain above, this package holds the evaluation logic built on
+// it — bounded result aggregation, behavioral diff, comparative scorecards,
+// deterministic hard gates — and, since task 057, the local SQLite
+// persistence adapter.
+//
+// The adapter lives here rather than in a subpackage for one reason: the
+// aggregate and the behavioral snapshot carry private bound markers, and
+// restoring them from outside would need an exported constructor taking
+// stored fields — an API for forging trusted evidence. Package privacy is
+// what makes that marker mean anything.
+//
+// What this package is still not: transport or an API, realtime delivery,
+// promotion, a full environment model, or raw event history. Those are
+// separate tasks, and each would be easier to add here than to remove later.
 package platform
 
 import (

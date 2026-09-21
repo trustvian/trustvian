@@ -1067,6 +1067,43 @@ Zero allocations because nothing is built: the result is a fixed struct of
 counters, identifiers and booleans, and no deltas, records or evidence
 objects are retained.
 
+### v1.0 task 057 (Local Platform Persistence)
+
+Saving and loading one evaluation run's evidence through the local SQLite
+adapter.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `SaveEvaluationEvidence32` | 659,436 | 92,164 | 1,919 |
+| `SaveEvaluationEvidence512` | 4,672,846 | 1,121,474 | 23,507 |
+| `LoadEvaluationEvidence32` | 118,502 | 42,148 | 983 |
+| `LoadEvaluationEvidence512` | 556,425 | 489,564 | 11,080 |
+
+Five runs each, darwin/arm64, Apple M3 Pro, Go 1.27, on a temporary
+file-backed database with crash durability left on. As everywhere in this
+document, `ns/op` is a machine- and session-specific measurement rather than
+an architectural constant — see [reading the numbers](#reading-the-numbers).
+
+**This is I/O, and no latency gate is asserted on it.** The numbers exist for
+regression tracking; durability settings were not weakened to improve them.
+
+**The shape is the claim, not the speed.** Persistence here is:
+
+```text
+O(1) in event-history length
+O(B) in retained behavior cardinality, where B <= 512
+```
+
+Not "O(1) persistence" — storing a snapshot necessarily writes up to 512
+entry rows, and the 16× step from 32 to 512 behaviors costs roughly 7× on
+write and 4.7× on read. Fixed per-transaction overhead is why it is
+sub-linear rather than proportional.
+
+The important half is the first line. No table grows per event, so a run that
+processed a million records writes the same rows as one that processed ten:
+one aggregate, one header, and at most 512 entries. Raw event history is a
+separate capability with its own volume question.
+
 ## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —

@@ -40,6 +40,47 @@ actually depend on.
 
 ### Added
 
+- **Local platform persistence: evaluation state survives a restart.**
+  `platform.OpenSQLiteStore` provides a local SQLite adapter behind two narrow
+  capabilities — `ControlStore` for projects, agents and candidates, and
+  `EvaluationStore` for evaluation runs and their evidence. There is no
+  generic `Database` interface; persistence is expressed in domain terms.
+
+  It persists what cannot be rebuilt — the entities, the
+  `EvaluationAggregate`, and the `BehaviorSnapshot` with its bounded entries.
+  `BehaviorDiff`, `EvaluationScorecard` and `EvaluationGateResult` are
+  deterministic functions of those and are recomputed on demand, so there is
+  one source of truth rather than a stored copy that can disagree.
+
+  Fail-closed throughout. Creates never upsert, so the same `CandidateID` with
+  a different artifact digest cannot rewrite what a finished run was evaluated
+  against. Identity stays caller-owned — the store generates no ID. Runs
+  update by compare-and-swap and are rebuilt by replaying their domain
+  transitions, so a corrupt chronology fails the same invariant a live value
+  would. Aggregate and snapshot commit in one transaction; evidence never
+  moves backwards; saturation is sticky, so an incomplete snapshot stays
+  incomplete and is still refused by `CompareBehaviorSnapshots`.
+
+  Restored evidence is validated before its private bound marker is set, and
+  corrupt rows return an error rather than a repaired value. Counters are
+  stored as canonical base-10 text, round-tripping the whole `0 … MaxUint64`
+  domain — SQLite `INTEGER` is signed 64-bit, and narrowing would corrupt
+  large values silently. Timestamps keep nanosecond precision and their
+  numeric zone offset rather than being normalized to UTC.
+
+  Unknown schema versions fail closed, and so do recognized tables with no
+  version metadata: adopting those as fresh would silently take ownership of
+  data this code has never seen. Schema creation and version stamping commit
+  together.
+
+  Raw event history is deliberately absent — no table grows per event — and
+  core baseline state is not duplicated; the engine's own stores keep owning
+  it. No API, transport, realtime, promotion workflow, or PostgreSQL platform
+  backend, and no core runtime change. Adds a pure-Go SQLite driver
+  (`modernc.org/sqlite`) to the platform module, so no CGO requirement is
+  introduced. See [ADR
+  0030](docs/adr/0030-local-persistence-stores-authoritative-bounded-state.md).
+
 - **Deterministic hard gates: a scorecard plus explicit limits becomes a
   verdict.** `platform.EvaluateEvaluationGate` pairs an `EvaluationScorecard`
   with a caller-owned `EvaluationGatePolicy` and returns a fixed-shape
