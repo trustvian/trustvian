@@ -40,6 +40,50 @@ actually depend on.
 
 ### Added
 
+- **Evaluation scorecards: one fixed-shape comparison of two evaluations.**
+  `platform.NewEvaluationScorecard` composes the evidence tasks 053 and 054
+  already produce:
+
+  ```text
+  reference EvaluationAggregate ───────┐
+  BehaviorDiff(reference → candidate) ─┼──▶ EvaluationScorecard
+  candidate EvaluationAggregate ───────┘
+  ```
+
+  It reports how the decision, risk, approval and policy-selection
+  distributions moved, how the five numeric signals moved, and how much
+  behavioral presence overlapped — counts, rates and signed deltas.
+
+  **No third reducer.** Records were consumed once, by two reducers designed
+  against the same stream; re-reading them would be a third ingestion path
+  with a third chance to disagree. Both aggregates are required, because
+  comparison is the point, and the diff cannot be derived from them nor they
+  from it.
+
+  **Evidence must describe one comparison.** Each aggregate is matched
+  against its own side of the diff, all three must agree on the environment,
+  and both observation counts must match — catching the case where one
+  reducer saw records the other did not. There is no partial card.
+
+  **Fixed-shape and O(1).** Construction costs 214 ns and zero allocations
+  for a 1,024-delta comparison over 2,048 records — identical to an empty
+  one, because only summary accessors are read. The diff's deltas are not
+  copied; a caller wanting per-behavior rows reads the `BehaviorDiff` it
+  already holds.
+
+  **Still evidence, not judgement.** No overall score, weight, threshold, or
+  verdict: a composite would let one dimension offset another, which the
+  roadmap forbids, and would become the number read instead of the gate.
+  Empty denominators are undefined rather than zero — two evaluations that
+  observed nothing are unmeasured, not identical.
+
+  **Unsupported semantics are absent, not zero.** Critical policy violations,
+  blocked or unapproved sensitive actions, per-rule compliance and delegation
+  stability have no field, because no current evidence can express them.
+  Reporting `0` would be a false security claim. Task 056 must define where
+  severity and sensitivity come from before those gates can exist. See [ADR
+  0028](docs/adr/0028-scorecards-are-fixed-shape-comparative-evidence.md).
+
 - **Behavioral diff: which behavioral shapes changed between two
   evaluations.** `BehaviorCollector` reduces a `DecisionRecord` stream into a
   bounded set of behaviors; `BehaviorSnapshot` is the detached, deterministic

@@ -57,9 +57,16 @@ slice, and it is the work that keeps a diff over a long evaluation from
 costing memory proportional to the evaluation.
 
 **Task 055 (scorecards)** consumes this aggregate as evidence. It does not
-extend it. A scorecard is an interpretation with its own thresholds; putting
-one here would mean a value that reports facts also rendering a judgement,
-and the judgement would be the thing people read.
+extend it. A scorecard derives comparative metrics from this and from the
+behavioral diff; putting that here would mean a value that reports facts also
+rendering an interpretation, and the interpretation would be the thing people
+read.
+
+Task 055 refined where the line falls, and
+[ADR 0028](0028-scorecards-are-fixed-shape-comparative-evidence.md) records
+it: a scorecard computes derived comparative metrics and carries no
+thresholds or verdict, while acceptance thresholds and pass/fail belong to
+the gate task. Both halves stay out of the aggregate.
 
 **Task 057 (persistence)** stores a fixed number of columns per aggregate. It
 does not inherit a growing blob, and it does not need a retention policy for

@@ -897,6 +897,41 @@ Like the aggregate, it reports facts and no verdict: no score, severity,
 threshold, or promotability. See
 [ADR 0027](adr/0027-behavioral-diff-compares-bounded-snapshots.md).
 
+### Evaluation scorecards
+
+`EvaluationScorecard` (task 055) composes the two reducers' outputs into one
+fixed-shape comparison:
+
+```text
+reference EvaluationAggregate ───────┐
+BehaviorDiff(reference → candidate) ─┼──▶ EvaluationScorecard
+candidate EvaluationAggregate ───────┘
+```
+
+It reports how the decision, risk, approval and policy-selection
+distributions moved, how the five numeric signals moved, and how much
+behavioral presence overlapped — as counts, rates and signed deltas.
+
+Three properties define it:
+
+- **Comparative.** Both aggregates are required: "reference block rate →
+  candidate block rate" cannot be expressed from one side, and the diff
+  cannot be derived from the aggregates nor they from it.
+- **Fixed-shape.** No slice, map, or retained input. Construction costs the
+  same for a 1,024-delta comparison as for an empty one, which is why the
+  diff's deltas are not copied — a caller wanting per-behavior rows reads the
+  `BehaviorDiff` it already holds.
+- **Evidence, still.** No overall score, no weight, no threshold, no verdict.
+  Concepts the evidence cannot express — critical policy violations, blocked
+  sensitive actions, per-rule compliance — are **absent rather than reported
+  as zero**, because a zero derived from evidence with no notion of severity
+  is a false security claim.
+
+Empty denominators are undefined rather than zero throughout. Two evaluations
+that observed nothing are unmeasured, not identical.
+
+See [ADR 0028](adr/0028-scorecards-are-fixed-shape-comparative-evidence.md).
+
 See [ADR 0025](adr/0025-platform-domain-values-with-caller-owned-identity.md)
 and [task 052](tasks/v1.0/052-evaluation-domain.md).
 

@@ -393,6 +393,63 @@ whose behavioral surface is widest.
   question, and putting it here would make the component that counts facts
   also the one that renders verdicts.
 
+### Scorecards combine evidence, and refuse to combine the wrong evidence
+
+**Threat:** a scorecard assembles three pieces of evidence that do not
+describe the same comparison, and presents the result as one evaluation —
+a decision distribution from one run beside a behavioral summary from
+another, or from a different environment, or from two partial views of one
+stream.
+
+**Status: every correspondence verified before anything is built.** Each
+aggregate is matched against its *own* side of the diff (run, candidate and
+behavioral profile), all three must agree on the environment, and both
+observation counts must match:
+
+```text
+reference.RecordCount == diff.ReferenceObservationCount
+candidate.RecordCount == diff.CandidateObservationCount
+```
+
+That last check catches the subtle case. Tasks 053 and 054 consume the same
+stream through two reducers; if one saw 100 records and the other 91, the two
+halves describe different evaluations and no reconciliation is correct. It is
+refused rather than best-efforted, and there is no partial card.
+
+Other properties worth naming:
+
+- **Zero-value evidence is not empty evidence.** A zero `EvaluationAggregate`
+  has all-zero counts — indistinguishable *by value* from a valid empty
+  evaluation, and opposite in meaning. Both zero aggregates and zero diffs
+  are refused; a genuinely empty evaluation produces a valid card.
+- **Empty denominators are undefined, never zero.** Every rate, delta, mean
+  comparison and presence ratio reports availability. Collapsing "nothing was
+  observed" into `0.0` always errs toward looking safe: a candidate that ran
+  nothing would otherwise show a zero block rate, a zero critical-risk rate,
+  and perfect behavioral overlap — an ideal candidate that did not run.
+- **Unsupported security semantics are absent, not zero.** No
+  `CriticalPolicyViolations`, `BlockedSensitiveActions`,
+  `UnapprovedSensitiveActions`, per-rule compliance, or delegation stability
+  field exists. `PolicyRule` carries no severity and is not retained;
+  `ContextRisk` has no repository-defined sensitivity threshold;
+  `ApprovalStatus` is producer-supplied evidence; and the aggregate keeps no
+  per-event rule, resource, or delegation correlation. A field reporting `0`
+  for any of these would be a false security claim that reads as a
+  measurement which found nothing rather than one that never ran.
+- **No overall score exists,** and no weights. A composite would let strength
+  in one dimension offset a critical condition in another — which the
+  roadmap's own rule forbids — and would become the number callers read
+  instead of the gate.
+- **No average may gate.** Categorical counts are integer arithmetic and
+  order-independent; mean comparisons inherit task 053's floating-point
+  semantics and are not guaranteed bit-identical under reordering. Critical
+  conditions must rest on counts.
+- **No raw history is retained.** No event identifier, record, delta,
+  fingerprint, or rule name reaches a card, and its shape is fixed.
+- **Availability is not permission.** Candidate block and critical-risk
+  counts are visible so a gate *could* use them; whether any of them may
+  legitimately gate a promotion is task 056's decision, not this layer's.
+
 ### Platform identity cannot become behavioral identity
 
 **Threat:** an evaluation concept leaks into the engine — a candidate becomes

@@ -1008,6 +1008,36 @@ Zero allocations was not a goal here and would have been the wrong one: two
 bounded maps and a defensive snapshot copy legitimately allocate, and removing
 any of them would trade a real invariant for a number.
 
+### v1.0 task 055 (Evaluation Scorecards)
+
+Composing two aggregates and a behavioral diff into one fixed-shape
+comparison.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `NewEvaluationScorecardTypical` (2,048 records, 1,024 deltas) | 214 | 0 | 0 |
+| `NewEvaluationScorecardEmpty` | 215 | 0 | 0 |
+
+Five runs each, darwin/arm64, Apple M3 Pro, Go 1.27. As everywhere in this
+document, the `ns/op` figures are machine- and session-specific measurements
+rather than architectural constants; the `0`/`0` allocation columns are the
+structurally stable part — see [reading the numbers](#reading-the-numbers).
+
+**The two rows being identical is the measurement.** "Typical" compares two
+evaluations of 2,048 records each whose diff holds the bounded maximum of
+1,024 deltas; "empty" compares two evaluations that observed nothing. They
+cost the same, because the scorecard reads only summary accessors — never the
+deltas, never anything that scales.
+
+Scorecard construction is therefore O(1) in both the number of records
+previously aggregated and the number of behaviors compared. That is the main
+reason task 054's detailed diff is not retained: a card copying the deltas
+would cost and weigh in proportion to behavioral cardinality, for data the
+caller already holds.
+
+Zero allocations here, unlike task 054's comparison, because nothing is built
+— every field is a copied counter, identifier, or summary.
+
 ## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —
