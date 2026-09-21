@@ -538,19 +538,31 @@ narrow capabilities — there is no generic `Database` interface, and no
   `last_insert_rowid`, no generated UUID. An identity minted by storage is one
   nobody chose, and it would differ between two backends holding the same
   logical data.
-- **Unknown and ambiguous schema states fail closed.** A version this build
-  does not support is refused. So are recognized tables with no version
-  metadata — stamping those as fresh would silently adopt data this code has
-  never seen. Schema creation and version recording commit together, so a
-  failed first open cannot produce that ambiguity.
+- **Unknown, ambiguous and incomplete schema states fail closed.** A version
+  this build does not support is refused. So are recognized tables with no
+  version metadata — stamping those as fresh would silently adopt data this
+  code has never seen. So is metadata claiming v1 beside a schema missing
+  required tables: a version row is a claim, not proof, and accepting a
+  partial restore moves the failure from open to the first write. Nothing is
+  recreated; there is no repair migration. Schema creation and version
+  recording commit together, and a racing initializer is resolved by
+  re-inspecting the committed schema rather than by matching an error string.
 - **Aggregate and snapshot update atomically.** They are two views of one run;
   written separately, an aggregate from observation N could commit beside a
   snapshot from N−1 and become durable truth. One transaction covers the
   aggregate, the header and every entry.
-- **Restored evidence is validated before it is trusted.** Category totals,
-  metric counts and ranges, finite floats, entry uniqueness, the behavior-to-
-  fingerprint relation in both directions, environment agreement and
-  observation sums are all re-proved before the private bound marker is set.
+- **Restored evidence is validated before it is trusted, and bound back to
+  its run.** Category totals, metric counts and ranges, finite floats, entry
+  uniqueness, the behavior-to-fingerprint relation in both directions,
+  environment agreement and exact observation sums are all re-proved before
+  the private bound marker is set — and the restored pair must then match the
+  persisted `EvaluationRun`. Two halves agreeing with each other proves only
+  that they were edited consistently. Half a pair present is corruption, never
+  "no evidence yet": treating it as first-write state would let the next save
+  complete the record and erase every trace that anything went wrong, so it is
+  refused on read and on save alike. The stored completeness flag is parsed as
+  exactly 0 or 1, because reading it as `== 1` would normalize a corrupt value
+  into the safer-looking answer.
   Corrupt rows return an error and no partial value; nothing is clamped or
   repaired, because a patched metric produces evidence that looks measured and
   is invented. Runs are rebuilt by replaying their domain transitions, so a

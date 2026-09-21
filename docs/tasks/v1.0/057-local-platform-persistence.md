@@ -192,9 +192,18 @@ than a table that could hold two versions at once.
 | State on open | Behavior |
 |---|---|
 | no tables, no metadata | transactionally create schema v1 |
-| metadata says v1 | verify and continue |
+| metadata says v1 **and every required table exists** | verify and continue |
+| metadata says v1, required tables missing | fail closed — **partial schema** |
 | metadata says anything else | fail closed, `ErrStoreSchemaVersion` |
 | data tables exist, metadata absent | fail closed — **never adopted as fresh** |
+
+**A version row is a claim, not proof.** A partial restore, an interrupted
+copy, or a manual `DROP` can leave metadata saying v1 beside a schema missing
+half its tables. Accepting that moves the failure from open to the first
+write, by which time the damage is invisible. So verification checks the whole
+allowlist, and nothing is recreated: there is no v1 repair migration, and
+silently rebuilding one table would discard whatever else went missing with
+it. A partial v1 schema is operator-visible damage.
 
 That last row is the important one. Stamping an unknown database as v1 because
 it happens to lack a version row would silently adopt someone else's data.
@@ -204,9 +213,18 @@ and no invented v0.
 
 **Initialization is atomic.** Schema creation and version recording commit
 together, so a failed first open cannot leave tables present with metadata
-absent — exactly the ambiguous state the table above refuses. Two local
-openers racing initialization must both end up correct: one commits, the other
-sees a valid v1 and continues rather than reporting corruption.
+absent — exactly the ambiguous state the table above refuses.
+
+**Two local openers racing initialization both end up correct.** A racing
+initializer can make any statement fail — a locked database, or a table the
+other opener just created — not only the commit, so recovery cannot key on
+which step failed, and must not key on a driver's English error text. The
+durable state decides instead: on any initialization failure the transaction
+is rolled back and the schema re-inspected once; a complete valid v1 means
+somebody else finished the job. Rollback comes first because the store holds a
+single connection and verifying inside the transaction would deadlock against
+itself. One re-inspection, no loop. A regression test races eight openers
+behind a barrier.
 
 ## Identity and Referential Integrity
 
@@ -337,6 +355,29 @@ Identity must agree exactly across aggregate and snapshot — run, candidate,
 environment, profile — *and* match the persisted `EvaluationRun`. Evidence is
 never stored under a run merely because a RunID string matched.
 
+The same binding is re-checked on **read**. Two halves agreeing with each
+other proves only that they were edited consistently; the authoritative
+statement of what a run is lives in the runs table, and evidence contradicting
+it describes some other evaluation. A read-path mismatch is `ErrStoreCorrupt`,
+not `ErrStoreConflict` — conflict describes a valid caller operation racing
+durable state, and nothing here came from a caller operation at all.
+
+### Partial evidence is corruption, never first write
+
+A run holds both halves or neither. Exactly one present is a partial write or
+a partial restore:
+
+```text
+neither present  → ErrStoreNotFound, and a save proceeds as first evidence
+both present     → load, validate, and bind
+exactly one      → ErrStoreCorrupt, on read and on save alike
+```
+
+One half's absence is never taken as proof that both are absent. Treating a
+half-pair as first-write state would let the next save complete the record and
+erase every trace that anything went wrong, so the save is refused and the
+partial state is left exactly as found for an explicit recovery decision.
+
 **Complete snapshot:** `aggregate.RecordCount() == snapshot.ObservationCount()`.
 Both consumed the same stream; a mismatch means divergent evidence and is
 refused.
@@ -415,16 +456,49 @@ StableFeatures enums recognized; name bounds preserved
 entry Behavior.Environment == snapshot Environment
 every Observations > 0
 StableFeatures → FingerprintID reverse identity unique
-sum of Observations does not overflow, and equals ObservationCount
-                                     (for a complete snapshot)
-Complete() preserved exactly
+sum of Observations does not overflow, and equals ObservationCount exactly
+the stored complete flag is exactly 0 or 1
 ```
+
+**The observation sum is exact for incomplete snapshots too.** This is a
+property of the collector, not of completeness: observations are counted only
+after every check passes, and the saturation path returns before that point,
+so a refused record increments nothing and a saturated collector refuses
+immediately. Every live snapshot therefore satisfies
+`sum(entries) == ObservationCount`. Allowing slack inside the snapshot would
+accept arithmetic no collector can produce.
+
+Completeness shows up one layer up instead, between snapshot and aggregate —
+the aggregate may have consumed a record the collector refused:
+
+```text
+Complete() == true  → ObservationCount == aggregate.RecordCount
+Complete() == false → ObservationCount <= aggregate.RecordCount
+```
+
+**The stored flag is parsed strictly.** `complete == 1` would turn a stored
+`2`, `-1` or `42` into `false`, normalizing corruption into the
+safer-looking of two answers and losing the fact that the column was damaged.
+Completeness decides whether a snapshot may be compared, so it is not a field
+to guess at.
 
 Entries are restored in ascending `FingerprintID` order, matching what
 `Entries()` guarantees for a live snapshot.
 
 Corrupt rows return `ErrStoreCorrupt` and **no partial bound value**. Nothing
 is clamped, repaired, or normalized on the way out.
+
+`EvaluationEvidence` returns trusted values only when all seven hold:
+
+```text
+1. the aggregate row exists
+2. the snapshot row exists
+3. the aggregate validates on its own
+4. the snapshot validates on its own
+5. the snapshot's entries validate on their own
+6. aggregate and snapshot agree with each other
+7. both agree with the persisted EvaluationRun
+```
 
 ## Errors
 

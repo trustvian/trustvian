@@ -132,17 +132,28 @@ unchanged number.
 | On open | Behavior |
 |---|---|
 | no tables, no metadata | create v1 |
-| metadata says v1 | continue |
+| metadata says v1 **and the schema is complete** | continue |
+| metadata says v1, required tables missing | **refuse** |
 | metadata says anything else | refuse |
 | data tables present, metadata absent | **refuse** |
 
-The last row is the one that matters. Adopting an unversioned database as
-fresh because it lacks a version row would silently take ownership of data
-this code has never seen — and the safe reading of "tables I recognize with no
-version" is "something else wrote here", not "empty".
+Two rows matter. Adopting an unversioned database as fresh because it lacks a
+version row would silently take ownership of data this code has never seen —
+the safe reading of "tables I recognize with no version" is "something else
+wrote here", not "empty".
+
+And a version row is a claim, not proof. A partial restore or a manual `DROP`
+can leave metadata saying v1 beside a schema missing half its tables;
+accepting it moves the failure from open to the first write, by which point
+the damage is invisible. Nothing is recreated — there is no v1 repair
+migration, and rebuilding one table would discard whatever else went missing
+with it. A partial v1 schema is operator-visible damage.
 
 Schema creation and version recording commit together, so a failed first open
-cannot produce that ambiguous state in the first place.
+cannot produce the ambiguous state in the first place. When initialization
+does fail, the durable schema decides whether it mattered: a racing opener can
+make any statement fail, not only the commit, so recovery re-inspects the
+committed state once rather than matching a driver's error text.
 
 ### 12. Evidence writes are transactional
 
@@ -154,6 +165,19 @@ disagree.
 
 One transaction covers the aggregate row, the snapshot header and every entry.
 The evidence a reader loads is always one coherent view.
+
+Reading enforces the same boundary rather than trusting the writer. Restored
+values are bound back to the persisted `EvaluationRun`: two halves agreeing
+with each other proves only that they were edited consistently, and the
+authoritative statement of what a run is lives in the runs table. A read-path
+mismatch is corruption, not a write conflict — nothing here came from a caller
+operation.
+
+Half a pair is corruption too, never "no evidence yet". One side's absence is
+not proof that both are absent, and treating a half-pair as first-write state
+would let the next save complete the record and erase every trace that
+anything went wrong. It is refused on read and on save, and left exactly as
+found for an explicit recovery decision.
 
 Stale writes are refused for the same reason: evidence never moves backwards,
 and two divergent views at the same observation count are never resolved by
@@ -181,6 +205,18 @@ The marker is what tasks 053–056 trust; setting it on unvalidated storage
 would make every downstream guarantee conditional on the database being
 undamaged. Silent repair would be worse than an error: a clamped metric or a
 patched timestamp produces evidence that looks measured and is invented.
+
+Normalization counts as repair. Reading the stored completeness flag as
+`value == 1` would turn a corrupt `2` into `false` — quietly choosing the
+safer-looking of two answers and losing the fact that the column was damaged
+at all. It is parsed strictly, as exactly `0` or `1`.
+
+The snapshot's observation arithmetic is exact for incomplete snapshots too,
+because that is a property of the collector rather than of completeness:
+observations are counted only after every check passes, and the saturation
+path returns before that point. Completeness instead shows up between the
+snapshot and the aggregate, where the aggregate may legitimately have consumed
+a record the collector refused.
 
 Runs are rehydrated by replaying their domain transitions rather than by
 writing private fields, so a corrupt chronology fails the same invariant a

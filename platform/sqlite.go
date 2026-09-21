@@ -143,7 +143,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 
 	switch {
 	case hasVersionTable:
-		return s.verifySchemaVersion(ctx)
+		return s.verifySchema(ctx)
 
 	case hasDataTable:
 		// Recognized tables with no version metadata. Stamping this as fresh
@@ -156,6 +156,40 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	default:
 		return s.createSchema(ctx)
 	}
+}
+
+// verifySchema accepts a database only when the version says 1 *and* the
+// whole schema is actually there.
+//
+// A version row is a claim, not proof. A partial restore, an interrupted
+// copy, or a manual DROP can leave metadata saying v1 beside a schema missing
+// half its tables — and accepting that would mean the first write fails
+// somewhere deep instead of at open, with the damage already invisible.
+//
+// Nothing is recreated. There is no v1 repair migration in this task: a
+// partial v1 schema is operator-visible damage, and silently rebuilding a
+// table would discard whatever else went missing with it.
+func (s *SQLiteStore) verifySchema(ctx context.Context) error {
+	if err := s.verifySchemaVersion(ctx); err != nil {
+		return err
+	}
+
+	present, err := s.tablesPresent(ctx)
+	if err != nil {
+		return err
+	}
+	var missing []string
+	for _, required := range schemaTables {
+		if !slices.Contains(present, required) {
+			missing = append(missing, required)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf(
+			"%w: schema reports version %d but required tables are missing: %v",
+			ErrStoreSchemaVersion, SchemaVersion, missing)
+	}
+	return nil
 }
 
 func (s *SQLiteStore) tablesPresent(ctx context.Context) ([]string, error) {
@@ -205,6 +239,27 @@ func (s *SQLiteStore) verifySchemaVersion(ctx context.Context) error {
 // so a failure cannot leave tables present with metadata absent — exactly the
 // ambiguous state migrate refuses to adopt.
 func (s *SQLiteStore) createSchema(ctx context.Context) error {
+	if err := s.createSchemaOnce(ctx); err != nil {
+		// A racing initializer can make any statement here fail — a locked
+		// database, or a table another opener just created — not only the
+		// commit. So recovery cannot key on which step failed, and must not
+		// key on a driver's English error text either.
+		//
+		// The durable state decides instead: if a complete, valid v1 schema
+		// now exists, somebody else finished the job and this opener is done.
+		// If it does not, the original error stands. One re-inspection, no
+		// loop, and the transaction is already rolled back before it runs —
+		// the store holds a single connection, so verifying while still
+		// inside the transaction would deadlock against itself.
+		if verifyErr := s.verifySchema(ctx); verifyErr == nil {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) createSchemaOnce(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("platform: create schema: %w", err)
@@ -221,13 +276,7 @@ func (s *SQLiteStore) createSchema(ctx context.Context) error {
 		SchemaVersion); err != nil {
 		return fmt.Errorf("platform: create schema: %w", err)
 	}
-
 	if err := tx.Commit(); err != nil {
-		// Another opener may have committed the same schema first. That is a
-		// race, not corruption: re-verify and accept a valid v1.
-		if verifyErr := s.verifySchemaVersion(ctx); verifyErr == nil {
-			return nil
-		}
 		return fmt.Errorf("platform: create schema: %w", err)
 	}
 	return nil
@@ -388,6 +437,24 @@ func parseUint64Text(field, s string) (uint64, error) {
 		return 0, fmt.Errorf("%w: %s is not canonical: %q", ErrStoreCorrupt, field, preview(s))
 	}
 	return v, nil
+}
+
+// parseStoredBool decodes a stored flag, refusing anything this code would
+// not have written.
+//
+// `complete == 1` would quietly turn a stored 2, -1 or 42 into false, which
+// normalizes corruption into the safer-looking of two answers and loses the
+// fact that the column was damaged at all. Completeness decides whether a
+// snapshot may be compared, so it is not a field to guess at.
+func parseStoredBool(field string, v int) (bool, error) {
+	switch v {
+	case 0:
+		return false, nil
+	case 1:
+		return true, nil
+	default:
+		return false, fmt.Errorf("%w: %s is %d, expected 0 or 1", ErrStoreCorrupt, field, v)
+	}
 }
 
 // timeText encodes a timestamp losslessly enough to preserve the instant,
@@ -936,10 +1003,21 @@ func (s *SQLiteStore) checkEvidenceNotStale(
 	ctx context.Context, tx *sql.Tx,
 	aggregate EvaluationAggregate, snapshot BehaviorSnapshot,
 ) error {
-	storedAggregate, storedSnapshot, err := s.loadEvidence(ctx, tx, aggregate.RunID())
-	if errors.Is(err, ErrStoreNotFound) {
-		return nil // first evidence for this run
+	present, err := evidenceRowsPresent(ctx, tx, aggregate.RunID())
+	if err != nil {
+		return err
 	}
+	switch {
+	case present.neither():
+		return nil // genuinely the first evidence for this run
+	case !present.both():
+		// Half a pair. Writing over it would complete the record and destroy
+		// the only sign that something went wrong, so it is refused and left
+		// exactly as found for an explicit recovery decision.
+		return partialEvidenceError(aggregate.RunID(), present)
+	}
+
+	storedAggregate, storedSnapshot, err := s.loadEvidence(ctx, tx, aggregate.RunID())
 	if err != nil {
 		return err
 	}
@@ -1122,9 +1200,76 @@ type evidenceQuerier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
+// evidencePresence is which halves of a run's evidence exist, established
+// without reading or trusting their content.
+//
+// It exists because "no aggregate row" is not proof that a run has no
+// evidence. Exactly one half present is a partial write or a partial restore,
+// and treating it as first-write state would let the next save quietly
+// complete the pair and erase every trace that anything went wrong.
+type evidencePresence struct {
+	aggregate bool
+	snapshot  bool
+}
+
+func (p evidencePresence) both() bool    { return p.aggregate && p.snapshot }
+func (p evidencePresence) neither() bool { return !p.aggregate && !p.snapshot }
+
+func evidenceRowsPresent(ctx context.Context, q rowQuerier, id EvaluationRunID) (evidencePresence, error) {
+	exists := func(table string) (bool, error) {
+		var one int
+		err := q.QueryRowContext(ctx,
+			`SELECT 1 FROM `+table+` WHERE run_id = ?`, string(id)).Scan(&one)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return false, nil
+		case err != nil:
+			return false, fmt.Errorf("platform: inspect evidence: %w", err)
+		}
+		return true, nil
+	}
+
+	aggregate, err := exists(tableAggregates)
+	if err != nil {
+		return evidencePresence{}, err
+	}
+	snapshot, err := exists(tableSnapshots)
+	if err != nil {
+		return evidencePresence{}, err
+	}
+	return evidencePresence{aggregate: aggregate, snapshot: snapshot}, nil
+}
+
+// partialEvidenceError describes a half-present pair. Corruption, never
+// "not found": the run demonstrably has evidence, and it cannot be trusted.
+func partialEvidenceError(id EvaluationRunID, p evidencePresence) error {
+	held, missing := "an aggregate", "snapshot"
+	if p.snapshot {
+		held, missing = "a snapshot", "aggregate"
+	}
+	return fmt.Errorf("%w: run %s holds %s with no %s",
+		ErrStoreCorrupt, preview(string(id)), held, missing)
+}
+
+// loadEvidence returns trusted values only when all seven conditions hold:
+// both rows exist; the aggregate validates on its own; the snapshot and its
+// entries validate on their own; the two agree with each other; and both
+// agree with the persisted EvaluationRun. Otherwise nothing bound escapes.
 func (s *SQLiteStore) loadEvidence(
 	ctx context.Context, q evidenceQuerier, id EvaluationRunID,
 ) (EvaluationAggregate, BehaviorSnapshot, error) {
+	present, err := evidenceRowsPresent(ctx, q, id)
+	if err != nil {
+		return EvaluationAggregate{}, BehaviorSnapshot{}, err
+	}
+	switch {
+	case present.neither():
+		return EvaluationAggregate{}, BehaviorSnapshot{}, fmt.Errorf(
+			"%w: evidence for run %s", ErrStoreNotFound, preview(string(id)))
+	case !present.both():
+		return EvaluationAggregate{}, BehaviorSnapshot{}, partialEvidenceError(id, present)
+	}
+
 	aggregate, err := loadAggregate(ctx, q, id)
 	if err != nil {
 		return EvaluationAggregate{}, BehaviorSnapshot{}, err
@@ -1141,7 +1286,53 @@ func (s *SQLiteStore) loadEvidence(
 			"%w: stored evidence for run %s is inconsistent: %w",
 			ErrStoreCorrupt, preview(string(id)), err)
 	}
+
+	// And with the run itself. Two halves agreeing with each other proves
+	// only that they were edited consistently — the authoritative statement
+	// of what this run is lives in the runs table, and evidence that
+	// contradicts it describes some other evaluation.
+	run, err := s.loadRun(ctx, q, id)
+	if err != nil {
+		if errors.Is(err, ErrStoreNotFound) {
+			return EvaluationAggregate{}, BehaviorSnapshot{}, fmt.Errorf(
+				"%w: run %s holds evidence but the run itself is missing",
+				ErrStoreCorrupt, preview(string(id)))
+		}
+		return EvaluationAggregate{}, BehaviorSnapshot{}, err
+	}
+	if err := validateRestoredEvidenceAgainstRun(run, aggregate, snapshot); err != nil {
+		return EvaluationAggregate{}, BehaviorSnapshot{}, err
+	}
 	return aggregate, snapshot, nil
+}
+
+// validateRestoredEvidenceAgainstRun binds restored evidence back to the run
+// it claims to describe.
+//
+// Read-path corruption, not a write conflict: ErrStoreConflict describes a
+// valid caller operation racing current durable state, and nothing here was
+// produced by a caller operation at all.
+func validateRestoredEvidenceAgainstRun(
+	run EvaluationRun, aggregate EvaluationAggregate, snapshot BehaviorSnapshot,
+) error {
+	for _, f := range []struct {
+		name                          string
+		runValue, aggValue, snapValue string
+	}{
+		{"run id", string(run.ID()), string(aggregate.RunID()), string(snapshot.RunID())},
+		{"candidate id", string(run.CandidateID()), string(aggregate.CandidateID()), string(snapshot.CandidateID())},
+		{"environment", string(run.Environment()), string(aggregate.Environment()), string(snapshot.Environment())},
+		{"behavioral profile", string(run.BehavioralProfile()),
+			string(aggregate.BehavioralProfile()), string(snapshot.BehavioralProfile())},
+	} {
+		if f.aggValue != f.runValue || f.snapValue != f.runValue {
+			return fmt.Errorf(
+				"%w: run %s records %s %s, but its stored evidence says %s/%s",
+				ErrStoreCorrupt, preview(string(run.ID())), f.name,
+				preview(f.runValue), preview(f.aggValue), preview(f.snapValue))
+		}
+	}
+	return nil
 }
 
 // sameAggregate compares every persisted field.
@@ -1436,6 +1627,11 @@ func loadSnapshot(ctx context.Context, q evidenceQuerier, id EvaluationRunID) (B
 		return BehaviorSnapshot{}, err
 	}
 
+	completeFlag, err := parseStoredBool("snapshot complete", complete)
+	if err != nil {
+		return BehaviorSnapshot{}, err
+	}
+
 	snapshot := BehaviorSnapshot{
 		runID:        id,
 		candidateID:  CandidateID(candidateID),
@@ -1443,7 +1639,7 @@ func loadSnapshot(ctx context.Context, q evidenceQuerier, id EvaluationRunID) (B
 		profile:      BehavioralProfileRef(profile),
 		observations: observations,
 		entries:      entries,
-		complete:     complete == 1,
+		complete:     completeFlag,
 	}
 
 	if err := validateRestoredSnapshot(snapshot, distinctCount); err != nil {
@@ -1556,14 +1752,21 @@ func validateRestoredSnapshot(s BehaviorSnapshot, storedDistinctCount int) error
 		observed += entry.Observations
 	}
 
-	// A complete snapshot saw every observation it counted. An incomplete one
-	// saturated, so its entries are a prefix and the sum is a lower bound.
-	switch {
-	case s.complete && observed != s.observations:
+	// Exact equality, for complete and incomplete snapshots alike.
+	//
+	// This is a property of the collector, not of completeness. Observations
+	// are counted only after every check has passed, and the saturation path
+	// returns before that point — so a refused record increments nothing, and
+	// once saturated the collector refuses immediately. Every live snapshot
+	// therefore satisfies sum(entries) == ObservationCount exactly.
+	//
+	// Completeness shows up one layer up instead, between the snapshot and
+	// the aggregate: the aggregate may have consumed a record the collector
+	// refused, which is why validateEvidencePair allows the snapshot to have
+	// observed fewer records than the aggregate. Allowing the same slack
+	// *inside* the snapshot would accept arithmetic no collector can produce.
+	if observed != s.observations {
 		return fmt.Errorf("entries account for %d observations, header records %d",
-			observed, s.observations)
-	case !s.complete && observed > s.observations:
-		return fmt.Errorf("entries account for %d observations, more than the header's %d",
 			observed, s.observations)
 	}
 	return nil

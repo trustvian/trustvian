@@ -24,6 +24,7 @@ import (
 	"math"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -747,4 +748,373 @@ func TestUnboundEvidenceIsRefused(t *testing.T) {
 	if err := store.SaveEvaluationEvidence(ctx, aggregate, BehaviorSnapshot{}); !errors.Is(err, ErrUnboundCollector) {
 		t.Errorf("zero snapshot error = %v, want ErrUnboundCollector", err)
 	}
+}
+
+// ---------------------------------------------------------------------
+// Hardening: schema completeness, evidence binding, partial state
+// ---------------------------------------------------------------------
+
+// A version row is a claim, not proof. Metadata saying v1 beside a schema
+// missing tables is a partial restore, and accepting it would move the
+// failure from open to the first write, with the damage already invisible.
+func TestMissingRequiredTableFailsSchemaVerification(t *testing.T) {
+	for _, table := range []string{
+		tableProjects, tableAgents, tableCandidates, tableRuns,
+		tableAggregates, tableSnapshots, tableEntries,
+	} {
+		t.Run(table, func(t *testing.T) {
+			store, path := testStore(t)
+			seedRun(t, store)
+			// Children first where a foreign key would otherwise block it.
+			exec(t, store.db, `PRAGMA foreign_keys = OFF`)
+			exec(t, store.db, `DROP TABLE `+table)
+			store.Close()
+
+			reopened, err := OpenSQLiteStore(t.Context(), path)
+			if !errors.Is(err, ErrStoreSchemaVersion) {
+				if reopened != nil {
+					reopened.Close()
+				}
+				t.Fatalf("OpenSQLiteStore() error = %v, want ErrStoreSchemaVersion", err)
+			}
+
+			// Nothing is rebuilt: there is no v1 repair migration, and
+			// silently recreating one table would hide whatever else went
+			// missing with it.
+			raw, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatalf("sql.Open() error = %v", err)
+			}
+			defer raw.Close()
+			var found int
+			if err := raw.QueryRow(
+				`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`,
+				table).Scan(&found); err != nil {
+				t.Fatalf("count error = %v", err)
+			}
+			if found != 0 {
+				t.Errorf("table %q was recreated by a failed open", table)
+			}
+		})
+	}
+}
+
+// storeEvidence writes one run's valid evidence and returns it.
+func storeEvidence(t *testing.T, store *SQLiteStore, run EvaluationRun, records int,
+) (EvaluationAggregate, BehaviorSnapshot) {
+	t.Helper()
+	aggregate, err := NewEvaluationAggregate(run)
+	if err != nil {
+		t.Fatalf("NewEvaluationAggregate() error = %v", err)
+	}
+	collector, err := NewBehaviorCollector(run)
+	if err != nil {
+		t.Fatalf("NewBehaviorCollector() error = %v", err)
+	}
+	for i := range records {
+		rec := internalRecord(fmt.Sprintf("evt-%d", i), fmt.Sprintf("fp-%d", i),
+			fmt.Sprintf("op-%d", i))
+		if aggregate, err = aggregate.AddRecord(rec); err != nil {
+			t.Fatalf("AddRecord() error = %v", err)
+		}
+		if err := collector.Observe(rec); err != nil {
+			t.Fatalf("Observe() error = %v", err)
+		}
+	}
+	snapshot := collector.Snapshot()
+	if err := store.SaveEvaluationEvidence(t.Context(), aggregate, snapshot); err != nil {
+		t.Fatalf("SaveEvaluationEvidence() error = %v", err)
+	}
+	return aggregate, snapshot
+}
+
+// Two halves agreeing with each other proves only that they were edited
+// consistently. The authoritative statement of what a run is lives in the
+// runs table.
+func TestStoredEvidenceMustMatchPersistedRun(t *testing.T) {
+	tests := []struct {
+		name   string
+		column string
+		value  string
+	}{
+		{"candidate mismatch", "candidate_id", "cand-other"},
+		{"environment mismatch", "environment", "production"},
+		{"behavioral profile mismatch", "behavioral_profile", "profile-other"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, _ := testStore(t)
+			run := seedRun(t, store)
+			storeEvidence(t, store, run, 3)
+
+			// Mutate both halves together, so they stay mutually consistent
+			// and only disagree with the run.
+			exec(t, store.db, `UPDATE `+tableAggregates+` SET `+tt.column+` = ? WHERE run_id = ?`,
+				tt.value, string(run.ID()))
+			exec(t, store.db, `UPDATE `+tableSnapshots+` SET `+tt.column+` = ? WHERE run_id = ?`,
+				tt.value, string(run.ID()))
+			if tt.column == "environment" {
+				// Keep the entries consistent with their own snapshot, so the
+				// only remaining disagreement is with the run.
+				exec(t, store.db, `UPDATE `+tableEntries+` SET environment = ? WHERE run_id = ?`,
+					tt.value, string(run.ID()))
+			}
+
+			aggregate, snapshot, err := store.EvaluationEvidence(t.Context(), run.ID())
+			if !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("EvaluationEvidence() error = %v, want ErrStoreCorrupt", err)
+			}
+			if aggregate.bound || snapshot.bound {
+				t.Error("evidence disagreeing with its run became trusted")
+			}
+		})
+	}
+}
+
+// Exactly one half present is a partial write or restore. Calling it
+// "no evidence yet" would let the next save complete the pair and erase
+// every trace that anything went wrong.
+func TestPartialEvidenceIsCorruptNotFirstWrite(t *testing.T) {
+	tests := []struct {
+		name  string
+		table string
+	}{
+		{"aggregate without snapshot", tableSnapshots},
+		{"snapshot without aggregate", tableAggregates},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, _ := testStore(t)
+			ctx := t.Context()
+			run := seedRun(t, store)
+			storeEvidence(t, store, run, 3)
+
+			exec(t, store.db, `PRAGMA foreign_keys = OFF`)
+			if tt.table == tableSnapshots {
+				exec(t, store.db, `DELETE FROM `+tableEntries+` WHERE run_id = ?`, string(run.ID()))
+			}
+			exec(t, store.db, `DELETE FROM `+tt.table+` WHERE run_id = ?`, string(run.ID()))
+
+			// Reading is corruption, not NotFound.
+			_, _, err := store.EvaluationEvidence(ctx, run.ID())
+			if !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("EvaluationEvidence() error = %v, want ErrStoreCorrupt", err)
+			}
+			if errors.Is(err, ErrStoreNotFound) {
+				t.Error("partial evidence was reported as absent evidence")
+			}
+
+			// And a later save must not quietly heal it.
+			aggregate, err := NewEvaluationAggregate(run)
+			if err != nil {
+				t.Fatalf("NewEvaluationAggregate() error = %v", err)
+			}
+			collector, err := NewBehaviorCollector(run)
+			if err != nil {
+				t.Fatalf("NewBehaviorCollector() error = %v", err)
+			}
+			for i := range 9 {
+				rec := internalRecord(fmt.Sprintf("new-%d", i), fmt.Sprintf("nfp-%d", i),
+					fmt.Sprintf("nop-%d", i))
+				if aggregate, err = aggregate.AddRecord(rec); err != nil {
+					t.Fatalf("AddRecord() error = %v", err)
+				}
+				if err := collector.Observe(rec); err != nil {
+					t.Fatalf("Observe() error = %v", err)
+				}
+			}
+			if err := store.SaveEvaluationEvidence(ctx, aggregate, collector.Snapshot()); !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("SaveEvaluationEvidence() over partial state error = %v, want ErrStoreCorrupt", err)
+			}
+
+			// The partial state is left exactly as found.
+			var remaining int
+			if err := store.db.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM `+tt.table+` WHERE run_id = ?`, string(run.ID())).
+				Scan(&remaining); err != nil {
+				t.Fatalf("count error = %v", err)
+			}
+			if remaining != 0 {
+				t.Errorf("the refused save recreated the missing half (%d rows)", remaining)
+			}
+		})
+	}
+}
+
+// `complete == 1` would turn a stored 2 into false, normalizing corruption
+// into the safer-looking of two answers.
+func TestInvalidStoredSnapshotCompletenessIsCorrupt(t *testing.T) {
+	for _, value := range []int{2, -1, 42} {
+		t.Run(strconv.Itoa(value), func(t *testing.T) {
+			store, _ := testStore(t)
+			run := seedRun(t, store)
+			storeEvidence(t, store, run, 3)
+
+			exec(t, store.db, `UPDATE `+tableSnapshots+` SET complete = ? WHERE run_id = ?`,
+				value, string(run.ID()))
+
+			aggregate, snapshot, err := store.EvaluationEvidence(t.Context(), run.ID())
+			if !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("EvaluationEvidence() error = %v, want ErrStoreCorrupt", err)
+			}
+			if aggregate.bound || snapshot.bound {
+				t.Error("a snapshot with an invalid complete flag became trusted")
+			}
+		})
+	}
+}
+
+// Every live snapshot satisfies sum(entries) == ObservationCount exactly,
+// saturated or not: the collector counts an observation only after every
+// check passes, and the saturation path returns before that point.
+func TestSnapshotEntrySumMustMatchHeaderEvenWhenIncomplete(t *testing.T) {
+	store, _ := testStore(t)
+	ctx := t.Context()
+	run := seedRun(t, store)
+
+	aggregate, err := NewEvaluationAggregate(run)
+	if err != nil {
+		t.Fatalf("NewEvaluationAggregate() error = %v", err)
+	}
+	rec := internalRecord("evt-0", "fp-0", "op-0")
+	// The aggregate deliberately holds far more records than the snapshot
+	// header will claim. Without that headroom the aggregate-vs-snapshot
+	// check fires first and this test would pass without the snapshot's own
+	// arithmetic guard existing at all — which is what a mutation of that
+	// guard revealed.
+	for range 20 {
+		if aggregate, err = aggregate.AddRecord(rec); err != nil {
+			t.Fatalf("AddRecord() error = %v", err)
+		}
+	}
+
+	incomplete := BehaviorSnapshot{
+		bound: true, runID: run.ID(), candidateID: run.CandidateID(),
+		environment: run.Environment(), profile: run.BehavioralProfile(),
+		observations: 5, complete: false,
+		entries: []BehaviorEntry{{FingerprintID: "fp-0", Behavior: rec.Behavior, Observations: 5}},
+	}
+	if err := store.SaveEvaluationEvidence(ctx, aggregate, incomplete); err != nil {
+		t.Fatalf("SaveEvaluationEvidence() error = %v", err)
+	}
+
+	// Header claims one more observation than the entries account for, and
+	// still fewer than the aggregate — so only the snapshot's internal
+	// equality can catch it.
+	exec(t, store.db, `UPDATE `+tableSnapshots+` SET observation_count = ? WHERE run_id = ?`,
+		uint64Text(6), string(run.ID()))
+
+	if _, _, err := store.EvaluationEvidence(ctx, run.ID()); !errors.Is(err, ErrStoreCorrupt) {
+		t.Fatalf("EvaluationEvidence() error = %v, want ErrStoreCorrupt", err)
+	}
+}
+
+// The valid saturation shape must still load: the snapshot observed fewer
+// records than the aggregate, while its own arithmetic balances exactly.
+func TestValidSaturatedEvidenceStillLoads(t *testing.T) {
+	store, _ := testStore(t)
+	ctx := t.Context()
+	run := seedRun(t, store)
+
+	aggregate, err := NewEvaluationAggregate(run)
+	if err != nil {
+		t.Fatalf("NewEvaluationAggregate() error = %v", err)
+	}
+	collector, err := NewBehaviorCollector(run)
+	if err != nil {
+		t.Fatalf("NewBehaviorCollector() error = %v", err)
+	}
+	for i := range 513 {
+		rec := internalRecord(fmt.Sprintf("evt-%d", i), fmt.Sprintf("fp-%04d", i),
+			fmt.Sprintf("op-%04d", i))
+		if aggregate, err = aggregate.AddRecord(rec); err != nil {
+			t.Fatalf("AddRecord() error = %v", err)
+		}
+		if err := collector.Observe(rec); err != nil && !errors.Is(err, ErrBehaviorCapacity) {
+			t.Fatalf("Observe() error = %v", err)
+		}
+	}
+
+	snapshot := collector.Snapshot()
+	if snapshot.Complete() {
+		t.Fatal("precondition: the collector did not saturate")
+	}
+	if aggregate.RecordCount() != 513 || snapshot.ObservationCount() != 512 {
+		t.Fatalf("precondition: aggregate %d, snapshot %d; want 513 and 512",
+			aggregate.RecordCount(), snapshot.ObservationCount())
+	}
+	if err := store.SaveEvaluationEvidence(ctx, aggregate, snapshot); err != nil {
+		t.Fatalf("SaveEvaluationEvidence() rejected valid saturated evidence: %v", err)
+	}
+
+	loadedAggregate, loadedSnapshot, err := store.EvaluationEvidence(ctx, run.ID())
+	if err != nil {
+		t.Fatalf("EvaluationEvidence() error = %v", err)
+	}
+	if loadedSnapshot.Complete() {
+		t.Error("Complete() = true after restore")
+	}
+	if loadedAggregate.RecordCount() != 513 || loadedSnapshot.ObservationCount() != 512 {
+		t.Errorf("counts = %d/%d, want 513/512",
+			loadedAggregate.RecordCount(), loadedSnapshot.ObservationCount())
+	}
+}
+
+// ---------------------------------------------------------------------
+// Concurrent initialization
+// ---------------------------------------------------------------------
+
+// A racing initializer can make any statement in schema creation fail, not
+// only the commit. Recovery therefore re-inspects the durable state instead
+// of matching an error string, and the final schema decides.
+func TestConcurrentFreshOpenersConvergeOnValidSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "race.db")
+	const openers = 8
+
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+
+	stores := make([]*SQLiteStore, openers)
+	errs := make([]error, openers)
+
+	for i := range openers {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait() // a barrier, not a sleep
+			stores[i], errs[i] = OpenSQLiteStore(context.Background(), path)
+		}()
+	}
+	start.Done()
+	done.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("opener %d failed: %v", i, err)
+		}
+	}
+	for i, store := range stores {
+		if store == nil {
+			continue
+		}
+		var version int
+		if err := store.db.QueryRow(
+			`SELECT version FROM ` + tableSchemaVersion + ` WHERE id = 1`).Scan(&version); err != nil {
+			t.Errorf("opener %d: read version: %v", i, err)
+		} else if version != SchemaVersion {
+			t.Errorf("opener %d: version = %d, want %d", i, version, SchemaVersion)
+		}
+		store.Close()
+	}
+
+	// The converged database is complete and usable afterwards.
+	reopened, err := OpenSQLiteStore(t.Context(), path)
+	if err != nil {
+		t.Fatalf("reopen after race error = %v", err)
+	}
+	defer reopened.Close()
+	seedRun(t, reopened)
 }
