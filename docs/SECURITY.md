@@ -615,12 +615,23 @@ service layer and an HTTP adapter over it.
 - **The behavioral profile is bound to the run.** It travels beside the
   record and must match the run's profile, so evidence produced under one
   learning scope cannot be folded into an evaluation of another.
-- **Evidence is accepted only while a run is `Running`.** A pending run has
-  not started, and a terminal one's evidence is what a comparison reads.
+- **Evidence is accepted only while a run is `Running`, checked inside the
+  commit transaction.** A pending run has not started, and a terminal one's
+  evidence is what a comparison reads. The service also prechecks, but a
+  completion committing between that check and the write would otherwise let
+  evidence land after the run ended — so the transactional check is the
+  authoritative one, and a completed evaluation's evidence can never grow.
 - **A monotonic sequence prevents duplicate aggregation.** Task 053 made a
   duplicate record count twice, so an ordinary HTTP retry would otherwise
   corrupt the evidence. Only the expected sequence applies; an identical retry
   of the previous one replays without re-aggregating.
+- **Identical concurrent retries all succeed.** A client retrying a slow
+  request sends the same sequence and record, and several may pass preflight
+  before any commits. The commit transaction distinguishes "the cursor moved
+  because somebody committed *this* record" from "the cursor moved for another
+  reason": the first replays, the second conflicts. One applies, the aggregate
+  advances once, and the counts in every reply come from the transaction that
+  decided it.
 - **Every ambiguous retry fails closed.** The same sequence with a different
   record, a stale sequence, and a gap are all conflicts. A migrated task 057
   run has no recorded digest, so nothing can be proven identical and a retry
@@ -633,9 +644,17 @@ service layer and an HTTP adapter over it.
   There is no EventID set, no idempotency table, and no stored record — raw
   event history remains a separate capability with its own retention and
   privacy questions.
-- **Cursor and evidence must agree.** A cursor that disagrees with the
-  aggregate's record count, or exists without evidence, is refused as
-  corruption rather than reconciled by guessing which side is right.
+- **Cursor and evidence must agree**, and a read cannot invent a
+  disagreement. A cursor that disagrees with the aggregate's record count, or
+  exists without evidence, is refused as corruption rather than reconciled by
+  guessing which side is right — and multi-query reads run in one transaction,
+  so they never observe a snapshot from after a write beside an aggregate from
+  before it.
+- **A persisted cursor always records a digest.** An empty one is legitimate
+  only for a run migrated from task 057, which has evidence but no cursor row
+  and no digest to derive. A row with an empty digest could not have been
+  written by this code, so it is corruption. Persisted digests are exactly 64
+  lowercase hex characters, refused rather than normalized.
 - **Internal errors are sanitized.** Storage corruption is a `500` with a
   generic message, never a `400` a client might try to "correct". No SQL text,
   database path, driver message or stack trace reaches a response body, and a

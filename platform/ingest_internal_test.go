@@ -16,8 +16,11 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
+
+	trustvian "github.com/trustvian/trustvian"
 )
 
 // schemaV1Statements is task 057's schema, pinned.
@@ -748,4 +751,298 @@ func seedRunningRun(t *testing.T, store *SQLiteStore) EvaluationRun {
 		t.Fatalf("UpdateEvaluationRun() error = %v", err)
 	}
 	return started
+}
+
+// ---------------------------------------------------------------------
+// Terminal transition versus ingest
+// ---------------------------------------------------------------------
+
+// A completed evaluation has final evidence. The service prechecks Running
+// before computing evidence, so a completion committing in between would let
+// an ingest land afterwards — and the durable transaction is what forbids it.
+//
+// The interleaving is pinned with a trigger rather than timing: the run is
+// completed between the service's preflight and the durable commit, by
+// completing it *before* the commit is attempted with a stale view.
+func TestIngestCannotCommitAfterRunBecomesTerminal(t *testing.T) {
+	store, _ := testStore(t)
+	ctx := t.Context()
+	run := seedRunningRun(t, store)
+
+	plane, err := NewControlPlane(store, store, store)
+	if err != nil {
+		t.Fatalf("NewControlPlane() error = %v", err)
+	}
+
+	// One record, so there is evidence and a cursor to compare against.
+	if _, err := plane.IngestDecisionRecord(ctx, IngestRequest{
+		RunID: run.ID(), Sequence: 1, BehavioralProfile: run.BehavioralProfile(),
+		Record: internalRecord("evt-0", "fp-0", "op-0"),
+	}); err != nil {
+		t.Fatalf("first ingest error = %v", err)
+	}
+
+	beforeAggregate, _, err := store.EvaluationEvidence(ctx, run.ID())
+	if err != nil {
+		t.Fatalf("EvaluationEvidence() error = %v", err)
+	}
+	beforeState, err := store.EvaluationIngestState(ctx, run.ID())
+	if err != nil {
+		t.Fatalf("EvaluationIngestState() error = %v", err)
+	}
+
+	// The run completes.
+	if _, err := plane.CompleteEvaluationRun(ctx, run.ID(), run.CreatedAt().Add(time.Hour)); err != nil {
+		t.Fatalf("CompleteEvaluationRun() error = %v", err)
+	}
+
+	// A commit built from the pre-completion view — exactly what an ingest
+	// that passed preflight before the completion would attempt.
+	aggregate, collector := staleEvidenceFor(t, store, run)
+	staleAggregate, err := aggregate.AddRecord(internalRecord("evt-1", "fp-1", "op-1"))
+	if err != nil {
+		t.Fatalf("AddRecord() error = %v", err)
+	}
+	if err := collector.Observe(internalRecord("evt-1", "fp-1", "op-1")); err != nil {
+		t.Fatalf("Observe() error = %v", err)
+	}
+
+	_, err = store.CommitEvaluationIngest(ctx, EvaluationIngestCommit{
+		PreviousNextSequence: beforeState.NextSequence(),
+		Sequence:             beforeState.NextSequence(),
+		RecordDigest:         mustDigest(t, internalRecord("evt-1", "fp-1", "op-1")),
+		Aggregate:            staleAggregate,
+		Snapshot:             collector.Snapshot(),
+	})
+	if !errors.Is(err, ErrEvaluationState) {
+		t.Fatalf("commit after completion error = %v, want ErrEvaluationState", err)
+	}
+
+	// Nothing moved.
+	afterAggregate, _, err := store.EvaluationEvidence(ctx, run.ID())
+	if err != nil {
+		t.Fatalf("EvaluationEvidence() error = %v", err)
+	}
+	if afterAggregate.RecordCount() != beforeAggregate.RecordCount() {
+		t.Errorf("RecordCount() = %d, want %d: evidence grew after completion",
+			afterAggregate.RecordCount(), beforeAggregate.RecordCount())
+	}
+	afterState, err := store.EvaluationIngestState(ctx, run.ID())
+	if err != nil {
+		t.Fatalf("EvaluationIngestState() error = %v", err)
+	}
+	if afterState.NextSequence() != beforeState.NextSequence() {
+		t.Errorf("NextSequence() = %d, want %d", afterState.NextSequence(), beforeState.NextSequence())
+	}
+
+	stored, err := store.EvaluationRun(ctx, run.ID())
+	if err != nil {
+		t.Fatalf("EvaluationRun() error = %v", err)
+	}
+	if stored.Status() != RunCompleted {
+		t.Errorf("Status() = %q, want completed", stored.Status())
+	}
+}
+
+// The inverse ordering is legitimate: an ingest that commits before the
+// completion belongs to the run's final evidence.
+func TestIngestThenCompleteBothSucceed(t *testing.T) {
+	store, _ := testStore(t)
+	ctx := t.Context()
+	run := seedRunningRun(t, store)
+
+	plane, err := NewControlPlane(store, store, store)
+	if err != nil {
+		t.Fatalf("NewControlPlane() error = %v", err)
+	}
+	if _, err := plane.IngestDecisionRecord(ctx, IngestRequest{
+		RunID: run.ID(), Sequence: 1, BehavioralProfile: run.BehavioralProfile(),
+		Record: internalRecord("evt-0", "fp-0", "op-0"),
+	}); err != nil {
+		t.Fatalf("ingest error = %v", err)
+	}
+	if _, err := plane.CompleteEvaluationRun(ctx, run.ID(), run.CreatedAt().Add(time.Hour)); err != nil {
+		t.Fatalf("CompleteEvaluationRun() error = %v", err)
+	}
+
+	aggregate, _, err := store.EvaluationEvidence(ctx, run.ID())
+	if err != nil {
+		t.Fatalf("EvaluationEvidence() error = %v", err)
+	}
+	if aggregate.RecordCount() != 1 {
+		t.Errorf("RecordCount() = %d, want 1: the record was lost", aggregate.RecordCount())
+	}
+}
+
+// staleEvidenceFor rebuilds a run's current evidence, as an in-flight ingest
+// would hold it.
+func staleEvidenceFor(t *testing.T, store *SQLiteStore, run EvaluationRun) (EvaluationAggregate, *BehaviorCollector) {
+	t.Helper()
+	aggregate, snapshot, err := store.EvaluationEvidence(t.Context(), run.ID())
+	if err != nil {
+		t.Fatalf("EvaluationEvidence() error = %v", err)
+	}
+	collector, err := behaviorCollectorFromSnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("behaviorCollectorFromSnapshot() error = %v", err)
+	}
+	return aggregate, collector
+}
+
+func mustDigest(t *testing.T, record trustvian.DecisionRecord) string {
+	t.Helper()
+	digest, err := RecordDigest(record)
+	if err != nil {
+		t.Fatalf("RecordDigest() error = %v", err)
+	}
+	return digest
+}
+
+// ---------------------------------------------------------------------
+// Persisted digest invariant
+// ---------------------------------------------------------------------
+
+// A cursor row was written by the commit path, which always records a digest.
+// An empty one cannot have been produced legitimately.
+func TestPersistedCursorRequiresCanonicalDigest(t *testing.T) {
+	tests := []struct {
+		name   string
+		digest string
+	}{
+		{"empty", ""},
+		{"too short", "abc123"},
+		{"not hex", "zzzz5c3f2b1a0908070605040302010009080706050403020100090807060504"},
+		{"uppercase", "ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890"},
+		{"too long", "ab" + "cdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, _ := testStore(t)
+			ctx := t.Context()
+			run := seedRunningRun(t, store)
+
+			plane, _ := NewControlPlane(store, store, store)
+			if _, err := plane.IngestDecisionRecord(ctx, IngestRequest{
+				RunID: run.ID(), Sequence: 1, BehavioralProfile: run.BehavioralProfile(),
+				Record: internalRecord("evt-0", "fp-0", "op-0"),
+			}); err != nil {
+				t.Fatalf("ingest error = %v", err)
+			}
+
+			exec(t, store.db, `UPDATE `+tableIngestState+` SET last_digest = ? WHERE run_id = ?`,
+				tt.digest, string(run.ID()))
+
+			if _, err := store.EvaluationIngestState(ctx, run.ID()); !errors.Is(err, ErrStoreCorrupt) {
+				t.Fatalf("EvaluationIngestState() error = %v, want ErrStoreCorrupt", err)
+			}
+		})
+	}
+}
+
+// The legitimate empty digest: derived legacy state with no cursor row. The
+// distinction is row presence, not the value.
+func TestDerivedLegacyStateMayHaveNoDigest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v1.db")
+	db := writeSchemaV1(t, path)
+	seedV1Content(t, db, "run-legacy", 3)
+	db.Close()
+
+	store, err := OpenSQLiteStore(t.Context(), path)
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	state, err := store.EvaluationIngestState(t.Context(), "run-legacy")
+	if err != nil {
+		t.Fatalf("EvaluationIngestState() error = %v", err)
+	}
+	if state.LastDigest() != "" {
+		t.Errorf("LastDigest() = %q, want empty", state.LastDigest())
+	}
+	if state.NextSequence() != 4 {
+		t.Errorf("NextSequence() = %d, want 4", state.NextSequence())
+	}
+}
+
+// ---------------------------------------------------------------------
+// Concurrent migration
+// ---------------------------------------------------------------------
+
+// Several openers racing one v1 database must converge on a single valid v2,
+// with every v1 row intact. A losing attempt can fail at any statement, not
+// only the commit, so recovery inspects the durable schema rather than the
+// error text.
+func TestConcurrentMigrationConvergesOnValidV2(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v1.db")
+	db := writeSchemaV1(t, path)
+	seedV1Content(t, db, "run-legacy", 4)
+	db.Close()
+
+	const openers = 8
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+	stores := make([]*SQLiteStore, openers)
+	errs := make([]error, openers)
+
+	for i := range openers {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait() // a barrier, not a sleep
+			stores[i], errs[i] = OpenSQLiteStore(context.Background(), path)
+		}()
+	}
+	start.Done()
+	done.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("opener %d failed: %v", i, err)
+		}
+	}
+	for _, store := range stores {
+		if store != nil {
+			store.Close()
+		}
+	}
+
+	// One valid v2, and the v1 content survived exactly.
+	reopened, err := OpenSQLiteStore(t.Context(), path)
+	if err != nil {
+		t.Fatalf("reopen after the race error = %v", err)
+	}
+	defer reopened.Close()
+
+	version, err := reopened.storedSchemaVersion(t.Context())
+	if err != nil || version != SchemaVersion {
+		t.Fatalf("version = %d, %v; want %d", version, err, SchemaVersion)
+	}
+	if err := reopened.requireTables(t.Context(), SchemaVersion, schemaTables); err != nil {
+		t.Fatalf("migrated schema is incomplete: %v", err)
+	}
+
+	project, err := reopened.Project(t.Context(), "proj-1")
+	if err != nil || project.Name() != "Checkout" {
+		t.Errorf("Project() = %q, %v", project.Name(), err)
+	}
+	aggregate, _, err := reopened.EvaluationEvidence(t.Context(), "run-legacy")
+	if err != nil {
+		t.Fatalf("EvaluationEvidence() error = %v", err)
+	}
+	if aggregate.RecordCount() != 4 {
+		t.Errorf("RecordCount() = %d, want 4", aggregate.RecordCount())
+	}
+	state, err := reopened.EvaluationIngestState(t.Context(), "run-legacy")
+	if err != nil {
+		t.Fatalf("EvaluationIngestState() error = %v", err)
+	}
+	if state.NextSequence() != 5 {
+		t.Errorf("NextSequence() = %d, want 5", state.NextSequence())
+	}
+	if state.LastDigest() != "" {
+		t.Errorf("LastDigest() = %q, want empty: a digest was invented", state.LastDigest())
+	}
 }

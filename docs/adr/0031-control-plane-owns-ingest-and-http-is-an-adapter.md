@@ -145,7 +145,22 @@ arrived. Neither surfaces as an error — they surface later as wrong numbers.
 
 The same reasoning extends to reading: a cursor that disagrees with the
 aggregate's record count is `ErrStoreCorrupt`, because there is no principled
-way to choose which side is right.
+way to choose which side is right. And a read spanning several queries runs in
+one transaction, so it cannot manufacture that disagreement out of two
+different moments.
+
+The transaction is also where the lifecycle is enforced. The service prechecks
+`Running` before computing evidence, but a completion committing in between
+would otherwise let the write land after the run became terminal. The
+transactional recheck is authoritative: whichever of ingest and completion
+commits first wins, and evidence never grows after a run ends.
+
+It is also the only place that can distinguish a concurrent duplicate from a
+conflict. Several identical retries may pass preflight before any commits, and
+the one that finds the cursor advanced past its own sequence *with its own
+digest* is looking at its own record, already committed by somebody else. That
+is the retry contract working, so the store reports a disposition rather than
+an error and the losers replay instead of failing.
 
 ### 11. The schema moves v1 → v2
 
@@ -163,6 +178,17 @@ cursor starts at `N + 1`, because one ingest is one aggregate record. No
 digest is fabricated for the legacy last record, so a retry of `N` cannot be
 proven identical and conflicts. Inventing a digest there would manufacture
 proof that does not exist.
+
+That makes an empty digest meaningful rather than merely absent, and the
+distinction is row presence: derived legacy state may have none, while a
+persisted cursor row always records one. An empty digest in a row is
+corruption, because the only code that writes rows requires a digest.
+
+Concurrent openers converge the way initialization does. A losing migration
+can fail at any statement, not only the commit, so recovery rolls back and
+inspects the durable schema once rather than reading a driver's error text. A
+complete, valid v2 means another opener finished; anything else keeps the
+original error.
 
 ### 12. No raw event history is created
 

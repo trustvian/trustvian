@@ -172,9 +172,24 @@ candidate field is added to `DecisionRecord`.
 ### Lifecycle gate
 
 Ingest is permitted only while the run is `Running`. `Pending`, `Completed`,
-`Failed` and `Cancelled` are conflicts. Lifecycle transitions reuse the
-domain's immutable transitions and task 057's compare-and-swap update; there
-is no second state machine.
+`Failed` and `Cancelled` are conflicts.
+
+**Checked twice, and the transactional check is authoritative.** The service
+prechecks before computing evidence; the durable commit transaction rechecks
+inside the same transaction that writes. Without the second, a completion
+committing between preflight and commit would let evidence land after the run
+became terminal — leaving a completed evaluation whose evidence kept growing.
+
+Both orderings are legitimate; only one interleaving is forbidden:
+
+```text
+ingest commits, then completion   → the record is part of the final evidence
+completion commits, then ingest   → refused, evidence unchanged
+completion commits, ingest after  → must never happen
+```
+
+Lifecycle transitions reuse the domain's immutable transitions and task 057's
+compare-and-swap update; there is no second state machine.
 
 `Completed` still means *execution ended*, not passed, safe, promotable or
 approved. Comparison and gating stay separate.
@@ -211,6 +226,20 @@ That is O(1) per run, and it gives bounded retry semantics:
 
 A conflict is an error, never a third success disposition.
 
+**Concurrent identical submissions all succeed.** A client retrying a slow
+request sends exactly the same sequence and record, and several may pass
+preflight before any commits. The commit transaction distinguishes the two
+reasons the cursor can have moved: advanced past this sequence *with this
+digest* means another request committed the same logical record, which is a
+replay; anything else is a conflict. One request applies, the rest replay,
+none conflicts, and the aggregate advances once.
+
+The store therefore reports a disposition — `committed` or `already
+committed` — rather than only an error, because only the transaction can tell
+those apart without a race. The counts come back from that same transaction,
+so a replay response never combines a cursor from one moment with evidence
+from another.
+
 ### Wire representation
 
 `sequence` is `uint64` and travels as a canonical decimal **string**, so a
@@ -229,6 +258,14 @@ HTTP bytes. Whitespace and key ordering therefore do not make a different
 logical record, which is what makes a genuine retry replay rather than
 conflict. The digest is storage metadata, not behavioral identity — it is
 emphatically not `FingerprintID` or `EventID`.
+
+**An empty digest is legitimate in exactly one place.** A run migrated from a
+task 057 database has evidence, no cursor row, and no digest to derive — the
+record predates this code. A *persisted* cursor row is different: the commit
+path always records a digest, so an empty one there cannot have been produced
+legitimately and is `ErrStoreCorrupt`. Persisted digests are exactly 64
+lowercase hex characters, refused rather than normalized, because anything
+else was written by something that is not this code.
 
 ## SQLite Schema v2
 
@@ -256,6 +293,13 @@ A v1 database is **never** stamped v2 without migrating. Migration and version
 update commit together, so a failure leaves a readable v1 rather than a
 half-stamped hybrid.
 
+**Concurrent openers converge.** A racing initializer can make any statement
+fail — a locked database, or the table another opener just created — not only
+the commit. So a failed attempt rolls back and inspects the durable schema
+once: a complete, valid v2 means somebody else finished the job; anything else
+keeps the original error. No loop, no driver error-text parsing, and the
+inspection runs after rollback because the store holds a single connection.
+
 ### Legacy evidence and the initial sequence
 
 A v1 database may hold evidence with no ingest cursor. For a run with no
@@ -279,6 +323,13 @@ API-managed evidence. Disagreement is `ErrStoreCorrupt` — there is no
 principled way to pick which side is right.
 
 ## Atomicity
+
+Reads spanning several queries run inside one transaction too. Loading
+evidence issues four — aggregate, snapshot header, entries, owning run — and
+outside a transaction each is its own implicit one, so a concurrent commit
+between them yields a snapshot from after the write beside an aggregate from
+before it. The consistency checks then report that as corruption, which is
+right for an inconsistency that should never have been observable.
 
 One SQLite transaction commits the aggregate row, the snapshot header, every
 behavior entry, the advanced `NextSequence` and the digest. Either all old
@@ -377,7 +428,14 @@ required; a request omitting one is `400`, never silently zero.
 ## Evaluation Progress
 
 Factual only: run identity, status, record count, behavior observation count,
-distinct behavior count, behavior completeness, next ingest sequence. No
+distinct behavior count, behavior completeness, next ingest sequence.
+
+Every count comes from one transactional read, so a report never shows a
+cursor at N+1 beside an aggregate already at N+2. For API-managed evidence
+`NextIngestSequence == RecordCount + 1` holds in every observation. The run's
+status is read separately on purpose: it is independent of evidence, and a
+lifecycle transition racing the read is a genuinely concurrent fact rather
+than a torn one. No
 pass/fail, promotable, or safety field — a running evaluation has progress,
 not a verdict.
 

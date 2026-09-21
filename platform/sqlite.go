@@ -254,6 +254,29 @@ func (s *SQLiteStore) requireTables(ctx context.Context, version int, required [
 // derived from the aggregate's record count on first read, because one ingest
 // is one record — and no digest is invented for a record this code never saw.
 func (s *SQLiteStore) migrateV1ToV2(ctx context.Context) error {
+	if err := s.migrateV1ToV2Once(ctx); err != nil {
+		// A racing opener can make *any* statement here fail — a locked
+		// database, or the table another opener just created — not only the
+		// commit. So recovery cannot key on which step failed, and must not
+		// key on a driver's English error text either.
+		//
+		// The durable schema decides instead: if a complete, valid v2 now
+		// exists, somebody else finished the migration and this opener is
+		// done. Anything else keeps the original error. One inspection, no
+		// loop, and the transaction is already rolled back before it runs —
+		// the store holds a single connection, so verifying inside the
+		// transaction would deadlock against itself.
+		if version, verr := s.storedSchemaVersion(ctx); verr == nil && version == SchemaVersion {
+			if tablesErr := s.requireTables(ctx, SchemaVersion, schemaTables); tablesErr == nil {
+				return nil
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateV1ToV2Once(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("platform: migrate schema v1 to v2: %w", err)
@@ -267,14 +290,7 @@ func (s *SQLiteStore) migrateV1ToV2(ctx context.Context) error {
 		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`, SchemaVersion); err != nil {
 		return fmt.Errorf("platform: migrate schema v1 to v2: %w", err)
 	}
-
 	if err := tx.Commit(); err != nil {
-		// Another opener may have migrated first. The durable schema decides,
-		// as it does for initialization: rollback has already happened, so
-		// re-inspection cannot deadlock against the single connection.
-		if version, verr := s.storedSchemaVersion(ctx); verr == nil && version == SchemaVersion {
-			return s.requireTables(ctx, SchemaVersion, schemaTables)
-		}
 		return fmt.Errorf("platform: migrate schema v1 to v2: %w", err)
 	}
 	return nil
@@ -1297,11 +1313,41 @@ func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
 
+// withReadTx runs a multi-query read inside one transaction.
+//
+// Loading evidence issues several queries — aggregate, snapshot header,
+// entries, and the owning run. Outside a transaction each is its own implicit
+// one, so a concurrent ingest committing between them tears the read: a
+// snapshot from after the write beside an aggregate from before it, which the
+// consistency checks then correctly report as corruption.
+//
+// The store holds a single connection, so this also serializes against
+// writers. That is a real cost and the right one: the alternative is reads
+// that occasionally invent an inconsistency that never existed durably.
+func (s *SQLiteStore) withReadTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("platform: begin read: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // a read transaction is always rolled back
+	return fn(tx)
+}
+
 // EvaluationEvidence loads one run's latest aggregate and snapshot.
 func (s *SQLiteStore) EvaluationEvidence(
 	ctx context.Context, id EvaluationRunID,
 ) (EvaluationAggregate, BehaviorSnapshot, error) {
-	return s.loadEvidence(ctx, s.db, id)
+	var aggregate EvaluationAggregate
+	var snapshot BehaviorSnapshot
+	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		aggregate, snapshot, err = s.loadEvidence(ctx, tx, id)
+		return err
+	})
+	if err != nil {
+		return EvaluationAggregate{}, BehaviorSnapshot{}, err
+	}
+	return aggregate, snapshot, nil
 }
 
 type evidenceQuerier interface {
@@ -1902,7 +1948,16 @@ var _ EvaluationIngestStore = (*SQLiteStore)(nil)
 func (s *SQLiteStore) EvaluationIngestState(
 	ctx context.Context, id EvaluationRunID,
 ) (EvaluationIngestState, error) {
-	return s.ingestState(ctx, s.db, id)
+	var state EvaluationIngestState
+	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		state, err = s.ingestState(ctx, tx, id)
+		return err
+	})
+	if err != nil {
+		return EvaluationIngestState{}, err
+	}
+	return state, nil
 }
 
 func (s *SQLiteStore) ingestState(
@@ -1934,14 +1989,16 @@ func (s *SQLiteStore) ingestState(
 		return EvaluationIngestState{}, fmt.Errorf(
 			"%w: run %s has ingest sequence 0", ErrStoreCorrupt, preview(string(id)))
 	}
-	if err := validateDigest("last_digest", lastDigest); err != nil {
+	// A row here was written by the commit path, which always records a
+	// digest. An empty one cannot have been produced legitimately.
+	if err := validatePersistedDigest("last_digest", lastDigest); err != nil {
 		return EvaluationIngestState{}, err
 	}
 
 	// The cursor and the evidence it describes must agree. Disagreement means
 	// one of them was written without the other, and there is no principled
 	// way to choose which is right.
-	aggregate, _, err := s.loadEvidence(ctx, q, id)
+	aggregate, snapshot, err := s.loadEvidence(ctx, q, id)
 	switch {
 	case errors.Is(err, ErrStoreNotFound):
 		return EvaluationIngestState{}, fmt.Errorf(
@@ -1960,17 +2017,26 @@ func (s *SQLiteStore) ingestState(
 			ErrStoreCorrupt, preview(string(id)), sequence, aggregate.RecordCount())
 	}
 
-	return EvaluationIngestState{nextSequence: sequence, lastDigest: lastDigest}, nil
+	return EvaluationIngestState{
+		nextSequence:             sequence,
+		lastDigest:               lastDigest,
+		recordCount:              aggregate.RecordCount(),
+		behaviorObservationCount: snapshot.ObservationCount(),
+		distinctBehaviorCount:    snapshot.DistinctBehaviorCount(),
+		behaviorComplete:         snapshot.Complete(),
+	}, nil
 }
 
 // derivedIngestState computes a cursor for a run that has none.
 func (s *SQLiteStore) derivedIngestState(
 	ctx context.Context, q evidenceQuerier, id EvaluationRunID,
 ) (EvaluationIngestState, error) {
-	aggregate, _, err := s.loadEvidence(ctx, q, id)
+	aggregate, snapshot, err := s.loadEvidence(ctx, q, id)
 	switch {
 	case errors.Is(err, ErrStoreNotFound):
-		return EvaluationIngestState{nextSequence: 1}, nil
+		// A run that has never ingested: no cursor, no evidence, and an empty
+		// snapshot is complete rather than saturated.
+		return EvaluationIngestState{nextSequence: 1, behaviorComplete: true}, nil
 	case err != nil:
 		return EvaluationIngestState{}, err
 	}
@@ -1980,33 +2046,42 @@ func (s *SQLiteStore) derivedIngestState(
 		return EvaluationIngestState{}, err
 	}
 	// No digest: this code never saw the record that produced the evidence,
-	// and inventing one would manufacture proof a retry is identical.
-	return EvaluationIngestState{nextSequence: next}, nil
+	// and inventing one would manufacture proof a retry is identical. This is
+	// the one legitimate empty digest in the system.
+	return EvaluationIngestState{
+		nextSequence:             next,
+		recordCount:              aggregate.RecordCount(),
+		behaviorObservationCount: snapshot.ObservationCount(),
+		distinctBehaviorCount:    snapshot.DistinctBehaviorCount(),
+		behaviorComplete:         snapshot.Complete(),
+	}, nil
 }
 
 // CommitEvaluationIngest writes evidence and cursor in one transaction.
 func (s *SQLiteStore) CommitEvaluationIngest(
 	ctx context.Context, commit EvaluationIngestCommit,
-) error {
+) (EvaluationIngestCommitResult, error) {
 	if err := validateEvidencePair(commit.Aggregate, commit.Snapshot); err != nil {
-		return err
+		return EvaluationIngestCommitResult{}, err
 	}
-	if err := validateDigest("record digest", commit.RecordDigest); err != nil {
-		return err
-	}
-	if commit.RecordDigest == "" {
-		return fmt.Errorf("%w: commit carries no record digest", ErrStoreCorrupt)
+	if err := validatePersistedDigest("record digest", commit.RecordDigest); err != nil {
+		return EvaluationIngestCommitResult{}, err
 	}
 	next, err := nextSequenceAfter(commit.Sequence)
 	if err != nil {
-		return err
+		return EvaluationIngestCommitResult{}, err
+	}
+	if commit.Sequence != commit.PreviousNextSequence {
+		return EvaluationIngestCommitResult{}, fmt.Errorf(
+			"%w: commit carries sequence %d against cursor %d",
+			ErrIngestSequence, commit.Sequence, commit.PreviousNextSequence)
 	}
 
 	runID := commit.Aggregate.RunID()
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("platform: commit evaluation ingest: %w", err)
+		return EvaluationIngestCommitResult{}, fmt.Errorf("platform: commit evaluation ingest: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
 
@@ -2015,35 +2090,65 @@ func (s *SQLiteStore) CommitEvaluationIngest(
 	// still matches durable state may apply.
 	current, err := s.ingestState(ctx, tx, runID)
 	if err != nil {
-		return err
+		return EvaluationIngestCommitResult{}, err
 	}
+
 	if current.NextSequence() != commit.PreviousNextSequence {
-		return fmt.Errorf("%w: run %s now expects sequence %d, not %d",
+		// The cursor moved while this request was computing evidence. That
+		// has two causes and only this transaction can tell them apart.
+		//
+		// If the cursor advanced past exactly this sequence and records this
+		// exact digest, another request committed the same logical record
+		// first. That is the retry contract working, not a conflict —
+		// reporting an error here would make a successful concurrent retry
+		// indistinguishable from a real failure.
+		//
+		// Anything else moved for a different reason and stays a conflict.
+		if current.NextSequence() == next && current.LastDigest() == commit.RecordDigest {
+			return EvaluationIngestCommitResult{
+				Disposition:      EvaluationIngestAlreadyCommitted,
+				NextSequence:     current.NextSequence(),
+				RecordCount:      current.RecordCount(),
+				BehaviorComplete: current.BehaviorComplete(),
+			}, nil
+		}
+		return EvaluationIngestCommitResult{}, fmt.Errorf(
+			"%w: run %s now expects sequence %d, not %d",
 			ErrIngestSequence, preview(string(runID)),
 			current.NextSequence(), commit.PreviousNextSequence)
-	}
-	if commit.Sequence != commit.PreviousNextSequence {
-		return fmt.Errorf("%w: commit carries sequence %d against cursor %d",
-			ErrIngestSequence, commit.Sequence, commit.PreviousNextSequence)
 	}
 
 	// The run must exist and agree, exactly as a direct evidence save requires.
 	run, err := s.loadRun(ctx, tx, runID)
 	if err != nil {
-		return err
+		return EvaluationIngestCommitResult{}, err
 	}
+
+	// And it must still be running, checked *here* rather than only in the
+	// service. The service's preflight happens before the evidence is
+	// computed, so a completion committing in between would otherwise let
+	// this write land after the run became terminal — leaving a completed
+	// evaluation whose evidence kept growing. Whichever of the two commits
+	// first wins; what must never happen is completion first, ingest after.
+	if run.Status() != RunRunning {
+		return EvaluationIngestCommitResult{}, fmt.Errorf(
+			"%w: run %s is %s, records are accepted only while running",
+			ErrEvaluationState, preview(string(runID)), run.Status())
+	}
+
 	if run.CandidateID() != commit.Aggregate.CandidateID() ||
 		run.Environment() != commit.Aggregate.Environment() ||
 		run.BehavioralProfile() != commit.Aggregate.BehavioralProfile() {
-		return fmt.Errorf("%w: evidence identity does not match stored run %s",
+		return EvaluationIngestCommitResult{}, fmt.Errorf(
+			"%w: evidence identity does not match stored run %s",
 			ErrStoreConflict, preview(string(runID)))
 	}
 
 	if err := s.checkEvidenceNotStale(ctx, tx, commit.Aggregate, commit.Snapshot); err != nil {
-		return err
+		return EvaluationIngestCommitResult{}, err
 	}
 	if err := s.writeEvidence(ctx, tx, commit.Aggregate, commit.Snapshot); err != nil {
-		return err
+		return EvaluationIngestCommitResult{}, err
 	}
 
 	if _, err := tx.ExecContext(ctx,
@@ -2053,12 +2158,18 @@ func (s *SQLiteStore) CommitEvaluationIngest(
 			next_sequence = excluded.next_sequence,
 			last_digest = excluded.last_digest`,
 		string(runID), uint64Text(next), commit.RecordDigest); err != nil {
-		return fmt.Errorf("platform: commit ingest cursor: %w", err)
+		return EvaluationIngestCommitResult{}, fmt.Errorf("platform: commit ingest cursor: %w", err)
 	}
 
 	// Evidence and cursor become durable together, or neither does.
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("platform: commit evaluation ingest: %w", err)
+		return EvaluationIngestCommitResult{}, fmt.Errorf("platform: commit evaluation ingest: %w", err)
 	}
-	return nil
+
+	return EvaluationIngestCommitResult{
+		Disposition:      EvaluationIngestCommitted,
+		NextSequence:     next,
+		RecordCount:      commit.Aggregate.RecordCount(),
+		BehaviorComplete: commit.Snapshot.Complete(),
+	}, nil
 }

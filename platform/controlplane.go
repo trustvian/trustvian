@@ -251,15 +251,14 @@ func (c *ControlPlane) IngestDecisionRecord(
 		// A migrated task 057 run has no recorded digest, so nothing can be
 		// proven identical and this conflicts rather than guessing.
 		if state.LastDigest() != "" && state.LastDigest() == digest {
-			aggregate, snapshot, err := c.evaluations.EvaluationEvidence(ctx, request.RunID)
-			if err != nil {
-				return IngestResult{}, err
-			}
+			// The counts travel with the cursor, read in one transaction, so
+			// this reply describes a state that actually existed rather than
+			// a cursor from one moment beside evidence from another.
 			return IngestResult{
 				Disposition:      IngestReplayed,
 				NextSequence:     state.NextSequence(),
-				RecordCount:      aggregate.RecordCount(),
-				BehaviorComplete: snapshot.Complete(),
+				RecordCount:      state.RecordCount(),
+				BehaviorComplete: state.BehaviorComplete(),
 			}, nil
 		}
 		return IngestResult{}, fmt.Errorf(
@@ -311,25 +310,31 @@ func (c *ControlPlane) applyRecord(
 
 	snapshot := collector.Snapshot()
 
-	if err := c.ingest.CommitEvaluationIngest(ctx, EvaluationIngestCommit{
+	committed, err := c.ingest.CommitEvaluationIngest(ctx, EvaluationIngestCommit{
 		PreviousNextSequence: state.NextSequence(),
 		Sequence:             request.Sequence,
 		RecordDigest:         digest,
 		Aggregate:            aggregate,
 		Snapshot:             snapshot,
-	}); err != nil {
-		return IngestResult{}, err
-	}
-
-	next, err := nextSequenceAfter(request.Sequence)
+	})
 	if err != nil {
 		return IngestResult{}, err
 	}
+
+	// The store may report that another request committed this exact record
+	// first. Concurrent identical submissions are the retry contract working,
+	// so all but one replay rather than conflicting — and the counts come
+	// from the transaction that decided it, never from a second read that
+	// could observe a third request's state.
+	disposition := IngestApplied
+	if committed.Disposition == EvaluationIngestAlreadyCommitted {
+		disposition = IngestReplayed
+	}
 	return IngestResult{
-		Disposition:      IngestApplied,
-		NextSequence:     next,
-		RecordCount:      aggregate.RecordCount(),
-		BehaviorComplete: snapshot.Complete(),
+		Disposition:      disposition,
+		NextSequence:     committed.NextSequence,
+		RecordCount:      committed.RecordCount,
+		BehaviorComplete: committed.BehaviorComplete,
 	}, nil
 }
 
@@ -398,27 +403,23 @@ func (c *ControlPlane) EvaluationProgress(
 		return EvaluationProgressReport{}, err
 	}
 
-	report := EvaluationProgressReport{
-		Run:                run,
-		NextIngestSequence: state.NextSequence(),
-		// A run with no evidence has observed nothing, and "nothing observed"
-		// is not "behaviorally incomplete".
-		BehaviorComplete: true,
-	}
-
-	aggregate, snapshot, err := c.evaluations.EvaluationEvidence(ctx, id)
-	switch {
-	case errors.Is(err, ErrStoreNotFound):
-		return report, nil
-	case err != nil:
-		return EvaluationProgressReport{}, err
-	}
-
-	report.RecordCount = aggregate.RecordCount()
-	report.BehaviorObservationCount = snapshot.ObservationCount()
-	report.DistinctBehaviorCount = snapshot.DistinctBehaviorCount()
-	report.BehaviorComplete = snapshot.Complete()
-	return report, nil
+	// Every count comes from the cursor read above, which loads them in one
+	// transaction alongside the sequence. Reading the evidence separately
+	// would let a concurrent ingest move one between the two reads and
+	// produce a report describing a state that never existed — a cursor at
+	// N+1 beside an aggregate already at N+2.
+	//
+	// The run's status is read separately on purpose: it is independent of
+	// evidence, and a lifecycle transition racing this read is a genuinely
+	// concurrent fact rather than a torn one.
+	return EvaluationProgressReport{
+		Run:                      run,
+		RecordCount:              state.RecordCount(),
+		BehaviorObservationCount: state.BehaviorObservationCount(),
+		DistinctBehaviorCount:    state.DistinctBehaviorCount(),
+		BehaviorComplete:         state.BehaviorComplete(),
+		NextIngestSequence:       state.NextSequence(),
+	}, nil
 }
 
 // EvaluationIngestState reports a run's ingest cursor, so a client can

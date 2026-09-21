@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 
 	trustvian "github.com/trustvian/trustvian"
 )
@@ -35,13 +36,25 @@ import (
 // caller can reason about and act on, not a race against durable state.
 var ErrIngestSequence = errors.New("platform: evaluation ingest sequence conflict")
 
-// EvaluationIngestState is one run's durable ingest cursor.
+// EvaluationIngestState is one run's durable ingest cursor together with the
+// evidence counts it describes.
 //
-// Fixed-shape and O(1): two values, whatever the run has ingested. That bound
-// is what separates a retry mechanism from an archive.
+// Fixed-shape and O(1): a handful of values, whatever the run has ingested.
+// That bound is what separates a retry mechanism from an archive.
+//
+// The counts travel with the cursor because they must be read together. A
+// caller that read the cursor and then the evidence could observe N+1 beside
+// an aggregate that had meanwhile moved to N+2, and report a state that never
+// existed. One transactional read removes the tear rather than papering over
+// it with a lock.
 type EvaluationIngestState struct {
 	nextSequence uint64
 	lastDigest   string
+
+	recordCount              uint64
+	behaviorObservationCount uint64
+	distinctBehaviorCount    int
+	behaviorComplete         bool
 }
 
 // NextSequence is the sequence the next accepted record must carry.
@@ -50,9 +63,27 @@ func (s EvaluationIngestState) NextSequence() uint64 { return s.nextSequence }
 // LastDigest is the digest of the most recently accepted record, or empty
 // when none is known.
 //
-// Empty is a real state, not a missing value: a run migrated from a task 057
-// database has evidence but no recorded digest, and nothing fabricates one.
+// Empty is legitimate in exactly one situation: a run migrated from a task
+// 057 database has evidence but no cursor row, so the sequence is derived and
+// no digest exists to derive. Nothing fabricates one. A *persisted* cursor row
+// with an empty digest is corruption — this code cannot write one.
 func (s EvaluationIngestState) LastDigest() string { return s.lastDigest }
+
+// RecordCount is how many records the run's aggregate holds, read in the same
+// transaction as the cursor above.
+func (s EvaluationIngestState) RecordCount() uint64 { return s.recordCount }
+
+// BehaviorObservationCount is the snapshot's observation count.
+func (s EvaluationIngestState) BehaviorObservationCount() uint64 {
+	return s.behaviorObservationCount
+}
+
+// DistinctBehaviorCount is how many distinct behaviors the snapshot holds.
+func (s EvaluationIngestState) DistinctBehaviorCount() int { return s.distinctBehaviorCount }
+
+// BehaviorComplete reports whether the behavioral snapshot describes the whole
+// run. False once the collector saturated.
+func (s EvaluationIngestState) BehaviorComplete() bool { return s.behaviorComplete }
 
 // EvaluationIngestCommit is one atomic advance of a run's evidence and cursor.
 type EvaluationIngestCommit struct {
@@ -66,6 +97,38 @@ type EvaluationIngestCommit struct {
 
 	Aggregate EvaluationAggregate
 	Snapshot  BehaviorSnapshot
+}
+
+// EvaluationIngestDisposition is what a commit attempt did.
+//
+// It exists because "the cursor moved" has two very different causes, and
+// only the store can tell them apart without a race: another request
+// committed a *different* record, which is a conflict, or another request
+// committed *this exact* record, which is the retry contract working. A bare
+// error would collapse them and turn a successful concurrent retry into a
+// failure the client cannot distinguish from a real problem.
+type EvaluationIngestDisposition uint8
+
+const (
+	// EvaluationIngestCommitted means this call wrote the evidence.
+	EvaluationIngestCommitted EvaluationIngestDisposition = iota
+
+	// EvaluationIngestAlreadyCommitted means another request committed this
+	// exact logical record first — same sequence, same digest.
+	EvaluationIngestAlreadyCommitted
+)
+
+// EvaluationIngestCommitResult is the outcome and the durable state it left.
+//
+// The counts come from the same transaction that decided the disposition, so
+// a caller never has to read them back and risk observing a state produced by
+// some third request in between.
+type EvaluationIngestCommitResult struct {
+	Disposition EvaluationIngestDisposition
+
+	NextSequence     uint64
+	RecordCount      uint64
+	BehaviorComplete bool
 }
 
 // EvaluationIngestStore persists the ingest cursor alongside the evidence it
@@ -88,7 +151,12 @@ type EvaluationIngestStore interface {
 	// the cursor makes the next retry double-count, and the cursor without
 	// evidence loses a record the protocol believes arrived. Neither surfaces
 	// as an error — they surface later as wrong numbers.
-	CommitEvaluationIngest(ctx context.Context, commit EvaluationIngestCommit) error
+	//
+	// Returns whether this call committed or found the same record already
+	// committed, together with the durable state that decision produced.
+	CommitEvaluationIngest(
+		ctx context.Context, commit EvaluationIngestCommit,
+	) (EvaluationIngestCommitResult, error)
 }
 
 // ---------------------------------------------------------------------
@@ -140,14 +208,32 @@ func RecordDigest(record trustvian.DecisionRecord) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-// validateDigest refuses stored or supplied digests that are not the shape
-// this code writes.
-func validateDigest(field, digest string) error {
+// validatePersistedDigest requires exactly what RecordDigest writes.
+//
+// Empty is refused here, and that is the whole point of the function. A
+// derived legacy cursor legitimately has no digest — the record predates this
+// code — but a *row* in the cursor table was written by the commit path,
+// which requires a digest. An empty one there cannot have been produced
+// legitimately, so it is corruption rather than "unknown".
+//
+// Uppercase hex is refused rather than normalized: hex.EncodeToString emits
+// lowercase, so anything else was written by something that is not this code,
+// and normalizing would hide that.
+func validatePersistedDigest(field, digest string) error {
 	if digest == "" {
-		return nil // legitimately unknown; see EvaluationIngestState.LastDigest
+		return fmt.Errorf("%w: %s is empty; a persisted cursor always records one",
+			ErrStoreCorrupt, field)
 	}
+	return validateDigestShape(field, digest)
+}
+
+// validateDigestShape checks a non-empty digest is canonical lowercase hex.
+func validateDigestShape(field, digest string) error {
 	if len(digest) != sha256.Size*2 {
 		return fmt.Errorf("%w: %s is not a sha-256 digest", ErrStoreCorrupt, field)
+	}
+	if digest != strings.ToLower(digest) {
+		return fmt.Errorf("%w: %s is not lowercase hex", ErrStoreCorrupt, field)
 	}
 	if _, err := hex.DecodeString(digest); err != nil {
 		return fmt.Errorf("%w: %s is not hex", ErrStoreCorrupt, field)

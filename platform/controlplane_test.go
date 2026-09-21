@@ -961,9 +961,15 @@ func (s *permissiveIngestStore) EvaluationIngestState(
 
 func (s *permissiveIngestStore) CommitEvaluationIngest(
 	ctx context.Context, commit platform.EvaluationIngestCommit,
-) error {
+) (platform.EvaluationIngestCommitResult, error) {
 	s.commits++
-	return nil // accepts anything, including a sequence the store would refuse
+	// Accepts anything, including a sequence the real store would refuse.
+	return platform.EvaluationIngestCommitResult{
+		Disposition:      platform.EvaluationIngestCommitted,
+		NextSequence:     commit.Sequence + 1,
+		RecordCount:      commit.Aggregate.RecordCount(),
+		BehaviorComplete: commit.Snapshot.Complete(),
+	}, nil
 }
 
 func TestServiceRejectsGapsWithoutRelyingOnTheStore(t *testing.T) {
@@ -1022,6 +1028,57 @@ func TestServiceRejectsGapsWithoutRelyingOnTheStore(t *testing.T) {
 	}
 }
 
+// The durable transaction also rechecks Running, which is what makes the
+// terminal race safe — and which would otherwise hide a missing preflight.
+// This isolates the service's own check against a store that refuses nothing.
+func TestServiceRejectsNonRunningWithoutRelyingOnTheStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "platform.db")
+	store, err := platform.OpenSQLiteStore(t.Context(), path)
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	permissive := &permissiveIngestStore{delegate: store}
+	plane, err := platform.NewControlPlane(store, store, permissive)
+	if err != nil {
+		t.Fatalf("NewControlPlane() error = %v", err)
+	}
+
+	seeder := &controlPlaneFixture{plane: mustPlane(t, store), store: store, path: path}
+	seeder.seedPending(t, "run-1")
+
+	tests := []struct {
+		name  string
+		drive func()
+	}{
+		{"pending", func() {}},
+		{"cancelled", func() {
+			if _, err := seeder.plane.CancelEvaluationRun(
+				t.Context(), "run-1", aggEpoch.Add(time.Minute)); err != nil {
+				t.Fatalf("cancel: %v", err)
+			}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.drive()
+			before := permissive.commits
+			_, err := plane.IngestDecisionRecord(t.Context(), platform.IngestRequest{
+				RunID: "run-1", Sequence: 1, BehavioralProfile: fixtureProfile,
+				Record: ingestRecord("evt-0", "fp-0", "read"),
+			})
+			if !errors.Is(err, platform.ErrEvaluationState) {
+				t.Fatalf("error = %v, want ErrEvaluationState", err)
+			}
+			if permissive.commits != before {
+				t.Error("the service committed into a non-running run; it is relying on the store to refuse")
+			}
+		})
+	}
+}
+
 func mustPlane(t *testing.T, store *platform.SQLiteStore) *platform.ControlPlane {
 	t.Helper()
 	plane, err := platform.NewControlPlane(store, store, store)
@@ -1029,4 +1086,139 @@ func mustPlane(t *testing.T, store *platform.SQLiteStore) *platform.ControlPlane
 		t.Fatalf("NewControlPlane() error = %v", err)
 	}
 	return plane
+}
+
+// Concurrent identical submissions are the retry contract working, not a
+// pile-up of conflicts: one applies and the rest replay.
+//
+// A client that retries on a slow response sends exactly this shape, so
+// treating the losers as conflicts would make ordinary network behaviour look
+// like an error the caller cannot distinguish from a real one.
+func TestConcurrentIdenticalSequenceReplays(t *testing.T) {
+	f := newFixture(t)
+	f.seedRunning(t, "run-1")
+
+	const attempts = 8
+	record := ingestRecord("evt-0", "fp-0", "read")
+
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+	results := make([]platform.IngestResult, attempts)
+	errs := make([]error, attempts)
+
+	for i := range attempts {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait()
+			results[i], errs[i] = f.plane.IngestDecisionRecord(context.Background(), platform.IngestRequest{
+				RunID:             "run-1",
+				Sequence:          1,
+				BehavioralProfile: fixtureProfile,
+				Record:            record, // byte-identical every time
+			})
+		}()
+	}
+	start.Done()
+	done.Wait()
+
+	var applied, replayed int
+	for i := range attempts {
+		if errs[i] != nil {
+			t.Errorf("attempt %d error = %v; an identical retry must not conflict", i, errs[i])
+			continue
+		}
+		switch results[i].Disposition {
+		case platform.IngestApplied:
+			applied++
+		case platform.IngestReplayed:
+			replayed++
+		default:
+			t.Errorf("attempt %d disposition = %q", i, results[i].Disposition)
+		}
+	}
+	if applied != 1 {
+		t.Errorf("applied = %d, want exactly 1", applied)
+	}
+	if replayed != attempts-1 {
+		t.Errorf("replayed = %d, want %d", replayed, attempts-1)
+	}
+
+	// Every response describes the same committed state.
+	for i := range attempts {
+		if errs[i] != nil {
+			continue
+		}
+		if results[i].RecordCount != 1 || results[i].NextSequence != 2 {
+			t.Errorf("attempt %d reported count %d / next %d, want 1 / 2",
+				i, results[i].RecordCount, results[i].NextSequence)
+		}
+	}
+
+	aggregate, snapshot, err := f.store.EvaluationEvidence(t.Context(), "run-1")
+	if err != nil {
+		t.Fatalf("EvaluationEvidence() error = %v", err)
+	}
+	if aggregate.RecordCount() != 1 {
+		t.Errorf("RecordCount() = %d, want 1: a concurrent retry double-counted", aggregate.RecordCount())
+	}
+	if snapshot.ObservationCount() != 1 {
+		t.Errorf("ObservationCount() = %d, want 1", snapshot.ObservationCount())
+	}
+	state, err := f.plane.EvaluationIngestState(t.Context(), "run-1")
+	if err != nil {
+		t.Fatalf("EvaluationIngestState() error = %v", err)
+	}
+	if state.NextSequence() != 2 {
+		t.Errorf("NextSequence() = %d, want 2", state.NextSequence())
+	}
+}
+
+// Progress never reports a cursor from one moment beside evidence from
+// another: the counts travel together, read in one transaction.
+func TestProgressStaysCoherentUnderConcurrentIngest(t *testing.T) {
+	f := newFixture(t)
+	f.seedRunning(t, "run-1")
+
+	var stop sync.WaitGroup
+	stop.Add(1)
+	done := make(chan struct{})
+
+	go func() {
+		defer stop.Done()
+		for sequence := uint64(1); ; sequence++ {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			if _, err := f.plane.IngestDecisionRecord(context.Background(), platform.IngestRequest{
+				RunID: "run-1", Sequence: sequence, BehavioralProfile: fixtureProfile,
+				Record: ingestRecord(fmt.Sprintf("evt-%d", sequence),
+					fmt.Sprintf("fp-%d", sequence%32), fmt.Sprintf("op-%d", sequence%32)),
+			}); err != nil {
+				return
+			}
+		}
+	}()
+
+	for range 200 {
+		report, err := f.plane.EvaluationProgress(context.Background(), "run-1")
+		if err != nil {
+			t.Fatalf("EvaluationProgress() error = %v", err)
+		}
+		// For API-managed evidence one ingest is one record, so the cursor
+		// and the aggregate must agree in every observation.
+		if report.NextIngestSequence != report.RecordCount+1 {
+			t.Fatalf("torn read: next sequence %d with record count %d",
+				report.NextIngestSequence, report.RecordCount)
+		}
+		if report.BehaviorObservationCount > report.RecordCount {
+			t.Fatalf("torn read: %d behavior observations against %d records",
+				report.BehaviorObservationCount, report.RecordCount)
+		}
+	}
+	close(done)
+	stop.Wait()
 }
