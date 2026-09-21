@@ -116,8 +116,11 @@ actually depend on.
   **Unsupported semantics are absent, not zero.** Critical policy violations,
   blocked or unapproved sensitive actions, per-rule compliance and delegation
   stability have no field, because no current evidence can express them.
-  Reporting `0` would be a false security claim. Task 056 must define where
-  severity and sensitivity come from before those gates can exist. See [ADR
+  Reporting `0` would be a false security claim. Task 056 deliberately did not
+  infer or define those semantics: gates depending on policy severity,
+  resource sensitivity, authorization semantics, or per-event correlation the
+  aggregate does not retain remain deferred until explicit evidence contracts
+  exist. See [ADR
   0028](docs/adr/0028-scorecards-are-fixed-shape-comparative-evidence.md).
 
 - **Behavioral diff: which behavioral shapes changed between two

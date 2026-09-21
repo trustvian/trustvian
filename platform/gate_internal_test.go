@@ -4,9 +4,13 @@ package platform
 //
 // BehaviorSummary counts are int and the gates are uint64. A negative count
 // reaching the conversion would not produce a small wrong number — it would
-// produce 18446744073709551615, a gate that no maximum can fail and every
-// minimum passes. That is the one path where corrupted evidence turns into a
-// passing gate, so the guard runs before any conversion.
+// produce math.MaxUint64, or 18446744073709551615.
+//
+// A maximum gate passes when actual <= maximum. So that value fails every
+// ordinary limit, and passes exactly one: MaxUint64, which is what a caller
+// indifferent to a gate is told to configure. Corrupted evidence would then
+// be accepted as a clean PASS. That is the one path where corruption turns
+// into a passing gate, so the guard runs before any conversion.
 //
 // NewEvaluationScorecard cannot produce these values. Only a bug inside this
 // package could, which is why the test lives here: the external suite cannot
@@ -88,7 +92,7 @@ func TestGateRejectsCorruptedBehaviorSummary(t *testing.T) {
 }
 
 // The specific failure the guard exists to prevent: a negative count becoming
-// an enormous uint64 that satisfies every maximum.
+// math.MaxUint64, which a permissive MaxUint64 limit accepts.
 func TestNegativeBehaviorCountNeverBecomesAPassingGate(t *testing.T) {
 	corrupt := BehaviorSummary{
 		AddedCount:             -1,

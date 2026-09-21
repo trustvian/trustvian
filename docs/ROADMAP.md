@@ -24,10 +24,11 @@ Status vocabulary:
 | **PLANNED** | Approved and decomposed into tasks, not implemented |
 | **FUTURE** | A direction, not scoped, designed, committed, or dated |
 
-`v1.0` Track B is PLANNED: the architecture is decided and the work is broken
-into numbered tasks. Its evaluation foundation (tasks 051–056) is implemented;
-nothing built on top of it — persistence, API, realtime, UI, promotion —
-exists yet. Everything under [Beyond v1.0](#beyond-v10) is FUTURE.
+`v1.0` is NEXT. Track B is **partly implemented**: its evaluation foundation
+(tasks 051–056) exists, while persistence, the API, realtime, the UI,
+promotion and the remaining numbered work are still PLANNED. The foundation
+is not usable end to end on its own. Everything under
+[Beyond v1.0](#beyond-v10) is FUTURE.
 
 ## Product Direction
 
@@ -123,8 +124,8 @@ The pre-`v1.0` core provides:
   an automated release pipeline
 
 **The platform foundation has begun, and is not usable end to end.** Task 052
-added the `platform/` module — a separate Go module at `trustvian-platform`,
-holding the evaluation domain and nothing else:
+added the `platform/` module — a separate Go module at `trustvian-platform`.
+It now holds the evaluation foundation, and nothing built on top of it:
 
 - implemented: the evaluation domain — `Project`, `Agent`, `Candidate`,
   `EvaluationRun`, `EnvironmentRef`, `BehavioralProfileRef`, with

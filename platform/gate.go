@@ -262,8 +262,14 @@ func EvaluateEvaluationGate(
 //
 // A constructor-produced scorecard is trusted, so this is not a
 // re-validation of every task 055 field — only the arithmetic a lossy
-// conversion sits on. uint64(-1) is not a large count, it is a gate that
-// passes nothing and fails everything for the wrong reason.
+// conversion sits on.
+//
+// The direction of that failure is what matters. Converting a negative int
+// yields math.MaxUint64, and a maximum gate passes when actual <= maximum —
+// so a corrupt count fails every ordinary limit but *passes* a permissive
+// MaxUint64 one, which is exactly the limit a caller indifferent to a gate
+// is told to choose. Corrupted evidence would then read as a clean PASS.
+// Rejecting before the conversion is what closes that path.
 func validateBehaviorSummaryArithmetic(s BehaviorSummary) error {
 	if s.AddedCount < 0 || s.RemovedCount < 0 || s.SharedCount < 0 ||
 		s.ReferenceDistinctCount < 0 || s.CandidateDistinctCount < 0 {

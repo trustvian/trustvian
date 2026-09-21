@@ -494,8 +494,10 @@ scorecard with explicit caller-owned limits and returns PASS or FAIL.
   problem.
 - **FAIL is a normal verdict, not an exception.** An error means the
   evaluation itself could not be trusted — unbound inputs, or structurally
-  impossible evidence such as a negative behavior count that would otherwise
-  become an enormous `uint64` and satisfy every maximum.
+  impossible evidence such as a negative behavior count, which converts to
+  `math.MaxUint64` — a value that fails every ordinary limit but is accepted
+  by the permissive `MaxUint64` one a caller indifferent to a gate is told to
+  configure, turning corrupted evidence into a clean PASS.
 - **Unsupported severity and sensitivity gates are absent, not zero.** No
   critical-policy-violation, sensitive-resource, or approval-compliance gate
   exists, because no evidence supports one. Approximating any of them from an
