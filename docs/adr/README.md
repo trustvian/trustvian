@@ -51,6 +51,7 @@ as long as its own decision holds.
 | [0025](0025-platform-domain-values-with-caller-owned-identity.md) | Platform domain entities are values with caller-owned identity | Accepted |
 | [0026](0026-evaluation-aggregation-is-bounded-evidence.md) | Evaluation aggregation is bounded evidence, not event history | Accepted |
 | [0027](0027-behavioral-diff-compares-bounded-snapshots.md) | Behavioral diff compares bounded snapshots | Accepted |
+| [0028](0028-scorecards-are-fixed-shape-comparative-evidence.md) | Scorecards are fixed-shape comparative evidence | Accepted |
 
 No ADR is currently Superseded or Deprecated. Several later ADRs build on
 earlier ones — 0006 and 0018 on 0004's narrow port, 0007/0008/0017 on 0002's

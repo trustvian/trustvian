@@ -78,15 +78,30 @@ number from it is not.
 An error a caller must handle is strictly better than a plausible wrong
 number nobody questions.
 
-### One fingerprint, one behavior — or nothing
+### Identity and descriptor are one-to-one — or nothing
 
-A fingerprint claiming two different `StableFeatures` fails closed, in the
-collector and again at comparison.
+```text
+same FingerprintID, different StableFeatures  → refused
+same StableFeatures, different FingerprintID  → refused
+```
 
-Overwriting the descriptor or merging the counts would report two distinct
-behaviors as one. The realistic causes — a tampered record, corrupted
-evidence, an identity collision — all warrant refusal, and none warrants a
-merge that looks like a normal result.
+Both directions fail closed, in the collector and again at comparison.
+
+The first prevents two distinct behaviors being reported as one. Overwriting
+the descriptor or merging the counts would do exactly that, and the realistic
+causes — a tampered record, corrupted evidence, an identity collision — all
+warrant refusal rather than a merge that looks like a normal result.
+
+The second prevents the same behavior appearing under two identities, which
+happens when evidence crosses identity encodings: a changed hash, mismatched
+namespaces, assembled records. Classified naively it becomes `Removed(old)` +
+`Added(new)` — a specific, confident claim that behavior changed when only its
+encoding did, in the output most likely to be acted on.
+
+The platform checks the relation, never the hash. Recomputing
+`hash(StableFeatures)` here would freeze the core's choice of algorithm, its
+version prefix, and its serialization; what is verified is that the evidence
+handed over is self-consistent.
 
 ### Raw records are not retained
 

@@ -297,14 +297,21 @@ the public documentation.
 **Partly implemented.** The foundations exist; nothing built on them does.
 
 Implemented: generic learning-scope isolation in the core (051), the
-evaluation domain (052), evaluation result aggregation (053), and behavioral
-diff (054).
+evaluation domain (052), evaluation result aggregation (053), behavioral
+diff (054), and evaluation scorecards (055).
 
-Still planned: scorecards (055), deterministic gates (056), local persistence
-(057), the control-plane API and ingest (058), and everything from realtime
-(059) onward. The platform can describe an evaluation, summarize what it
-observed, and compare bounded behavioral snapshots. It cannot yet score,
-gate, persist, serve, or promote — so it is not usable end to end.
+Still planned: deterministic gates (056), local persistence (057), the
+control-plane API and ingest (058), and everything from realtime (059)
+onward. The platform can describe an evaluation, aggregate bounded result
+evidence, compare bounded behavioral snapshots, and produce fixed-shape
+comparative scorecards. It cannot yet gate, persist, serve, or promote — so
+it is not usable end to end.
+
+The scorecard carries no verdict and no threshold, and several metrics named
+below are **not derivable from current evidence** — see
+[task 055](tasks/v1.0/055-evaluation-scorecards.md). Task 056 must define
+where policy severity and resource sensitivity come from before the
+corresponding gates can exist.
 
 The concepts below are named so that every task shares one vocabulary.
 
