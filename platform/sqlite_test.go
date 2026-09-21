@@ -13,10 +13,12 @@ package platform_test
 // database is never adopted, and no corrupt row ever becomes a bound value.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -1059,3 +1061,300 @@ func BenchmarkSaveEvaluationEvidence32(b *testing.B)  { benchmarkSave(b, 32) }
 func BenchmarkSaveEvaluationEvidence512(b *testing.B) { benchmarkSave(b, 512) }
 func BenchmarkLoadEvaluationEvidence32(b *testing.B)  { benchmarkLoad(b, 32) }
 func BenchmarkLoadEvaluationEvidence512(b *testing.B) { benchmarkLoad(b, 512) }
+
+// ---------------------------------------------------------------------
+// In-memory store isolation
+// ---------------------------------------------------------------------
+
+// Two stores opened with ":memory:" are two databases.
+//
+// A shared-cache DSN would make them one, and platform state written through
+// one store would appear in an unrelated one — projects, runs and evidence
+// crossing a boundary callers reasonably assume exists.
+func TestIndependentMemoryStoresAreIsolated(t *testing.T) {
+	ctx := t.Context()
+
+	storeA, err := platform.OpenSQLiteStore(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore(A) error = %v", err)
+	}
+	defer storeA.Close()
+
+	storeB, err := platform.OpenSQLiteStore(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore(B) error = %v", err)
+	}
+	defer storeB.Close()
+
+	projectA, err := platform.NewProject("project-a", "Only in A")
+	if err != nil {
+		t.Fatalf("NewProject() error = %v", err)
+	}
+	projectB, err := platform.NewProject("project-b", "Only in B")
+	if err != nil {
+		t.Fatalf("NewProject() error = %v", err)
+	}
+	if err := storeA.CreateProject(ctx, projectA); err != nil {
+		t.Fatalf("CreateProject(A) error = %v", err)
+	}
+	if err := storeB.CreateProject(ctx, projectB); err != nil {
+		t.Fatalf("CreateProject(B) error = %v", err)
+	}
+
+	t.Run("each store sees its own project", func(t *testing.T) {
+		if _, err := storeA.Project(ctx, "project-a"); err != nil {
+			t.Errorf("storeA.Project(project-a) error = %v", err)
+		}
+		if _, err := storeB.Project(ctx, "project-b"); err != nil {
+			t.Errorf("storeB.Project(project-b) error = %v", err)
+		}
+	})
+
+	t.Run("neither store sees the other's project", func(t *testing.T) {
+		if _, err := storeA.Project(ctx, "project-b"); !errors.Is(err, platform.ErrStoreNotFound) {
+			t.Errorf("storeA.Project(project-b) error = %v, want ErrStoreNotFound", err)
+		}
+		if _, err := storeB.Project(ctx, "project-a"); !errors.Is(err, platform.ErrStoreNotFound) {
+			t.Errorf("storeB.Project(project-a) error = %v, want ErrStoreNotFound", err)
+		}
+	})
+
+	// Not a projects-table quirk: the whole hierarchy and its evidence stay
+	// on their own side.
+	t.Run("runs and evidence do not cross", func(t *testing.T) {
+		agent, err := platform.NewAgent("agent-a", "project-a", "A's agent")
+		if err != nil {
+			t.Fatalf("NewAgent() error = %v", err)
+		}
+		candidate, err := platform.NewCandidate("cand-a", "agent-a", platform.CandidateMetadata{Label: "v1"})
+		if err != nil {
+			t.Fatalf("NewCandidate() error = %v", err)
+		}
+		run, err := platform.NewEvaluationRun("run-a", "cand-a", "staging", "profile-a", aggEpoch)
+		if err != nil {
+			t.Fatalf("NewEvaluationRun() error = %v", err)
+		}
+		for _, err := range []error{
+			storeA.CreateAgent(ctx, agent),
+			storeA.CreateCandidate(ctx, candidate),
+			storeA.CreateEvaluationRun(ctx, run),
+		} {
+			if err != nil {
+				t.Fatalf("seed in A error = %v", err)
+			}
+		}
+
+		aggregate, err := platform.NewEvaluationAggregate(run)
+		if err != nil {
+			t.Fatalf("NewEvaluationAggregate() error = %v", err)
+		}
+		collector, err := platform.NewBehaviorCollector(run)
+		if err != nil {
+			t.Fatalf("NewBehaviorCollector() error = %v", err)
+		}
+		rec := scorecardRecord("evt-0", "fp-0", "read", "staging",
+			"allow", "low", event.ApprovalNotRequired, 0.9)
+		if aggregate, err = aggregate.AddRecord(rec); err != nil {
+			t.Fatalf("AddRecord() error = %v", err)
+		}
+		if err := collector.Observe(rec); err != nil {
+			t.Fatalf("Observe() error = %v", err)
+		}
+		if err := storeA.SaveEvaluationEvidence(ctx, aggregate, collector.Snapshot()); err != nil {
+			t.Fatalf("SaveEvaluationEvidence(A) error = %v", err)
+		}
+
+		// A has all of it.
+		if _, err := storeA.EvaluationRun(ctx, "run-a"); err != nil {
+			t.Errorf("storeA.EvaluationRun() error = %v", err)
+		}
+		if _, _, err := storeA.EvaluationEvidence(ctx, "run-a"); err != nil {
+			t.Errorf("storeA.EvaluationEvidence() error = %v", err)
+		}
+
+		// B has none of it.
+		for _, c := range []struct {
+			name string
+			err  error
+		}{
+			{"Agent", func() error { _, err := storeB.Agent(ctx, "agent-a"); return err }()},
+			{"Candidate", func() error { _, err := storeB.Candidate(ctx, "cand-a"); return err }()},
+			{"EvaluationRun", func() error { _, err := storeB.EvaluationRun(ctx, "run-a"); return err }()},
+			{"EvaluationEvidence", func() error { _, _, err := storeB.EvaluationEvidence(ctx, "run-a"); return err }()},
+		} {
+			if !errors.Is(c.err, platform.ErrStoreNotFound) {
+				t.Errorf("storeB.%s() error = %v, want ErrStoreNotFound: state crossed stores", c.name, c.err)
+			}
+		}
+	})
+}
+
+// Closing one private database must not disturb another.
+func TestClosingOneMemoryStoreLeavesAnotherUsable(t *testing.T) {
+	ctx := t.Context()
+
+	storeA, err := platform.OpenSQLiteStore(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore(A) error = %v", err)
+	}
+	storeB, err := platform.OpenSQLiteStore(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore(B) error = %v", err)
+	}
+	defer storeB.Close()
+
+	projectA, _ := platform.NewProject("project-a", "In A")
+	projectB, _ := platform.NewProject("project-b", "In B")
+	if err := storeA.CreateProject(ctx, projectA); err != nil {
+		t.Fatalf("CreateProject(A) error = %v", err)
+	}
+	if err := storeB.CreateProject(ctx, projectB); err != nil {
+		t.Fatalf("CreateProject(B) error = %v", err)
+	}
+
+	if err := storeA.Close(); err != nil {
+		t.Fatalf("Close(A) error = %v", err)
+	}
+
+	loaded, err := storeB.Project(ctx, "project-b")
+	if err != nil {
+		t.Fatalf("storeB.Project() after closing A error = %v", err)
+	}
+	if loaded.Name() != "In B" {
+		t.Errorf("Name() = %q, want %q", loaded.Name(), "In B")
+	}
+
+	// B is still writable, so closing A took nothing with it.
+	another, _ := platform.NewProject("project-b2", "Also in B")
+	if err := storeB.CreateProject(ctx, another); err != nil {
+		t.Errorf("storeB.CreateProject() after closing A error = %v", err)
+	}
+}
+
+// Many private databases at once, each seeing only its own state.
+func TestConcurrentMemoryStoresStayIsolated(t *testing.T) {
+	const stores = 8
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+	errs := make([]error, stores)
+
+	for i := range stores {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait()
+
+			ctx := context.Background()
+			store, err := platform.OpenSQLiteStore(ctx, ":memory:")
+			if err != nil {
+				errs[i] = fmt.Errorf("open: %w", err)
+				return
+			}
+			defer store.Close()
+
+			mine := platform.ProjectID(fmt.Sprintf("project-%d", i))
+			project, err := platform.NewProject(mine, "Mine")
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			if err := store.CreateProject(ctx, project); err != nil {
+				errs[i] = fmt.Errorf("create: %w", err)
+				return
+			}
+			if _, err := store.Project(ctx, mine); err != nil {
+				errs[i] = fmt.Errorf("read own: %w", err)
+				return
+			}
+			// Nobody else's project is visible here.
+			for j := range stores {
+				if j == i {
+					continue
+				}
+				other := platform.ProjectID(fmt.Sprintf("project-%d", j))
+				if _, err := store.Project(ctx, other); !errors.Is(err, platform.ErrStoreNotFound) {
+					errs[i] = fmt.Errorf("saw %s: %v", other, err)
+					return
+				}
+			}
+		}()
+	}
+	start.Done()
+	done.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("store %d: %v", i, err)
+		}
+	}
+}
+
+// Isolation is not a reason to lose within-store reads: one open store is one
+// database, and a write is visible to the next read on the same handle.
+func TestMemoryStoreReadsItsOwnWrites(t *testing.T) {
+	ctx := t.Context()
+	store, err := platform.OpenSQLiteStore(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	project, _ := platform.NewProject("proj-1", "Checkout")
+	agent, _ := platform.NewAgent("agent-1", "proj-1", "Deploy agent")
+	candidate, _ := platform.NewCandidate("cand-1", "agent-1", platform.CandidateMetadata{Label: "v1"})
+	run, _ := platform.NewEvaluationRun("run-1", "cand-1", "staging", "profile-1", aggEpoch)
+	for _, err := range []error{
+		store.CreateProject(ctx, project),
+		store.CreateAgent(ctx, agent),
+		store.CreateCandidate(ctx, candidate),
+		store.CreateEvaluationRun(ctx, run),
+	} {
+		if err != nil {
+			t.Fatalf("write error = %v", err)
+		}
+	}
+
+	// Several reads in sequence, so a discarded connection would surface as a
+	// vanished database rather than passing by luck.
+	for range 5 {
+		if _, err := store.Project(ctx, "proj-1"); err != nil {
+			t.Fatalf("Project() error = %v", err)
+		}
+		if _, err := store.EvaluationRun(ctx, "run-1"); err != nil {
+			t.Fatalf("EvaluationRun() error = %v", err)
+		}
+	}
+}
+
+// The isolation fix is specific to ":memory:". Two stores opened on the same
+// file path are still two handles to one durable database, which is what
+// makes a file the thing that survives a restart.
+func TestFileBackedStoresOnOnePathShareOneDatabase(t *testing.T) {
+	ctx := t.Context()
+	path := storePath(t)
+
+	storeA := openStore(t, path)
+	storeB := openStore(t, path)
+
+	project, err := platform.NewProject("shared-project", "Written through A")
+	if err != nil {
+		t.Fatalf("NewProject() error = %v", err)
+	}
+	if err := storeA.CreateProject(ctx, project); err != nil {
+		t.Fatalf("CreateProject(A) error = %v", err)
+	}
+
+	loaded, err := storeB.Project(ctx, "shared-project")
+	if err != nil {
+		t.Fatalf("storeB.Project() error = %v: file-backed stores stopped sharing", err)
+	}
+	if loaded.Name() != "Written through A" {
+		t.Errorf("Name() = %q, want %q", loaded.Name(), "Written through A")
+	}
+
+	// And the shared identity is real: B cannot re-create what A created.
+	if err := storeB.CreateProject(ctx, project); !errors.Is(err, platform.ErrStoreAlreadyExists) {
+		t.Errorf("storeB.CreateProject() error = %v, want ErrStoreAlreadyExists", err)
+	}
+}

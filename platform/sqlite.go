@@ -78,7 +78,11 @@ var (
 // an unknown version, or recognized tables with no version metadata — fails
 // closed with ErrStoreSchemaVersion rather than being adopted.
 //
-// Pass ":memory:" for an ephemeral database.
+// Pass ":memory:" for an ephemeral database. Each such call owns a private
+// one: two stores opened this way share no projects, runs, or evidence, and
+// closing one does not disturb the other. It does not survive Close — a
+// later ":memory:" open is a new empty database, and a file path is what
+// provides persistence across a restart.
 func OpenSQLiteStore(ctx context.Context, path string) (*SQLiteStore, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, fmt.Errorf("%w: empty database path", ErrStoreCorrupt)
@@ -88,10 +92,13 @@ func OpenSQLiteStore(ctx context.Context, path string) (*SQLiteStore, error) {
 	// a guarantee that lapses the moment the pool opens a second connection.
 	// Setting it in the DSN applies it to every connection the pool creates.
 	// busy_timeout bounds lock waiting instead of blocking forever.
+	//
+	// ":memory:" is passed through unchanged, which is what keeps two stores
+	// independent. A shared-cache DSN — file::memory:?cache=shared — names one
+	// process-wide database, so every store opened with it would see the same
+	// projects, runs and evidence. For platform state that is not a
+	// convenience, it is a cross-store identity leak.
 	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
-	if path == ":memory:" {
-		dsn = "file::memory:?cache=shared&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
-	}
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -101,7 +108,16 @@ func OpenSQLiteStore(ctx context.Context, path string) (*SQLiteStore, error) {
 	// One writer. SQLite serializes writes anyway, and a single connection
 	// makes the foreign-key pragma above true for every statement this store
 	// issues rather than true for whichever connection happened to run it.
+	//
+	// It also carries the in-memory database. A private ":memory:" database
+	// lives in its connection, so the pool must hold that one connection open
+	// for the store's lifetime — hence an explicit idle connection and no
+	// lifetime expiry. A file-backed store does not depend on this; it is
+	// stated so a later pool change cannot silently discard memory state.
 	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+	db.SetConnMaxIdleTime(0)
 
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
