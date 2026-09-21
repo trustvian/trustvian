@@ -967,13 +967,15 @@ A second per-record platform reducer, plus a comparison path.
 
 Three to five runs each, darwin/arm64, Apple M3 Pro, Go 1.27.
 
-**What enforcing one-to-one identity cost.** An earlier revision checked only
-that one fingerprint described one behavior, and measured 189 ns / 57 µs for
-the last two rows. Adding the reverse check — one behavior describes one
-fingerprint — roughly doubled new-fingerprint admission and comparison, for a
-bounded reverse index in the collector and a descriptor map in the
-comparison. The hot path is untouched: repeat observation is still 61 ns and
-allocation-free.
+**What enforcing one-to-one identity cost.** The table above is current; the
+figures in this paragraph are superseded and recorded only to show the price.
+
+An earlier revision checked one direction only — that a fingerprint described
+a single behavior — and measured roughly 190 ns for new-fingerprint admission
+and 57 µs for the full comparison. Adding the reverse check, that a behavior
+has a single fingerprint, about doubled both: it needs a bounded reverse index
+in the collector and a descriptor map in the comparison. The hot path is
+untouched — repeat observation is still ~61 ns and allocation-free.
 
 A bounded linear scan was tried before the index and measured first: 3.2 µs
 per newly admitted fingerprint, because the scan averages half of a 512-entry
@@ -986,19 +988,25 @@ place. The measurement is what chose between them.
 by a wide margin — an evaluation observes the same shapes repeatedly — and it
 is what makes per-record cost independent of how many records came before.
 
-*Admitting a new behavior allocates once,* for the map entry. Bounded at 512
-per collector by construction, so total allocation is bounded no matter how
-long the evaluation runs.
+*Admitting a new behavior allocates 3 times,* covering the entry and the
+growth of the two bounded indexes. Both are capped at 512 per collector, so
+the total is bounded however long the evaluation runs.
 
-*Comparison allocates a constant 7 times* whether it compares 64 entries or
-1,024. Bytes scale with the bounded entry count; the allocation *count* does
-not scale at all. The worst case — two full, disjoint snapshots producing the
-maximum 1,024 deltas — costs 57 µs and 347 KB, which is a bound rather than a
-measurement that could grow.
+*Comparison allocates 10 times* in both the representative and the full
+bounded case — 32 × 32 and 512 × 512 measure the same count. That is the
+invariant worth reading: the allocation *count* does not grow with the number
+of historical observations, and bytes scale only with the bounded number of
+behaviors and deltas. The worst case, two full disjoint snapshots producing
+the maximum 1,024 deltas, is ~104 µs and ~470 KB on the machine recorded
+above.
 
-Zero allocations was not a goal here and would have been the wrong one: a
-bounded map and a defensive snapshot copy legitimately allocate, and removing
-either would trade a real invariant for a number.
+Treat the `ns/op` figures as machine- and session-specific; the allocation
+counts are structurally stable and are what these rows are really for — see
+[reading the numbers](#reading-the-numbers).
+
+Zero allocations was not a goal here and would have been the wrong one: two
+bounded maps and a defensive snapshot copy legitimately allocate, and removing
+any of them would trade a real invariant for a number.
 
 ## Reading the numbers
 

@@ -316,7 +316,7 @@ The concepts below are named so that every task shares one vocabulary.
 | **Agent** | A stable logical agent identity | Not tied to a commit, model version, or deployment |
 | **Candidate** | One version or configuration of an Agent under evaluation | Its metadata — git SHA, artifact digest, model or tool-set hash — **must never become fingerprint dimensions** |
 | **Evaluation Run** | A bounded execution assessing one Candidate, grouping sessions, events, results, detections, policy outcomes and a scorecard | Correlation and evaluation metadata, **not behavioral identity** |
-| **Behavioral Profile** | The learning scope a candidate's behavior is evaluated against | Not yet designed — see below |
+| **Behavioral Profile** | The platform's reference to a generic core learning scope | The isolation mechanism is solved (task 051); allocation, reuse, ownership and lifecycle remain platform policy — see below |
 | **Scorecard** | An evaluation-level aggregation of evidence | **Distinct from `Trust.Score`**, which stays event-level and is not redefined or overloaded |
 | **Promotion** | A platform workflow moving a candidate between environments | The engine promotes nothing; it supplies evidence |
 
