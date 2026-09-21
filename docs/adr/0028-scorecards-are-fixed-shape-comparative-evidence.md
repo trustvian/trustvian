@@ -102,8 +102,11 @@ it reads as a measurement that found nothing rather than a measurement that
 never ran. A reviewer seeing the field absent asks why; seeing it zero, they
 move on.
 
-Task 056 inherits this as a constraint. If it wants those gates, it must first
-define where severity and sensitivity come from.
+Task 056 inherited this as a constraint and deliberately did not invent
+severity or sensitivity semantics. Its implemented gates use only factual
+integer evidence already present on the card. Gates that would need the
+missing semantics remain deferred until explicit evidence contracts exist —
+see [ADR 0029](0029-hard-gates-use-explicit-integer-evidence.md).
 
 ### Empty denominators are undefined
 

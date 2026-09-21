@@ -232,6 +232,11 @@ summaries.
 legitimately gate a promotion and whether an explicit policy-severity contract
 is needed first. This task makes evidence visible; it grants nothing.
 
+*Resolved by [task 056](056-deterministic-hard-gates.md):* it gates the added
+behavior, candidate block, and candidate critical-risk counts under their
+factual names, and invents no severity or sensitivity contract. The semantic
+gates above remain unsupported until explicit evidence exists.
+
 ## Zero / Empty Evidence
 
 A valid empty evaluation produces a valid scorecard: counts zero, every rate

@@ -40,6 +40,42 @@ actually depend on.
 
 ### Added
 
+- **Deterministic hard gates: a scorecard plus explicit limits becomes a
+  verdict.** `platform.EvaluateEvaluationGate` pairs an `EvaluationScorecard`
+  with a caller-owned `EvaluationGatePolicy` and returns a fixed-shape
+  `EvaluationGateResult` carrying five checks and a PASS/FAIL `GateVerdict`.
+
+  The five checks, all evaluated on every call: reference evidence present,
+  candidate evidence present, added behaviors within limit, candidate block
+  decisions within limit, candidate critical-risk observations within limit.
+  PASS requires all five, and there is no short-circuit — a FAIL reports
+  everything measured.
+
+  Every comparison is an integer. No mean, rate, delta, or presence ratio
+  takes part in a verdict: floating-point sums are not guaranteed
+  bit-identical under record reordering, and an average is precisely how
+  strength in one dimension offsets a condition in another.
+
+  Fail-closed throughout. An unbound policy or unbound scorecard is an error.
+  A *valid* evaluation that observed nothing is not — it fails the two
+  non-configurable sufficiency gates, which exist because a candidate that
+  ran zero records satisfies every maximum. `0` is a strict limit rather than
+  "unset", so a private marker separates the strictest policy from an absent
+  one.
+
+  Names stay factual: a block decision is the policy engine doing what it was
+  configured to do, not a violation; a critical-risk observation is a risk
+  classification, not an incident. Gates the evidence cannot support —
+  critical policy violations, sensitive-resource access, approval compliance,
+  per-rule or delegation compliance — remain absent rather than reported as
+  zero, and `docs/ROADMAP.md` now separates implemented evidence-backed gates
+  from those deferred until an explicit evidence contract exists.
+
+  A verdict performs nothing. PASS means only that the configured gates
+  passed; promotion is a later task. No change to `EvaluationScorecard`, no
+  core runtime change, no persistence, and no transport. See [ADR
+  0029](docs/adr/0029-hard-gates-use-explicit-integer-evidence.md).
+
 - **Evaluation scorecards: one fixed-shape comparison of two evaluations.**
   `platform.NewEvaluationScorecard` composes the evidence tasks 053 and 054
   already produce:
@@ -80,8 +116,11 @@ actually depend on.
   **Unsupported semantics are absent, not zero.** Critical policy violations,
   blocked or unapproved sensitive actions, per-rule compliance and delegation
   stability have no field, because no current evidence can express them.
-  Reporting `0` would be a false security claim. Task 056 must define where
-  severity and sensitivity come from before those gates can exist. See [ADR
+  Reporting `0` would be a false security claim. Task 056 deliberately did not
+  infer or define those semantics: gates depending on policy severity,
+  resource sensitivity, authorization semantics, or per-event correlation the
+  aggregate does not retain remain deferred until explicit evidence contracts
+  exist. See [ADR
   0028](docs/adr/0028-scorecards-are-fixed-shape-comparative-evidence.md).
 
 - **Behavioral diff: which behavioral shapes changed between two

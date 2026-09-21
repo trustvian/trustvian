@@ -11,9 +11,10 @@ Tasks for the `v1.0` milestone.
 | [053 — Evaluation Result Aggregation](053-evaluation-result-aggregation.md) | Specified and implemented |
 | [054 — Behavioral Diff](054-behavioral-diff.md) | Specified and implemented |
 | [055 — Evaluation Scorecards](055-evaluation-scorecards.md) | Specified and implemented |
-| 056–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
+| [056 — Deterministic Hard Gates](056-deterministic-hard-gates.md) | Specified and implemented |
+| 057–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
 
-The numbers 056–072 are the approved plan, not placeholders — the sequence,
+The numbers 057–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
 is the specification for any of them.
 

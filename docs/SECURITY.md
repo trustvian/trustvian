@@ -449,6 +449,63 @@ Other properties worth naming:
 - **Availability is not permission.** Candidate block and critical-risk
   counts are visible so a gate *could* use them; whether any of them may
   legitimately gate a promotion is task 056's decision, not this layer's.
+  Task 056 gates both, under their factual names, and invents no severity or
+  sensitivity contract to go with them.
+
+### Hard gates fail closed on missing evidence
+
+**Threat:** a candidate passes a promotion gate without having demonstrated
+anything — either because it produced no evidence at all, because the policy
+that judged it was never configured, or because a favourable average offset a
+condition the gate exists to catch.
+
+**Status: every path fails closed.**
+[Task 056](tasks/v1.0/056-deterministic-hard-gates.md) pairs a
+scorecard with explicit caller-owned limits and returns PASS or FAIL.
+
+- **A zero or unbound gate policy is rejected** with `ErrInvalidGatePolicy`.
+  This matters more than the usual zero-value guard, because `0` is a
+  legitimate limit: `MaxBlockDecisions = 0` accepts no block decision at all.
+  If zero also meant "unset", the strictest policy and an absent policy would
+  be the same value, and the failure direction would be toward permissive.
+- **All-zero limits are valid and strict** when they come from
+  `NewEvaluationGatePolicy`. A private marker separates the two cases, so
+  configuring the strictest possible policy is never mistaken for configuring
+  none.
+- **A zero or unbound scorecard is rejected** with `ErrInvalidGateEvidence`.
+  Task 055 added the card's marker for exactly this check; validity is never
+  inferred from public zero values.
+- **Valid empty evidence fails rather than appearing safe.** A candidate that
+  ran zero records has zero blocks, zero critical risks and zero added
+  behaviors, and satisfies every maximum. Two non-configurable sufficiency
+  gates require at least one record on each side. An empty evaluation is not
+  an input error — it is evidence that fails the gate, and those two outcomes
+  are kept distinct.
+- **Every gate is an integer comparison.** No mean, rate, delta, or presence
+  ratio takes part. Floating-point sums are not guaranteed bit-identical
+  under record reordering, so a float gate could flip on replay of the same
+  evidence.
+- **No value can compensate for a failed gate.** There is no weighting model
+  to disable: PASS requires all five checks, and the absence of a
+  compensating path is what makes "a high average cannot override a critical
+  violation" true by construction.
+- **Every check is evaluated on every call.** There is no short-circuit, so a
+  FAIL reports everything measured rather than everything up to the first
+  problem.
+- **FAIL is a normal verdict, not an exception.** An error means the
+  evaluation itself could not be trusted — unbound inputs, or structurally
+  impossible evidence such as a negative behavior count, which converts to
+  `math.MaxUint64` — a value that fails every ordinary limit but is accepted
+  by the permissive `MaxUint64` one a caller indifferent to a gate is told to
+  configure, turning corrupted evidence into a clean PASS.
+- **Unsupported severity and sensitivity gates are absent, not zero.** No
+  critical-policy-violation, sensitive-resource, or approval-compliance gate
+  exists, because no evidence supports one. Approximating any of them from an
+  available count would produce a gate whose name promises a guarantee its
+  evidence cannot support.
+- **A verdict performs nothing.** PASS means only that the configured task
+  056 gates passed. It is not an approval, a promotion, or a deployment, no
+  field is named for one, and nothing acts on the result.
 
 ### Platform identity cannot become behavioral identity
 
