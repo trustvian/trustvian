@@ -1038,6 +1038,35 @@ caller already holds.
 Zero allocations here, unlike task 054's comparison, because nothing is built
 — every field is a copied counter, identifier, or summary.
 
+### v1.0 task 056 (Deterministic Hard Gates)
+
+Applying five integer gates to a full-size scorecard.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `EvaluateEvaluationGatePass` | 97 | 0 | 0 |
+| `EvaluateEvaluationGateFail` | 97 | 0 | 0 |
+
+Five runs each, darwin/arm64, Apple M3 Pro, Go 1.27. As everywhere in this
+document, the `ns/op` figures are machine- and session-specific measurements
+rather than architectural constants; the `0`/`0` allocation columns are the
+structurally stable part — see [reading the numbers](#reading-the-numbers).
+
+**PASS and FAIL costing the same is the measurement.** Both evaluate a card
+built from 2,048 records and 512 behaviors a side, the bounded maximum of
+1,024 diff deltas. A gate evaluator that stopped at the first failure would
+make FAIL the cheaper case; these two rows are what "every check is evaluated
+on every call" looks like from the outside.
+
+Evaluation is O(1) in record count and behavioral cardinality alike, because
+it reads five scalar accessors off a card that already summarized everything.
+The input size above is therefore not a stress case — it is the same work any
+card requires.
+
+Zero allocations because nothing is built: the result is a fixed struct of
+counters, identifiers and booleans, and no deltas, records or evidence
+objects are retained.
+
 ## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —

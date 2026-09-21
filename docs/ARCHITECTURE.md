@@ -515,9 +515,12 @@ behavioral diff: `BehaviorCollector` → `BehaviorSnapshot` →
 disappeared, or persisted between two evaluations.
 
 Task 055 added `EvaluationScorecard`, composing those two outputs into one
-fixed-shape comparison of two evaluations.
+fixed-shape comparison of two evaluations. Task 056 added the first layer
+allowed to judge one: `EvaluateEvaluationGate` pairs a card with explicit
+caller-owned integer limits and returns a PASS/FAIL `EvaluationGateResult`.
 
-Still absent: persistence, transport, gates, promotion, and event history.
+Still absent: persistence, transport, promotion, and event history. A gate
+verdict has no side effect — it is evidence about acceptance, not an action.
 This section records the boundary all of it respects, decided in
 [ADR 0022](adr/0022-core-platform-boundary.md).
 
@@ -527,9 +530,12 @@ carries its own bound (512 distinct behaviors) rather than reopening the
 aggregate's shape. The scorecard then composes both rather than re-reading
 records, and copies only summaries — so its construction cost is independent
 of both record count and behavioral cardinality, and it carries no verdict.
+The gate is where acceptance finally enters, and it stays separate for the
+same reason: the limits are a caller's policy, not a property of evidence.
 See [ADR 0026](adr/0026-evaluation-aggregation-is-bounded-evidence.md),
-[ADR 0027](adr/0027-behavioral-diff-compares-bounded-snapshots.md) and
-[ADR 0028](adr/0028-scorecards-are-fixed-shape-comparative-evidence.md).
+[ADR 0027](adr/0027-behavioral-diff-compares-bounded-snapshots.md),
+[ADR 0028](adr/0028-scorecards-are-fixed-shape-comparative-evidence.md) and
+[ADR 0029](adr/0029-hard-gates-use-explicit-integer-evidence.md).
 
 `platform/` is a separate Go module at `trustvian-platform`. The path is
 deliberately not under `github.com/trustvian/trustvian`: Go's `internal/` rule

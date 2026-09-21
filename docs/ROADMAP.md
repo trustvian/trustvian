@@ -25,8 +25,9 @@ Status vocabulary:
 | **FUTURE** | A direction, not scoped, designed, committed, or dated |
 
 `v1.0` Track B is PLANNED: the architecture is decided and the work is broken
-into numbered tasks, but none of it exists. Everything under
-[Beyond v1.0](#beyond-v10) is FUTURE.
+into numbered tasks. Its evaluation foundation (tasks 051–056) is implemented;
+nothing built on top of it — persistence, API, realtime, UI, promotion —
+exists yet. Everything under [Beyond v1.0](#beyond-v10) is FUTURE.
 
 ## Product Direction
 
@@ -129,18 +130,19 @@ holding the evaluation domain and nothing else:
   `EvaluationRun`, `EnvironmentRef`, `BehavioralProfileRef`, with
   construction-time validation and an explicit run lifecycle (task 052);
   evaluation result aggregation over the core's public `DecisionRecord`
-  (task 053); and behavioral diff over bounded behavioral snapshots
-  (task 054);
-- not implemented: scorecards, deterministic gates, platform persistence, the
-  control-plane API and ingest, realtime, the CLI evaluation workflow, the
-  TUI, the WebUI, the full environment model, promotion, and the
-  event-history capability.
+  (task 053); behavioral diff over bounded behavioral snapshots (task 054);
+  fixed-shape comparative scorecards (task 055); and deterministic
+  evidence-backed hard gates over those scorecards (task 056);
+- not implemented: platform persistence, the control-plane API and ingest,
+  realtime, the CLI evaluation workflow, the TUI, the WebUI, the full
+  environment model, promotion, and the event-history capability.
 
-So the platform can now describe an evaluation, summarize what it observed,
-and compare bounded behavioral snapshots between two of them. Nothing yet
-scores, gates, persists, serves, or promotes. Everything else about the
-platform in this document remains approved direction rather than shipped
-behavior.
+So the platform can now describe an evaluation, aggregate bounded result
+evidence, compare bounded behavioral snapshots, build a comparative scorecard
+from the two, and apply deterministic evidence-backed hard gates to it.
+Nothing yet persists, serves, or promotes — a gate returns a verdict and has
+no side effect. Everything else about the platform in this document remains
+approved direction rather than shipped behavior.
 
 Also not implemented: multi-tenancy, access control, an MCP server surface, a
 machine-learning detection path, and prompt- or content-level analysis.
@@ -298,20 +300,25 @@ the public documentation.
 
 Implemented: generic learning-scope isolation in the core (051), the
 evaluation domain (052), evaluation result aggregation (053), behavioral
-diff (054), and evaluation scorecards (055).
+diff (054), evaluation scorecards (055), and deterministic hard gates (056).
 
-Still planned: deterministic gates (056), local persistence (057), the
-control-plane API and ingest (058), and everything from realtime (059)
-onward. The platform can describe an evaluation, aggregate bounded result
-evidence, compare bounded behavioral snapshots, and produce fixed-shape
-comparative scorecards. It cannot yet gate, persist, serve, or promote — so
-it is not usable end to end.
+Still planned: local persistence (057), the control-plane API and ingest
+(058), and everything from realtime (059) onward. The platform can describe an
+evaluation, aggregate bounded result evidence, compare bounded behavioral
+snapshots, produce fixed-shape comparative scorecards, and apply deterministic
+evidence-backed hard gates to them. It cannot yet persist, serve, or promote —
+so it is not usable end to end.
 
-The scorecard carries no verdict and no threshold, and several metrics named
-below are **not derivable from current evidence** — see
-[task 055](tasks/v1.0/055-evaluation-scorecards.md). Task 056 must define
-where policy severity and resource sensitivity come from before the
-corresponding gates can exist.
+The scorecard itself carries no verdict and no threshold; acceptance lives in
+[task 056](tasks/v1.0/056-deterministic-hard-gates.md), which pairs a card
+with caller-owned limits and returns PASS or FAIL. A PASS means only that the
+configured gates passed — it is not a promotion, and nothing acts on it.
+
+Several metrics named below are **not derivable from current evidence** — see
+[task 055](tasks/v1.0/055-evaluation-scorecards.md). Task 056 did not invent
+those contracts: policy severity and resource sensitivity remain unsupported
+until explicit evidence exists, and the gates depending on them are deferred
+rather than approximated.
 
 The concepts below are named so that every task shares one vocabulary.
 
@@ -363,21 +370,72 @@ open.
 
 ### Hard gates, not averages
 
-Promotion must never rest on an aggregate score alone. A scorecard may
-aggregate behavioral stability, policy compliance, sensitive-resource access,
-delegation stability, approval compliance, new behavioral shapes, and drift —
-but deterministic gates decide:
+Promotion must never rest on an aggregate score alone. A high average must not
+override a critical violation. This is the same fail-closed discipline
+`policy.Evaluate` already applies at event level, raised to the evaluation
+level — and [task 056](tasks/v1.0/056-deterministic-hard-gates.md) implements
+it with integer counts, because a float is not guaranteed bit-identical under
+record reordering and an average is precisely the mechanism by which one
+dimension offsets another.
+
+**Implemented in task 056.** Five checks, all evaluated on every call, with
+PASS requiring all five:
 
 ```text
-critical_policy_violations   == 0
-blocked_sensitive_actions    == 0
-unapproved_sensitive_actions == 0
-new_behavior_count           <= threshold
+reference_record_count         >= 1
+candidate_record_count         >= 1
+new_behavior_count             <= configured maximum
+candidate_block_decisions      <= configured maximum
+candidate_critical_risk_count  <= configured maximum
 ```
 
-A high average must not override a critical violation. This is the same
-fail-closed discipline `policy.Evaluate` already applies at event level,
-raised to the evaluation level.
+The first two are evidence-sufficiency gates and are not configurable. A
+candidate that ran zero records satisfies every maximum, so without them the
+strictest policy would pass an evaluation that never happened.
+
+The other three are caller-owned limits over factual integers. Their names
+stay factual on purpose: a **block decision** is the policy engine doing what
+it was configured to do, not a violation; a **critical-risk observation** is a
+risk classification, not an incident; an **added behavior** is a count, and
+the platform makes no claim that new behavior is bad.
+
+**Deferred until explicit evidence exists.** An earlier version of this
+section listed the first three of these as immediately implementable:
+
+```text
+critical_policy_violations
+blocked_sensitive_actions
+unapproved_sensitive_actions
+per-rule compliance
+resource sensitivity gates
+approval-compliance gates
+delegation-compliance gates
+```
+
+[Task 055](tasks/v1.0/055-evaluation-scorecards.md) established that none of
+them is derivable from evidence this chain retains. `PolicyRule` carries no
+severity and is not retained; `ContextRisk` has no repository-defined
+sensitivity threshold; `ApprovalStatus` is producer-supplied evidence rather
+than proof of authorization; and the aggregate keeps no per-event rule,
+resource, or delegation correlation.
+
+They could each be approximated from a count that *is* available — but
+
+```text
+critical risk count   != critical policy violation count
+block decision count  != blocked sensitive action count
+denied approval count != unapproved sensitive action count
+```
+
+and a gate whose name promises a guarantee its evidence cannot support is
+worse than no gate, because it reads as a check that ran and found nothing.
+
+**The intent is not withdrawn.** These gates remain planned. Each needs an
+explicit evidence contract first — policy severity metadata, an approved
+sensitivity mapping, an authorization signal distinct from reported approval
+status — and each will then add new named gates rather than reinterpreting
+the counts above. See
+[ADR 0029](adr/0029-hard-gates-use-explicit-integer-evidence.md).
 
 ### Deployment stages
 

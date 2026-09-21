@@ -932,6 +932,50 @@ that observed nothing are unmeasured, not identical.
 
 See [ADR 0028](adr/0028-scorecards-are-fixed-shape-comparative-evidence.md).
 
+### Deterministic hard gates
+
+`EvaluateEvaluationGate` (task 056) is the first platform layer allowed to
+judge a comparison. It pairs a scorecard with explicit caller-owned limits:
+
+```text
+EvaluationScorecard ──┐
+                      ├──▶ EvaluateEvaluationGate ──▶ EvaluationGateResult
+EvaluationGatePolicy ─┘                                   PASS | FAIL
+```
+
+Five checks, all evaluated on every call, in a stable order: reference
+evidence present, candidate evidence present, added behaviors within limit,
+candidate block decisions within limit, candidate critical-risk observations
+within limit. PASS requires all five.
+
+The separation is the point. A scorecard says what happened; a policy says
+what is acceptable. The same card yields PASS or FAIL depending only on the
+limits, and the limits belong to the caller because no fact in the evidence
+can settle whether three added behaviors are routine or disqualifying.
+
+Four properties define it:
+
+- **Integer-only.** No mean, rate, delta, or presence ratio takes part in a
+  verdict. Floating-point sums are not guaranteed bit-identical under record
+  reordering, and an average is how one dimension offsets another.
+- **Fail-closed.** An unbound policy or unbound card is an error. A *valid*
+  evaluation that observed nothing is not an error — it fails the two
+  sufficiency gates, which exist because a candidate that ran zero records
+  satisfies every maximum.
+- **Strict zero.** `MaxBlockDecisions = 0` accepts no block decision, so zero
+  never means "unset"; a private marker separates the strictest policy from
+  an absent one.
+- **A verdict, not an action.** PASS means only that the configured gates
+  passed. Promotion is task 066's, and the result performs nothing.
+
+Names stay factual: a block decision is not a policy violation, a
+critical-risk observation is not an incident, and an added behavior is not a
+defect. Gates the evidence cannot support — critical policy violations,
+sensitive-resource access, approval compliance — remain **absent rather than
+reported as zero**.
+
+See [ADR 0029](adr/0029-hard-gates-use-explicit-integer-evidence.md).
+
 See [ADR 0025](adr/0025-platform-domain-values-with-caller-owned-identity.md)
 and [task 052](tasks/v1.0/052-evaluation-domain.md).
 
