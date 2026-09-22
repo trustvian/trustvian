@@ -541,7 +541,7 @@ core's build graph contains none of it. See
 Task 058 added the first service layer and a transport over it:
 
 ```text
-producer / CLI (task 060) · future TUI · WebUI
+producer / CLI (060) · TUI (061) · future WebUI
               │
               ▼
         HTTP / JSON  ← adapter only, in platform/httpapi
@@ -596,7 +596,7 @@ The control plane holds a publisher and the transport holds a subscriber, so
 neither gains the other's authority — a transport able to publish could
 fabricate state.
 
-Still absent: the TUI, the WebUI, promotion, and event history. The API binds no listener — composing one is a later task, and it
+Still absent: the WebUI, promotion, and event history. The API binds no listener — composing one is a later task, and it
 must default to loopback. A gate verdict still has no side effect: it is
 evidence about acceptance, not an action. This section records the boundary
 all of it respects, decided in
@@ -707,6 +707,8 @@ differently, and the difference is deliberate rather than transitional:
 analyze / baseline / version   ──▶  root Engine, in process, no network
 project / agent / candidate    ──▶  HTTP /v1  ──▶  control plane
 eval
+tui                            ──▶  HTTP /v1 authoritative reads
+                                 +  SSE /v1/realtime notifications
 ```
 
 The engine commands are released offline tools: they run the pipeline against a
@@ -717,6 +719,23 @@ existing invocation, so they were left exactly as they were.
 The control-plane commands are a client of the service layer. They compute no
 diff, no scorecard and no gate — the CLI reads `gate.verdict` from the response
 to choose an exit code and reproduces none of the logic behind it.
+
+`tui` ([task 061](tasks/v1.0/061-terminal-dashboard.md)) is the third shape: a
+long-lived client that holds one SSE subscription for notification and reads
+durable state over HTTP for truth. It is read-only — three GET endpoints — and
+the same edge applies:
+
+```text
+cmd/trustvian ──HTTP + SSE──▶ platform/httpapi ──▶ ControlPlane
+              ✗ Go import
+```
+
+It brings the repository's fourth third-party dependency, a terminal UI
+framework, confined to `cmd/trustvian`. The engine's package graphs stay free
+of it, which `go list -deps` and a test both check —
+[ADR 0034](adr/0034-tui-is-a-bounded-realtime-http-client.md) explains why a
+shipped user interface carrying a UI toolkit is a different claim from the
+behavioral engine depending on one.
 
 ### Learning isolation, the core change the platform required
 

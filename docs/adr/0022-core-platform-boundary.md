@@ -188,8 +188,10 @@ raised one level.
   root-module source — and the name-based tripwire in
   `scripts/check-platform-boundary.sh` flagged them.
 
-  That scan was narrowed to skip exactly those seven adapter files, and
-  nothing else. The invariant it proxies for is that *the engine* must not
+  That scan was narrowed to skip exactly those adapter files, and nothing
+  else. [Task 061](../tasks/v1.0/061-terminal-dashboard.md) added one more —
+  the TUI's SSE wire types, which name the same contract nouns for the same
+  reason. The invariant it proxies for is that *the engine* must not
   grow platform concepts; an HTTP client naming the contract's own fields
   is not that. The engine-facing CLI files (`analyze.go`, `baseline.go`,
   `policy.go`, …) are still scanned, and a platform identity declared in

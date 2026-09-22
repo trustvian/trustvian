@@ -832,6 +832,69 @@ else; see [ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md).
   year and then diverges on an untested edge, in the direction of a false
   PASS.
 
+### The terminal dashboard renders untrusted text safely, and holds nothing
+
+**Threat:** a dashboard is the first client that holds a long-lived connection
+and the first that paints server-supplied text onto a terminal. So it can
+accumulate state nothing bounds, become a second source of truth for a run's
+history, or — the one with the sharpest edge — let a server-controlled string
+execute terminal control sequences on a developer's machine.
+
+**Status: bounded, read-only, and sanitized.**
+[Task 061](tasks/v1.0/061-terminal-dashboard.md) consumes `/v1` HTTP and SSE
+and nothing else; see
+[ADR 0034](adr/0034-tui-is-a-bounded-realtime-http-client.md).
+
+- **Server-originated text cannot emit terminal control sequences.**
+  Identifiers, operation and target names, failure reasons and environment
+  refs all come from outside the process and all reach the screen. A terminal
+  is an execution surface: ESC moves the cursor, clears the display, retitles
+  the window, emits clickable OSC hyperlinks and changes colors. Every such
+  string passes through one sanitizer that replaces ESC, BEL, C0, DEL and C1
+  before rendering. The framework emits control sequences; data does not. A
+  regression drives `"\x1b[2J\x1b]0;owned\x07"` through run metadata,
+  behavior descriptors and failure reasons and asserts no server byte survives
+  into the view.
+- **SSE input is bounded** at 64 KiB per line and per frame, checked while
+  reading rather than after. A server sending an endless line costs a fixed
+  amount of memory and fails, instead of growing a buffer until something
+  dies; a test drives exactly that case against a reader that never ends.
+- **The resync buffer is bounded** at 64 frames, matching the server's
+  per-subscriber queue. Overflow **abandons the stream and resynchronizes**
+  rather than dropping a frame — a client that discarded a notification could
+  not describe what it missed.
+- **The observation window is bounded** at 100 rows and evicts the oldest.
+  That is deliberate truncation of a *display*, and the distinction from the
+  transport bound is load-bearing: one would be data loss, the other is a
+  viewport.
+- **No raw event payload.** The realtime projection excludes attributes, tool
+  arguments, prompts, completions, contributors and policy reason, and the TUI
+  has no endpoint that would return them. A test sends an unknown observation
+  field carrying a marker string and asserts it is neither rendered nor
+  retained.
+- **No history and no replay.** Nothing is written to disk. Rows are cleared
+  on every reconnect, so two disconnected streams are never joined into an
+  apparent sequence. `Last-Event-ID` is never sent and no `id:` is retained —
+  the bus keeps no history, so a cursor would ask for a replay that cannot
+  happen.
+- **Reconnect requires an authoritative resync**, and subscription always
+  precedes the state fetch. The reverse order loses anything committed between
+  the two.
+- **No polling.** No ticker over `/progress`, no watcher. A quiet healthy
+  stream issues exactly one run read and one progress read, which a test
+  asserts; the only extra read is one final resync when a terminal lifecycle
+  event arrives.
+- **Read-only.** Three GETs — the stream, the run, its progress. No lifecycle
+  POST, no ingest, no compare, and no keybinding that mutates. An architecture
+  test enforces the endpoint list structurally.
+- **Credentials in `--api-url` are rejected** and never echoed; no auth header
+  is sent and none is claimed. Task 070 owns authentication.
+- **No listener is bound**, and the streaming client refuses redirects: a
+  subscription addressed to one host must not silently become one to another.
+- **Quitting cancels everything.** One context owns the connection, the reader
+  goroutine and the reconnect timer; a test asserts the server observes the
+  client going away.
+
 ### Platform identity cannot become behavioral identity
 
 **Threat:** an evaluation concept leaks into the engine — a candidate becomes

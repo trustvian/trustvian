@@ -79,6 +79,8 @@ func runPlatform(s streams, args []string, timeout time.Duration) (int, bool) {
 		return runCandidate(s, args[1:], timeout), true
 	case "eval":
 		return runEval(s, args[1:], timeout), true
+	case "tui":
+		return runTUI(s, args[1:], timeout), true
 	}
 	return 0, false
 }
@@ -103,10 +105,15 @@ Control-plane commands (require --api-url; see docs/platform-cli.md):
       Drive a local control plane over its /v1 HTTP API. Each supports
       --json, which writes the API's own response to stdout.
 
+  trustvian tui        --api-url <url> --run-id <id>
+      Watch one evaluation run live in the terminal. Read-only; requires
+      an already-running control plane.
+
 Exit codes differ by command family. analyze, baseline and version keep
-0 success / 1 failure / 2 usage. The control-plane commands use 0 success
-/ 2 usage / 3 API or network failure, and 'eval compare' additionally uses
-1 for a gate FAIL — only there. See docs/compatibility.md.
+0 success / 1 failure / 2 usage. The control-plane commands and tui use
+0 success / 2 usage / 3 API or network failure, and 'eval compare'
+additionally uses 1 for a gate FAIL — only there. See
+docs/compatibility.md.
 
 --config <path> loads a schema-v1 YAML policy config (see config.LoadFile)
 and uses it instead of the CLI's built-in default policy. Without it,
