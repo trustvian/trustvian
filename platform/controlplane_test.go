@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -1522,4 +1523,590 @@ func nonEmptyIngestState(t *testing.T, store *platform.SQLiteStore) platform.Eva
 		t.Fatal("precondition: the fixture state should report records")
 	}
 	return state
+}
+
+// ---------------------------------------------------------------------
+// Realtime publication
+// ---------------------------------------------------------------------
+
+// recordingPublisher captures what the control plane announced.
+type recordingPublisher struct {
+	mu     sync.Mutex
+	events []platform.RealtimeEvent
+}
+
+func (p *recordingPublisher) Publish(e platform.RealtimeEvent) platform.RealtimePublishResult {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.events = append(p.events, e)
+	return platform.RealtimePublishResult{Delivered: 1}
+}
+
+func (p *recordingPublisher) captured() []platform.RealtimeEvent {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.events)
+}
+
+func (p *recordingPublisher) kinds() []platform.RealtimeEventKind {
+	var kinds []platform.RealtimeEventKind
+	for _, e := range p.captured() {
+		kinds = append(kinds, e.Kind)
+	}
+	return kinds
+}
+
+// failingPublisher stands in for a broken or closed bus.
+type failingPublisher struct{ calls int }
+
+func (p *failingPublisher) Publish(platform.RealtimeEvent) platform.RealtimePublishResult {
+	p.calls++
+	return platform.RealtimePublishResult{Closed: true}
+}
+
+// realtimeFixture is a control plane with a recording publisher attached.
+func newRealtimeFixture(t *testing.T) (*controlPlaneFixture, *recordingPublisher) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "platform.db")
+	store, err := platform.OpenSQLiteStore(t.Context(), path)
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	publisher := &recordingPublisher{}
+	plane, err := platform.NewControlPlane(store, store, store,
+		platform.WithRealtimePublisher(publisher))
+	if err != nil {
+		t.Fatalf("NewControlPlane() error = %v", err)
+	}
+	return &controlPlaneFixture{plane: plane, store: store, path: path}, publisher
+}
+
+// Realtime is optional infrastructure: task 058 callers are unchanged.
+func TestControlPlaneWorksWithoutAPublisher(t *testing.T) {
+	f := newFixture(t)
+	f.seedRunning(t, "run-1")
+	if _, err := f.ingest(t, "run-1", 1, ingestRecord("evt-0", "fp-0", "read")); err != nil {
+		t.Fatalf("ingest without a publisher error = %v", err)
+	}
+}
+
+func TestLifecycleMutationsArePublished(t *testing.T) {
+	f, publisher := newRealtimeFixture(t)
+	ctx := t.Context()
+	f.seedPending(t, "run-1")
+
+	if got := publisher.kinds(); len(got) != 1 || got[0] != platform.RealtimeEvaluationCreated {
+		t.Fatalf("after create, kinds = %v, want one evaluation_created", got)
+	}
+
+	mustStart(t, f, "run-1")
+	if _, err := f.plane.CompleteEvaluationRun(ctx, "run-1", aggEpoch.Add(time.Hour)); err != nil {
+		t.Fatalf("CompleteEvaluationRun() error = %v", err)
+	}
+
+	want := []platform.RealtimeEventKind{
+		platform.RealtimeEvaluationCreated,
+		platform.RealtimeEvaluationStarted,
+		platform.RealtimeEvaluationCompleted,
+	}
+	if got := publisher.kinds(); !slices.Equal(got, want) {
+		t.Errorf("kinds = %v, want %v", got, want)
+	}
+
+	// Lifecycle events carry factual state and the full hierarchy.
+	last := publisher.captured()[2]
+	if last.Evaluation.Status != platform.RunCompleted {
+		t.Errorf("Status = %q, want completed", last.Evaluation.Status)
+	}
+	if last.Evaluation.FinishedAt.IsZero() {
+		t.Error("FinishedAt is zero on a completion event")
+	}
+	if last.Scope.ProjectID != "proj-1" || last.Scope.AgentID != "agent-1" ||
+		last.Scope.CandidateID != "cand-1" || last.Scope.RunID != "run-1" {
+		t.Errorf("scope = %+v; the hierarchy was not resolved", last.Scope)
+	}
+}
+
+func TestFailAndCancelArePublished(t *testing.T) {
+	tests := []struct {
+		name  string
+		drive func(t *testing.T, f *controlPlaneFixture)
+		want  platform.RealtimeEventKind
+	}{
+		{
+			name: "failed",
+			drive: func(t *testing.T, f *controlPlaneFixture) {
+				mustStart(t, f, "run-1")
+				if _, err := f.plane.FailEvaluationRun(
+					t.Context(), "run-1", aggEpoch.Add(time.Hour), "engine unreachable"); err != nil {
+					t.Fatalf("FailEvaluationRun() error = %v", err)
+				}
+			},
+			want: platform.RealtimeEvaluationFailed,
+		},
+		{
+			name: "cancelled",
+			drive: func(t *testing.T, f *controlPlaneFixture) {
+				if _, err := f.plane.CancelEvaluationRun(
+					t.Context(), "run-1", aggEpoch.Add(time.Minute)); err != nil {
+					t.Fatalf("CancelEvaluationRun() error = %v", err)
+				}
+			},
+			want: platform.RealtimeEvaluationCancelled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f, publisher := newRealtimeFixture(t)
+			f.seedPending(t, "run-1")
+			tt.drive(t, f)
+
+			kinds := publisher.kinds()
+			if len(kinds) == 0 || kinds[len(kinds)-1] != tt.want {
+				t.Fatalf("kinds = %v, want it to end with %q", kinds, tt.want)
+			}
+			if tt.want == platform.RealtimeEvaluationFailed {
+				last := publisher.captured()[len(kinds)-1]
+				if last.Evaluation.FailureReason != "engine unreachable" {
+					t.Errorf("FailureReason = %q", last.Evaluation.FailureReason)
+				}
+			}
+		})
+	}
+}
+
+// Reads have no side effect. Publishing a comparison would give a read a
+// side effect and make a caller-limit-dependent derived value look durable.
+func TestReadsAndComparisonPublishNothing(t *testing.T) {
+	f, publisher := newRealtimeFixture(t)
+	ctx := t.Context()
+	f.completeEvaluation(t, "run-ref", "cand-ref", []string{"read"})
+	f.completeEvaluation(t, "run-can", "cand-can", []string{"read", "write"})
+
+	before := len(publisher.captured())
+
+	if _, err := f.plane.Project(ctx, "proj-1"); err != nil {
+		t.Fatalf("Project() error = %v", err)
+	}
+	if _, err := f.plane.EvaluationProgress(ctx, "run-ref"); err != nil {
+		t.Fatalf("EvaluationProgress() error = %v", err)
+	}
+	if _, err := f.plane.EvaluationIngestState(ctx, "run-ref"); err != nil {
+		t.Fatalf("EvaluationIngestState() error = %v", err)
+	}
+	if _, err := f.plane.CompareEvaluations(ctx, "run-ref", "run-can", permissiveLimits()); err != nil {
+		t.Fatalf("CompareEvaluations() error = %v", err)
+	}
+
+	if after := len(publisher.captured()); after != before {
+		t.Errorf("reads published %d events, want 0", after-before)
+	}
+}
+
+// Publication happens after the commit, never before: a failed mutation
+// announces nothing a subscriber could believe.
+func TestFailedMutationsPublishNothing(t *testing.T) {
+	f, publisher := newRealtimeFixture(t)
+	ctx := t.Context()
+	f.seedPending(t, "run-1")
+	before := len(publisher.captured())
+
+	// An illegal transition.
+	if _, err := f.plane.CompleteEvaluationRun(ctx, "run-1", aggEpoch.Add(time.Minute)); err == nil {
+		t.Fatal("completing a pending run succeeded")
+	}
+	// Ingest into a non-running run.
+	if _, err := f.ingest(t, "run-1", 1, ingestRecord("evt-0", "fp-0", "read")); err == nil {
+		t.Fatal("ingest into a pending run succeeded")
+	}
+	// A duplicate create.
+	run, _ := platform.NewEvaluationRun("run-1", "cand-1", fixtureEnvironment, fixtureProfile, aggEpoch)
+	if err := f.plane.CreateEvaluationRun(ctx, run); err == nil {
+		t.Fatal("duplicate create succeeded")
+	}
+
+	if after := len(publisher.captured()); after != before {
+		t.Errorf("failed operations published %d events, want 0", after-before)
+	}
+}
+
+// The critical direction: a broken bus must never turn a committed write into
+// an apparent failure, because a client would then retry a write that landed.
+func TestRealtimeFailureDoesNotFailTheOperation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "platform.db")
+	store, err := platform.OpenSQLiteStore(t.Context(), path)
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	broken := &failingPublisher{}
+	plane, err := platform.NewControlPlane(store, store, store,
+		platform.WithRealtimePublisher(broken))
+	if err != nil {
+		t.Fatalf("NewControlPlane() error = %v", err)
+	}
+	f := &controlPlaneFixture{plane: plane, store: store, path: path}
+
+	f.seedRunning(t, "run-1")
+	result, err := f.ingest(t, "run-1", 1, ingestRecord("evt-0", "fp-0", "read"))
+	if err != nil {
+		t.Fatalf("ingest error = %v; a delivery problem failed a committed write", err)
+	}
+	if result.Disposition != platform.IngestApplied || result.RecordCount != 1 {
+		t.Errorf("result = %+v, want applied with one record", result)
+	}
+	if broken.calls == 0 {
+		t.Error("the publisher was never called, so the test proves nothing")
+	}
+
+	// And the write really is durable.
+	aggregate, _, err := store.EvaluationEvidence(t.Context(), "run-1")
+	if err != nil {
+		t.Fatalf("EvaluationEvidence() error = %v", err)
+	}
+	if aggregate.RecordCount() != 1 {
+		t.Errorf("RecordCount() = %d, want 1", aggregate.RecordCount())
+	}
+}
+
+// An actually closed bus behaves the same way.
+func TestClosedBusDoesNotFailTheOperation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "platform.db")
+	store, err := platform.OpenSQLiteStore(t.Context(), path)
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	bus := platform.NewInMemoryRealtimeBus()
+	if err := bus.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	plane, err := platform.NewControlPlane(store, store, store,
+		platform.WithRealtimePublisher(bus))
+	if err != nil {
+		t.Fatalf("NewControlPlane() error = %v", err)
+	}
+	f := &controlPlaneFixture{plane: plane, store: store, path: path}
+
+	f.seedRunning(t, "run-1")
+	if _, err := f.ingest(t, "run-1", 1, ingestRecord("evt-0", "fp-0", "read")); err != nil {
+		t.Fatalf("ingest against a closed bus error = %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Observations
+// ---------------------------------------------------------------------
+
+func TestAppliedIngestPublishesExactlyOneObservation(t *testing.T) {
+	f, publisher := newRealtimeFixture(t)
+	f.seedRunning(t, "run-1")
+	before := len(publisher.captured())
+
+	record := ingestRecord("evt-0", "fp-0", "read")
+	if _, err := f.ingest(t, "run-1", 1, record); err != nil {
+		t.Fatalf("ingest error = %v", err)
+	}
+
+	captured := publisher.captured()[before:]
+	if len(captured) != 1 {
+		t.Fatalf("published %d events, want 1", len(captured))
+	}
+	observed := captured[0]
+	if observed.Kind != platform.RealtimeObservationRecorded {
+		t.Errorf("Kind = %q, want observation", observed.Kind)
+	}
+
+	o := observed.Observation
+	if o.Sequence != 1 || o.RecordCount != 1 || !o.BehaviorComplete {
+		t.Errorf("observation counts = %+v", o)
+	}
+	if o.FingerprintID != record.FingerprintID || o.Behavior != record.Behavior {
+		t.Error("the observation does not describe the ingested record")
+	}
+	if o.Decision != record.Decision || o.RiskLevel != record.RiskLevel ||
+		o.TrustScore != record.TrustScore {
+		t.Error("decision fields do not match the record")
+	}
+	if !o.NewBehavior {
+		t.Error("NewBehavior = false for the first sighting of a fingerprint")
+	}
+}
+
+// A retry that produced no second durable record must produce no second live
+// observation.
+func TestReplayedIngestPublishesNothing(t *testing.T) {
+	f, publisher := newRealtimeFixture(t)
+	f.seedRunning(t, "run-1")
+
+	record := ingestRecord("evt-0", "fp-0", "read")
+	if _, err := f.ingest(t, "run-1", 1, record); err != nil {
+		t.Fatalf("first ingest error = %v", err)
+	}
+	afterFirst := len(publisher.captured())
+
+	result, err := f.ingest(t, "run-1", 1, record)
+	if err != nil {
+		t.Fatalf("retry error = %v", err)
+	}
+	if result.Disposition != platform.IngestReplayed {
+		t.Fatalf("Disposition = %q, want replayed", result.Disposition)
+	}
+
+	if after := len(publisher.captured()); after != afterFirst {
+		t.Errorf("a replayed ingest published %d events, want 0", after-afterFirst)
+	}
+}
+
+func TestNewBehaviorTracksFirstSightings(t *testing.T) {
+	f, publisher := newRealtimeFixture(t)
+	f.seedRunning(t, "run-1")
+	before := len(publisher.captured())
+
+	// Same fingerprint twice, then a different one.
+	for i, record := range []trustvian.DecisionRecord{
+		ingestRecord("evt-0", "fp-a", "read"),
+		ingestRecord("evt-1", "fp-a", "read"),
+		ingestRecord("evt-2", "fp-b", "write"),
+	} {
+		if _, err := f.ingest(t, "run-1", uint64(i+1), record); err != nil {
+			t.Fatalf("ingest %d error = %v", i+1, err)
+		}
+	}
+
+	captured := publisher.captured()[before:]
+	if len(captured) != 3 {
+		t.Fatalf("published %d observations, want 3", len(captured))
+	}
+	for i, want := range []bool{true, false, true} {
+		if got := captured[i].Observation.NewBehavior; got != want {
+			t.Errorf("observation %d NewBehavior = %v, want %v", i+1, got, want)
+		}
+	}
+}
+
+// At saturation a new behavior is still a real live observation, even though
+// the bounded snapshot cannot retain it. Nothing is evicted, and completeness
+// is reported honestly.
+func TestSaturationPublishesNewBehaviorWithIncompleteEvidence(t *testing.T) {
+	f, publisher := newRealtimeFixture(t)
+	f.seedRunning(t, "run-1")
+
+	const capacity = 512
+	for i := range capacity {
+		if _, err := f.ingest(t, "run-1", uint64(i+1),
+			ingestRecord(fmt.Sprintf("evt-%04d", i), fmt.Sprintf("fp-%04d", i),
+				fmt.Sprintf("op-%04d", i))); err != nil {
+			t.Fatalf("ingest %d error = %v", i+1, err)
+		}
+	}
+	before := len(publisher.captured())
+
+	// The 513th distinct behavior saturates the collector.
+	if _, err := f.ingest(t, "run-1", capacity+1,
+		ingestRecord("evt-overflow", "fp-overflow", "op-overflow")); err != nil {
+		t.Fatalf("saturating ingest error = %v", err)
+	}
+
+	captured := publisher.captured()[before:]
+	if len(captured) != 1 {
+		t.Fatalf("published %d events, want 1", len(captured))
+	}
+	o := captured[0].Observation
+	if !o.NewBehavior {
+		t.Error("NewBehavior = false for an unseen behavior at saturation")
+	}
+	if o.BehaviorComplete {
+		t.Error("BehaviorComplete = true after saturation")
+	}
+	if o.RecordCount != capacity+1 {
+		t.Errorf("RecordCount = %d, want %d", o.RecordCount, capacity+1)
+	}
+
+	// Durable semantics are unchanged by any of this.
+	aggregate, snapshot, err := f.store.EvaluationEvidence(t.Context(), "run-1")
+	if err != nil {
+		t.Fatalf("EvaluationEvidence() error = %v", err)
+	}
+	if aggregate.RecordCount() != capacity+1 || snapshot.ObservationCount() != capacity ||
+		snapshot.Complete() {
+		t.Errorf("durable state = %d records, %d observations, complete=%v",
+			aggregate.RecordCount(), snapshot.ObservationCount(), snapshot.Complete())
+	}
+}
+
+// ---------------------------------------------------------------------
+// Scope filtering end to end
+// ---------------------------------------------------------------------
+
+// Two hierarchies through a real bus: each subscription receives exactly its
+// own events, with no cross-delivery and no database read on the subscriber
+// side.
+func TestRealtimeScopeFilteringAcrossHierarchies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "platform.db")
+	store, err := platform.OpenSQLiteStore(t.Context(), path)
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	bus := platform.NewInMemoryRealtimeBus()
+	t.Cleanup(func() { bus.Close() })
+	plane, err := platform.NewControlPlane(store, store, store,
+		platform.WithRealtimePublisher(bus))
+	if err != nil {
+		t.Fatalf("NewControlPlane() error = %v", err)
+	}
+	ctx := t.Context()
+
+	// Two independent hierarchies.
+	for _, h := range []struct{ project, agent, candidate, run string }{
+		{"proj-a", "agent-a", "cand-a", "run-a"},
+		{"proj-b", "agent-b", "cand-b", "run-b"},
+	} {
+		project, _ := platform.NewProject(platform.ProjectID(h.project), "P")
+		agent, _ := platform.NewAgent(platform.AgentID(h.agent), platform.ProjectID(h.project), "A")
+		candidate, _ := platform.NewCandidate(
+			platform.CandidateID(h.candidate), platform.AgentID(h.agent), platform.CandidateMetadata{})
+		run, _ := platform.NewEvaluationRun(
+			platform.EvaluationRunID(h.run), platform.CandidateID(h.candidate),
+			fixtureEnvironment, fixtureProfile, aggEpoch)
+		for _, err := range []error{
+			plane.CreateProject(ctx, project),
+			plane.CreateAgent(ctx, agent),
+			plane.CreateCandidate(ctx, candidate),
+			plane.CreateEvaluationRun(ctx, run),
+		} {
+			if err != nil {
+				t.Fatalf("seed %s error = %v", h.run, err)
+			}
+		}
+	}
+
+	byProjectA, err := bus.Subscribe(ctx, platform.RealtimeFilter{ProjectID: "proj-a"})
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	byAgentB, err := bus.Subscribe(ctx, platform.RealtimeFilter{AgentID: "agent-b"})
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	byRunA, err := bus.Subscribe(ctx, platform.RealtimeFilter{RunID: "run-a"})
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	// Start both runs, then ingest one record into each.
+	for _, runID := range []platform.EvaluationRunID{"run-a", "run-b"} {
+		if _, err := plane.StartEvaluationRun(ctx, runID, aggEpoch.Add(time.Minute)); err != nil {
+			t.Fatalf("StartEvaluationRun(%s) error = %v", runID, err)
+		}
+	}
+	for _, runID := range []platform.EvaluationRunID{"run-a", "run-b"} {
+		if _, err := plane.IngestDecisionRecord(ctx, platform.IngestRequest{
+			RunID: runID, Sequence: 1, BehavioralProfile: fixtureProfile,
+			Record: ingestRecord(string(runID)+"-evt", "fp-"+string(runID), "op"),
+		}); err != nil {
+			t.Fatalf("ingest %s error = %v", runID, err)
+		}
+	}
+
+	// Each subscription sees exactly one start and one observation, for its
+	// own side only.
+	for _, c := range []struct {
+		name         string
+		subscription platform.RealtimeSubscription
+		wantRun      platform.EvaluationRunID
+	}{
+		{"project A", byProjectA, "run-a"},
+		{"agent B", byAgentB, "run-b"},
+		{"run A", byRunA, "run-a"},
+	} {
+		wantKinds := []platform.RealtimeEventKind{
+			platform.RealtimeEvaluationStarted, platform.RealtimeObservationRecorded,
+		}
+		for _, wantKind := range wantKinds {
+			received := <-c.subscription.Events()
+			if received.Kind != wantKind {
+				t.Errorf("%s: kind = %q, want %q", c.name, received.Kind, wantKind)
+			}
+			if received.Scope.RunID != c.wantRun {
+				t.Errorf("%s: received run %q, want %q; events crossed scopes",
+					c.name, received.Scope.RunID, c.wantRun)
+			}
+		}
+		// Nothing more is queued for this subscription.
+		select {
+		case extra := <-c.subscription.Events():
+			t.Errorf("%s: unexpected extra event %q for run %q",
+				c.name, extra.Kind, extra.Scope.RunID)
+		default:
+		}
+	}
+}
+
+// Concurrent identical retries publish exactly one observation.
+//
+// Distinct from the preflight replay test above, and the distinction matters:
+// preflight returns before the record is applied at all, so it never exercises
+// the commit path's own replay detection. A concurrent retry does — several
+// requests pass preflight, one commits, and the rest learn from the
+// transaction that their record was already durable. Every one of those is
+// still a replay, and a replay publishes nothing.
+func TestConcurrentIdenticalIngestPublishesOneObservation(t *testing.T) {
+	f, publisher := newRealtimeFixture(t)
+	f.seedRunning(t, "run-1")
+	before := len(publisher.captured())
+
+	const attempts = 8
+	record := ingestRecord("evt-0", "fp-0", "read")
+
+	var start sync.WaitGroup
+	start.Add(1)
+	var done sync.WaitGroup
+	errs := make([]error, attempts)
+
+	for i := range attempts {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			start.Wait()
+			_, errs[i] = f.plane.IngestDecisionRecord(context.Background(), platform.IngestRequest{
+				RunID:             "run-1",
+				Sequence:          1,
+				BehavioralProfile: fixtureProfile,
+				Record:            record,
+			})
+		}()
+	}
+	start.Done()
+	done.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("attempt %d error = %v; an identical retry must not conflict", i, err)
+		}
+	}
+
+	observations := publisher.captured()[before:]
+	if len(observations) != 1 {
+		t.Fatalf("published %d observations, want exactly 1: a concurrent retry was announced twice",
+			len(observations))
+	}
+	if observations[0].Observation.RecordCount != 1 {
+		t.Errorf("RecordCount = %d, want 1", observations[0].Observation.RecordCount)
+	}
+
+	aggregate, _, err := f.store.EvaluationEvidence(t.Context(), "run-1")
+	if err != nil {
+		t.Fatalf("EvaluationEvidence() error = %v", err)
+	}
+	if aggregate.RecordCount() != 1 {
+		t.Errorf("RecordCount() = %d, want 1", aggregate.RecordCount())
+	}
 }

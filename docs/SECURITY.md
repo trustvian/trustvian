@@ -680,6 +680,90 @@ service layer and an HTTP adapter over it.
   security model nobody reviewed. That is a later task's decision, and this
   API should not be exposed beyond loopback until it is made.
 
+### Realtime is bounded, ephemeral, and never authoritative
+
+**Threat:** a notification stream becomes a way to leak payloads the record
+boundary excludes, exhaust memory through subscribers or queues, let one
+client stall every other, or quietly become a source of truth clients rely on
+instead of the database.
+
+**Status: bounded at every dimension, and advisory by construction.**
+[Task 059](tasks/v1.0/059-realtime-infrastructure.md) publishes only after a
+committed mutation, over an in-memory bus with no history.
+
+- **No raw event payload.** An observation is a bounded projection —
+  fingerprint, behavioral shape, decision, risk, approval and three numeric
+  signals. No `Event.Attributes`, tool arguments, prompts, completions,
+  contributors, `PolicyReason` or raw record, so task 050's boundary holds on
+  this path. A test drives a real engine with a distinctive attribute value
+  and asserts it never reaches the wire.
+- **Per-subscriber queues are bounded** at a fixed capacity, and **the
+  subscriber count is bounded** too — a bounded queue with unlimited
+  subscribers is still unbounded memory, so worst-case cost is a constant
+  rather than a function of who connected. At the limit a new subscription is
+  refused; an existing one is never evicted to admit it.
+- **Slow consumers are disconnected**, not blocked and not silently trimmed.
+  Blocking would add a stalled client's latency to every committed mutation;
+  dropping silently would leave that client believing it has a complete stream
+  when it does not. Disconnection makes the gap observable while the client
+  can still act on it.
+- **Filters are applied before enqueue**, so a busy run cannot fill the queue
+  of a subscriber watching a quiet one. Without that the per-subscriber bound
+  would be nominal.
+- **Filter input is validated by the bus, before a slot is taken.** Nothing
+  else checks it — an unmatched filter is a legitimate subscription to a quiet
+  stream, so no store lookup stands between a caller's string and the bus.
+  Each non-empty dimension obeys the same identifier rule as every other
+  platform value (256 bytes, valid UTF-8, no control characters, no
+  surrounding whitespace). Validating in the SSE handler instead would leave
+  the bus reachable, unchecked, by any in-process caller; validating after
+  registration would let malformed input exhaust the subscriber bound with
+  identifiers the bus was about to reject. A malformed filter is a `400`
+  `invalid_request`, never a `503` — an SSE client’s reflex on a `5xx` is to
+  reconnect against a request that will never succeed.
+- **One subscriber cannot stall another.** Publishing to one never waits for
+  another, and a dead subscriber affects only itself.
+- **No durable replay history exists.** Nothing is retained after delivery,
+  no offsets are kept, and `Last-Event-ID` is ignored rather than honored —
+  accepting it while unable to replay would promise durability the bus does
+  not have. No SSE `id:` field is emitted.
+- **Every connection requires resynchronization**, and the handshake arrives
+  *after* the subscription is registered, so nothing that happens during the
+  resync is lost.
+- **Delivery failure never falsifies a durable outcome.** A committed write
+  reports success even when the bus is closed, broken or full. The alternative
+  makes a client retry a write that landed, and ambiguity about whether a
+  write happened is worse than a missed notification.
+- **Publication happens after the commit**, never before, so a subscriber
+  cannot observe state that never existed. Failed, conflicted and replayed
+  operations publish nothing.
+- **No message broker, no CORS, no authentication claim, no listener, and no
+  event-history table.** Realtime inherits task 058's local trust boundary
+  exactly; nothing here is authenticated and nothing claims to be.
+- **An SSE disconnect releases its subscription**, so a client that hangs up
+  does not hold a slot.
+- **Every SSE delivery attempt has a finite deadline** — the write *and* the
+  flush behind it — refreshed immediately before it, covering the handshake,
+  every domain frame and every heartbeat. `Write` can succeed into a local
+  buffer while the flush is what reaches the socket, and `http.Flusher.Flush`
+  returns nothing, so flushing goes through `ResponseController.Flush` and its
+  error is propagated rather than discarded. A write or flush failure
+  terminates **only that stream** and releases its subscription; nothing is
+  retried, buffered or dropped, because once one frame is uncertain the client
+  cannot be assumed to have it. The bus
+  bounds what it queues; it does not bound a client that holds a healthy
+  subscription and stops draining its socket. That client’s queue never fills,
+  so it is never disconnected — and the handler blocks inside `Write` where it
+  can no longer observe its context, its subscription, or a shutdown, so the
+  stalled connections accumulate outside every count the bus keeps. The
+  deadline is refreshed per write rather than set once (set once it is a
+  connection lifetime, killing healthy streams), is separate from the
+  heartbeat interval (a slower keepalive must not buy a stalled client more
+  time), and is configurable only within a fixed maximum, rejected rather than
+  clamped outside it. A writer that cannot take a deadline is refused with a
+  sanitized `500` before any `200`, because continuing unbounded is precisely
+  the condition the deadline prevents.
+
 ### Platform identity cannot become behavioral identity
 
 **Threat:** an evaluation concept leaks into the engine — a candidate becomes

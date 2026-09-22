@@ -568,9 +568,37 @@ closed. The schema moved to version 2 for that cursor, with a real migration
 from version 1. See
 [ADR 0031](adr/0031-control-plane-owns-ingest-and-http-is-an-adapter.md).
 
-Still absent: realtime, the developer CLI and TUI, the WebUI, promotion, and
-event history. The API binds no listener — composing one is a later task, and
-it must default to loopback. A gate verdict still has no side effect: it is
+Task 059 added realtime as a third adapter over the same service:
+
+```text
+ControlPlane ──after a committed mutation──▶ RealtimePublisher
+                                                   │
+                                          InMemoryRealtimeBus
+                                          bounded / ephemeral
+                                                   │
+                                               SSE adapter
+```
+
+The relationship is one-directional: durable state is authoritative and
+realtime is notification. Publication happens only after a commit, and a
+delivery failure never changes a committed operation's outcome — reporting one
+as failed would make a client retry a write that landed.
+
+The bus retains no history. Each subscriber owns a bounded queue, the
+subscriber count is bounded too, and one that falls behind is disconnected
+rather than blocking the publisher or silently losing events. Every connection
+therefore resynchronizes from authoritative state before consuming
+incrementally. Filtering by project, agent or run happens before enqueue, so a
+busy run cannot overflow a subscriber watching a quiet one. See
+[ADR 0032](adr/0032-realtime-is-bounded-ephemeral-not-authoritative.md).
+
+The control plane holds a publisher and the transport holds a subscriber, so
+neither gains the other's authority — a transport able to publish could
+fabricate state.
+
+Still absent: the developer CLI and TUI, the WebUI, promotion, and event
+history. The API binds no listener — composing one is a later task, and it
+must default to loopback. A gate verdict still has no side effect: it is
 evidence about acceptance, not an action. This section records the boundary
 all of it respects, decided in
 [ADR 0022](adr/0022-core-platform-boundary.md).

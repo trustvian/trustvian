@@ -48,6 +48,7 @@ const (
 	codeUnsupportedVersion   = "unsupported_version"
 	codeIncompleteEvidence   = "incomplete_evidence"
 	codeInternal             = "internal"
+	codeRealtimeUnavailable  = "realtime_unavailable"
 )
 
 // ---------------------------------------------------------------------
@@ -413,4 +414,75 @@ type compareResponse struct {
 	Diff      behaviorDiffDTO `json:"behavior_diff"`
 	Scorecard scorecardDTO    `json:"scorecard"`
 	Gate      gateResultDTO   `json:"gate"`
+}
+
+// ---------------------------------------------------------------------
+// Realtime (SSE)
+// ---------------------------------------------------------------------
+
+// streamReadyPayload is the first frame on every connection.
+//
+// Both fields are deliberately constant. The bus retains no history, so a
+// client is told plainly that it must resynchronize from authoritative state
+// rather than expect a replay — and told before it starts consuming, while it
+// can still act on it.
+type streamReadyPayload struct {
+	Version         string `json:"version"`
+	ReplayAvailable bool   `json:"replay_available"`
+	ResyncRequired  bool   `json:"resync_required"`
+}
+
+type realtimeScopeDTO struct {
+	ProjectID         string `json:"project_id"`
+	AgentID           string `json:"agent_id"`
+	CandidateID       string `json:"candidate_id"`
+	RunID             string `json:"run_id"`
+	Environment       string `json:"environment,omitempty"`
+	BehavioralProfile string `json:"behavioral_profile,omitempty"`
+}
+
+type realtimeEvaluationDTO struct {
+	Status        string `json:"status"`
+	CreatedAt     string `json:"created_at,omitempty"`
+	StartedAt     string `json:"started_at,omitempty"`
+	FinishedAt    string `json:"finished_at,omitempty"`
+	FailureReason string `json:"failure_reason,omitempty"`
+}
+
+// realtimeObservationDTO carries the bounded projection and nothing more.
+//
+// No attributes, tool arguments, prompts, completions, contributors,
+// PolicyReason, or raw record — task 050's privacy boundary holds on this path
+// too, and a test asserts a distinctive attribute value never appears here.
+type realtimeObservationDTO struct {
+	Sequence         string `json:"sequence"`
+	RecordCount      string `json:"record_count"`
+	BehaviorComplete bool   `json:"behavior_complete"`
+
+	FingerprintID string                `json:"fingerprint_id"`
+	Behavior      behaviorDescriptorDTO `json:"behavior"`
+
+	Decision       string `json:"decision"`
+	RiskLevel      string `json:"risk_level"`
+	ApprovalStatus string `json:"approval_status,omitempty"`
+
+	TrustScore        float64 `json:"trust_score"`
+	AnomalyScore      float64 `json:"anomaly_score"`
+	AnomalyConfidence float64 `json:"anomaly_confidence"`
+
+	NewBehavior bool `json:"new_behavior"`
+}
+
+// realtimeEventPayload is one SSE data frame.
+//
+// Lifecycle and observation halves are both present in the type and omitted on
+// the wire when empty, matching the fixed-shape domain value rather than
+// inventing a variant schema.
+type realtimeEventPayload struct {
+	Version string           `json:"version"`
+	Kind    string           `json:"kind"`
+	Scope   realtimeScopeDTO `json:"scope"`
+
+	Evaluation  *realtimeEvaluationDTO  `json:"evaluation,omitempty"`
+	Observation *realtimeObservationDTO `json:"observation,omitempty"`
 }

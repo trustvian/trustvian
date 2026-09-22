@@ -74,6 +74,14 @@ reconstructed later. Everything else in this table is already released.
 | Platform error `message` text | OBSERVATIONAL | The code and status are the contract; wording is diagnostic | Any change | None |
 | Platform ingest sequence semantics | STABLE | Monotonic from 1; expected applies, identical retry of the last replays, gap and stale fail | — | Major |
 | Platform SQLite schema | OPERATIONALLY STABLE | Forward-only, version-gated; currently version 2 | Additive tables or columns with a schema-version bump and a migration | Major for a destructive change |
+| `GET /v1/realtime` route and filter query names | STABLE | Path, method, and the `project_id`, `agent_id`, `run_id` filters | New optional filters | Major, or a new path version |
+| Realtime SSE event names | STABLE | A published event name keeps the condition it names | New event names — **consumers must tolerate unknown names** | Major |
+| Realtime SSE JSON field names | STABLE | A published field name keeps its meaning | New fields — **consumers must tolerate unknown fields** | Major |
+| `stream_ready` semantics | STABLE | Sent first on every connection; `replay_available` false and `resync_required` true | — | Major |
+| Realtime no-replay / resync-required contract | STABLE | No history is retained; `Last-Event-ID` triggers no replay; every connection resynchronizes | A separate durable replay capability may be added alongside | Major |
+| Slow-consumer disconnect semantics | STABLE | A subscriber that cannot keep up is disconnected rather than silently losing events | — | Major |
+| SSE heartbeat timing and wording | OBSERVATIONAL | A comment frame with no domain meaning; interval is not a contract | Any change | None |
+| Realtime byte-level SSE formatting | OBSERVATIONAL | Protocol semantics are the contract, not whitespace or frame ordering beyond `stream_ready` first | Any change | None |
 | Container entrypoint and ports | OPERATIONALLY STABLE | `trustvian-collector` entrypoint; `4317`, `4318`, `13133`; runs as `nonroot` | New ports | Major |
 | Image name and immutable tags | OPERATIONALLY STABLE | `ghcr.io/trustvian/trustvian-collector:vX.Y.Z` is immutable | — | Major |
 | Floating image tags (`latest`, `X.Y`) | OBSERVATIONAL | Convenience aliases; they move by design | Move on every stable release | None |

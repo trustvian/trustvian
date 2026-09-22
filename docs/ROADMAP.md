@@ -25,8 +25,9 @@ Status vocabulary:
 | **FUTURE** | A direction, not scoped, designed, committed, or dated |
 
 `v1.0` is NEXT. Track B is **partly implemented**: its evaluation foundation,
-local persistence and the local control-plane API (tasks 051–058) exist, while
-realtime, the UI, promotion and the remaining numbered work are still PLANNED.
+local persistence, the local control-plane API and realtime (tasks 051–059)
+exist, while the developer CLI, the UI, promotion and the remaining numbered
+work are still PLANNED.
 What exists is not usable end to end on its own. Everything under
 [Beyond v1.0](#beyond-v10) is FUTURE.
 
@@ -134,20 +135,22 @@ It now holds the evaluation foundation, and nothing built on top of it:
   (task 053); behavioral diff over bounded behavioral snapshots (task 054);
   fixed-shape comparative scorecards (task 055); deterministic
   evidence-backed hard gates over those scorecards (task 056); local
-  SQLite persistence for control and evaluation state (task 057); and an
+  SQLite persistence for control and evaluation state (task 057); an
   authoritative control-plane service with a local `/v1` HTTP adapter and
-  sequenced `DecisionRecord` ingest (task 058);
-- not implemented: realtime, the CLI evaluation workflow, the TUI, the WebUI,
-  the full environment model, promotion, and the event-history capability.
+  sequenced `DecisionRecord` ingest (task 058); and bounded, ephemeral
+  realtime notification over committed state, streamed over SSE (task 059);
+- not implemented: the CLI evaluation workflow, the TUI, the WebUI, the full
+  environment model, promotion, and the event-history capability.
 
 So the platform can now describe an evaluation, aggregate bounded result
 evidence, compare bounded behavioral snapshots, build a comparative scorecard
 from the two, apply deterministic evidence-backed hard gates to it, keep all
 of that across a restart, and accept evidence over a versioned local HTTP API
-that a restarted process resumes rather than restarts. Nothing yet streams
-realtime, offers the new developer CLI or TUI, runs the integrated
+that a restarted process resumes rather than restarts. Subscribers can watch an evaluation live without polling the database.
+Nothing yet offers the new developer CLI or TUI, runs the integrated
 one-command workflow, serves a WebUI, shares through PostgreSQL, or promotes —
-a gate returns a verdict and has no side effect. Raw event history is
+a gate returns a verdict and has no side effect, and realtime is notification
+over state the database already holds, never a source of truth. Raw event history is
 deliberately still absent, and the API binds no listener: composing one is a
 later task, and it must default to loopback. Everything else about the
 platform in this document remains approved direction rather than shipped
@@ -310,19 +313,20 @@ the public documentation.
 Implemented: generic learning-scope isolation in the core (051), the
 evaluation domain (052), evaluation result aggregation (053), behavioral
 diff (054), evaluation scorecards (055), deterministic hard gates (056),
-local SQLite persistence (057), and the local control-plane API and ingest
-(058).
+local SQLite persistence (057), the local control-plane API and ingest (058),
+and bounded realtime infrastructure (059).
 
-Still planned: everything from realtime (059) onward. The platform can
-describe an evaluation, aggregate bounded result evidence, compare bounded
+Still planned: everything from the developer CLI (060) onward. The platform
+can describe an evaluation, aggregate bounded result evidence, compare bounded
 behavioral snapshots, produce fixed-shape comparative scorecards, apply
 deterministic evidence-backed hard gates to them, persist local control and
-evaluation state across a restart, and accept public `DecisionRecord`
-evidence through a versioned local HTTP API that resumes a running evaluation
-after a restart. It cannot yet stream realtime, offer the new developer
-CLI/TUI, run the integrated one-command workflow, serve a WebUI, share through
-PostgreSQL, promote, or retain raw event history — so it is not usable end to
-end.
+evaluation state across a restart, accept public `DecisionRecord` evidence
+through a versioned local HTTP API that resumes a running evaluation after a
+restart, and publish bounded live updates over SSE with project, agent and run
+filtering. It cannot yet offer the new developer CLI or TUI, run the
+integrated one-command workflow, serve a WebUI, share through PostgreSQL,
+promote, retain raw event history, or replay realtime history — so it is not
+usable end to end.
 
 The scorecard itself carries no verdict and no threshold; acceptance lives in
 [task 056](tasks/v1.0/056-deterministic-hard-gates.md), which pairs a card
@@ -572,7 +576,7 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**Partly implemented:** tasks 049–058 are done; 059 onward remain PLANNED.
+**Partly implemented:** tasks 049–059 are done; 060 onward remain PLANNED.
 
 **Architecture and core boundary** — the only tasks that touch the engine:
 
