@@ -1184,6 +1184,18 @@ publish  O(S) matching + O(matched) delivery, S ≤ 64
 memory   O(S × Q), S ≤ 64 and Q ≤ 64, with no history term
 ```
 
+**Filter validation is not on the publish path.** It runs once per
+`Subscribe`, over at most three identifiers of at most 256 bytes each, and
+`Publish` compares already-validated values. A bound checked per event would
+have shown up in the rows above; this one cannot.
+
+**The SSE write deadline costs one `SetWriteDeadline` per frame**, not per
+publish and not per subscriber — the handler sets it, writes, and flushes,
+so it is amortized against a socket write that is orders of magnitude more
+expensive. Not benchmarked: there is no useful number to report for a syscall
+that precedes an I/O operation whose cost is the network's, and the reason it
+exists is a bound rather than a speed.
+
 ## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —

@@ -49,6 +49,20 @@ type Handler struct {
 	// every other route keeps working.
 	realtimeSubscriber platform.RealtimeSubscriber
 	heartbeatInterval  time.Duration
+
+	// realtimeWriteTimeout bounds each individual SSE write. It is not a
+	// heartbeat interval: one is how often a quiet stream proves it is alive,
+	// the other is how long a single socket write may block before the
+	// connection is abandoned. Tying them together would make a slower
+	// keepalive silently buy a client more time to stall.
+	realtimeWriteTimeout time.Duration
+
+	// configErr carries an option's rejection to NewHandler.
+	//
+	// Options cannot return an error, and a rejected option must not be
+	// silently ignored — a caller that asked for a 0 write timeout would
+	// otherwise get the default and believe it got what it asked for.
+	configErr error
 }
 
 // Option configures a Handler.
@@ -91,19 +105,43 @@ func WithHeartbeatInterval(interval time.Duration) Option {
 	}
 }
 
+// WithRealtimeWriteTimeout replaces the per-write SSE deadline.
+//
+// Rejected rather than clamped when out of range: a caller asking for an
+// unbounded or absurd write deadline is asking for the bound this handler
+// claims to have, and answering with a quietly different number would make the
+// claim untrue in a way nothing surfaces.
+func WithRealtimeWriteTimeout(timeout time.Duration) Option {
+	return func(h *Handler) {
+		switch {
+		case timeout <= 0:
+			h.configErr = errors.New("httpapi: realtime write timeout must be positive")
+		case timeout > maxRealtimeWriteTimeout:
+			h.configErr = fmt.Errorf(
+				"httpapi: realtime write timeout must not exceed %s", maxRealtimeWriteTimeout)
+		default:
+			h.realtimeWriteTimeout = timeout
+		}
+	}
+}
+
 // NewHandler returns an http.Handler over the control plane.
 func NewHandler(controlPlane *platform.ControlPlane, options ...Option) (http.Handler, error) {
 	if controlPlane == nil {
 		return nil, errors.New("httpapi: handler requires a control plane")
 	}
 	h := &Handler{
-		controlPlane:      controlPlane,
-		now:               time.Now,
-		mux:               http.NewServeMux(),
-		heartbeatInterval: defaultHeartbeatInterval,
+		controlPlane:         controlPlane,
+		now:                  time.Now,
+		mux:                  http.NewServeMux(),
+		heartbeatInterval:    defaultHeartbeatInterval,
+		realtimeWriteTimeout: defaultRealtimeWriteTimeout,
 	}
 	for _, option := range options {
 		option(h)
+	}
+	if h.configErr != nil {
+		return nil, h.configErr
 	}
 	h.routes()
 	return h, nil

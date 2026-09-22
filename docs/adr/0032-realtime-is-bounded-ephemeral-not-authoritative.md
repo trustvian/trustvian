@@ -213,6 +213,59 @@ imply state worth migrating, and there is none.
 `realtime_events`, `notifications`, `stream_offsets`, `subscriber_offsets`,
 `message_log` — each is point 1 or point 10 wearing a table name.
 
+### 21. Filter input is validated by the bus, not by a transport
+
+A filter's three identifiers arrive from a caller and reach the bus unchecked
+by anything else: no store lookup validates them, because an unmatched filter
+is a legitimate subscription to a quiet stream, not an error.
+
+The validation therefore lives in `Subscribe`, reusing `ErrInvalidID` and the
+same 256-byte, UTF-8, no-control-character, no-surrounding-whitespace rule
+every other platform identifier obeys ([ADR 0025](0025-platform-domain-values-with-caller-owned-identity.md)).
+Putting it in the SSE handler instead would leave the bus reachable, unchecked,
+by a future CLI, TUI, or any in-process caller — the same mistake as validating
+a domain rule in a controller.
+
+It runs *before* a slot is taken and before a queue is allocated, so malformed
+input cannot consume the bound in point 9: otherwise a caller could exhaust all
+64 slots with identifiers the bus was about to reject anyway.
+
+A malformed filter is a `400 invalid_request` on the wire, never a `503
+realtime_unavailable`. The distinction matters more on a stream than on a POST,
+because an SSE client's natural response to a 5xx is to reconnect in a loop
+against a request that will never succeed.
+
+### 22. Every SSE write has its own deadline
+
+Points 5 through 9 bound what the *bus* holds. They do not bound a client that
+keeps a healthy subscription and stops draining its socket: that client's queue
+never fills, so it is never disconnected, and the handler blocks inside `Write`
+where it can no longer observe its context, its subscription, or a shutdown.
+Connections in that state accumulate outside every count the bus keeps.
+
+Each write therefore sets a deadline first, via
+`http.NewResponseController(w).SetWriteDeadline` — the handshake, every domain
+frame, and every heartbeat alike.
+
+The deadline is refreshed *before each write* rather than set once when the
+stream opens. Set once, the same value would be a connection lifetime: a
+healthy long-lived stream would die at an arbitrary moment having done nothing
+wrong, and the failure would look like a network fault.
+
+It is not the heartbeat interval. One is how often a quiet stream proves it is
+alive; the other is how long a single write may block. Reusing the interval
+would mean a slower keepalive silently bought a stalled client more time.
+
+Default 5s, configurable up to 30s, rejected outside that range rather than
+clamped — an option accepting any duration could turn a bounded write into an
+effectively unbounded one while the code still claimed a bound, which is the
+same reasoning that keeps the queue and subscriber limits constants.
+
+If the writer cannot take a deadline, the stream is refused with a sanitized
+`500` *before* the `200` is written. Continuing would leave the handler in
+exactly the state this exists to prevent, while every comment and this document
+claimed otherwise.
+
 ## Alternatives considered
 
 **A small replay ring, "just a few seconds".** Rejected: it needs a retention
@@ -245,3 +298,11 @@ sound because the hierarchy is immutable.
 Worst-case realtime memory is subscribers × queue, a constant. Adding a
 transport later changes nothing about the bus; adding durable replay is a
 different capability with its own decision record, not a setting here.
+
+A stalled client is disconnected after a write deadline rather than held, so a
+stream can end for a reason the client never sees as a frame. That is the same
+trade as point 6: an observable gap beats an invisible one.
+
+Any future transport must supply a write deadline of its own. SSE gets one from
+`net.Conn`; a transport that cannot bound a write does not get to skip the
+bound, it fails to open.

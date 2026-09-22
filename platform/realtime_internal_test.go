@@ -13,8 +13,10 @@ package platform
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // testBus is a bus with small bounds, so saturation is reachable without
@@ -445,6 +447,111 @@ func TestRealtimeConcurrentPublishSubscribeClose(t *testing.T) {
 
 // Publish is O(S) with S bounded by the subscriber limit, and carries no
 // historical term. These measure that shape; there is no latency gate.
+
+// ---------------------------------------------------------------------
+// Filter validation
+// ---------------------------------------------------------------------
+
+// TestRealtimeSubscribeValidatesEveryFilterDimension proves the bound is the
+// bus's, not a transport's.
+//
+// A filter value crosses no validation on its way here: it is whatever a
+// caller passed. Validating in the SSE handler would leave the same bus
+// reachable, unchecked, by a CLI, a TUI, or a test — so the check lives where
+// the value is actually used, and this test addresses it directly rather than
+// over HTTP.
+func TestRealtimeSubscribeValidatesEveryFilterDimension(t *testing.T) {
+	dimensions := []struct {
+		name  string
+		build func(string) RealtimeFilter
+	}{
+		{"project_id", func(v string) RealtimeFilter { return RealtimeFilter{ProjectID: ProjectID(v)} }},
+		{"agent_id", func(v string) RealtimeFilter { return RealtimeFilter{AgentID: AgentID(v)} }},
+		{"run_id", func(v string) RealtimeFilter { return RealtimeFilter{RunID: EvaluationRunID(v)} }},
+	}
+
+	values := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		// Empty is not "invalid input" — it is the documented way to leave a
+		// dimension unconstrained, so it must stay accepted.
+		{"empty is unconstrained", "", false},
+		{"ordinary identifier", "run-2026-09-22", false},
+		{"maximum length", strings.Repeat("a", maxIdentifierLength), false},
+
+		{"one byte over maximum", strings.Repeat("a", maxIdentifierLength+1), true},
+		{"far over maximum", strings.Repeat("a", 64<<10), true},
+		{"leading whitespace", " run-1", true},
+		{"trailing whitespace", "run-1 ", true},
+		{"newline", "run\n1", true},
+		{"nul", "run\x001", true},
+		{"escape", "run\x1b[2J", true},
+	}
+
+	for _, dimension := range dimensions {
+		for _, value := range values {
+			t.Run(dimension.name+"/"+value.name, func(t *testing.T) {
+				bus := testBus(t, realtimeQueueCapacity, realtimeMaxSubscribers)
+
+				subscription, err := bus.Subscribe(context.Background(), dimension.build(value.value))
+				if value.wantErr {
+					if err == nil {
+						subscription.Close()
+						t.Fatalf("Subscribe(%q) accepted an invalid filter", value.value)
+					}
+					// ErrInvalidID specifically: the transport maps this to a
+					// 400, and an unclassified error would become a 500 that
+					// tells a client with a bad identifier the server is broken.
+					if !errors.Is(err, ErrInvalidID) {
+						t.Fatalf("Subscribe error = %v, want ErrInvalidID", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("Subscribe(%q) rejected a valid filter: %v", value.value, err)
+				}
+				subscription.Close()
+			})
+		}
+	}
+}
+
+// TestRealtimeRejectedSubscribeConsumesNoCapacity proves validation happens
+// before a slot is taken.
+//
+// Validating after registration would turn malformed input into a denial of
+// service: a caller could exhaust all 64 slots with identifiers the bus was
+// about to reject anyway. A bus of one makes the leak unambiguous — if the
+// rejected attempt kept its slot, the valid one that follows cannot succeed.
+func TestRealtimeRejectedSubscribeConsumesNoCapacity(t *testing.T) {
+	bus := testBus(t, realtimeQueueCapacity, 1)
+
+	for range 16 {
+		if _, err := bus.Subscribe(context.Background(), RealtimeFilter{RunID: " bad"}); err == nil {
+			t.Fatal("Subscribe accepted an invalid filter")
+		}
+	}
+
+	subscription, err := bus.Subscribe(context.Background(), RealtimeFilter{RunID: "run-1"})
+	if err != nil {
+		t.Fatalf("valid Subscribe after rejected attempts: %v", err)
+	}
+	defer subscription.Close()
+
+	// And the survivor is a working subscription, not merely an accepted one.
+	scope := scopeFor("proj-1", "agent-1", "run-1")
+	bus.Publish(observationEvent(scope, 1))
+	select {
+	case event, open := <-subscription.Events():
+		if !open || event.Observation.Sequence != 1 {
+			t.Fatalf("event = %+v, open = %v", event, open)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no event delivered to the surviving subscription")
+	}
+}
 
 func benchmarkPublish(b *testing.B, subscribers int, filter RealtimeFilter) {
 	bus := newRealtimeBus(realtimeQueueCapacity, realtimeMaxSubscribers)

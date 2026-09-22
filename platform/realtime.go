@@ -165,6 +165,37 @@ type RealtimeFilter struct {
 	RunID     EvaluationRunID
 }
 
+// validate bounds the identifiers a subscription retains.
+//
+// A bounded subscriber count is not by itself a bounded memory claim: 64
+// subscriptions each holding a megabyte of caller-supplied filter text is
+// still attacker-controlled process memory. The filter is retained for the
+// life of the subscription, so it has to be bounded on the way in.
+//
+// The same rules the domain already applies to identifiers, not a second
+// policy: these values are opaque identifiers and nothing about being a
+// filter makes them different ones.
+//
+// Empty stays valid and means unconstrained.
+func (f RealtimeFilter) validate() error {
+	for _, dimension := range []struct {
+		field string
+		value string
+	}{
+		{"realtime project filter", string(f.ProjectID)},
+		{"realtime agent filter", string(f.AgentID)},
+		{"realtime run filter", string(f.RunID)},
+	} {
+		if dimension.value == "" {
+			continue
+		}
+		if err := validateID(dimension.field, dimension.value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // matches reports whether an event satisfies the filter.
 func (f RealtimeFilter) matches(scope RealtimeScope) bool {
 	if f.ProjectID != "" && f.ProjectID != scope.ProjectID {
@@ -320,6 +351,12 @@ func (b *InMemoryRealtimeBus) Subscribe(
 ) (RealtimeSubscription, error) {
 	if ctx == nil {
 		return nil, errors.New("platform: realtime subscribe requires a context")
+	}
+	// Before the lock, before a slot, before a queue: an invalid filter must
+	// cost nothing. Validating here rather than in a transport is what keeps
+	// the bound true for a future CLI, TUI or any other direct caller.
+	if err := filter.validate(); err != nil {
+		return nil, err
 	}
 
 	b.mu.Lock()

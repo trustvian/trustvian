@@ -10,10 +10,15 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -717,10 +722,17 @@ type contextIgnoringSubscriber struct {
 	events     chan platform.RealtimeEvent
 }
 
+// newContextIgnoringSubscriber allocates the channel up front.
+//
+// Allocating it inside Subscribe would race any test that publishes into it,
+// since Subscribe runs on the handler's goroutine.
+func newContextIgnoringSubscriber() *contextIgnoringSubscriber {
+	return &contextIgnoringSubscriber{events: make(chan platform.RealtimeEvent, 4)}
+}
+
 func (s *contextIgnoringSubscriber) Subscribe(
 	ctx context.Context, filter platform.RealtimeFilter,
 ) (platform.RealtimeSubscription, error) {
-	s.events = make(chan platform.RealtimeEvent, 4)
 	return &countingSubscription{owner: s, events: s.events}, nil
 }
 
@@ -747,7 +759,7 @@ func (s *countingSubscription) Close() error {
 }
 
 func TestSSEHandlerClosesItsSubscriptionOnDisconnect(t *testing.T) {
-	subscriber := &contextIgnoringSubscriber{}
+	subscriber := newContextIgnoringSubscriber()
 
 	store, err := platform.OpenSQLiteStore(t.Context(), filepath.Join(t.TempDir(), "platform.db"))
 	if err != nil {
@@ -800,4 +812,497 @@ func TestSSEHandlerClosesItsSubscriptionOnDisconnect(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+// ---------------------------------------------------------------------
+// Filter validation over the wire
+// ---------------------------------------------------------------------
+
+// rawGet issues a realtime GET that is expected to be refused.
+//
+// It takes its own *testing.T because the callers below are subtests sharing
+// one fixture, and it cannot hang: a request that wrongly opens a stream is
+// reported here rather than left to block ReadAll until the package timeout.
+// An earlier version did block, which turned a caught mutation into a
+// ten-minute hang and hid which mutation it was.
+func (a *realtimeAPI) rawGet(t *testing.T, query string) (int, []byte) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	request, err := http.NewRequestWithContext(ctx, "GET", a.server.URL+"/v1/realtime"+query, nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	response, err := a.client.Do(request)
+	if err != nil {
+		t.Fatalf("GET /v1/realtime error = %v", err)
+	}
+	defer response.Body.Close()
+
+	// No stream was claimed. A client that saw text/event-stream on a refusal
+	// would have to parse an error envelope as SSE frames — and this body
+	// would never end.
+	if got := response.Header.Get("Content-Type"); strings.HasPrefix(got, "text/event-stream") {
+		t.Fatalf("a stream was opened (status %d, Content-Type %q) where the request should have been refused",
+			response.StatusCode, got)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return response.StatusCode, body
+}
+
+func wireErrorCode(t *testing.T, body []byte) string {
+	t.Helper()
+	var envelope struct {
+		Version string `json:"version"`
+		Error   struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("error body is not an envelope: %v (%s)", err, body)
+	}
+	if envelope.Version != httpapi.WireVersion {
+		t.Errorf("error envelope version = %q, want %q", envelope.Version, httpapi.WireVersion)
+	}
+	return envelope.Error.Code
+}
+
+// TestSSERejectsMalformedFilterAsClientError proves malformed input is not
+// dressed up as infrastructure unavailability.
+//
+// A 503 realtime_unavailable tells a client to back off and retry an identical
+// request that will never succeed. The distinction matters more here than on a
+// POST, because an SSE client's natural reaction to a 5xx is to reconnect in a
+// loop.
+func TestSSERejectsMalformedFilterAsClientError(t *testing.T) {
+	overlong := strings.Repeat("a", 257)
+
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{"project_id too long", "?project_id=" + overlong},
+		{"agent_id too long", "?agent_id=" + overlong},
+		{"run_id too long", "?run_id=" + overlong},
+		{"project_id leading space", "?project_id=%20proj-1"},
+		{"agent_id trailing space", "?agent_id=agent-1%20"},
+		{"run_id newline", "?run_id=run%0A1"},
+		{"run_id nul", "?run_id=run%001"},
+		{"run_id escape", "?run_id=run%1b%5b2J"},
+		// One valid dimension does not excuse another: the filter is ANDed,
+		// and a partially-validated filter would mean a caller could smuggle
+		// an unbounded value past by pairing it with a good one.
+		{"one good one bad", "?run_id=run-1&agent_id=" + overlong},
+	}
+
+	a := newRealtimeAPI(t)
+	a.seedRunning("run-1", "cand-1")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// rawGet also asserts no stream was opened.
+			status, body := a.rawGet(t, tt.query)
+
+			if status != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", status, body)
+			}
+			if code := wireErrorCode(t, body); code != "invalid_request" {
+				t.Errorf("code = %q, want invalid_request", code)
+			}
+		})
+	}
+
+	// And a valid filter still opens a stream on the same server, so the
+	// rejections above did not leave the route or its capacity damaged.
+	s := a.connect("?run_id=run-1", nil)
+	defer s.close()
+	decodeReady(t, s.next())
+}
+
+// failingSubscriber returns a fixed error, so each branch of the wire mapping
+// can be reached without contriving the condition on a real bus.
+type failingSubscriber struct{ err error }
+
+func (s failingSubscriber) Subscribe(
+	context.Context, platform.RealtimeFilter,
+) (platform.RealtimeSubscription, error) {
+	return nil, s.err
+}
+
+// TestSSESubscribeFailuresKeepTheirCategories guards the distinction the
+// previous test depends on.
+//
+// Mapping every subscribe failure to one status would make the 400 above an
+// accident of ordering rather than a decision. Capacity and shutdown are
+// infrastructure conditions a client can only wait out; anything unrecognised
+// is a server fault and must not leak its text.
+func TestSSESubscribeFailuresKeepTheirCategories(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   string
+	}{
+		{"capacity", platform.ErrRealtimeCapacity, 503, "realtime_unavailable"},
+		{"closed", platform.ErrRealtimeClosed, 503, "realtime_unavailable"},
+		{"malformed filter", fmt.Errorf("%w: bad", platform.ErrInvalidID), 400, "invalid_request"},
+		{"unclassified", errors.New("SECRET-INTERNAL-DETAIL"), 500, "internal"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newRealtimeAPI(t, httpapi.WithRealtimeSubscriber(failingSubscriber{err: tt.err}))
+
+			status, body := a.rawGet(t, "?run_id=run-1")
+			if status != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", status, tt.wantStatus, body)
+			}
+			if code := wireErrorCode(t, body); code != tt.wantCode {
+				t.Errorf("code = %q, want %q", code, tt.wantCode)
+			}
+			if strings.Contains(string(body), "SECRET-INTERNAL-DETAIL") {
+				t.Errorf("unclassified error text leaked to the client: %s", body)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------
+// Per-write deadlines
+// ---------------------------------------------------------------------
+
+// stallingWriter is a ResponseWriter that can stop draining mid-stream.
+//
+// It honors whatever deadline the handler sets rather than a duration of its
+// own: a stalled write unblocks exactly when that deadline expires and reports
+// os.ErrDeadlineExceeded, which is what a real net.Conn does. That is what
+// makes this test about the handler's bound and not about a sleep the test
+// picked.
+type stallingWriter struct {
+	header http.Header
+
+	mu        sync.Mutex
+	deadlines []time.Time
+	writes    int
+	body      []byte
+
+	// stallAfter is the number of writes served normally before one blocks.
+	stallAfter int
+	stalled    chan struct{}
+	stallOnce  sync.Once
+}
+
+func newStallingWriter(stallAfter int) *stallingWriter {
+	return &stallingWriter{
+		header:     make(http.Header),
+		stallAfter: stallAfter,
+		stalled:    make(chan struct{}),
+	}
+}
+
+func (s *stallingWriter) Header() http.Header  { return s.header }
+func (s *stallingWriter) WriteHeader(code int) { s.header.Set("X-Status", strconv.Itoa(code)) }
+func (s *stallingWriter) Flush()               {}
+
+func (s *stallingWriter) SetWriteDeadline(deadline time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deadlines = append(s.deadlines, deadline)
+	return nil
+}
+
+func (s *stallingWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	s.writes++
+	stall := s.writes > s.stallAfter
+	deadline := s.deadlines[len(s.deadlines)-1]
+	if !stall {
+		s.body = append(s.body, p...)
+	}
+	s.mu.Unlock()
+
+	if !stall {
+		return len(p), nil
+	}
+
+	s.stallOnce.Do(func() { close(s.stalled) })
+
+	// The client has stopped reading. A real connection blocks here until its
+	// write deadline expires; so does this one.
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	<-timer.C
+	return 0, os.ErrDeadlineExceeded
+}
+
+func (s *stallingWriter) deadlineCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.deadlines)
+}
+
+func (s *stallingWriter) sentBody() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return string(s.body)
+}
+
+// TestSSEStalledWriteIsBoundedByItsDeadline is the point of the whole
+// mechanism.
+//
+// The bus bound does not cover this case: this subscriber's queue is healthy
+// and its slot is freed the moment it unsubscribes. What is unbounded without
+// a write deadline is the handler goroutine and the connection under it — a
+// client that opens streams and never reads them would accumulate them outside
+// every count the bus keeps.
+func TestSSEStalledWriteIsBoundedByItsDeadline(t *testing.T) {
+	subscriber := newContextIgnoringSubscriber()
+	plane := newBarePlane(t)
+
+	const writeTimeout = 150 * time.Millisecond
+	handler, err := httpapi.NewHandler(plane,
+		httpapi.WithRealtimeSubscriber(subscriber),
+		httpapi.WithRealtimeWriteTimeout(writeTimeout),
+		// Long enough that no heartbeat can be the thing that frees the
+		// handler: only the write deadline can.
+		httpapi.WithHeartbeatInterval(time.Hour))
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+
+	// stream_ready costs three writes; the client drains those and then stops.
+	writer := newStallingWriter(3)
+	request := httptest.NewRequest("GET", "/v1/realtime?run_id=run-1", nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(writer, request)
+	}()
+
+	// Wait for the handshake to land before publishing, so the frame that
+	// stalls is unambiguously the observation.
+	waitFor(t, func() bool { return writer.sentBody() != "" }, "handshake written")
+
+	subscriber.events <- platform.RealtimeEvent{
+		Kind:        platform.RealtimeObservationRecorded,
+		Scope:       platform.RealtimeScope{ProjectID: "proj-1", AgentID: "agent-1", RunID: "run-1"},
+		Observation: platform.RealtimeObservation{Sequence: 1},
+	}
+
+	select {
+	case <-writer.stalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalling write never began")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		// Generous on purpose: the assertion is that the handler returns at
+		// all, and a failure here is a hang, not a slow machine.
+		t.Fatal("handler did not return after its write deadline expired")
+	}
+
+	// The subscription is released. A handler that exited while leaving a
+	// registration behind would leak a slot per stalled client, which is the
+	// bound this is protecting.
+	if got := subscriber.closes(); got != 1 {
+		t.Errorf("subscription Close calls = %d, want 1", got)
+	}
+
+	if strings.Contains(writer.sentBody(), "observation") {
+		t.Error("the stalled frame was recorded as delivered")
+	}
+}
+
+// TestSSEDeadlineIsRefreshedBeforeEveryWrite proves it is a per-write bound.
+//
+// Set once when the connection opens, the same constant would be a
+// connection lifetime: a healthy stream would die at an arbitrary moment
+// having done nothing wrong, and the failure would look like a network fault.
+func TestSSEDeadlineIsRefreshedBeforeEveryWrite(t *testing.T) {
+	subscriber := newContextIgnoringSubscriber()
+	plane := newBarePlane(t)
+
+	handler, err := httpapi.NewHandler(plane,
+		httpapi.WithRealtimeSubscriber(subscriber),
+		httpapi.WithRealtimeWriteTimeout(5*time.Second),
+		httpapi.WithHeartbeatInterval(time.Hour))
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+
+	// Never stalls: every write is served, so the handler keeps looping.
+	writer := newStallingWriter(1 << 30)
+	ctx, cancel := context.WithCancel(context.Background())
+	request := httptest.NewRequest("GET", "/v1/realtime?run_id=run-1", nil).WithContext(ctx)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(writer, request)
+	}()
+
+	// The handshake's deadline proves Subscribe has returned and the handler
+	// is in its loop, so the frames below cannot race registration.
+	waitFor(t, func() bool { return writer.deadlineCount() >= 1 }, "handshake deadline")
+
+	for range 4 {
+		subscriber.events <- platform.RealtimeEvent{
+			Kind:        platform.RealtimeObservationRecorded,
+			Scope:       platform.RealtimeScope{ProjectID: "proj-1", AgentID: "agent-1", RunID: "run-1"},
+			Observation: platform.RealtimeObservation{Sequence: 1},
+		}
+	}
+
+	// One deadline for the handshake plus one per frame. Waiting on the count
+	// rather than sleeping keeps this deterministic.
+	waitFor(t, func() bool { return writer.deadlineCount() >= 5 }, "five deadlines set")
+
+	cancel()
+	<-done
+
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	for i := 1; i < len(writer.deadlines); i++ {
+		// Strictly later each time: a single stored deadline, or one derived
+		// from the connection's start, would repeat.
+		if !writer.deadlines[i].After(writer.deadlines[i-1]) {
+			t.Fatalf("deadline %d (%v) is not after deadline %d (%v) — set once, not per write",
+				i, writer.deadlines[i], i-1, writer.deadlines[i-1])
+		}
+	}
+}
+
+// TestSSEHealthyStreamOutlivesItsWriteTimeout is the same property from the
+// client's side, over a real socket.
+//
+// The write timeout here is shorter than the span the stream is observed over.
+// A deadline set once at connection time would kill this stream mid-test; a
+// per-write deadline never notices.
+func TestSSEHealthyStreamOutlivesItsWriteTimeout(t *testing.T) {
+	a := newRealtimeAPI(t,
+		httpapi.WithRealtimeWriteTimeout(60*time.Millisecond),
+		httpapi.WithHeartbeatInterval(20*time.Millisecond))
+
+	s := a.connect("?run_id=run-1", nil)
+	defer s.close()
+	decodeReady(t, s.next())
+
+	// Several multiples of the write timeout, all served by writes that each
+	// individually complete well inside it.
+	for range 8 {
+		s.waitForHeartbeat(5 * time.Second)
+	}
+}
+
+// TestSSERequiresWriteDeadlineSupport refuses a stream it cannot bound.
+//
+// Continuing without a deadline would leave the handler in exactly the state
+// the mechanism exists to prevent, while every comment and document claimed
+// otherwise. Failing before the 200 keeps that visible to the client instead
+// of silent.
+func TestSSERequiresWriteDeadlineSupport(t *testing.T) {
+	subscriber := newContextIgnoringSubscriber()
+	plane := newBarePlane(t)
+
+	handler, err := httpapi.NewHandler(plane, httpapi.WithRealtimeSubscriber(subscriber))
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+
+	// A recorder flushes but cannot take a deadline — the precise shape of a
+	// wrapper that silently removes the bound.
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest("GET", "/v1/realtime", nil))
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body = %s", recorder.Code, recorder.Body.String())
+	}
+	if code := wireErrorCode(t, recorder.Body.Bytes()); code != "internal" {
+		t.Errorf("code = %q, want internal", code)
+	}
+	if got := recorder.Header().Get("Content-Type"); strings.HasPrefix(got, "text/event-stream") {
+		t.Errorf("Content-Type = %q: a stream was claimed and then refused", got)
+	}
+	// Refused before subscribing, so nothing to release and no slot consumed.
+	if got := subscriber.closes(); got != 0 {
+		t.Errorf("Close calls = %d, want 0: the handler subscribed before it could bound its writes", got)
+	}
+}
+
+// TestRealtimeWriteTimeoutOptionIsValidated rejects rather than clamps.
+//
+// An option silently corrected to a working value lets a caller believe a
+// bound they did not get. maxRealtimeWriteTimeout exists for the same reason
+// the default does: an unbounded configurable value is not a bound.
+func TestRealtimeWriteTimeoutOptionIsValidated(t *testing.T) {
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		wantErr bool
+	}{
+		{"zero", 0, true},
+		{"negative", -time.Second, true},
+		{"one nanosecond over the maximum", 30*time.Second + 1, true},
+		{"an hour", time.Hour, true},
+
+		{"one nanosecond", time.Nanosecond, false},
+		{"the maximum", 30 * time.Second, false},
+		{"a second", time.Second, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plane := newBarePlane(t)
+			_, err := httpapi.NewHandler(plane, httpapi.WithRealtimeWriteTimeout(tt.timeout))
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("NewHandler(WithRealtimeWriteTimeout(%v)) error = %v, wantErr = %v",
+					tt.timeout, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// waitFor polls a condition to a generous limit.
+//
+// The limit is not the assertion — it is the difference between a failing test
+// and a hung one. Every condition here is reached by a goroutine that has
+// already been handed everything it needs.
+func waitFor(t *testing.T, condition func() bool, what string) {
+	t.Helper()
+	limit := time.After(5 * time.Second)
+	for !condition() {
+		select {
+		case <-limit:
+			t.Fatalf("timed out waiting for %s", what)
+		default:
+			runtime.Gosched()
+		}
+	}
+}
+
+// newBarePlane is a control plane with no realtime publisher, for tests whose
+// subject is the transport rather than the pipeline.
+func newBarePlane(t *testing.T) *platform.ControlPlane {
+	t.Helper()
+	store, err := platform.OpenSQLiteStore(t.Context(), filepath.Join(t.TempDir(), "platform.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+
+	plane, err := platform.NewControlPlane(store, store, store)
+	if err != nil {
+		t.Fatalf("NewControlPlane() error = %v", err)
+	}
+	return plane
 }

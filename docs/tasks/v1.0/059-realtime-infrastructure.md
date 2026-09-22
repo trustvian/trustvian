@@ -155,6 +155,18 @@ Empty means unconstrained on that dimension; populated dimensions are ANDed.
 No regex, glob, expression language, tags or predicates — those move matching
 into an unbounded surface and put a small language on the wire contract.
 
+**Filter values are validated by `Subscribe`, not by a transport.** Nothing
+else checks them: an unmatched filter is a legitimate subscription to a quiet
+stream, so no store lookup stands between a caller's string and the bus. Each
+non-empty dimension goes through the same `validateID` every other platform
+identifier obeys — at most 256 bytes, valid UTF-8, no control characters, no
+leading or trailing whitespace — and fails with `ErrInvalidID`. Validating in
+the SSE handler instead would leave the bus reachable, unchecked, by a future
+CLI, TUI or any in-process caller.
+
+Validation runs **before a slot is taken and before a queue is allocated**, so
+malformed input cannot consume the subscriber bound below.
+
 **Filtering happens before enqueue.** Delivering everything and letting SSE
 discard the rest would let a busy run overflow a subscriber watching a quiet
 one, which breaks the isolation the bounds exist to provide.
@@ -274,6 +286,44 @@ Headers: `text/event-stream`, `no-cache`. No CORS — task 063 has the first
 browser caller and can decide explicitly. `http.Flusher` is required; a writer
 that cannot stream fails before a healthy stream is claimed.
 
+Preconditions are checked in a fixed order, all of them before the `200`:
+subscriber configured, writer streamable, write deadlines supported, filter
+valid and subscribed. Once a status line is out the only way to report a
+problem is to hang up, so a stream is never claimed healthy and then discovered
+to be impossible.
+
+**Every write carries a finite deadline**, set through
+`http.NewResponseController(w).SetWriteDeadline` immediately before it —
+handshake, domain frame and heartbeat alike. The bus bounds what it queues; it
+does not bound a client that holds a healthy subscription and stops draining
+its socket. Such a client's queue never fills, so it is never disconnected, and
+the handler blocks inside `Write` where it can no longer see its context, its
+subscription, or a shutdown — accumulating connections outside every count the
+bus keeps.
+
+```text
+default  5s   (defaultRealtimeWriteTimeout)
+maximum  30s  (maxRealtimeWriteTimeout)
+option        WithRealtimeWriteTimeout — rejects 0, negative, and over-maximum
+```
+
+Refreshed before each write, not set once when the stream opens: set once, the
+same value is a connection lifetime, and a healthy long-lived stream would die
+having done nothing wrong. It is **not** the heartbeat interval — one is how
+often a quiet stream proves it is alive, the other is how long a single write
+may block — and the option is rejected rather than clamped, for the same reason
+the queue bounds are constants.
+
+A writer that cannot take a deadline fails with a sanitized `500` before the
+`200`. Continuing unbounded is the exact condition the deadline exists to
+prevent.
+
+Subscription failures keep their categories: a malformed filter is `400`
+`invalid_request`, while capacity and a closed bus are `503`
+`realtime_unavailable`. An SSE client's reflex on a `5xx` is to reconnect in a
+loop, so telling a caller with a bad identifier that the server is unavailable
+costs more here than on a POST.
+
 Wire frames carry explicit DTOs in `httpapi`; domain realtime types gain no
 JSON tags.
 
@@ -332,7 +382,9 @@ reports success, because authority lives in the database.
 ## Security
 
 Covered in `docs/SECURITY.md`: no raw event payload; bounded queues and
-subscriber count; slow consumers disconnected; filters applied before enqueue;
+subscriber count; slow consumers disconnected; filter input validated at the
+bus before a slot is taken; every SSE write bounded by a refreshed deadline;
+filters applied before enqueue;
 no subscriber stalls another; no durable replay; reconnect requires resync;
 delivery failure never falsifies a durable outcome; publication after commit;
 no broker, CORS, authentication claim, listener, or event-history table; and
@@ -394,13 +446,19 @@ diff, scorecard or gate, and **cannot publish**.
 
 ## Mutation Tests
 
-Each must fail a targeted test, and all are restored before commit:
+Each must fail a targeted test, and all are restored before commit (verified by digest against a pristine copy — an earlier harness in this milestone silently overwrote a source file):
 publish-before-commit ordering; replay suppression; filter-before-enqueue;
 queue-full disconnect; subscriber isolation; subscriber-count bound; context
 cancellation removal; bus close semantics; ordering; no-history reconnect;
 `stream_ready` requiring resync; no-publisher behavior; applied-ingest event
 count; new-behavior detection; saturation projection; realtime failure not
-changing a durable outcome; SSE privacy; HTTP unable to publish.
+changing a durable outcome; SSE privacy; HTTP unable to publish; filter
+validation removed entirely and per dimension; a malformed filter mapped to
+`503` instead of `400`; an unsupported write deadline ignored; the deadline set
+once instead of per write; the heartbeat written without one; a stalled write
+leaving its subscription registered; and the write-timeout option clamped
+rather than rejected; and filter validation moved to after registration,
+which is the specific way a bound becomes reachable by the input it rejects.
 
 ## Benchmarks
 

@@ -710,6 +710,17 @@ committed mutation, over an in-memory bus with no history.
 - **Filters are applied before enqueue**, so a busy run cannot fill the queue
   of a subscriber watching a quiet one. Without that the per-subscriber bound
   would be nominal.
+- **Filter input is validated by the bus, before a slot is taken.** Nothing
+  else checks it — an unmatched filter is a legitimate subscription to a quiet
+  stream, so no store lookup stands between a caller's string and the bus.
+  Each non-empty dimension obeys the same identifier rule as every other
+  platform value (256 bytes, valid UTF-8, no control characters, no
+  surrounding whitespace). Validating in the SSE handler instead would leave
+  the bus reachable, unchecked, by any in-process caller; validating after
+  registration would let malformed input exhaust the subscriber bound with
+  identifiers the bus was about to reject. A malformed filter is a `400`
+  `invalid_request`, never a `503` — an SSE client’s reflex on a `5xx` is to
+  reconnect against a request that will never succeed.
 - **One subscriber cannot stall another.** Publishing to one never waits for
   another, and a dead subscriber affects only itself.
 - **No durable replay history exists.** Nothing is retained after delivery,
@@ -731,6 +742,20 @@ committed mutation, over an in-memory bus with no history.
   exactly; nothing here is authenticated and nothing claims to be.
 - **An SSE disconnect releases its subscription**, so a client that hangs up
   does not hold a slot.
+- **Every SSE write has a finite deadline**, refreshed immediately before it,
+  covering the handshake, every domain frame and every heartbeat. The bus
+  bounds what it queues; it does not bound a client that holds a healthy
+  subscription and stops draining its socket. That client’s queue never fills,
+  so it is never disconnected — and the handler blocks inside `Write` where it
+  can no longer observe its context, its subscription, or a shutdown, so the
+  stalled connections accumulate outside every count the bus keeps. The
+  deadline is refreshed per write rather than set once (set once it is a
+  connection lifetime, killing healthy streams), is separate from the
+  heartbeat interval (a slower keepalive must not buy a stalled client more
+  time), and is configurable only within a fixed maximum, rejected rather than
+  clamped outside it. A writer that cannot take a deadline is refused with a
+  sanitized `500` before any `200`, because continuing unbounded is precisely
+  the condition the deadline prevents.
 
 ### Platform identity cannot become behavioral identity
 

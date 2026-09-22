@@ -22,8 +22,16 @@
 //
 // Beyond the domain above, this package holds the evaluation logic built on
 // it — bounded result aggregation, behavioral diff, comparative scorecards,
-// deterministic hard gates — and, since task 057, the local SQLite
-// persistence adapter.
+// deterministic hard gates — the local SQLite persistence adapter (task 057),
+// the ControlPlane that owns ingest (task 058), and the in-memory realtime
+// bus (task 059).
+//
+// Realtime lives here but is not domain state: it is a bounded, ephemeral
+// notification of a mutation that already committed, and it retains nothing.
+// The store above stays the only thing anyone trusts. Its filter is validated
+// here for the same reason the evidence markers are private — the bound has
+// to hold for every caller, not only the one transport that exists today. See
+// docs/adr/0032-realtime-is-bounded-ephemeral-not-authoritative.md.
 //
 // The adapter lives here rather than in a subpackage for one reason: the
 // aggregate and the behavioral snapshot carry private bound markers, and
@@ -31,8 +39,9 @@
 // stored fields — an API for forging trusted evidence. Package privacy is
 // what makes that marker mean anything.
 //
-// What this package is still not: transport or an API, realtime delivery,
-// promotion, a full environment model, or raw event history. Those are
+// What this package is still not: a transport or an HTTP surface (that is the
+// httpapi subpackage, which holds a ControlPlane and nothing else), durable
+// replay, promotion, a full environment model, or raw event history. Those are
 // separate tasks, and each would be easier to add here than to remove later.
 package platform
 
