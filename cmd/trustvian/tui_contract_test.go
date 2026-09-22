@@ -113,12 +113,30 @@ type fakePlane struct {
 	progRequests int
 	sseRequests  int
 	lastEventIDs []string
-	runBody      string
-	progressBody string
-	runStatus    int
-	holdProgress chan struct{}
-	streams      []*fakeStream
-	sseHandler   func(w http.ResponseWriter, r *http.Request, s *fakeStream)
+	// runBodies and progressBodies are consumed one per request, the last
+	// repeating. Scripted rather than mutable, because a mutable field makes
+	// the response depend on when a request happens to arrive: a resync whose
+	// read landed after the test updated the field would silently receive the
+	// *next* answer, and an assertion distinguishing first from second read
+	// would then pass or fail on scheduling.
+	runBodies      []string
+	progressBodies []string
+	runStatus      int
+	holdProgress   chan struct{}
+
+	// progressEntered is signalled after the progress handler has captured
+	// its response body and before it blocks on holdProgress.
+	//
+	// Request counters alone cannot prove which body a request received: the
+	// counter increments on arrival, but the body is chosen a moment later. A
+	// test mutating the server's answer between those two points would
+	// silently hand the *next* answer to the *first* request, and an
+	// assertion distinguishing first from second read would then pass or fail
+	// on scheduling. That is exactly how this test was flaky.
+	progressEntered chan struct{}
+
+	streams    []*fakeStream
+	sseHandler func(w http.ResponseWriter, r *http.Request, s *fakeStream)
 
 	// heartbeat mirrors the real server: task 059 sends comment frames on a
 	// quiet healthy stream, so a fake that sends nothing at all is not a
@@ -182,10 +200,10 @@ func (s *fakeStream) serve(w http.ResponseWriter, flusher http.Flusher, requestD
 func newFakePlane(t *testing.T) *fakePlane {
 	t.Helper()
 	p := &fakePlane{
-		t:            t,
-		runStatus:    200,
-		runBody:      `{"version":"1","id":"run-42","candidate_id":"cand-2","environment":"local","behavioral_profile":"checkout-agent","status":"running"}`,
-		progressBody: `{"version":"1","run_id":"run-42","status":"running","record_count":"18","behavior_observation_count":"18","distinct_behavior_count":11,"behavior_complete":true,"next_ingest_sequence":"19"}`,
+		t:              t,
+		runStatus:      200,
+		runBodies:      []string{`{"version":"1","id":"run-42","candidate_id":"cand-2","environment":"local","behavioral_profile":"checkout-agent","status":"running"}`},
+		progressBodies: []string{`{"version":"1","run_id":"run-42","status":"running","record_count":"18","behavior_observation_count":"18","distinct_behavior_count":11,"behavior_complete":true,"next_ingest_sequence":"19"}`},
 	}
 
 	mux := http.NewServeMux()
@@ -243,7 +261,7 @@ func newFakePlane(t *testing.T) *fakePlane {
 	mux.HandleFunc("GET /v1/evaluation-runs/{id}", func(w http.ResponseWriter, r *http.Request) {
 		p.mu.Lock()
 		p.runRequests++
-		status, body := p.runStatus, p.runBody
+		status, body := p.runStatus, takeScripted(&p.runBodies, p.runRequests)
 		p.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
@@ -253,8 +271,16 @@ func newFakePlane(t *testing.T) *fakePlane {
 	mux.HandleFunc("GET /v1/evaluation-runs/{id}/progress", func(w http.ResponseWriter, r *http.Request) {
 		p.mu.Lock()
 		p.progRequests++
-		hold, body := p.holdProgress, p.progressBody
+		hold, body := p.holdProgress, takeScripted(&p.progressBodies, p.progRequests)
+		entered := p.progressEntered
+		p.progressEntered = nil
 		p.mu.Unlock()
+
+		// Announced only after the body is fixed, so a waiter knows exactly
+		// which response this request will produce.
+		if entered != nil {
+			close(entered)
+		}
 
 		if hold != nil {
 			select {
@@ -278,6 +304,15 @@ func (p *fakePlane) serveSSE(handler func(w http.ResponseWriter, r *http.Request
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.sseHandler = handler
+}
+
+// takeScripted returns the body for the nth request, the last one repeating.
+func takeScripted(bodies *[]string, n int) string {
+	list := *bodies
+	if n <= len(list) {
+		return list[n-1]
+	}
+	return list[len(list)-1]
 }
 
 func (p *fakePlane) counts() (sse, run, progress int) {
@@ -541,8 +576,8 @@ func TestTerminalLifecycleTriggersExactlyOneResync(t *testing.T) {
 			}
 
 			plane.mu.Lock()
-			plane.runBody = strings.Replace(plane.runBody, `"status":"running"`,
-				`"status":"completed"`, 1)
+			plane.runBodies = append(plane.runBodies, strings.Replace(
+				plane.runBodies[0], `"status":"running"`, `"status":"completed"`, 1))
 			plane.mu.Unlock()
 
 			stream.send(kind, fmt.Sprintf(
@@ -628,6 +663,8 @@ func TestBufferedTerminalEventStillTriggersFinalResync(t *testing.T) {
 		t.Run(terminal.kind, func(t *testing.T) {
 			plane := newFakePlane(t)
 			plane.holdProgress = make(chan struct{})
+			plane.progressEntered = make(chan struct{})
+			progressEntered := plane.progressEntered
 
 			model, _ := newTestModel(t, plane)
 			driver := newDriver(t, model)
@@ -637,6 +674,27 @@ func TestBufferedTerminalEventStillTriggersFinalResync(t *testing.T) {
 			if !driver.settleUntil(func() bool { return model.state == stateResyncing },
 				5*time.Second) {
 				t.Fatalf("never reached resyncing; state = %v", model.state)
+			}
+
+			// The first run read must have happened...
+			if !driver.settleUntil(func() bool {
+				_, runs, _ := plane.counts()
+				return runs == 1
+			}, 5*time.Second) {
+				t.Fatal("the first authoritative run read never happened")
+			}
+			// ...and the first progress handler must have captured its body
+			// and be blocked. Only then is the stale snapshot guaranteed, and
+			// only then is it safe to publish the final answer.
+			if !driver.settleUntil(func() bool {
+				select {
+				case <-progressEntered:
+					return true
+				default:
+					return false
+				}
+			}, 5*time.Second) {
+				t.Fatal("the first progress handler never captured its response body")
 			}
 
 			// The run finishes while the first resync is blocked.
@@ -651,37 +709,48 @@ func TestBufferedTerminalEventStillTriggersFinalResync(t *testing.T) {
 
 			// The authoritative answer moves on while the first read is held,
 			// so a stale snapshot is distinguishable from a fresh one.
+			// Appended, not replaced: the first resync is guaranteed the stale
+			// answer no matter when its request actually lands, so
+			// record_count 19 can only come from a genuine second read.
 			plane.mu.Lock()
-			plane.runBody = fmt.Sprintf(`{"version":"1","id":"run-42","candidate_id":"cand-2",`+
-				`"environment":"local","behavioral_profile":"checkout-agent","status":%q}`,
-				terminal.status)
-			plane.progressBody = `{"version":"1","run_id":"run-42","status":"` + terminal.status +
-				`","record_count":"19","behavior_observation_count":"19",` +
-				`"distinct_behavior_count":12,"behavior_complete":true,"next_ingest_sequence":"20"}`
+			plane.runBodies = append(plane.runBodies, fmt.Sprintf(
+				`{"version":"1","id":"run-42","candidate_id":"cand-2",`+
+					`"environment":"local","behavioral_profile":"checkout-agent","status":%q}`,
+				terminal.status))
+			plane.progressBodies = append(plane.progressBodies,
+				`{"version":"1","run_id":"run-42","status":"`+terminal.status+
+					`","record_count":"19","behavior_observation_count":"19",`+
+					`"distinct_behavior_count":12,"behavior_complete":true,"next_ingest_sequence":"20"}`)
 			plane.mu.Unlock()
 
 			close(plane.holdProgress)
 
-			// A second authoritative read must happen, and its values must win.
+			// The whole externally meaningful postcondition, waited for as one
+			// settled state rather than asserted piecemeal.
+			//
+			// Counting requests alone is too weak: counters increment on
+			// arrival, so a final resync still in flight satisfies them while
+			// its result has not been applied — and m.resyncing is then
+			// legitimately still true. Asserting that separately raced the
+			// model loop, which is the flake this replaces.
+			//
+			// Exactly 2 of each, not "at least": one initial resync, one final
+			// resync, and nothing else may fetch.
 			if !driver.settleUntil(func() bool {
 				_, runs, progress := plane.counts()
-				return runs >= 2 && progress >= 2 && model.snapshot.progress.RecordCount == "19"
-			}, 10*time.Second) {
+				return runs == 2 &&
+					progress == 2 &&
+					model.snapshot.run.Status == terminal.status &&
+					model.snapshot.progress.RecordCount == "19" &&
+					model.snapshot.progress.DistinctBehaviorCount == 12 &&
+					!model.resyncing
+			}, 15*time.Second) {
 				_, runs, progress := plane.counts()
-				t.Fatalf("no final resync after a buffered %s: runs=%d progress=%d records=%q",
-					terminal.kind, runs, progress, model.snapshot.progress.RecordCount)
-			}
-
-			if model.snapshot.run.Status != terminal.status {
-				t.Errorf("status = %q, want %q", model.snapshot.run.Status, terminal.status)
-			}
-			if model.snapshot.progress.DistinctBehaviorCount != 12 {
-				t.Errorf("distinct behaviors = %d, want the final authoritative 12",
-					model.snapshot.progress.DistinctBehaviorCount)
-			}
-			// And the guard is released, not stuck.
-			if model.resyncing {
-				t.Error("m.resyncing is still true; a later terminal event could never resync")
+				t.Fatalf("buffered %s did not produce one applied final resync:\n"+
+					"  runs=%d progress=%d status=%q records=%q behaviors=%d resyncing=%v",
+					terminal.kind, runs, progress, model.snapshot.run.Status,
+					model.snapshot.progress.RecordCount,
+					model.snapshot.progress.DistinctBehaviorCount, model.resyncing)
 			}
 
 			// Exactly one final read, and nothing periodic after it.

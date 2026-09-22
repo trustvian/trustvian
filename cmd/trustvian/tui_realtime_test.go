@@ -143,7 +143,7 @@ func TestStartupFailureIsFatalNotAReconnectLoop(t *testing.T) {
 	plane := newFakePlane(t)
 	plane.mu.Lock()
 	plane.runStatus = 404
-	plane.runBody = `{"version":"1","error":{"code":"not_found","message":"no such run"}}`
+	plane.runBodies = []string{`{"version":"1","error":{"code":"not_found","message":"no such run"}}`}
 	plane.mu.Unlock()
 
 	model, _ := newTestModel(t, plane)
