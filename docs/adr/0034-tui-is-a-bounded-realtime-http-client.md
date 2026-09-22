@@ -113,6 +113,14 @@ mutation lands between the two and is seen by neither. The window is small,
 which is exactly what makes it the kind of bug that survives review and shows
 up once a month in someone's dashboard.
 
+A terminal lifecycle event that arrives *during* a resync is buffered like any
+other frame, and its replay must still schedule the one final authoritative
+read. The first implementation dropped the command that replay returned, so a
+run completing while the first resync was in flight kept the stale counts
+permanently — status from the event, numbers from before it, and the
+one-resync guard stuck closed so nothing could re-arm it. Exactly one final
+read per terminal event, whichever state it arrives in.
+
 Draining continues *during* the authoritative reads. The bus queue is 64
 events; a client that paused reading while its own HTTP was in flight would
 fill it and be disconnected for being slow — turning a slow resync into a
@@ -125,6 +133,48 @@ streams rendered as one list would assert a continuity that does not exist —
 the client cannot know what happened while it was away, and the authoritative
 summary, not the retained rows, is what bridges the gap.
 
+### 11b. Silence on an active stream is bounded
+
+A connection that stops delivering bytes without closing produces no error and
+no EOF. That is what a half-open TCP connection looks like, and a dashboard
+reading one blocks forever while the screen keeps saying LIVE — asserting state
+it can no longer refresh, which is the single failure this interface must not
+have.
+
+`http.Transport.IdleConnTimeout` does **not** cover it: that governs unused
+keep-alive connections waiting in the pool, and an active response body is
+never idle by its definition. The first implementation set it and looked
+protected. It is now named `sseIdleConnPoolTimeout` so the mistake is harder to
+repeat.
+
+The real bound is a read-inactivity watchdog: an activity-aware reader feeds a
+capacity-1 signal, one watchdog per stream resets a single timer, and expiry
+cancels that stream's context. 60s — four times task 059's 15s heartbeat, so
+three consecutive heartbeats must be missed. Generous on purpose: this is a
+liveness tolerance, not a polling interval, and a false reconnect costs a
+resync while a missed disconnect costs a lie on screen.
+
+Any byte refreshes it, heartbeat comments included. They never become domain
+events, so a client counting only events would disconnect a healthy evaluation
+that simply had nothing to report.
+
+### 11c. Known events are validated structurally; unknown ones are not
+
+An unknown event name is held to no shape — that is what additive compatibility
+means. A known one must agree with itself: payload version, `kind` matching the
+SSE event name, `scope.run_id` matching the watched run, and the payload half
+that belongs to the kind present while the other is absent.
+
+Each of those was previously absorbed in silence, which is the problem. An
+observation with no observation payload did nothing at all; a mismatched kind
+was applied under the wrong name; and an event for another run would have been
+rendered as this run's. The last is the sharpest: the subscription is filtered
+server-side, so a mismatch means the filter did not hold, and attributing one
+agent's behavior to another is worse than showing nothing.
+
+This is wire integrity only. Lifecycle legality, gate semantics and field
+validation stay the server's, for the same reason point 3 gives.
+
 ### 12. No polling
 
 No ticker over `/progress`, no database watcher, no filesystem watcher.
@@ -136,6 +186,22 @@ That last one is event-driven, not a loop: a completed run's final counts are
 worth one read, and no periodic refresh follows it. The SSE heartbeat is
 transport liveness and is not a polling signal. A test asserts a quiet healthy
 stream issues exactly one `/run` and one `/progress`.
+
+### 12b. Abandoning a generation cancels its work
+
+Generation numbers stop a stale *result* from being applied. They do not stop
+the request.
+
+Every network operation therefore runs under a generation-scoped context.
+Replacing a generation — manual `r`, stream failure, protocol failure, pending
+overflow, quit — cancels the open and the authoritative reads that belonged to
+it. Without that, repeated `r` against a blocked endpoint accumulated sockets
+and goroutines whose answers were already destined to be discarded: the
+resource contract said "one active generation" while the process held several.
+
+The context spans the whole generation rather than just the open, because the
+SSE response body is read under it; cancelling once `open` returned would tear
+down the stream that had just succeeded.
 
 ### 13. Bounded display state
 

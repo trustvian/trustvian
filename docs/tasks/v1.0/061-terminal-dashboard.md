@@ -91,6 +91,14 @@ that observation must still appear after the snapshot is applied.
 flight would fill it and be disconnected — turning a slow resync into a
 reconnect loop.
 
+**A terminal lifecycle event buffered during a resync still gets its final
+authoritative read.** Replaying a pending frame returns a command exactly when
+that frame is a completion, failure or cancellation, and that command *is* the
+final read. Discarding it left the status updated from the event and the counts
+frozen at the stale snapshot, with the one-resync guard stuck closed. One
+terminal event produces exactly one final resync whether it arrives while LIVE
+or while a resync is still in flight.
+
 ## Authoritative State
 
 Exactly two reads per resync: the run and its progress. `ingest-state` is not
@@ -162,17 +170,40 @@ disconnect.
 so a closed stream means the stream is incomplete — reconnect and resync. Only
 lifecycle events determine run status.
 
+**Silence is bounded too.** An active stream that stops delivering bytes
+without closing produces no error and no EOF, which is exactly what a half-open
+connection looks like — and a dashboard that keeps showing LIVE against one is
+asserting state it can no longer refresh. `sseReadIdleTimeout` (60s, four times
+task 059's 15s heartbeat) ends such a stream; before first synchronization that
+is fatal, after it a reconnect, identical to an EOF.
+
+Any byte refreshes the bound, heartbeat comments included. They never become
+domain events, so a client counting only events would disconnect a healthy but
+quiet evaluation. `http.Transport.IdleConnTimeout` is **not** this mechanism —
+it governs unused pooled connections and never touches an active body; it is
+named `sseIdleConnPoolTimeout` here so the two cannot be confused.
+
 ## Bounded Memory
 
 ```text
-tuiObservationCapacity = 100   displayed rows; oldest evicted
-tuiPendingEventCapacity = 64   frames buffered during resync; overflow reconnects
-maxSSELineBytes        = 64 KiB
-maxSSEFrameBytes       = 64 KiB
-connections             1 SSE + bounded authoritative reads
-reconnect timers        ≤ 1
-durable/replay history  0
+tuiObservationCapacity  = 100    displayed rows; oldest evicted
+tuiPendingEventCapacity = 64     frames buffered during resync; overflow reconnects
+maxSSELineBytes         = 64 KiB
+maxSSEFrameBytes        = 64 KiB
+sseReadIdleTimeout      = 60s    silence on an active stream
+connections              1 SSE + bounded authoritative reads
+reconnect timers         ≤ 1
+idle watchdogs           ≤ 1 per stream, one shared capacity-1 signal
+durable/replay history   0
 ```
+
+**Abandoning a generation cancels its work, not just its result.** Generation
+numbers stop a stale answer being applied; they do not stop the request. Every
+network operation runs under a generation-scoped context, so a manual `r`, a
+stream failure, a pending overflow or a quit cancels the open and the
+authoritative reads that belonged to the generation being replaced. Without
+that, repeated `r` against a blocked endpoint accumulated sockets and
+goroutines whose answers were already destined to be discarded.
 
 The two bounds differ in kind, and the difference is deliberate:
 
@@ -194,10 +225,25 @@ Reads are bounded at both the line and frame level; exceeding either makes the
 stream invalid rather than allocating for it.
 
 **Unknown event names are ignored and the stream continues** — the
-compatibility contract requires clients to tolerate additive kinds. A *known*
-event with malformed JSON or an unsupported payload version is different: the
-stream can no longer be trusted, so it reconnects and resyncs rather than
-silently discarding a frame and pretending nothing was lost.
+compatibility contract requires clients to tolerate additive kinds, and an
+unknown one is held to no shape at all. A *known* event is validated for wire
+structural integrity, and failing that invalidates the stream:
+
+```text
+payload version == "1"
+envelope.kind   == the SSE event name
+scope.run_id    == the watched run
+observation     ⇒ observation payload present, evaluation absent
+lifecycle       ⇒ evaluation payload present, observation absent
+```
+
+Structure only — no lifecycle legality, no gate semantics, no field-by-field
+domain checks. Each of those failures was previously absorbed in silence: an
+observation with no payload did nothing, a mismatched kind was applied under
+the wrong name, and an event scoped to another run would have been rendered as
+this run's. That last one matters most: the subscription is filtered
+server-side, so a mismatch means the filter did not hold, and attributing
+another agent's behavior to this dashboard is worse than showing nothing.
 
 `stream_ready` must be the first domain frame, with `version: "1"`,
 `replay_available: false` and `resync_required: true`. Anything else — an

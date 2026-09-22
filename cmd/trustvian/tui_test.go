@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -83,7 +84,7 @@ func TestUnknownEventKindIsTolerated(t *testing.T) {
 	kind, _, err := classifyFrame(realtimeFrame{
 		event: "future_event_type",
 		data:  `{"version":"1","kind":"future_event_type","future":true}`,
-	})
+	}, "run-42")
 	if err != nil {
 		t.Fatalf("an unknown event kind must not fail the stream: %v", err)
 	}
@@ -112,7 +113,7 @@ func TestMalformedKnownEventInvalidatesStream(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, _, err := classifyFrame(tt.frame); err == nil {
+			if _, _, err := classifyFrame(tt.frame, "run-42"); err == nil {
 				t.Fatal("a malformed known event must invalidate the stream")
 			}
 		})
@@ -133,7 +134,7 @@ func TestUnknownObservationFieldsAreIgnored(t *testing.T) {
 		`"trust_score":0.9,"anomaly_score":0.1,"new_behavior":false,`+
 		`"prompt":%q,"attributes":{"tool_argument":%q}}}`, secret, secret)
 
-	kind, envelope, err := classifyFrame(realtimeFrame{event: kindObservation, data: data})
+	kind, envelope, err := classifyFrame(realtimeFrame{event: kindObservation, data: data}, "run-42")
 	if err != nil {
 		t.Fatalf("classifyFrame: %v", err)
 	}
@@ -671,4 +672,378 @@ func TestPendingBufferBoundIsEnforcedByTheModel(t *testing.T) {
 		t.Errorf("pending grew to %d, past the %d bound",
 			len(model.pending), tuiPendingEventCapacity)
 	}
+}
+
+// TestKnownEventStructuralValidation is the wire-integrity table.
+//
+// Every row here was previously accepted in silence. An observation with no
+// observation payload did nothing at all; a mismatched kind was applied under
+// the SSE name; an event scoped to another run would have been rendered as
+// this run's. None of those is an additive change a client should absorb —
+// each means the client and the server disagree about what arrived, and
+// continuing would present an incomplete stream as a complete one.
+func TestKnownEventStructuralValidation(t *testing.T) {
+	const watched = "run-42"
+
+	tests := []struct {
+		name    string
+		frame   realtimeFrame
+		wantErr bool
+	}{
+		{
+			name: "well-formed observation",
+			frame: realtimeFrame{event: kindObservation, data: `{"version":"1",
+				"kind":"observation","scope":{"run_id":"run-42"},
+				"observation":{"sequence":"1"}}`},
+		},
+		{
+			name: "well-formed lifecycle",
+			frame: realtimeFrame{event: kindEvaluationStarted, data: `{"version":"1",
+				"kind":"evaluation_started","scope":{"run_id":"run-42"},
+				"evaluation":{"status":"running"}}`},
+		},
+		{
+			name: "additive fields inside version 1 are tolerated",
+			frame: realtimeFrame{event: kindObservation, data: `{"version":"1",
+				"kind":"observation","scope":{"run_id":"run-42","future":"x"},
+				"observation":{"sequence":"1","future_field":{"a":1}},"extra":true}`},
+		},
+
+		{
+			name: "observation with no observation payload",
+			frame: realtimeFrame{event: kindObservation, data: `{"version":"1",
+				"kind":"observation","scope":{"run_id":"run-42"}}`},
+			wantErr: true,
+		},
+		{
+			name: "observation carrying only an evaluation",
+			frame: realtimeFrame{event: kindObservation, data: `{"version":"1",
+				"kind":"observation","scope":{"run_id":"run-42"},
+				"evaluation":{"status":"running"}}`},
+			wantErr: true,
+		},
+		{
+			name: "lifecycle with no evaluation payload",
+			frame: realtimeFrame{event: kindEvaluationCompleted, data: `{"version":"1",
+				"kind":"evaluation_completed","scope":{"run_id":"run-42"}}`},
+			wantErr: true,
+		},
+		{
+			name: "lifecycle carrying only an observation",
+			frame: realtimeFrame{event: kindEvaluationCompleted, data: `{"version":"1",
+				"kind":"evaluation_completed","scope":{"run_id":"run-42"},
+				"observation":{"sequence":"1"}}`},
+			wantErr: true,
+		},
+		{
+			name: "event name and payload kind disagree",
+			frame: realtimeFrame{event: kindObservation, data: `{"version":"1",
+				"kind":"evaluation_completed","scope":{"run_id":"run-42"},
+				"observation":{"sequence":"1"}}`},
+			wantErr: true,
+		},
+		{
+			name: "missing kind",
+			frame: realtimeFrame{event: kindObservation, data: `{"version":"1",
+				"scope":{"run_id":"run-42"},"observation":{"sequence":"1"}}`},
+			wantErr: true,
+		},
+		{
+			name: "missing scope run id",
+			frame: realtimeFrame{event: kindObservation, data: `{"version":"1",
+				"kind":"observation","scope":{},"observation":{"sequence":"1"}}`},
+			wantErr: true,
+		},
+		{
+			name: "wrong scope run id",
+			frame: realtimeFrame{event: kindObservation, data: `{"version":"1",
+				"kind":"observation","scope":{"run_id":"run-99"},
+				"observation":{"sequence":"1"}}`},
+			wantErr: true,
+		},
+		{
+			name: "unsupported payload version",
+			frame: realtimeFrame{event: kindObservation, data: `{"version":"2",
+				"kind":"observation","scope":{"run_id":"run-42"},
+				"observation":{"sequence":"1"}}`},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kind, _, err := classifyFrame(tt.frame, watched)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("a malformed known event was accepted (kind = %q)", kind)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("a well-formed event was rejected: %v", err)
+			}
+			if kind != tt.frame.event {
+				t.Errorf("kind = %q, want %q", kind, tt.frame.event)
+			}
+		})
+	}
+}
+
+// TestUnknownEventKindsStayForwardCompatible keeps the other side of the
+// contract: an event name this build does not know is held to no shape at all.
+func TestUnknownEventKindsStayForwardCompatible(t *testing.T) {
+	tests := []realtimeFrame{
+		{event: "future_event_type", data: `{"version":"1","kind":"future_event_type"}`},
+		// Deliberately violating every structural rule above — none applies to
+		// an unknown kind, because this build cannot know what shape it has.
+		{event: "future_event_type", data: `{"version":"9","scope":{"run_id":"run-99"}}`},
+		{event: "policy_something", data: `not even json`},
+		{event: "another_future", data: ``},
+	}
+
+	for _, frame := range tests {
+		t.Run(frame.event+"/"+frame.data, func(t *testing.T) {
+			kind, _, err := classifyFrame(frame, "run-42")
+			if err != nil {
+				t.Fatalf("an unknown event kind must never fail the stream: %v", err)
+			}
+			if kind != "" {
+				t.Errorf("kind = %q, want empty so the caller ignores it", kind)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------
+// Blocker 4: abandoning a generation cancels its work
+// ---------------------------------------------------------------------
+
+// blockingOpener records the context of every open and never returns until it
+// is cancelled.
+type blockingOpener struct {
+	mu       sync.Mutex
+	contexts []context.Context
+	started  chan struct{}
+}
+
+func newBlockingOpener() *blockingOpener {
+	return &blockingOpener{started: make(chan struct{}, 16)}
+}
+
+func (o *blockingOpener) open(ctx context.Context, runID string) (*realtimeStream, error) {
+	o.mu.Lock()
+	o.contexts = append(o.contexts, ctx)
+	o.mu.Unlock()
+
+	select {
+	case o.started <- struct{}{}:
+	default:
+	}
+
+	<-ctx.Done()
+	return nil, operationalErrorf("open cancelled: %v", ctx.Err())
+}
+
+func (o *blockingOpener) contextAt(t *testing.T, i int) context.Context {
+	t.Helper()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if len(o.contexts) <= i {
+		t.Fatalf("open %d never started; %d so far", i, len(o.contexts))
+	}
+	return o.contexts[i]
+}
+
+func (o *blockingOpener) openCount() int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return len(o.contexts)
+}
+
+// blockingReader blocks inside the authoritative read, recording its context.
+type blockingReader struct {
+	mu       sync.Mutex
+	contexts []context.Context
+	release  chan struct{}
+}
+
+func newBlockingReader() *blockingReader {
+	return &blockingReader{release: make(chan struct{})}
+}
+
+func (r *blockingReader) run(ctx context.Context, runID string) (evaluationRunDTO, error) {
+	r.mu.Lock()
+	r.contexts = append(r.contexts, ctx)
+	r.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return evaluationRunDTO{}, operationalErrorf("run read cancelled: %v", ctx.Err())
+	case <-r.release:
+		return evaluationRunDTO{ID: runID, Status: "running"}, nil
+	}
+}
+
+func (r *blockingReader) progress(ctx context.Context, runID string) (progressDTO, error) {
+	select {
+	case <-ctx.Done():
+		return progressDTO{}, operationalErrorf("progress read cancelled: %v", ctx.Err())
+	case <-r.release:
+		return progressDTO{RunID: runID}, nil
+	}
+}
+
+func (r *blockingReader) contextAt(t *testing.T, i int) context.Context {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.contexts) <= i {
+		t.Fatalf("authoritative read %d never started; %d so far", i, len(r.contexts))
+	}
+	return r.contexts[i]
+}
+
+func waitCancelled(t *testing.T, ctx context.Context, what string) {
+	t.Helper()
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s was never cancelled; obsolete work keeps running", what)
+	}
+}
+
+// TestReconnectCancelsBlockedOpen proves generation numbers are not enough.
+//
+// They stop a stale *result* being applied. They do not stop the work: before
+// this, a blocked open kept its socket and goroutine alive until it timed out
+// or the program exited, so repeated `r` accumulated connections whose answers
+// were already destined to be discarded.
+func TestReconnectCancelsBlockedOpen(t *testing.T) {
+	opener := newBlockingOpener()
+	model := newTUIModel(context.Background(), "run-42", opener, newBlockingReader())
+
+	// Init's open blocks.
+	go func() { model.Init()() }()
+	select {
+	case <-opener.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first open never started")
+	}
+	first := opener.contextAt(t, 0)
+
+	// Manual reconnect abandons that generation.
+	_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	waitCancelled(t, first, "the abandoned open")
+
+	// Only now does the replacement start, under a live context of its own.
+	go func() { cmd() }()
+	select {
+	case <-opener.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replacement open never started")
+	}
+	second := opener.contextAt(t, 1)
+	if second.Err() != nil {
+		t.Fatalf("the new generation's context is already cancelled: %v", second.Err())
+	}
+
+	model.endGeneration()
+	waitCancelled(t, second, "the final open")
+}
+
+// TestReconnectCancelsBlockedAuthoritativeRead covers the other in-flight
+// operation.
+func TestReconnectCancelsBlockedAuthoritativeRead(t *testing.T) {
+	reader := newBlockingReader()
+	model := newTUIModel(context.Background(), "run-42", newBlockingOpener(), reader)
+	model.state = stateResyncing
+
+	// Start a resync that blocks inside the run read.
+	go func() { model.resync()() }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for reader.contextCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	first := reader.contextAt(t, 0)
+
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	waitCancelled(t, first, "the abandoned authoritative read")
+
+	model.endGeneration()
+}
+
+func (r *blockingReader) contextCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.contexts)
+}
+
+// TestRepeatedReconnectDoesNotAccumulateWork drives several `r` presses
+// against blocking fakes and checks cancellation directly rather than timing.
+func TestRepeatedReconnectDoesNotAccumulateWork(t *testing.T) {
+	opener := newBlockingOpener()
+	model := newTUIModel(context.Background(), "run-42", opener, newBlockingReader())
+
+	go func() { model.Init()() }()
+	select {
+	case <-opener.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first open never started")
+	}
+
+	const presses = 5
+	for i := range presses {
+		previous := opener.contextAt(t, i)
+
+		_, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+		waitCancelled(t, previous, fmt.Sprintf("open %d", i))
+
+		go func() { cmd() }()
+		select {
+		case <-opener.started:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("replacement open %d never started", i+1)
+		}
+	}
+
+	// Every generation but the current one is cancelled: at most one live.
+	live := 0
+	for i := range opener.openCount() {
+		if opener.contextAt(t, i).Err() == nil {
+			live++
+		}
+	}
+	if live != 1 {
+		t.Fatalf("%d open contexts are still live after %d reconnects, want exactly 1",
+			live, presses)
+	}
+
+	model.endGeneration()
+}
+
+// TestStaleGenerationResultCannotMutateState keeps the original guard honest:
+// cancellation is additional to the generation check, not a replacement.
+func TestStaleGenerationResultCannotMutateState(t *testing.T) {
+	model := newTUIModel(context.Background(), "run-42", newBlockingOpener(), newBlockingReader())
+	staleGeneration := model.generation
+
+	_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+
+	// A result from the abandoned generation arrives late.
+	_, _ = model.Update(resyncDoneMsg{
+		snapshot: authoritativeSnapshot{taken: true,
+			run: evaluationRunDTO{ID: "run-42", Status: "STALE"}},
+		generation: staleGeneration,
+	})
+	if model.snapshot.taken {
+		t.Fatal("a stale generation's snapshot was applied")
+	}
+
+	_, _ = model.Update(frameMsg{generation: staleGeneration,
+		frame: realtimeFrame{event: kindObservation, data: observationFrame("99", true)}})
+	if len(model.live) != 0 {
+		t.Fatal("a stale generation's frame was displayed")
+	}
+
+	model.endGeneration()
 }

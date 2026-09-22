@@ -119,6 +119,11 @@ type fakePlane struct {
 	holdProgress chan struct{}
 	streams      []*fakeStream
 	sseHandler   func(w http.ResponseWriter, r *http.Request, s *fakeStream)
+
+	// heartbeat mirrors the real server: task 059 sends comment frames on a
+	// quiet healthy stream, so a fake that sends nothing at all is not a
+	// quiet healthy stream — it is a dead one.
+	heartbeat time.Duration
 }
 
 // fakeStream is one live SSE connection the test can write into.
@@ -211,6 +216,27 @@ func newFakePlane(t *testing.T) *fakePlane {
 			return
 		}
 		stream.send("stream_ready", `{"version":"1","replay_available":false,"resync_required":true}`)
+
+		p.mu.Lock()
+		heartbeat := p.heartbeat
+		p.mu.Unlock()
+		if heartbeat > 0 {
+			stopBeat := make(chan struct{})
+			defer close(stopBeat)
+			go func() {
+				ticker := time.NewTicker(heartbeat)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ticker.C:
+						stream.sendRaw(": keepalive\n\n")
+					case <-stopBeat:
+						return
+					}
+				}
+			}()
+		}
+
 		stream.serve(w, flusher, r.Context().Done())
 	})
 
@@ -245,6 +271,13 @@ func newFakePlane(t *testing.T) *fakePlane {
 	p.server = httptest.NewServer(mux)
 	t.Cleanup(p.server.Close)
 	return p
+}
+
+// serveSSE replaces the default SSE handler.
+func (p *fakePlane) serveSSE(handler func(w http.ResponseWriter, r *http.Request, s *fakeStream)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sseHandler = handler
 }
 
 func (p *fakePlane) counts() (sse, run, progress int) {
@@ -296,14 +329,27 @@ func (p *fakePlane) eventIDHeaders() []string {
 // newTestModel wires the model against a fake plane.
 func newTestModel(t *testing.T, p *fakePlane) (*tuiModel, context.CancelFunc) {
 	t.Helper()
+	return newTestModelIdle(t, p, sseReadIdleTimeout)
+}
+
+// newTestModelIdle shortens the active-stream liveness bound.
+//
+// Reaching into the opener's unexported field rather than adding a flag: a
+// liveness tolerance is not something a user should configure, and a flag
+// added for tests becomes operational surface nobody asked for.
+func newTestModelIdle(t *testing.T, p *fakePlane, idle time.Duration) (*tuiModel, context.CancelFunc) {
+	t.Helper()
 	client, err := newPlatformClient(p.server.URL, 5*time.Second)
 	if err != nil {
 		t.Fatalf("newPlatformClient: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	model := newTUIModel(ctx, "run-42", newSSEOpener(client.baseURL),
-		&httpAuthoritativeReader{client: client})
+
+	opener := newSSEOpener(client.baseURL)
+	opener.idleTimeout = idle
+
+	model := newTUIModel(ctx, "run-42", opener, &httpAuthoritativeReader{client: client})
 	return model, cancel
 }
 
@@ -442,7 +488,12 @@ func TestReconnectResyncsAndClearsRows(t *testing.T) {
 // TestQuietStreamDoesNotPoll proves realtime drives the dashboard.
 func TestQuietStreamDoesNotPoll(t *testing.T) {
 	plane := newFakePlane(t)
-	model, _ := newTestModel(t, plane)
+	// A real quiet stream still heartbeats. Without this the fake would be a
+	// dead connection, and the test would pass for the wrong reason once the
+	// client learned to notice silence.
+	plane.heartbeat = 20 * time.Millisecond
+
+	model, _ := newTestModelIdle(t, plane, 2*time.Second)
 	driver := newDriver(t, model)
 	defer driver.stop()
 
@@ -552,4 +603,235 @@ func TestPendingOverflowReconnectsRatherThanDropping(t *testing.T) {
 			len(model.pending), tuiPendingEventCapacity)
 	}
 	close(plane.holdProgress)
+}
+
+// ---------------------------------------------------------------------
+// Blocker 1: a terminal event buffered during resync still gets its
+// final authoritative read
+// ---------------------------------------------------------------------
+
+// TestBufferedTerminalEventStillTriggersFinalResync covers the case the
+// reviewed head lost.
+//
+// A run that finishes while the *first* resync is still in flight has its
+// completion buffered like any other frame. Replaying that frame updated the
+// status from the event and dropped the command that performs the final
+// authoritative read — so the counts stayed at whatever the stale first
+// snapshot said, forever, with m.resyncing stuck true so nothing could re-arm
+// it. The screen showed "completed" beside numbers from before completion.
+func TestBufferedTerminalEventStillTriggersFinalResync(t *testing.T) {
+	for _, terminal := range []struct{ kind, status string }{
+		{kindEvaluationCompleted, "completed"},
+		{kindEvaluationFailed, "failed"},
+		{kindEvaluationCancelled, "cancelled"},
+	} {
+		t.Run(terminal.kind, func(t *testing.T) {
+			plane := newFakePlane(t)
+			plane.holdProgress = make(chan struct{})
+
+			model, _ := newTestModel(t, plane)
+			driver := newDriver(t, model)
+			defer driver.stop()
+
+			stream := plane.streamAt(0)
+			if !driver.settleUntil(func() bool { return model.state == stateResyncing },
+				5*time.Second) {
+				t.Fatalf("never reached resyncing; state = %v", model.state)
+			}
+
+			// The run finishes while the first resync is blocked.
+			stream.send(terminal.kind, fmt.Sprintf(
+				`{"version":"1","kind":%q,"scope":{"run_id":"run-42"},`+
+					`"evaluation":{"status":%q}}`, terminal.kind, terminal.status))
+
+			if !driver.settleUntil(func() bool { return len(model.pending) == 1 },
+				5*time.Second) {
+				t.Fatalf("terminal event was not buffered; pending = %d", len(model.pending))
+			}
+
+			// The authoritative answer moves on while the first read is held,
+			// so a stale snapshot is distinguishable from a fresh one.
+			plane.mu.Lock()
+			plane.runBody = fmt.Sprintf(`{"version":"1","id":"run-42","candidate_id":"cand-2",`+
+				`"environment":"local","behavioral_profile":"checkout-agent","status":%q}`,
+				terminal.status)
+			plane.progressBody = `{"version":"1","run_id":"run-42","status":"` + terminal.status +
+				`","record_count":"19","behavior_observation_count":"19",` +
+				`"distinct_behavior_count":12,"behavior_complete":true,"next_ingest_sequence":"20"}`
+			plane.mu.Unlock()
+
+			close(plane.holdProgress)
+
+			// A second authoritative read must happen, and its values must win.
+			if !driver.settleUntil(func() bool {
+				_, runs, progress := plane.counts()
+				return runs >= 2 && progress >= 2 && model.snapshot.progress.RecordCount == "19"
+			}, 10*time.Second) {
+				_, runs, progress := plane.counts()
+				t.Fatalf("no final resync after a buffered %s: runs=%d progress=%d records=%q",
+					terminal.kind, runs, progress, model.snapshot.progress.RecordCount)
+			}
+
+			if model.snapshot.run.Status != terminal.status {
+				t.Errorf("status = %q, want %q", model.snapshot.run.Status, terminal.status)
+			}
+			if model.snapshot.progress.DistinctBehaviorCount != 12 {
+				t.Errorf("distinct behaviors = %d, want the final authoritative 12",
+					model.snapshot.progress.DistinctBehaviorCount)
+			}
+			// And the guard is released, not stuck.
+			if model.resyncing {
+				t.Error("m.resyncing is still true; a later terminal event could never resync")
+			}
+
+			// Exactly one final read, and nothing periodic after it.
+			deadline := time.Now().Add(1200 * time.Millisecond)
+			for time.Now().Before(deadline) {
+				driver.step(50 * time.Millisecond)
+			}
+			_, runs, progress := plane.counts()
+			if runs != 2 || progress != 2 {
+				t.Fatalf("authoritative reads = %d run / %d progress, want exactly 2 each",
+					runs, progress)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------
+// Blocker 2: active-stream liveness
+// ---------------------------------------------------------------------
+
+// TestSilentActiveStreamIsDetected proves a half-open connection cannot leave
+// the dashboard showing LIVE forever.
+//
+// http.Transport.IdleConnTimeout does not cover this: it governs unused
+// keep-alive connections in the pool, not an active response body. A stream
+// that stops delivering bytes without closing produces no error and no EOF,
+// so without a read-inactivity bound the reader simply blocks and the screen
+// keeps asserting state it can no longer refresh.
+func TestSilentActiveStreamIsDetected(t *testing.T) {
+	plane := newFakePlane(t)
+	// Deliberately no heartbeat: this is the dead-but-open case.
+	model, _ := newTestModelIdle(t, plane, 250*time.Millisecond)
+	driver := newDriver(t, model)
+	defer driver.stop()
+
+	plane.streamAt(0)
+	if !driver.settleUntil(func() bool { return model.state == stateLive }, 5*time.Second) {
+		t.Fatalf("never went live; state = %v", model.state)
+	}
+
+	// Nothing more is sent. The client must notice.
+	if !driver.settleUntil(func() bool { return model.state != stateLive }, 10*time.Second) {
+		t.Fatal("the dashboard stayed LIVE against a silent stream")
+	}
+
+	// And it reconnects rather than giving up, since it had been live.
+	if !driver.settleUntil(func() bool {
+		sse, _, _ := plane.counts()
+		return sse >= 2
+	}, 15*time.Second) {
+		sse, _, _ := plane.counts()
+		t.Fatalf("subscriptions = %d; a silent stream must be resubscribed", sse)
+	}
+}
+
+// TestHeartbeatKeepsAQuietStreamLive is the other half: liveness must
+// tolerate a genuinely quiet evaluation.
+//
+// Comment frames never become domain events, so a client counting only events
+// would disconnect a healthy run that simply had nothing to report.
+func TestHeartbeatKeepsAQuietStreamLive(t *testing.T) {
+	plane := newFakePlane(t)
+	plane.heartbeat = 40 * time.Millisecond
+
+	model, _ := newTestModelIdle(t, plane, 400*time.Millisecond)
+	driver := newDriver(t, model)
+	defer driver.stop()
+
+	plane.streamAt(0)
+	if !driver.settleUntil(func() bool { return model.state == stateLive }, 5*time.Second) {
+		t.Fatalf("never went live; state = %v", model.state)
+	}
+
+	// Several multiples of the inactivity bound, carried only by heartbeats.
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		driver.step(25 * time.Millisecond)
+		if model.state != stateLive {
+			t.Fatalf("state = %v; heartbeats must refresh liveness", model.state)
+		}
+	}
+
+	sse, runs, progress := plane.counts()
+	if sse != 1 {
+		t.Errorf("subscriptions = %d, want 1: heartbeats must not cause a reconnect", sse)
+	}
+	if runs != 1 || progress != 1 {
+		t.Errorf("authoritative reads = %d/%d, want 1 each: a heartbeat is not a poll trigger",
+			runs, progress)
+	}
+}
+
+// TestSilenceBeforeStreamReadyIsFatal covers the pre-synchronization case.
+//
+// Headers arrive, then nothing. Without the bound the command would hang
+// indefinitely on a connection that will never say anything.
+func TestSilenceBeforeStreamReadyIsFatal(t *testing.T) {
+	plane := newFakePlane(t)
+	plane.serveSSE(func(w http.ResponseWriter, r *http.Request, s *fakeStream) {
+		// Headers only — no stream_ready, no bytes, no close.
+		<-r.Context().Done()
+	})
+
+	model, _ := newTestModelIdle(t, plane, 250*time.Millisecond)
+	driver := newDriver(t, model)
+	defer driver.stop()
+
+	if !driver.settleUntil(func() bool { return model.quitting }, 15*time.Second) {
+		t.Fatalf("silence before stream_ready did not terminate; state = %v", model.state)
+	}
+	if model.state != stateFatal {
+		t.Errorf("state = %v, want FATAL", model.state)
+	}
+	if model.finalExitCode() != exitOperational {
+		t.Errorf("exit = %d, want %d", model.finalExitCode(), exitOperational)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Blocker 3: wrong-run events, end to end
+// ---------------------------------------------------------------------
+
+// TestObservationForAnotherRunInvalidatesStream proves a filter failure is not
+// rendered.
+//
+// The subscription is run-scoped server-side, so an event for another run
+// means the filter did not hold. Displaying it would attribute one agent's
+// behavior to another — worse than showing nothing.
+func TestObservationForAnotherRunInvalidatesStream(t *testing.T) {
+	plane := newFakePlane(t)
+	model, _ := newTestModel(t, plane)
+	driver := newDriver(t, model)
+	defer driver.stop()
+
+	stream := plane.streamAt(0)
+	if !driver.settleUntil(func() bool { return model.state == stateLive }, 5*time.Second) {
+		t.Fatalf("never went live; state = %v", model.state)
+	}
+
+	stream.send("observation", `{"version":"1","kind":"observation",`+
+		`"scope":{"run_id":"run-99"},"observation":{"sequence":"1",`+
+		`"record_count":"1","fingerprint_id":"fp-x","behavior":{"operation_category":"tool"},`+
+		`"decision":"allow","risk_level":"low","new_behavior":true}}`)
+
+	if !driver.settleUntil(func() bool { return model.state != stateLive }, 5*time.Second) {
+		t.Fatalf("state = %v; a wrong-run event must invalidate the stream", model.state)
+	}
+	for _, row := range model.live {
+		if row.sequence == "1" {
+			t.Fatal("an observation from another run was displayed")
+		}
+	}
 }

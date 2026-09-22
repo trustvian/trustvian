@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -54,7 +55,32 @@ const (
 	sseDialTimeout           = 10 * time.Second
 	sseTLSHandshakeTimeout   = 10 * time.Second
 	sseResponseHeaderTimeout = 30 * time.Second
-	sseIdleConnTimeout       = 30 * time.Second
+
+	// sseIdleConnPoolTimeout bounds how long an *unused* keep-alive
+	// connection lingers in the transport pool.
+	//
+	// Named for what it does, because the previous name invited exactly the
+	// wrong conclusion: http.Transport.IdleConnTimeout has nothing to do with
+	// an active response body. A live SSE connection that stops delivering
+	// bytes is not idle by this definition and is never touched by it. The
+	// active-stream bound is sseReadIdleTimeout below.
+	sseIdleConnPoolTimeout = 30 * time.Second
+
+	// sseReadIdleTimeout bounds silence on an *active* stream.
+	//
+	// Without it a dashboard could sit at LIVE forever against a connection
+	// that stopped delivering: no bytes, no error, no EOF — a half-open TCP
+	// connection produces exactly that, and the screen keeps showing state it
+	// can no longer refresh. A stale dashboard that looks current is the one
+	// failure this interface must not have.
+	//
+	// 60s is four times task 059's 15s heartbeat, so three consecutive
+	// heartbeats must be missed before the client gives up. That is
+	// deliberately generous: this is a liveness tolerance, not a polling
+	// interval, and a false reconnect costs a resync while a missed
+	// disconnect costs a lie on screen. The TUI does not generate or expect a
+	// specific heartbeat cadence — any byte refreshes it.
+	sseReadIdleTimeout = 60 * time.Second
 )
 
 // realtimeFrame is one parsed SSE frame.
@@ -171,6 +197,11 @@ type realtimeStream struct {
 	// after done is closed, which is the only ordering this needs.
 	done   chan struct{}
 	reason error
+
+	// idle distinguishes "went silent" from "read failed". Set by the
+	// watchdog before it cancels, so the read error it provokes is reported
+	// as what it actually was.
+	idle atomic.Bool
 }
 
 // errStreamOverflow means the client could not keep up with its own stream.
@@ -178,6 +209,14 @@ type realtimeStream struct {
 // Not a dropped frame: the stream is abandoned and resynchronized instead,
 // because a client that discarded a notification cannot know what it missed.
 var errStreamOverflow = errors.New("realtime stream outpaced the dashboard")
+
+// errStreamIdle means the connection went silent without closing.
+//
+// Reported distinctly from a read error because it is not one: nothing
+// failed, nothing arrived, and the client stopped waiting. Treated exactly
+// like an EOF by the model — before first sync it is fatal, after it is a
+// reconnect.
+var errStreamIdle = errors.New("realtime stream went silent")
 
 // realtimeOpener opens a subscription. An interface so tests can drive the
 // model's state machine without a socket.
@@ -189,6 +228,11 @@ type realtimeOpener interface {
 type sseOpener struct {
 	baseURL *url.URL
 	client  *http.Client
+
+	// idleTimeout is the active-stream bound. A field rather than a constant
+	// so tests can shorten it; no CLI flag exists for it, because a liveness
+	// tolerance is not something a user should have to reason about.
+	idleTimeout time.Duration
 }
 
 // newSSEOpener builds the streaming client.
@@ -196,7 +240,8 @@ type sseOpener struct {
 // Separate from task 060's client on purpose — see this file's header.
 func newSSEOpener(base *url.URL) *sseOpener {
 	return &sseOpener{
-		baseURL: base,
+		baseURL:     base,
+		idleTimeout: sseReadIdleTimeout,
 		client: &http.Client{
 			// No Timeout: a total response deadline would kill a healthy
 			// dashboard. Every bound below is on establishing the connection.
@@ -204,7 +249,7 @@ func newSSEOpener(base *url.URL) *sseOpener {
 				DialContext:           (&net.Dialer{Timeout: sseDialTimeout}).DialContext,
 				TLSHandshakeTimeout:   sseTLSHandshakeTimeout,
 				ResponseHeaderTimeout: sseResponseHeaderTimeout,
-				IdleConnTimeout:       sseIdleConnTimeout,
+				IdleConnTimeout:       sseIdleConnPoolTimeout,
 				MaxIdleConns:          2,
 				MaxIdleConnsPerHost:   2,
 				ForceAttemptHTTP2:     false,
@@ -263,8 +308,63 @@ func (o *sseOpener) open(ctx context.Context, runID string) (*realtimeStream, er
 		body:   response.Body,
 		done:   make(chan struct{}),
 	}
-	go stream.read()
+
+	// One watchdog for the one active stream, fed by a capacity-1 signal.
+	// Not a timer per frame and not a queue that grows with traffic: a busy
+	// stream coalesces into the single pending slot, and the watchdog resets
+	// once per wake rather than once per byte.
+	activity := &activityReader{inner: response.Body, signal: make(chan struct{}, 1)}
+	go watchStreamIdle(streamCtx, activity.signal, o.idleTimeout, func() {
+		stream.idle.Store(true)
+		cancel()
+	})
+
+	go stream.read(activity)
 	return stream, nil
+}
+
+// activityReader refreshes a liveness signal as bytes arrive.
+//
+// Heartbeat comments count. They never become domain events, but they are
+// exactly what task 059 sends to prove a quiet stream is alive, so a client
+// that only counted events would disconnect healthy idle evaluations.
+type activityReader struct {
+	inner  io.Reader
+	signal chan struct{}
+}
+
+func (a *activityReader) Read(p []byte) (int, error) {
+	n, err := a.inner.Read(p)
+	if n > 0 {
+		select {
+		case a.signal <- struct{}{}:
+		default:
+			// A refresh is already pending; one is as good as many.
+		}
+	}
+	return n, err
+}
+
+// watchStreamIdle cancels the stream when nothing has arrived for too long.
+//
+// Exits on context cancellation, so closing the stream stops it — there is no
+// path where this goroutine outlives the connection it watches.
+func watchStreamIdle(ctx context.Context, signal <-chan struct{}, timeout time.Duration, onIdle func()) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-signal:
+			timer.Stop()
+			timer.Reset(timeout)
+		case <-timer.C:
+			onIdle()
+			return
+		}
+	}
 }
 
 // realtimeStatusError turns a non-200 subscription into a diagnostic.
@@ -286,7 +386,7 @@ func isEventStream(mediaType string) bool {
 //
 // Continuously, not on demand: see this file's header for why pausing here
 // gets the subscriber disconnected.
-func (s *realtimeStream) read() {
+func (s *realtimeStream) read(source io.Reader) {
 	// Defers run last-in-first-out, so: close the body, then the frame
 	// channel, then done. That order matters — a reader blocked on frames
 	// must observe the close and only then find done already closed, or it
@@ -295,11 +395,15 @@ func (s *realtimeStream) read() {
 	defer close(s.frames)
 	defer s.body.Close()
 
-	parser := newSSEParser(s.body)
+	parser := newSSEParser(source)
 	for {
 		frame, err := parser.next()
 		if err != nil {
-			s.reason = err
+			if s.idle.Load() {
+				s.reason = errStreamIdle
+			} else {
+				s.reason = err
+			}
 			return
 		}
 		select {

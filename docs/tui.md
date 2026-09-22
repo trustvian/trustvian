@@ -110,6 +110,18 @@ to skip the wait.
 A stream closing does **not** mean the evaluation ended — the server disconnects
 clients that fall behind. Only lifecycle events change the run's status.
 
+A stream that goes *silent* without closing is treated the same way. The server
+heartbeats a quiet healthy connection, so 60 seconds with no bytes at all means
+the connection is gone even though nothing reported an error — the dashboard
+reconnects rather than continuing to show LIVE against something it can no
+longer refresh. Heartbeats count as activity, so a genuinely quiet evaluation
+stays connected indefinitely.
+
+When a run completes, fails or is cancelled, the dashboard performs one final
+authoritative read so the closing numbers are correct. That happens once, and
+nothing periodic follows it — including when the run finishes while a resync is
+already in progress.
+
 If something fails *before* the dashboard is ever live — a bad URL, a run that
 does not exist, realtime not configured — it exits rather than retrying
 forever against something that will not work.

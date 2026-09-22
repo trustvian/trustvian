@@ -879,7 +879,26 @@ and nothing else; see
   happen.
 - **Reconnect requires an authoritative resync**, and subscription always
   precedes the state fetch. The reverse order loses anything committed between
-  the two.
+  the two. A terminal lifecycle event buffered during a resync still triggers
+  its one final read, so a completed run never displays stale closing counts.
+- **Active-stream silence is finitely bounded** at 60 seconds, four times the
+  server heartbeat. A half-open connection delivers no bytes, no error and no
+  EOF; without this the dashboard would block forever while continuing to show
+  LIVE. `http.Transport.IdleConnTimeout` does not provide it — that governs
+  unused pooled connections, not an active body. Heartbeat comments refresh
+  the bound, so a quiet healthy evaluation is never disconnected.
+- **Known events are validated for wire integrity**: payload version, `kind`
+  matching the SSE event name, `scope.run_id` matching the watched run, and
+  the payload half the kind requires. An event scoped to another run is
+  refused rather than rendered — the subscription is filtered server-side, so
+  a mismatch means the filter did not hold, and attributing another agent's
+  behavior to this dashboard would be worse than showing nothing. Unknown
+  event names remain ignorable and are held to no shape.
+- **Abandoning a connection cancels its in-flight work.** Every network
+  operation runs under a generation-scoped context, so a reconnect, protocol
+  failure or quit cancels the open and the authoritative reads it replaces.
+  Generation numbers alone only discarded the results; the sockets and
+  goroutines kept running.
 - **No polling.** No ticker over `/progress`, no watcher. A quiet healthy
   stream issues exactly one run read and one progress read, which a test
   asserts; the only extra read is one final resync when a terminal lifecycle

@@ -148,6 +148,18 @@ type tuiModel struct {
 	generation int
 	backoffAt  int
 
+	// genCtx scopes every network operation belonging to the current
+	// generation; genCancel abandons them.
+	//
+	// Generation numbers stop a stale *result* from being applied. They do
+	// not stop the work: a blocked open or a blocked authoritative GET kept
+	// running until it timed out or the program exited, so repeated `r`
+	// accumulated sockets and goroutines whose answers were already destined
+	// to be ignored. Cancelling is what makes "one active generation" true
+	// rather than merely apparent.
+	genCtx    context.Context
+	genCancel context.CancelFunc
+
 	// waiting is true while exactly one frame read is outstanding. The
 	// invariant matters: two concurrent reads would interleave frames and
 	// break the ordering the resync protocol depends on.
@@ -175,7 +187,7 @@ type authoritativeReader interface {
 }
 
 func newTUIModel(ctx context.Context, runID string, opener realtimeOpener, reader authoritativeReader) *tuiModel {
-	return &tuiModel{
+	m := &tuiModel{
 		runID:  runID,
 		opener: opener,
 		reader: reader,
@@ -184,15 +196,39 @@ func newTUIModel(ctx context.Context, runID string, opener realtimeOpener, reade
 		width:  80,
 		height: 24,
 	}
+	m.beginGeneration()
+	return m
+}
+
+// beginGeneration abandons the previous generation's network work and starts
+// a fresh scope for the next one.
+//
+// The context lives for the whole generation, not just the open: the SSE
+// response body is read under it, so cancelling once open() returned would
+// tear down the stream that just succeeded.
+func (m *tuiModel) beginGeneration() {
+	if m.genCancel != nil {
+		m.genCancel()
+	}
+	m.genCtx, m.genCancel = context.WithCancel(m.ctx)
+}
+
+// endGeneration cancels the current scope without opening a new one. Used on
+// quit and on terminal failure.
+func (m *tuiModel) endGeneration() {
+	if m.genCancel != nil {
+		m.genCancel()
+		m.genCancel = nil
+	}
 }
 
 func (m *tuiModel) Init() tea.Cmd { return m.openStream() }
 
 // openStream subscribes. Always before any authoritative read.
 func (m *tuiModel) openStream() tea.Cmd {
-	generation := m.generation
+	generation, ctx := m.generation, m.genCtx
 	return func() tea.Msg {
-		stream, err := m.opener.open(m.ctx, m.runID)
+		stream, err := m.opener.open(ctx, m.runID)
 		if err != nil {
 			return streamEndedMsg{err: err, generation: generation}
 		}
@@ -220,14 +256,14 @@ func (m *tuiModel) waitForFrame() tea.Cmd {
 // point. A client that stopped draining while this was in flight would fill
 // the server's 64-event queue and be disconnected for being slow.
 func (m *tuiModel) resync() tea.Cmd {
-	generation := m.generation
+	generation, ctx := m.generation, m.genCtx
 	runID := m.runID
 	return func() tea.Msg {
-		run, err := m.reader.run(m.ctx, runID)
+		run, err := m.reader.run(ctx, runID)
 		if err != nil {
 			return streamEndedMsg{err: err, generation: generation}
 		}
-		progress, err := m.reader.progress(m.ctx, runID)
+		progress, err := m.reader.progress(ctx, runID)
 		if err != nil {
 			return streamEndedMsg{err: err, generation: generation}
 		}
@@ -298,6 +334,8 @@ func (m *tuiModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		m.quitting = true
 		m.exitCode = exitOK
+		m.releaseStream()
+		m.endGeneration()
 		return m, tea.Quit
 	case "r":
 		// Cancels any pending backoff by advancing the generation, so a
@@ -336,7 +374,7 @@ func (m *tuiModel) handleFrame(frame realtimeFrame) (tea.Model, tea.Cmd) {
 			"realtime sent %q before stream_ready", sanitizeTerminalText(frame.event)))
 	}
 
-	kind, envelope, err := classifyFrame(frame)
+	kind, envelope, err := classifyFrame(frame, m.runID)
 	if err != nil {
 		// A known event the client cannot parse means the stream is no longer
 		// trustworthy. Discarding it silently would pretend nothing was lost.
@@ -422,16 +460,30 @@ func (m *tuiModel) applySnapshot(snapshot authoritativeSnapshot) (tea.Model, tea
 	// snapshot, which is why subscribing first loses nothing.
 	pending := m.pending
 	m.pending = nil
+
+	// Commands are collected, not discarded. applyEvent returns one only for
+	// a terminal lifecycle event, and that command *is* the final
+	// authoritative read. Dropping it here meant a run that completed while
+	// the first resync was still in flight kept the stale snapshot forever:
+	// the status updated from the event, the counts never did, and
+	// m.resyncing stayed true so nothing could re-arm it.
+	var cmds []tea.Cmd
 	for _, frame := range pending {
-		kind, envelope, err := classifyFrame(frame)
+		kind, envelope, err := classifyFrame(frame, m.runID)
 		if err != nil {
 			return m.failStream(err)
 		}
-		if kind != "" {
-			m.applyEvent(kind, envelope)
+		if kind == "" {
+			continue
+		}
+		if cmd := m.applyEvent(kind, envelope); cmd != nil {
+			cmds = append(cmds, cmd)
 		}
 	}
-	return m, nil
+	// At most one: applyEvent's own m.resyncing guard means the first
+	// terminal event schedules the read and any later one finds it already
+	// pending. tea.Batch(nil...) is a no-op, which is the common case.
+	return m, tea.Batch(cmds...)
 }
 
 // handleStreamEnd decides between fatal and reconnect.
@@ -448,6 +500,7 @@ func (m *tuiModel) handleStreamEnd(err error) (tea.Model, tea.Cmd) {
 		m.lastError = sanitizeTerminalText(errorText(err))
 		m.exitCode = exitOperational
 		m.quitting = true
+		m.endGeneration()
 		return m, tea.Quit
 	}
 
@@ -468,6 +521,9 @@ func (m *tuiModel) scheduleReconnect() tea.Cmd {
 
 	m.generation++
 	generation := m.generation
+	// Cancels anything the failed generation still had in flight — typically
+	// an authoritative read that outlived the stream it belonged to.
+	m.beginGeneration()
 	// Live rows are cleared here rather than on success: the screen must stop
 	// implying the list is current the moment the stream is gone.
 	m.live = nil
@@ -482,6 +538,7 @@ func (m *tuiModel) scheduleReconnect() tea.Cmd {
 func (m *tuiModel) reconnect() tea.Cmd {
 	m.releaseStream()
 	m.generation++
+	m.beginGeneration()
 	m.live = nil
 	m.pending = nil
 	m.resyncing = false
@@ -523,13 +580,18 @@ func validateStreamReady(data string) error {
 	return nil
 }
 
-// classifyFrame decodes a domain frame.
+// classifyFrame decodes and structurally validates a domain frame.
 //
 // Returns an empty kind for an event name this build does not know, which the
-// caller ignores: additive kinds must not break a stream. A *known* kind that
-// fails to decode returns an error, because silently discarding it would
-// pretend the stream stayed complete.
-func classifyFrame(frame realtimeFrame) (string, realtimeEnvelope, error) {
+// caller ignores: additive kinds must not break a stream, and an unknown one
+// is not held to any shape. A *known* kind that fails validation returns an
+// error, because silently discarding it would pretend the stream stayed
+// complete when a frame was in fact dropped.
+//
+// The checks are wire structural integrity only — no lifecycle legality, no
+// gate semantics, no field-by-field domain validation. That is the server's,
+// and duplicating it here would be a second implementation that drifts.
+func classifyFrame(frame realtimeFrame, watchedRunID string) (string, realtimeEnvelope, error) {
 	switch frame.event {
 	case kindObservation, kindEvaluationCreated, kindEvaluationStarted,
 		kindEvaluationCompleted, kindEvaluationFailed, kindEvaluationCancelled:
@@ -542,11 +604,62 @@ func classifyFrame(frame realtimeFrame) (string, realtimeEnvelope, error) {
 		return "", realtimeEnvelope{}, operationalErrorf(
 			"realtime %s event is not valid JSON", sanitizeTerminalText(frame.event))
 	}
-	if envelope.Version != wireVersion {
-		return "", realtimeEnvelope{}, operationalErrorf(
-			"realtime payload version %q is not supported", sanitizeTerminalText(envelope.Version))
+	if err := validateRealtimeEnvelope(frame.event, envelope, watchedRunID); err != nil {
+		return "", realtimeEnvelope{}, err
 	}
 	return frame.event, envelope, nil
+}
+
+// validateRealtimeEnvelope checks a known event against what task 059 emits.
+//
+// Every failure here was previously accepted in silence: an observation with
+// no observation payload did nothing, a mismatched kind was applied under the
+// SSE name, and an event scoped to another run would have been rendered as
+// this run's. None of those is an additive change a client should tolerate —
+// each means the client and the server disagree about what arrived.
+func validateRealtimeEnvelope(eventName string, envelope realtimeEnvelope, watchedRunID string) error {
+	safeName := sanitizeTerminalText(eventName)
+
+	if envelope.Version != wireVersion {
+		return operationalErrorf(
+			"realtime payload version %q is not supported", sanitizeTerminalText(envelope.Version))
+	}
+	// The SSE event name and the payload's own kind must agree. They are two
+	// statements about the same thing, and a client that trusts one while
+	// ignoring the other will eventually apply an event as the wrong type.
+	if envelope.Kind != eventName {
+		return operationalErrorf(
+			"realtime %s event carries kind %q", safeName, sanitizeTerminalText(envelope.Kind))
+	}
+	// Scoped to the run this dashboard is watching. The subscription is
+	// filtered server-side, so a mismatch means the filter did not hold —
+	// rendering it would attribute another run's behavior to this one, which
+	// is worse than showing nothing.
+	if envelope.Scope.RunID != watchedRunID {
+		return operationalErrorf(
+			"realtime %s event is scoped to run %q, not the watched run",
+			safeName, sanitizeTerminalText(envelope.Scope.RunID))
+	}
+
+	// Task 059 emits exactly the half that matches the kind, so requiring the
+	// other half to be absent is a real check rather than a formality.
+	switch eventName {
+	case kindObservation:
+		if envelope.Observation == nil {
+			return operationalErrorf("realtime %s event carries no observation", safeName)
+		}
+		if envelope.Evaluation != nil {
+			return operationalErrorf("realtime %s event also carries an evaluation", safeName)
+		}
+	default:
+		if envelope.Evaluation == nil {
+			return operationalErrorf("realtime %s event carries no evaluation", safeName)
+		}
+		if envelope.Observation != nil {
+			return operationalErrorf("realtime %s event also carries an observation", safeName)
+		}
+	}
+	return nil
 }
 
 // describeBehavior renders the stable behavioral shape compactly.
