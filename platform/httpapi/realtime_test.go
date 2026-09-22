@@ -1306,3 +1306,193 @@ func newBarePlane(t *testing.T) *platform.ControlPlane {
 	}
 	return plane
 }
+
+// ---------------------------------------------------------------------
+// Bounded flushes
+// ---------------------------------------------------------------------
+
+// flushStallingWriter accepts every write and stalls in the flush.
+//
+// This is the half stallingWriter cannot reach. A Write can succeed into a
+// local buffer while the flush behind it is what actually touches the socket,
+// so a client that stops reading is far more likely to be observed here — and
+// http.Flusher.Flush returns nothing, which is why the handler must flush
+// through the controller instead.
+//
+// It implements both Flush and FlushError on purpose. Flush satisfies the
+// handler's http.Flusher precondition and is deliberately a no-op, so a
+// regression that flushed through it would sail past every assertion below;
+// ResponseController prefers FlushError, which is the one that stalls.
+type flushStallingWriter struct {
+	header http.Header
+
+	mu        sync.Mutex
+	deadlines []time.Time
+	flushes   int
+	body      []byte
+
+	// stallFlushAfter is the number of flushes served normally before one
+	// blocks: 0 stalls the handshake, 1 stalls whatever frame follows it.
+	stallFlushAfter int
+	stalled         chan struct{}
+	stallOnce       sync.Once
+}
+
+func newFlushStallingWriter(stallFlushAfter int) *flushStallingWriter {
+	return &flushStallingWriter{
+		header:          make(http.Header),
+		stallFlushAfter: stallFlushAfter,
+		stalled:         make(chan struct{}),
+	}
+}
+
+func (s *flushStallingWriter) Header() http.Header  { return s.header }
+func (s *flushStallingWriter) WriteHeader(code int) { s.header.Set("X-Status", strconv.Itoa(code)) }
+
+// Flush is the capability, never the delivery. A handler that called this
+// would discard exactly the error this test exists to produce.
+func (s *flushStallingWriter) Flush() {}
+
+func (s *flushStallingWriter) SetWriteDeadline(deadline time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deadlines = append(s.deadlines, deadline)
+	return nil
+}
+
+// Write always succeeds: the frame is buffered, not delivered.
+func (s *flushStallingWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	s.body = append(s.body, p...)
+	s.mu.Unlock()
+	return len(p), nil
+}
+
+func (s *flushStallingWriter) FlushError() error {
+	s.mu.Lock()
+	s.flushes++
+	stall := s.flushes > s.stallFlushAfter
+	deadline := s.deadlines[len(s.deadlines)-1]
+	s.mu.Unlock()
+
+	if !stall {
+		return nil
+	}
+	s.stallOnce.Do(func() { close(s.stalled) })
+
+	// Honors the handler's own deadline, exactly as a real net.Conn does.
+	// Nothing here picks a duration of its own.
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	<-timer.C
+	return os.ErrDeadlineExceeded
+}
+
+func (s *flushStallingWriter) flushCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.flushes
+}
+
+// flushStallCase drives one stalled-flush scenario to completion.
+//
+// The three call sites differ only in which frame stalls, and writing them out
+// three times would make it easy for one to drift into asserting less than the
+// others.
+type flushStallCase struct {
+	name string
+	// stallFlushAfter selects the frame whose flush stalls.
+	stallFlushAfter int
+	heartbeat       time.Duration
+	// publish sends a domain event once the handshake has been flushed.
+	publish bool
+}
+
+func runFlushStallCase(t *testing.T, tc flushStallCase) {
+	t.Helper()
+
+	const writeTimeout = 150 * time.Millisecond
+
+	subscriber := newContextIgnoringSubscriber()
+	handler, err := httpapi.NewHandler(newBarePlane(t),
+		httpapi.WithRealtimeSubscriber(subscriber),
+		httpapi.WithRealtimeWriteTimeout(writeTimeout),
+		httpapi.WithHeartbeatInterval(tc.heartbeat))
+	if err != nil {
+		t.Fatalf("NewHandler() error = %v", err)
+	}
+
+	writer := newFlushStallingWriter(tc.stallFlushAfter)
+
+	// Background context: the request is never cancelled, so nothing but the
+	// write deadline can free this handler.
+	request := httptest.NewRequest("GET", "/v1/realtime?run_id=run-1", nil).
+		WithContext(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		handler.ServeHTTP(writer, request)
+	}()
+
+	if tc.publish {
+		// The handshake's flush proves Subscribe returned and the handler is
+		// in its loop, so the frame below cannot race registration.
+		waitFor(t, func() bool { return writer.flushCount() >= 1 }, "handshake flushed")
+		subscriber.events <- platform.RealtimeEvent{
+			Kind:        platform.RealtimeObservationRecorded,
+			Scope:       platform.RealtimeScope{ProjectID: "proj-1", AgentID: "agent-1", RunID: "run-1"},
+			Observation: platform.RealtimeObservation{Sequence: 1},
+		}
+	}
+
+	select {
+	case <-writer.stalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stalling flush never began")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		// Generous on purpose: the assertion is that the handler returns at
+		// all, and a failure here is a hang, not a slow machine.
+		t.Fatal("handler did not return after its flush deadline expired")
+	}
+
+	// Exactly once, and by the handler itself — the subscriber double ignores
+	// the request context, so bus-side cancellation cannot stand in for this.
+	if got := subscriber.closes(); got != 1 {
+		t.Errorf("subscription Close calls = %d, want 1", got)
+	}
+}
+
+// TestSSEStalledFlushTerminatesTheStream covers every frame kind.
+//
+// Splitting it this way is the point: a regression that bounded event frames
+// but left the heartbeat flushing error-blind would still pass a test that
+// only ever stalled an observation.
+func TestSSEStalledFlushTerminatesTheStream(t *testing.T) {
+	tests := []flushStallCase{
+		{
+			// The status line is already 200 here, and that is correct:
+			// deadline support was verified before it, and this is a runtime
+			// transport failure after the stream began. Hanging up is the only
+			// honest report — an error envelope written into a live SSE body
+			// would be parsed as frames.
+			name: "stream_ready", stallFlushAfter: 0, heartbeat: time.Hour,
+		},
+		{
+			name: "observation", stallFlushAfter: 1, heartbeat: time.Hour, publish: true,
+		},
+		{
+			// No domain event at all: the heartbeat is the only thing that can
+			// flush, so nothing else can be what terminates the stream.
+			name: "heartbeat", stallFlushAfter: 1, heartbeat: 20 * time.Millisecond,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) { runFlushStallCase(t, tt) })
+	}
+}

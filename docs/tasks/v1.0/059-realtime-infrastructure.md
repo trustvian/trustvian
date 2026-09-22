@@ -292,14 +292,27 @@ valid and subscribed. Once a status line is out the only way to report a
 problem is to hang up, so a stream is never claimed healthy and then discovered
 to be impossible.
 
-**Every write carries a finite deadline**, set through
+**Every delivery attempt carries a finite deadline**, set through
 `http.NewResponseController(w).SetWriteDeadline` immediately before it —
 handshake, domain frame and heartbeat alike. The bus bounds what it queues; it
 does not bound a client that holds a healthy subscription and stops draining
 its socket. Such a client's queue never fills, so it is never disconnected, and
-the handler blocks inside `Write` where it can no longer see its context, its
-subscription, or a shutdown — accumulating connections outside every count the
-bus keeps.
+the handler blocks inside the delivery where it can no longer see its context,
+its subscription, or a shutdown — accumulating connections outside every count
+the bus keeps.
+
+A delivery is the write **and** the flush behind it, and one refresh covers the
+pair. `Write` can succeed into a local buffer while the flush is what touches
+the socket, and `http.Flusher.Flush` returns nothing — so the handler flushes
+through `ResponseController.Flush` and propagates its error. Discarding it
+would let the handler continue believing a frame was delivered that may never
+have left. `http.Flusher` stays a precondition, but as a capability check only,
+and there is exactly one flush per frame.
+
+A failed write or flush returns false, the handler returns, and the deferred
+`Close` releases the subscription — no retry, no extra buffering, no background
+writer goroutine, no frame dropping. Only that stream ends; once one frame is
+uncertain the client cannot be assumed to have it, and resyncs on reconnect.
 
 ```text
 default  5s   (defaultRealtimeWriteTimeout)
@@ -316,7 +329,9 @@ the queue bounds are constants.
 
 A writer that cannot take a deadline fails with a sanitized `500` before the
 `200`. Continuing unbounded is the exact condition the deadline exists to
-prevent.
+prevent. A delivery that fails *after* the `200` can only be reported by
+hanging up: an error envelope written into a live SSE body would be parsed as
+frames.
 
 Subscription failures keep their categories: a malformed filter is `400`
 `invalid_request`, while capacity and a closed bus are `503`
@@ -446,19 +461,30 @@ diff, scorecard or gate, and **cannot publish**.
 
 ## Mutation Tests
 
-Each must fail a targeted test, and all are restored before commit (verified by digest against a pristine copy — an earlier harness in this milestone silently overwrote a source file):
-publish-before-commit ordering; replay suppression; filter-before-enqueue;
-queue-full disconnect; subscriber isolation; subscriber-count bound; context
-cancellation removal; bus close semantics; ordering; no-history reconnect;
-`stream_ready` requiring resync; no-publisher behavior; applied-ingest event
-count; new-behavior detection; saturation projection; realtime failure not
-changing a durable outcome; SSE privacy; HTTP unable to publish; filter
-validation removed entirely and per dimension; a malformed filter mapped to
-`503` instead of `400`; an unsupported write deadline ignored; the deadline set
+Each must fail a targeted test, and all are restored before commit — verified
+by digest against a pristine copy, because an earlier harness in this milestone
+silently overwrote a source file.
+
+Task 059 as first written: publish-before-commit ordering; replay suppression;
+filter-before-enqueue; queue-full disconnect; subscriber isolation;
+subscriber-count bound; context cancellation removal; bus close semantics;
+ordering; no-history reconnect; `stream_ready` requiring resync; no-publisher
+behavior; applied-ingest event count; new-behavior detection; saturation
+projection; realtime failure not changing a durable outcome; SSE privacy; and
+HTTP unable to publish.
+
+The filter bound: validation removed entirely; removed per dimension; stripped
+of its length, whitespace and control-character rule; moved to *after*
+registration, which is the specific way a bound becomes reachable by the input
+it rejects; and a malformed filter mapped to `503` instead of `400`.
+
+The delivery bound: an unsupported write deadline ignored; the deadline set
 once instead of per write; the heartbeat written without one; a stalled write
-leaving its subscription registered; and the write-timeout option clamped
-rather than rejected; and filter validation moved to after registration,
-which is the specific way a bound becomes reachable by the input it rejects.
+leaving its subscription registered; the write-timeout option clamped rather
+than rejected, or its rejection dropped by `NewHandler`; flushing through the
+error-blind `http.Flusher`; the controller's flush error discarded; `event` or
+`comment` reporting success after a failed flush; and the subscription left
+registered after a flush timeout.
 
 ## Benchmarks
 

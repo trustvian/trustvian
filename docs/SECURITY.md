@@ -742,8 +742,15 @@ committed mutation, over an in-memory bus with no history.
   exactly; nothing here is authenticated and nothing claims to be.
 - **An SSE disconnect releases its subscription**, so a client that hangs up
   does not hold a slot.
-- **Every SSE write has a finite deadline**, refreshed immediately before it,
-  covering the handshake, every domain frame and every heartbeat. The bus
+- **Every SSE delivery attempt has a finite deadline** — the write *and* the
+  flush behind it — refreshed immediately before it, covering the handshake,
+  every domain frame and every heartbeat. `Write` can succeed into a local
+  buffer while the flush is what reaches the socket, and `http.Flusher.Flush`
+  returns nothing, so flushing goes through `ResponseController.Flush` and its
+  error is propagated rather than discarded. A write or flush failure
+  terminates **only that stream** and releases its subscription; nothing is
+  retried, buffered or dropped, because once one frame is uncertain the client
+  cannot be assumed to have it. The bus
   bounds what it queues; it does not bound a client that holds a healthy
   subscription and stops draining its socket. That client’s queue never fills,
   so it is never disconnected — and the handler blocks inside `Write` where it

@@ -235,7 +235,7 @@ realtime_unavailable`. The distinction matters more on a stream than on a POST,
 because an SSE client's natural response to a 5xx is to reconnect in a loop
 against a request that will never succeed.
 
-### 22. Every SSE write has its own deadline
+### 22. Every SSE delivery attempt has its own deadline
 
 Points 5 through 9 bound what the *bus* holds. They do not bound a client that
 keeps a healthy subscription and stops draining its socket: that client's queue
@@ -243,9 +243,26 @@ never fills, so it is never disconnected, and the handler blocks inside `Write`
 where it can no longer observe its context, its subscription, or a shutdown.
 Connections in that state accumulate outside every count the bus keeps.
 
-Each write therefore sets a deadline first, via
+Each delivery therefore sets a deadline first, via
 `http.NewResponseController(w).SetWriteDeadline` — the handshake, every domain
 frame, and every heartbeat alike.
+
+A delivery is a write **and** the flush behind it, and the bound covers both.
+`Write` can succeed into a local buffer while the flush is what actually
+reaches the socket, so the flush is where a stalled client is most likely to be
+observed — and `http.Flusher.Flush` returns nothing. Flushing therefore goes
+through `ResponseController.Flush`, whose error is propagated: a discarded
+flush error would let the handler continue believing a frame was delivered that
+may never have left. One refresh covers the pair, because giving the flush its
+own window would let a client stalling in that half hold the connection for
+twice the bound.
+
+A failed write or flush terminates **only that stream**, releasing its
+subscription; no frame is retried, buffered, or dropped in favour of the next.
+Once one frame is uncertain the stream is over, and the client resyncs on
+reconnect — the same reasoning as point 6. After the `200` the only honest
+report is to hang up: an error envelope written into a live SSE body would be
+parsed as frames.
 
 The deadline is refreshed *before each write* rather than set once when the
 stream opens. Set once, the same value would be a connection lifetime: a
@@ -261,8 +278,10 @@ clamped — an option accepting any duration could turn a bounded write into an
 effectively unbounded one while the code still claimed a bound, which is the
 same reasoning that keeps the queue and subscriber limits constants.
 
-If the writer cannot take a deadline, the stream is refused with a sanitized
-`500` *before* the `200` is written. Continuing would leave the handler in
+`http.Flusher` remains a precondition checked before the `200`, but it is a
+capability check only — never the delivery mechanism. If the writer cannot take
+a deadline, the stream is refused with a sanitized `500` *before* the `200` is
+written. Continuing would leave the handler in
 exactly the state this exists to prevent, while every comment and this document
 claimed otherwise.
 
@@ -303,6 +322,7 @@ A stalled client is disconnected after a write deadline rather than held, so a
 stream can end for a reason the client never sees as a frame. That is the same
 trade as point 6: an observable gap beats an invisible one.
 
-Any future transport must supply a write deadline of its own. SSE gets one from
-`net.Conn`; a transport that cannot bound a write does not get to skip the
-bound, it fails to open.
+Any future transport must supply a delivery deadline of its own, covering
+whatever its equivalent of a flush is. SSE gets one from `net.Conn`; a
+transport that cannot bound a delivery does not get to skip the bound, it fails
+to open.

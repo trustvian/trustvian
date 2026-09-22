@@ -13,10 +13,10 @@ package httpapi
 //
 // Two different bounds meet in this file. The bus bounds queued events, which
 // protects the publisher from a subscriber that reads slowly. A write deadline
-// bounds each socket write, which protects this goroutine and its connection
-// from a client that stops reading entirely. Neither substitutes for the
-// other: a client can hold a healthy subscription and still never drain its
-// socket.
+// bounds each socket *delivery* — the write and the flush that pushes it —
+// which protects this goroutine and its connection from a client that stops
+// reading entirely. Neither substitutes for the other: a client can hold a
+// healthy subscription and still never drain its socket.
 //
 // See docs/adr/0032-realtime-is-bounded-ephemeral-not-authoritative.md.
 
@@ -73,8 +73,10 @@ func (h *Handler) realtime(w http.ResponseWriter, r *http.Request) {
 	// 200 is written. Once the status line is out, the only way to report a
 	// problem is to hang up — so a stream is never claimed healthy and then
 	// discovered to be impossible.
-	flusher, streamable := w.(http.Flusher)
-	if !streamable {
+	// A capability check, not the flush mechanism. Actual flushing goes
+	// through the controller below, because http.Flusher.Flush returns
+	// nothing and a flush is exactly where a stalled socket surfaces.
+	if _, streamable := w.(http.Flusher); !streamable {
 		h.writeError(w, apiError{
 			status: http.StatusInternalServerError, code: codeInternal,
 			message: "internal server error"})
@@ -114,7 +116,6 @@ func (h *Handler) realtime(w http.ResponseWriter, r *http.Request) {
 
 	writer := &sseWriter{
 		w:          w,
-		flusher:    flusher,
 		controller: controller,
 		timeout:    h.realtimeWriteTimeout,
 	}
@@ -198,7 +199,6 @@ func realtimeSubscribeError(err error) apiError {
 // unbounded buffer instead of a bounded one.
 type sseWriter struct {
 	w          http.ResponseWriter
-	flusher    http.Flusher
 	controller *http.ResponseController
 	timeout    time.Duration
 }
@@ -221,8 +221,7 @@ func (s *sseWriter) event(name string, payload any) bool {
 	if _, err := s.w.Write([]byte("\n\n")); err != nil {
 		return false
 	}
-	s.flusher.Flush()
-	return true
+	return s.flush()
 }
 
 // comment writes a keepalive, under the same bound as a frame.
@@ -233,11 +232,31 @@ func (s *sseWriter) comment(text string) bool {
 	if _, err := s.w.Write([]byte(": " + text + "\n\n")); err != nil {
 		return false
 	}
-	s.flusher.Flush()
-	return true
+	return s.flush()
 }
 
-// refresh extends the deadline for the write about to happen.
+// flush pushes the frame and reports whether it actually left.
+//
+// Through the controller rather than http.Flusher, because Flusher.Flush
+// returns nothing: a Write can succeed into a local buffer and the flush
+// behind it can then hit the deadline, so discarding this error would let the
+// handler carry on believing a frame was delivered that may never have been.
+// That is the failure the deadline exists to surface, arriving through the
+// half of the operation that was not watching for it.
+//
+// ResponseController.Flush prefers a FlushError() error implementation and
+// falls back to a plain Flusher, which net/http's own response type provides
+// — so no second capability negotiation is needed beyond the http.Flusher
+// precondition the handler already checked before the 200.
+func (s *sseWriter) flush() bool {
+	return s.controller.Flush() == nil
+}
+
+// refresh extends the deadline for the delivery about to happen.
+//
+// One refresh per frame covers its write *and* its flush: they are one
+// delivery attempt, and giving the flush its own window would let a client
+// that stalls in exactly that half hold the connection for twice the bound.
 func (s *sseWriter) refresh() bool {
 	return s.controller.SetWriteDeadline(time.Now().Add(s.timeout)) == nil
 }
