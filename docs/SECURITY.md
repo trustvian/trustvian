@@ -764,6 +764,74 @@ committed mutation, over an in-memory bus with no history.
   sanitized `500` before any `200`, because continuing unbounded is precisely
   the condition the deadline prevents.
 
+### The developer CLI is a client, and claims nothing more
+
+**Threat:** a CLI that drives the control plane becomes a second way in —
+reaching the database directly, recomputing a gate verdict, generating
+identity, leaking credentials through a URL, or turning a network failure into
+a reported policy result that a CI job then acts on.
+
+**Status: an HTTP adapter with no authority of its own.**
+[Task 060](tasks/v1.0/060-developer-cli.md) consumes the `/v1` API and nothing
+else; see [ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md).
+
+- **The API URL is explicit.** `--api-url` is required on every control-plane
+  command. No default address or port is chosen, and no environment variable
+  is read — task 062 owns integrated local startup, and a default frozen
+  before the thing that binds it exists is far harder to change later.
+- **Credentials in the URL are rejected**, and the diagnostic does not repeat
+  the value. A URL is the wrong place for a secret, and a refusal that echoed
+  it into shell history, CI logs and terminal scrollback would have protected
+  nothing.
+- **No authentication is claimed.** No `--token`, no credential store, no
+  auth header. Task 070 owns authentication; a flag now would freeze a
+  credential shape before there is anything to authenticate against. A test
+  fails the build if such a flag is declared.
+- **Redirects are not followed.** A mutation addressed to one host must not
+  silently become a mutation against another; a redirect is refused with an
+  operational exit and the destination receives nothing.
+- **Request bodies are bounded** at the server's own 256 KiB limit, checked on
+  the encoded envelope rather than the input file, so the CLI never knowingly
+  builds a request the server must reject.
+- **Response bodies are bounded** at 4 MiB, read as limit+1 and failed closed.
+  A client that reads an unbounded body trusts the server's good behavior for
+  its own memory safety.
+- **The request timeout is finite** — 30s, a fixed constant. There are no
+  retries: a GET is safe to repeat but a lifecycle POST is not, and ingest
+  already carries explicit sequence semantics, so retrying is the caller's
+  decision.
+- **Identifiers are never generated.** Every create requires an explicit
+  `--id` ([ADR 0025](adr/0025-platform-domain-values-with-caller-owned-identity.md)),
+  and caller-owned IDs are URL-escaped into paths, so an identifier cannot
+  reshape a route or traverse one.
+- **Unknown `DecisionRecord` fields survive ingest.** The record is
+  transported as raw JSON and never decoded into the CLI's current struct: a
+  round trip would strip a newer producer's field *before transmission*,
+  defeating the server's deliberate tolerance from the client side, silently.
+- **Unknown API response fields are tolerated and preserved.** Decoding never
+  uses `DisallowUnknownFields`, and `--json` forwards the server's own body
+  rather than a re-marshalled subset.
+- **No direct database access.** No `database/sql`, no SQLite driver, no
+  `--db` flag, no path to the platform store. The store's invariants live in
+  `ControlPlane`, and a second writer reaching past them is how a store
+  acquires states its own code believes impossible.
+- **No listener is bound.** The CLI is a client; task 062 owns the local
+  runtime. A test fails the build on `ListenAndServe` in shipped CLI source.
+- **No work outlives a command.** No background goroutine, no cache, no retry
+  state, no sequence cursor written to disk.
+- **API errors never masquerade as gate failure.** For the control-plane
+  families, exit `3` covers every transport, timeout, redirect and HTTP error;
+  exit `1` means a gate FAIL, and only on `trustvian eval compare`. This is
+  the load-bearing one: CI scripts are habitually written as "non-zero means
+  the gate failed", and conflating the two would report a broken network as a
+  policy violation — or teach a team to ignore the code that means their agent
+  regressed.
+- **The CLI computes no verdict.** It reads `gate.verdict` and reproduces
+  neither the diff, the scorecard, nor any threshold comparison. A second
+  implementation of a security decision does not fail loudly; it agrees for a
+  year and then diverges on an untested edge, in the direction of a false
+  PASS.
+
 ### Platform identity cannot become behavioral identity
 
 **Threat:** an evaluation concept leaks into the engine — a candidate becomes

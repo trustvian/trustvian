@@ -181,6 +181,27 @@ raised one level.
   automated check rather than by review, because both fail silently —
   and, for invariant 2, because the module boundary alone would not
   catch it.
+- **A client of the platform is not the core.**
+  [Task 060](../tasks/v1.0/060-developer-cli.md) added control-plane
+  commands to the CLI in the root module. Their wire DTOs mirror the JSON
+  nouns of the `/v1` contract, so field names like `ProjectID` appear in
+  root-module source — and the name-based tripwire in
+  `scripts/check-platform-boundary.sh` flagged them.
+
+  That scan was narrowed to skip exactly those seven adapter files, and
+  nothing else. The invariant it proxies for is that *the engine* must not
+  grow platform concepts; an HTTP client naming the contract's own fields
+  is not that. The engine-facing CLI files (`analyze.go`, `baseline.go`,
+  `policy.go`, …) are still scanned, and a platform identity declared in
+  one still fails the build.
+
+  The narrowing is safe because the stronger checks still cover those
+  files: the root module's build graph must contain no platform package,
+  and `cmd/trustvian`'s own architecture test fails on an import of
+  `trustvian-platform`, on a platform type named in CLI source, and on
+  `trustvian-platform` appearing in the root `go.mod` or `go.sum`. A name
+  scan was always the weakest of the four — see
+  [ADR 0033](0033-developer-cli-is-a-thin-http-adapter.md).
 - No analytical store — ClickHouse or otherwise — ever becomes a
   dependency of the engine. The platform may adopt one when measured
   volume justifies it.

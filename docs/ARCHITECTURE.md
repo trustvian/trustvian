@@ -541,7 +541,7 @@ core's build graph contains none of it. See
 Task 058 added the first service layer and a transport over it:
 
 ```text
-producer / future CLI · TUI · WebUI
+producer / CLI (task 060) · future TUI · WebUI
               │
               ▼
         HTTP / JSON  ← adapter only, in platform/httpapi
@@ -596,8 +596,7 @@ The control plane holds a publisher and the transport holds a subscriber, so
 neither gains the other's authority — a transport able to publish could
 fabricate state.
 
-Still absent: the developer CLI and TUI, the WebUI, promotion, and event
-history. The API binds no listener — composing one is a later task, and it
+Still absent: the TUI, the WebUI, promotion, and event history. The API binds no listener — composing one is a later task, and it
 must default to loopback. A gate verdict still has no side effect: it is
 evidence about acceptance, not an action. This section records the boundary
 all of it respects, decided in
@@ -699,6 +698,26 @@ The event-history row is the load-bearing one. The engine holds learned state,
 not an event log. Any evaluation feature that needs to replay or diff raw events
 needs the platform to store them — and that is a boundary, not a gap.
 
+### Two CLI surfaces in one binary
+
+The `trustvian` binary now has two command groups that reach the system
+differently, and the difference is deliberate rather than transitional:
+
+```text
+analyze / baseline / version   ──▶  root Engine, in process, no network
+project / agent / candidate    ──▶  HTTP /v1  ──▶  control plane
+eval
+```
+
+The engine commands are released offline tools: they run the pipeline against a
+file of events with no platform present. Rewriting them to go through HTTP
+would replace a working local tool with a service dependency and break every
+existing invocation, so they were left exactly as they were.
+
+The control-plane commands are a client of the service layer. They compute no
+diff, no scorecard and no gate — the CLI reads `gate.verdict` from the response
+to choose an exit code and reproduces none of the logic behind it.
+
 ### Learning isolation, the core change the platform required
 
 Evaluating two candidates against one actor identity would train one baseline,
@@ -791,6 +810,28 @@ source imports `github.com/trustvian/trustvian/internal/…`. A non-prefixed
 module path is recommended alongside it as a second line of defence.
 `GOWORK=off` verification remains for a different purpose: proving the
 module's declared dependencies actually resolve, which a workspace hides.
+
+**The edge points one way, and task 060 is where that gets tested.** The
+developer CLI ships in the root module and drives the platform, which is
+exactly the shape that would tempt someone to import `trustvian-platform` from
+`cmd/trustvian`. That edge must not exist:
+
+```text
+cmd/trustvian ──HTTP /v1──▶ platform/httpapi ──▶ ControlPlane
+              ✗ Go import
+```
+
+Importing the platform would reverse the dependency, and would also pull the
+platform's implementation types, its SQLite driver and its schema into the root
+module's shipped release artifact. A client that imports the server's domain is
+additionally no longer evidence that the wire contract works.
+
+So the CLI's control-plane commands use `net/http`, `encoding/json` and
+`net/url` with client-side DTOs, the root `go.mod` gains nothing, and a test in
+`cmd/trustvian` fails on a forbidden import, on a platform concept named in
+CLI source, and on `trustvian-platform` appearing in the root `go.mod` or
+`go.sum`. See
+[ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md).
 
 ## Relationship to a future Alert & Notification layer
 
