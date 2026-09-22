@@ -1027,3 +1027,414 @@ func TestNoRequestIsSentWithoutAnAPIURL(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------
+// Verdict vocabulary
+// ---------------------------------------------------------------------
+
+// comparisonWithVerdict builds a well-formed comparison carrying any verdict,
+// including ones the CLI must refuse to interpret.
+func comparisonWithVerdict(verdict string) string {
+	return fmt.Sprintf(`{
+	  "version": "1",
+	  "reference_run_id": "ref",
+	  "candidate_run_id": "cand",
+	  "behavior_diff": {"added_count": 0, "removed_count": 0, "shared_count": 4},
+	  "gate": {
+	    "reference_evidence": {"actual":"10","minimum":"1","passed":true},
+	    "candidate_evidence": {"actual":"12","minimum":"1","passed":true},
+	    "added_behaviors": {"actual":"0","maximum":"0","passed":true},
+	    "block_decisions": {"actual":"0","maximum":"0","passed":true},
+	    "critical_risk_observations": {"actual":"0","maximum":"0","passed":true},
+	    "verdict": %q
+	  }
+	}`, verdict)
+}
+
+// comparisonWithoutVerdict omits the field entirely, so it decodes to "".
+func comparisonWithoutVerdict() string {
+	return `{
+	  "version": "1",
+	  "reference_run_id": "ref",
+	  "candidate_run_id": "cand",
+	  "behavior_diff": {"added_count": 0, "removed_count": 0, "shared_count": 4},
+	  "gate": {
+	    "reference_evidence": {"actual":"10","minimum":"1","passed":true},
+	    "candidate_evidence": {"actual":"12","minimum":"1","passed":true},
+	    "added_behaviors": {"actual":"0","maximum":"0","passed":true},
+	    "block_decisions": {"actual":"0","maximum":"0","passed":true},
+	    "critical_risk_observations": {"actual":"0","maximum":"0","passed":true}
+	  }
+	}`
+}
+
+// TestCompareOnlyExplicitFailIsExitOne is the tightened core of the exit
+// contract.
+//
+// The earlier implementation was "pass is 0, everything else is 1", which
+// reported a verdict the CLI could not interpret as a policy violation. A
+// build failed for something that never happened — and the wrong-case "PASS"
+// case is the one that shows how ordinary the mistake is.
+//
+// Exit 1 now requires the server to have said "fail", explicitly.
+func TestCompareOnlyExplicitFailIsExitOne(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		wantExit int
+	}{
+		{"pass", comparisonWithVerdict("pass"), exitOK},
+		{"fail", comparisonWithVerdict("fail"), exitGateFail},
+
+		{"unknown", comparisonWithVerdict("unknown"), exitOperational},
+		{"pending", comparisonWithVerdict("pending"), exitOperational},
+		{"empty string", comparisonWithVerdict(""), exitOperational},
+		{"missing field", comparisonWithoutVerdict(), exitOperational},
+		{"wrong case PASS", comparisonWithVerdict("PASS"), exitOperational},
+		{"wrong case FAIL", comparisonWithVerdict("FAIL"), exitOperational},
+		{"typo", comparisonWithVerdict("passs"), exitOperational},
+		{"leading space", comparisonWithVerdict(" pass"), exitOperational},
+		{"future verdict", comparisonWithVerdict("conditional_pass"), exitOperational},
+	}
+
+	for _, tt := range tests {
+		for _, mode := range []string{"human", "json"} {
+			t.Run(tt.name+"/"+mode, func(t *testing.T) {
+				api := newFakeAPI(t)
+				api.reply(200, tt.body)
+
+				args := compareArgs(api.url())
+				if mode == "json" {
+					args = append(args, "--json")
+				}
+				result := runPlatformCLI(t, args...)
+				result.mustExit(t, tt.wantExit, tt.name+"/"+mode)
+
+				// The invariant, stated directly: nothing but an explicit
+				// "fail" may produce the CI gate-failure code.
+				if tt.wantExit != exitGateFail && result.code == exitGateFail {
+					t.Fatalf("verdict %s produced exit 1, which means gate FAIL", tt.name)
+				}
+
+				if tt.wantExit != exitOperational {
+					return
+				}
+				// An uninterpretable response is not publishable evidence. If
+				// it reached stdout, a pipeline redirecting stdout to a file
+				// would keep the artifact and lose the retraction.
+				if result.stdout != "" {
+					t.Errorf("stdout = %q, want empty for an unsupported verdict", result.stdout)
+				}
+				if result.stderr == "" {
+					t.Error("stderr is empty; an unsupported verdict must be diagnosed")
+				}
+			})
+		}
+	}
+}
+
+// TestCompareVerdictVocabularyIsNotArithmetic keeps the fix narrow.
+//
+// Only the verdict *word* is validated. The CLI still does not check whether
+// the verdict agrees with the counts — that would be the second gate
+// implementation ADR 0033 rules out.
+func TestCompareVerdictVocabularyIsNotArithmetic(t *testing.T) {
+	t.Run("impossible evidence with an explicit pass still exits 0", func(t *testing.T) {
+		api := newFakeAPI(t)
+		api.reply(200, comparisonBody(gateVerdictPass, 7, "0"))
+		runPlatformCLI(t, compareArgs(api.url())...).
+			mustExit(t, exitOK, "7 added under a maximum of 0, verdict pass")
+	})
+
+	t.Run("passing-looking evidence with an explicit fail still exits 1", func(t *testing.T) {
+		api := newFakeAPI(t)
+		api.reply(200, comparisonBody(gateVerdictFail, 0, "99"))
+		runPlatformCLI(t, compareArgs(api.url())...).
+			mustExit(t, exitGateFail, "0 added under a maximum of 99, verdict fail")
+	})
+}
+
+// ---------------------------------------------------------------------
+// Successful bodies must be JSON, in both modes
+// ---------------------------------------------------------------------
+
+// TestSuccessfulBodyMustBeJSON closes the gap between the two output modes.
+//
+// --json used to copy a 2xx body through untouched and exit 0, while human
+// mode failed on the same response because its renderer had to decode one. A
+// machine-readable mode that reports success for arbitrary bytes is worse than
+// one with no validation, because the exit code claims the output is usable.
+func TestSuccessfulBodyMustBeJSON(t *testing.T) {
+	recordPath := writeRecordFile(t, `{"event_id":"evt-1"}`)
+
+	commands := []struct {
+		name   string
+		args   []string
+		status int
+	}{
+		{"eval get", []string{"eval", "get", "--id", "run-42"}, 200},
+		{"project create", []string{"project", "create", "--id", "p1", "--name", "n"}, 201},
+		{"agent get", []string{"agent", "get", "--id", "a1"}, 200},
+		{"candidate get", []string{"candidate", "get", "--id", "c1"}, 200},
+		{"eval progress", []string{"eval", "progress", "--id", "run-42"}, 200},
+		{"eval start", []string{"eval", "start", "--id", "run-42"}, 200},
+		{"eval ingest", []string{"eval", "ingest", "--id", "run-42", "--sequence", "1",
+			"--behavioral-profile", "p", "--record", recordPath}, 200},
+	}
+
+	bodies := []struct {
+		name string
+		body string
+	}{
+		{"plain text", "not-json"},
+		{"truncated JSON", `{"version":"1"`},
+		{"HTML error page", "<html><body>502 Bad Gateway</body></html>"},
+		{"empty", ""},
+		{"whitespace only", "   \n\t "},
+	}
+
+	for _, command := range commands {
+		for _, body := range bodies {
+			for _, mode := range []string{"human", "json"} {
+				t.Run(command.name+"/"+body.name+"/"+mode, func(t *testing.T) {
+					api := newFakeAPI(t)
+					api.reply(command.status, body.body)
+
+					args := append(append([]string{}, command.args...), "--api-url", api.url())
+					if mode == "json" {
+						args = append(args, "--json")
+					}
+
+					result := runPlatformCLI(t, args...)
+					result.mustExit(t, exitOperational, command.name+"/"+body.name+"/"+mode)
+
+					if result.stdout != "" {
+						t.Errorf("stdout = %q, want empty for a malformed success body", result.stdout)
+					}
+					if result.stderr == "" {
+						t.Error("stderr is empty; a malformed success body must be diagnosed")
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestCompareSuccessfulBodyMustBeJSON applies the same rule on the CI path,
+// where an exit code is read as a policy answer.
+func TestCompareSuccessfulBodyMustBeJSON(t *testing.T) {
+	for _, body := range []struct{ name, content string }{
+		{"plain text", "not-json"},
+		{"truncated", `{"gate":{"verdict":"pass"`},
+		{"empty", ""},
+	} {
+		for _, mode := range []string{"human", "json"} {
+			t.Run(body.name+"/"+mode, func(t *testing.T) {
+				api := newFakeAPI(t)
+				api.reply(200, body.content)
+
+				args := compareArgs(api.url())
+				if mode == "json" {
+					args = append(args, "--json")
+				}
+				result := runPlatformCLI(t, args...)
+				result.mustExit(t, exitOperational, body.name+"/"+mode)
+
+				if result.code == exitGateFail {
+					t.Fatal("a malformed body produced exit 1, which means gate FAIL")
+				}
+				if result.stdout != "" {
+					t.Errorf("stdout = %q, want empty", result.stdout)
+				}
+			})
+		}
+	}
+}
+
+// TestValidJSONWithUnknownFieldsStillSucceeds is the other half of the JSON
+// gate: it checks syntax and nothing else, so an additive server change still
+// passes through untouched.
+func TestValidJSONWithUnknownFieldsStillSucceeds(t *testing.T) {
+	const body = `{"version":"1","id":"run-1","status":"running",` +
+		`"future_field":{"preserve":true,"nested":[1,2,3]}}`
+
+	api := newFakeAPI(t)
+	api.reply(200, body)
+
+	human := runPlatformCLI(t, "eval", "get", "--api-url", api.url(), "--id", "run-1")
+	human.mustExit(t, exitOK, "human mode with an unknown field")
+	if !strings.Contains(human.stdout, "run-1") {
+		t.Errorf("human output missing the known field:\n%s", human.stdout)
+	}
+
+	machine := runPlatformCLI(t, "eval", "get", "--api-url", api.url(), "--id", "run-1", "--json")
+	machine.mustExit(t, exitOK, "json mode with an unknown field")
+
+	var got, want any
+	if err := json.Unmarshal([]byte(machine.stdout), &got); err != nil {
+		t.Fatalf("--json stdout is not JSON: %v\n%s", err, machine.stdout)
+	}
+	if err := json.Unmarshal([]byte(body), &want); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	if mustJSON(got) != mustJSON(want) {
+		t.Errorf("the JSON gate altered the body:\ngot  %s\nwant %s", mustJSON(got), mustJSON(want))
+	}
+
+	// And the bytes are forwarded, not rebuilt: a re-marshal would reorder or
+	// reformat, and would drop anything the CLI's DTO does not name.
+	if !strings.Contains(machine.stdout, `"future_field"`) {
+		t.Error("--json output lost the unknown field entirely")
+	}
+}
+
+// ---------------------------------------------------------------------
+// Positional arguments
+// ---------------------------------------------------------------------
+
+// TestTrailingPositionalArgumentsAreRejected stops a typo from looking like a
+// result.
+//
+// Every platform leaf takes its input through flags, so a leftover argument is
+// always a mistake — a lost dash, a stray filename, a shell-quoting slip.
+// Ignoring it sent the request anyway, which on eval compare meant an
+// invocation the user got wrong still produced a PASS or a FAIL that CI acted
+// on.
+func TestTrailingPositionalArgumentsAreRejected(t *testing.T) {
+	recordPath := writeRecordFile(t, `{"event_id":"evt-1"}`)
+
+	commands := []struct {
+		name string
+		args []string
+	}{
+		{"project create", []string{"project", "create", "--id", "p1", "--name", "n"}},
+		{"project get", []string{"project", "get", "--id", "p1"}},
+		{"agent create", []string{"agent", "create", "--id", "a1", "--project-id", "p1", "--name", "n"}},
+		{"agent get", []string{"agent", "get", "--id", "a1"}},
+		{"candidate create", []string{"candidate", "create", "--id", "c1", "--agent-id", "a1"}},
+		{"candidate get", []string{"candidate", "get", "--id", "c1"}},
+		{"eval create", []string{"eval", "create", "--id", "r1", "--candidate-id", "c1",
+			"--environment", "local", "--behavioral-profile", "p"}},
+		{"eval get", []string{"eval", "get", "--id", "r1"}},
+		{"eval start", []string{"eval", "start", "--id", "r1"}},
+		{"eval complete", []string{"eval", "complete", "--id", "r1"}},
+		{"eval cancel", []string{"eval", "cancel", "--id", "r1"}},
+		{"eval fail", []string{"eval", "fail", "--id", "r1"}},
+		{"eval progress", []string{"eval", "progress", "--id", "r1"}},
+		{"eval ingest-state", []string{"eval", "ingest-state", "--id", "r1"}},
+		{"eval ingest", []string{"eval", "ingest", "--id", "r1", "--sequence", "1",
+			"--behavioral-profile", "p", "--record", recordPath}},
+		{"eval compare", []string{"eval", "compare", "--reference-run", "ref",
+			"--candidate-run", "cand", "--max-added-behaviors", "0",
+			"--max-block-decisions", "0", "--max-critical-risk-observations", "0"}},
+	}
+
+	// Deliberately ordinary-looking. The dangerous trailing argument is not a
+	// weird one — it is the plausible one nobody looks at twice.
+	//
+	// "-- foo" and a bare "-" are here because both reach fs.Args() and would
+	// otherwise be ignored just like a plain word. A bare trailing "--" is
+	// deliberately absent: flag consumes it as the POSIX end-of-options
+	// marker, leaving no positional argument, and rejecting it would refuse a
+	// legitimate invocation. TestBareDoubleDashIsNotAPositionalArgument pins
+	// that distinction.
+	extras := []string{"foo", "record.json", "run-42", "0", "-", "--|foo"}
+
+	for _, command := range commands {
+		for _, extra := range extras {
+			t.Run(command.name+"/"+extra, func(t *testing.T) {
+				api := newFakeAPI(t)
+				api.reply(200, `{"version":"1","gate":{"verdict":"pass"}}`)
+
+				args := append(append([]string{}, command.args...), "--api-url", api.url())
+				// "--|foo" stands for the two-token form: an escaped
+				// positional that survives the end-of-options marker.
+				if extra == "--|foo" {
+					args = append(args, "--", "foo")
+				} else {
+					args = append(args, extra)
+				}
+
+				result := runPlatformCLI(t, args...)
+				result.mustExit(t, exitUsage, command.name+" with trailing "+extra)
+
+				// Nothing reached the server: the invocation was never valid,
+				// so it must not have had an effect to undo.
+				if got := api.captured(); len(got) != 0 {
+					t.Fatalf("server received %d requests for a rejected invocation", len(got))
+				}
+				if result.stdout != "" {
+					t.Errorf("stdout = %q, want empty", result.stdout)
+				}
+				if result.stderr == "" {
+					t.Error("stderr is empty; a usage error must be diagnosed")
+				}
+			})
+		}
+	}
+}
+
+// TestBareDoubleDashIsNotAPositionalArgument keeps the check from
+// over-rejecting.
+//
+// A trailing "--" is the standard end-of-options marker. Go's flag package
+// consumes it and reports no positional arguments, so `… --api-url X --` is a
+// well-formed invocation. Treating it as a stray argument would reject a
+// legitimate command, which is the failure mode opposite to the one this
+// blocker was about — and the one nobody would think to test for.
+func TestBareDoubleDashIsNotAPositionalArgument(t *testing.T) {
+	api := newFakeAPI(t)
+	api.reply(200, `{"version":"1","id":"proj-1","name":"Checkout"}`)
+
+	result := runPlatformCLI(t, "project", "get", "--api-url", api.url(), "--id", "proj-1", "--")
+	result.mustExit(t, exitOK, "trailing end-of-options marker")
+
+	if got := api.captured(); len(got) != 1 {
+		t.Fatalf("request count = %d, want 1", len(got))
+	}
+
+	// But one token after it is a positional argument again.
+	rejected := runPlatformCLI(t,
+		"project", "get", "--api-url", api.url(), "--id", "proj-1", "--", "foo")
+	rejected.mustExit(t, exitUsage, "escaped positional after the marker")
+	if got := api.captured(); len(got) != 1 {
+		t.Fatalf("request count = %d after a rejected invocation, want still 1", len(got))
+	}
+}
+
+// TestCompareTrailingArgumentIsNeverAGateResult states the CI-facing half
+// separately, because this is the one where silence had a policy meaning.
+func TestCompareTrailingArgumentIsNeverAGateResult(t *testing.T) {
+	for _, verdict := range []string{gateVerdictPass, gateVerdictFail} {
+		t.Run("server would have said "+verdict, func(t *testing.T) {
+			api := newFakeAPI(t)
+			api.reply(200, comparisonWithVerdict(verdict))
+
+			result := runPlatformCLI(t, append(compareArgs(api.url()), "oops")...)
+			result.mustExit(t, exitUsage, "compare with a trailing argument")
+
+			if result.code == exitOK || result.code == exitGateFail {
+				t.Fatal("a mistyped invocation produced a gate result")
+			}
+			if got := api.captured(); len(got) != 0 {
+				t.Fatalf("server received %d requests", len(got))
+			}
+		})
+	}
+}
+
+// TestFamilyLevelUsageIsUnchanged confirms the new check did not disturb
+// dispatch-level behavior.
+func TestFamilyLevelUsageIsUnchanged(t *testing.T) {
+	cases := [][]string{
+		{"project"}, {"project", "list"},
+		{"agent"}, {"agent", "update"},
+		{"candidate"}, {"candidate", "promote"},
+		{"eval"}, {"eval", "watch"}, {"eval", "serve"},
+	}
+	for _, args := range cases {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			runPlatformCLI(t, args...).mustExit(t, exitUsage, strings.Join(args, " "))
+		})
+	}
+}

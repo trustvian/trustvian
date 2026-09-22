@@ -240,7 +240,11 @@ meaning for every code, and assuming one will be wrong:
 
 **Exit code `1` means gate failure only for `trustvian eval compare`; it
 does not change the established meaning of code `1` for legacy
-commands.** [Task 060](tasks/v1.0/060-developer-cli.md) resolved the
+commands.** It further requires the server to have returned the explicit
+verdict `fail`: `pass` and `fail` are a closed vocabulary, and any other
+value — including a missing field, a different case, or a verdict from a
+newer server — is an unsupported response and exits `3`. Adding a verdict
+to that vocabulary is a minor change; changing what `1` means is major. [Task 060](tasks/v1.0/060-developer-cli.md) resolved the
 conflict by scoping rather than renumbering, so no released automation
 changed meaning. See
 [ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md).
@@ -262,7 +266,9 @@ promise, and parsing it is not a supported integration.
 
 The control-plane commands do have a machine-readable mode: `--json`
 writes the API's own successful response body to stdout, and the API's
-error envelope to stderr. Those fields inherit the `/v1` API contract
+error envelope to stderr. A successful response must be a syntactically
+valid, non-empty JSON body in both output modes; a `2xx` carrying
+anything else exits `3` rather than being forwarded as a result. Those fields inherit the `/v1` API contract
 rather than defining a second field namespace — the CLI adds no wrapper
 and removes no field, so a client must tolerate additive fields exactly
 as an HTTP client would. Results go to stdout and diagnostics to stderr,
@@ -273,6 +279,11 @@ to stdout.
 that needs structured engine results uses the Go SDK. Adding one would be
 additive and allowed in a minor; it is listed under
 [public API review outcome](#public-api-review-outcome).
+
+The control-plane commands accept no positional arguments. A trailing
+argument is a usage error (`2`) raised before any request is sent, so an
+invocation typo cannot be mistaken for an API or gate result. Legacy
+`analyze`, `baseline` and `version` keep their existing operand parsing.
 
 The control-plane commands require `--api-url`. No default address or
 port is defined yet, and no environment variable is read — task 062 owns

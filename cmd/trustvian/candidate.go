@@ -54,7 +54,7 @@ func runCandidateCreate(s streams, args []string, timeout time.Duration) int {
 	toolsetDigest := fs.String("toolset-digest", "", "digest of the toolset")
 	configDigest := fs.String("config-digest", "", "digest of the configuration")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, candidateUsage, err)
 	}
 	if err := requireAll(fs, map[string]string{"id": *id, "agent-id": *agentID}); err != nil {
@@ -97,7 +97,7 @@ func runCandidateGet(s streams, args []string, timeout time.Duration) int {
 	common := registerCommonFlags(fs)
 	id := fs.String("id", "", "candidate identifier (required)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, candidateUsage, err)
 	}
 	if err := requireFlag("id", *id); err != nil {

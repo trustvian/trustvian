@@ -63,6 +63,8 @@ The CLI reads `gate.verdict` and nothing else to pick its exit code. Human
 output prints the checks the server returned, which is rendering, not
 evaluation.
 
+It validates that verdict's *vocabulary*, never its arithmetic — see point 9.
+
 ### 4. IDs belong to the caller
 
 [ADR 0025](0025-platform-domain-values-with-caller-owned-identity.md) put
@@ -117,15 +119,34 @@ That leaves `1` unclaimed on exactly the command that needs it.
 ### 9. `eval compare` gives `1` a unique, command-scoped meaning
 
 ```text
-0  HTTP succeeded and gate.verdict == pass
-1  HTTP succeeded and gate.verdict == fail
+0  HTTP succeeded and gate.verdict is exactly "pass"
+1  HTTP succeeded and gate.verdict is exactly "fail"
 2  usage
-3  operational
+3  operational, including any other verdict
 ```
 
 Scoped to one command, this adds a meaning without changing one. A reader of
 `docs/compatibility.md` is told plainly that `1` means gate failure *for
 `eval compare` only*.
+
+**`pass` and `fail` are a closed vocabulary, and everything else is
+operational.** An earlier draft mapped pass to `0` and *anything else* to `1`,
+which quietly reported `unknown`, `pending`, `PASS` with the wrong case, a
+typo, a verdict from a newer server, and a missing field decoding to `""` as
+policy failures. None of those is a gate failure; they are responses this
+client cannot interpret. Failing a build for one states something that did not
+happen, and a team that meets it a few times learns to treat exit `1` as noise
+— which costs them the one signal the code exists to carry.
+
+Only the word is checked. A response reporting seven added behaviors under a
+maximum of zero with a verdict of `pass` still exits `0`: `pass` is an
+authoritative answer, and second-guessing it here is the second gate
+implementation point 3 rules out.
+
+The classification happens **before** anything is written. An uninterpretable
+response is not publishable CI evidence, so it must not reach stdout and then
+be retracted by an exit code — a pipeline redirecting stdout to a file keeps
+the artifact and loses the retraction.
 
 ### 10. An API error must never look like a gate failure
 
@@ -139,7 +160,19 @@ a team to ignore the code that actually means their agent regressed.
 
 ### 11. Structured output is the API's JSON, not a second schema
 
-`--json` writes the server's successful response body through unchanged.
+`--json` writes the server's successful response body through unchanged, after
+checking that it is syntactically JSON at all.
+
+Every `/v1` operation this CLI calls answers with a JSON body, so a `2xx`
+carrying anything else is a server the client does not understand. Without that
+check the two output modes disagreed: human mode failed because its renderer
+had to decode the body, while `--json` copied arbitrary bytes to stdout and
+exited `0`. A machine-readable mode that reports success for a malformed body
+is worse than one with no validation at all, because the exit code asserts the
+output is usable.
+
+The check is syntax only — `json.Valid`, plus an explicit empty-body case — so
+it touches no fields and an additive server change still passes through.
 
 Decoding into a CLI struct and re-marshalling would create a second field
 namespace with its own versioning problem, and would silently drop any field a
@@ -209,6 +242,24 @@ The CLI sends no auth header and claims no transport guarantee. It does refuse
 credentials embedded in `--api-url` — not as authentication, but because a URL
 is the wrong place for a secret and accepting one would put it in shell
 history, process listings and logs.
+
+### 19. Platform commands take no positional arguments
+
+Every leaf receives its input through flags, so anything left after parsing is
+a mistake: a lost dash, a stray filename, a shell-quoting slip. Ignoring it
+sent the request anyway.
+
+On `eval compare` that meant a mistyped invocation still produced a real PASS
+or FAIL for CI to act on — an exit code carrying a policy meaning, derived from
+a command the user did not write. The rejection is a usage error before the API
+URL is built and before any request is sent.
+
+Parsing and the check are one function, because a separate check is the kind a
+new command forgets: it compiles, it works for every correct invocation, and it
+fails only on a typo.
+
+Legacy `analyze`, `baseline` and `version` keep their own parsing untouched —
+they take a file operand, and their behavior is released surface.
 
 ## Alternatives considered
 

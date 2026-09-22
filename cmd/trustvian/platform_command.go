@@ -7,7 +7,9 @@ package main
 // it abstracts. The existing CLI uses flag; this stays with it.
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"io"
 	"slices"
@@ -25,6 +27,36 @@ func newFlagSet(name string) *flag.FlagSet {
 	return fs
 }
 
+// parseFlags parses arguments and rejects anything left over.
+//
+// One function rather than a Parse call followed by a separate check, because
+// the separate check is the kind a new command forgets: it compiles, it works
+// for every correct invocation, and it fails only on a typo — which is exactly
+// when silence is most expensive. Nothing here can parse without it.
+func parseFlags(fs *flag.FlagSet, args []string) error {
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return requireNoArgs(fs)
+}
+
+// requireNoArgs rejects trailing positional arguments.
+//
+// Every platform leaf takes its input through flags, so a positional argument
+// is always a mistake — a shell-quoting slip, a stray filename, a flag whose
+// leading dashes were lost. Ignoring it silently is what turns
+//
+//	trustvian eval compare … accidental-garbage
+//
+// into a real gate verdict a CI job then acts on. A typo must never be
+// mistaken for a PASS or a FAIL.
+func requireNoArgs(fs *flag.FlagSet) error {
+	if fs.NArg() != 0 {
+		return usageErrorf("unexpected positional argument %q", fs.Arg(0))
+	}
+	return nil
+}
+
 // requireAll checks several required flags, reporting them in a stable order.
 //
 // Sorted rather than map order, so the same wrong invocation produces the same
@@ -40,6 +72,30 @@ func requireAll(fs *flag.FlagSet, values map[string]string) error {
 		if err := requireFlag(name, values[name]); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// requireJSONBody rejects a 2xx response that is not a JSON document.
+//
+// Every /v1 operation the CLI calls answers with a JSON body, so a successful
+// status carrying something else is a server the client does not understand —
+// not a success with unusual content.
+//
+// This runs before either output mode. Without it the two disagreed: human
+// mode failed on a malformed body because its renderer decoded one, while
+// --json copied the bytes through and exited 0. A machine-readable mode that
+// reports success for arbitrary bytes is worse than one that has no
+// validation at all, because the exit code says the output is trustworthy.
+//
+// Syntax only. Nothing here inspects fields, so an additive server change
+// still passes untouched.
+func requireJSONBody(body []byte) error {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return operationalErrorf("server returned a successful status with an empty body")
+	}
+	if !json.Valid(body) {
+		return operationalErrorf("server response is not valid JSON")
 	}
 	return nil
 }
@@ -63,6 +119,9 @@ func runLeaf(
 		return emitError(s, *common.json, err)
 	}
 	if err := checkStatus(result); err != nil {
+		return emitError(s, *common.json, err)
+	}
+	if err := requireJSONBody(result.body); err != nil {
 		return emitError(s, *common.json, err)
 	}
 

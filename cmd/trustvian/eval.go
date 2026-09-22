@@ -86,7 +86,7 @@ func runEvalCreate(s streams, args []string, timeout time.Duration) int {
 	environment := fs.String("environment", "", "environment reference (required)")
 	profile := fs.String("behavioral-profile", "", "behavioral profile reference (required)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, evalUsage, err)
 	}
 	if err := requireAll(fs, map[string]string{
@@ -114,7 +114,7 @@ func runEvalGet(s streams, args []string, timeout time.Duration) int {
 	common := registerCommonFlags(fs)
 	id := fs.String("id", "", "evaluation run identifier (required)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, evalUsage, err)
 	}
 	if err := requireFlag("id", *id); err != nil {
@@ -139,7 +139,7 @@ func runEvalLifecycle(s streams, action string, args []string, timeout time.Dura
 	common := registerCommonFlags(fs)
 	id := fs.String("id", "", "evaluation run identifier (required)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, evalUsage, err)
 	}
 	if err := requireFlag("id", *id); err != nil {
@@ -161,7 +161,7 @@ func runEvalFail(s streams, args []string, timeout time.Duration) int {
 	// would put CLI-authored text into durable evaluation state.
 	reason := fs.String("reason", "", "why the run failed")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, evalUsage, err)
 	}
 	if err := requireFlag("id", *id); err != nil {
@@ -188,7 +188,7 @@ func runEvalProgress(s streams, args []string, timeout time.Duration) int {
 	common := registerCommonFlags(fs)
 	id := fs.String("id", "", "evaluation run identifier (required)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, evalUsage, err)
 	}
 	if err := requireFlag("id", *id); err != nil {
@@ -213,7 +213,7 @@ func runEvalIngestState(s streams, args []string, timeout time.Duration) int {
 	common := registerCommonFlags(fs)
 	id := fs.String("id", "", "evaluation run identifier (required)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, evalUsage, err)
 	}
 	if err := requireFlag("id", *id); err != nil {
@@ -257,7 +257,7 @@ func runEvalIngest(s streams, args []string, timeout time.Duration) int {
 	var sequence optionalUint64
 	fs.Var(&sequence, "sequence", "ingest sequence, a canonical decimal integer >= 1 (required)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, evalUsage, err)
 	}
 	if err := requireAll(fs, map[string]string{
@@ -342,7 +342,7 @@ func runEvalCompare(s streams, args []string, timeout time.Duration) int {
 	fs.Var(&criticalRisk, "max-critical-risk-observations",
 		"maximum critical-risk observations (required)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, evalUsage, err)
 	}
 	if err := requireAll(fs, map[string]string{
@@ -394,28 +394,71 @@ func runEvalCompare(s streams, args []string, timeout time.Duration) int {
 	if err := checkStatus(result); err != nil {
 		return emitError(s, *common.json, err)
 	}
+	// Redundant here, and deliberately kept: decodeJSON below rejects a
+	// malformed or empty body on its own, so a mutation removing this line
+	// survives. It stays because every successful platform response goes
+	// through one rule rather than two that happen to agree — and because a
+	// future edit that moved the decode after the emit would otherwise lose
+	// the guarantee silently. It also names the empty-body case specifically,
+	// which "not valid JSON" does not.
+	if err := requireJSONBody(result.body); err != nil {
+		return emitError(s, *common.json, err)
+	}
 
 	var comparison compareDTO
 	if err := decodeJSON(result.body, &comparison); err != nil {
 		return emitError(s, *common.json, err)
 	}
 
-	// The evidence goes to stdout on both verdicts. A gate FAIL is a result,
-	// not an error: CI needs the comparison to publish alongside the failure,
-	// and writing it to stderr would separate the verdict from its reasons.
+	// Classified before anything is written. A response the CLI cannot
+	// interpret is not publishable CI evidence, so it must not reach stdout
+	// and then be retracted by the exit code — a pipeline redirecting stdout
+	// to a file would keep the artifact and lose the retraction.
+	exit, err := gateExitCode(comparison.Gate.Verdict)
+	if err != nil {
+		return emitError(s, *common.json, err)
+	}
+
+	// The evidence goes to stdout on both recognized verdicts. A gate FAIL is
+	// a result, not an error: CI needs the comparison to publish alongside the
+	// failure, and writing it to stderr would separate the verdict from its
+	// reasons.
 	if err := emitSuccess(s, *common.json, result.body, func(w io.Writer) error {
 		return renderComparison(w, comparison)
 	}); err != nil {
 		return emitError(s, *common.json, err)
 	}
+	return exit
+}
 
-	// Exactly one field decides the exit code. Nothing here counts behaviors,
-	// sums decisions, or compares anything against a limit — all of that is
-	// already in the response, computed by the authority that owns it.
-	if comparison.Gate.Verdict == gateVerdictPass {
-		return exitOK
+// gateExitCode maps a server verdict onto this command's exit contract.
+//
+// Exit 1 means one thing: the control plane successfully returned a verdict of
+// "fail". It is the only code in the CLI that a CI job is expected to branch
+// on as a policy outcome, so everything that is not that explicit answer has
+// to stay out of it.
+//
+// The earlier shape — pass is 0, everything else is 1 — quietly reported
+// "unknown", "pending", "PASS" with the wrong case, a typo, a verdict from a
+// newer server, and a missing field decoding to "" all as gate failures. Those
+// are responses the CLI does not understand. Calling them policy violations
+// fails a build for a reason that never happened, and teaches a team that
+// exit 1 is noise.
+//
+// Only the vocabulary is checked, never the arithmetic. A response reporting
+// seven added behaviors under a maximum of zero and a verdict of "pass" is
+// still exit 0: "pass" is an authoritative answer, and second-guessing it here
+// would make the CLI a second gate implementation.
+func gateExitCode(verdict string) (int, error) {
+	switch verdict {
+	case gateVerdictPass:
+		return exitOK, nil
+	case gateVerdictFail:
+		return exitGateFail, nil
+	default:
+		return exitOperational, operationalErrorf(
+			"server response has unsupported gate verdict %q", verdict)
 	}
-	return exitGateFail
 }
 
 type gateLimitsBody struct {

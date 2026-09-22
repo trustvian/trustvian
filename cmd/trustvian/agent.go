@@ -37,7 +37,7 @@ func runAgentCreate(s streams, args []string, timeout time.Duration) int {
 	projectID := fs.String("project-id", "", "owning project identifier (required)")
 	name := fs.String("name", "", "human-readable agent name (required)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, agentUsage, err)
 	}
 	if err := requireAll(fs, map[string]string{
@@ -64,7 +64,7 @@ func runAgentGet(s streams, args []string, timeout time.Duration) int {
 	common := registerCommonFlags(fs)
 	id := fs.String("id", "", "agent identifier (required)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, agentUsage, err)
 	}
 	if err := requireFlag("id", *id); err != nil {

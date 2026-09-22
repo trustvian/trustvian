@@ -37,7 +37,7 @@ func runProjectCreate(s streams, args []string, timeout time.Duration) int {
 	id := fs.String("id", "", "caller-owned project identifier (required)")
 	name := fs.String("name", "", "human-readable project name (required)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, projectUsage, err)
 	}
 	if err := requireAll(fs, map[string]string{"id": *id, "name": *name}); err != nil {
@@ -62,7 +62,7 @@ func runProjectGet(s streams, args []string, timeout time.Duration) int {
 	common := registerCommonFlags(fs)
 	id := fs.String("id", "", "project identifier (required)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, projectUsage, err)
 	}
 	if err := requireFlag("id", *id); err != nil {

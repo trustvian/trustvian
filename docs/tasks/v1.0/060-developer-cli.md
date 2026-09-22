@@ -65,6 +65,28 @@ So the CLI uses `net/http`, `encoding/json` and `net/url`, with its own
 client-side DTOs for the fields it renders. `go.mod` gains nothing. An
 architecture test enforces both halves.
 
+## Positional Arguments
+
+Every platform leaf takes its input through flags and accepts **zero**
+positional arguments. Anything left after parsing is a usage error (`2`),
+diagnosed before the API URL is built and before any request is sent.
+
+A leftover argument is always a mistake — a lost dash, a stray filename, a
+shell-quoting slip. Ignoring it sent the request anyway, which on `eval
+compare` meant an invocation the user got wrong still produced a real PASS or
+FAIL that CI acted on. A typo must never be mistaken for a gate result.
+
+Parsing and the check are one operation (`parseFlags`), because a separate
+check is the kind a new command forgets: it compiles, it works for every
+correct invocation, and it fails only on a typo.
+
+A bare trailing `--` is *not* a positional argument — it is the POSIX
+end-of-options marker, which `flag` consumes — so `… --id x --` stays valid.
+`-- foo` and a bare `-` do reach the argument list and are rejected.
+
+Legacy `analyze`, `baseline` and `version` are unchanged: they take a file
+operand, and their parsing is released compatibility surface.
+
 ## Command Surface
 
 ```text
@@ -126,10 +148,24 @@ a caller-supplied identifier cannot change the route's shape.
 
 ## JSON / Human Output
 
-`--json` writes **the server's own successful response body** to stdout. Not a
-re-marshalled subset: decoding into a smaller struct and re-encoding would
-silently drop any field a newer server added, which is exactly the
-compatibility property the `/v1` contract promises.
+Every `/v1` operation the CLI calls answers with a JSON body, so **a successful
+status carrying anything else is an operational failure** (`3`) — in both
+output modes. A `2xx` with a malformed body, or an empty one, is a server the
+client does not understand, not a success with unusual content.
+
+That check is syntax only (`json.Valid`, plus an explicit empty-body case) and
+runs before either mode renders. Without it the two disagreed: human mode
+failed because its renderer had to decode the body, while `--json` copied the
+bytes through and exited `0`. A machine-readable mode that reports success for
+arbitrary bytes is worse than one with no validation, because the exit code
+claims the output is usable.
+
+`--json` then writes **the server's own successful response body** to stdout,
+byte for byte apart from trailing-newline normalization. Not a re-marshalled
+subset: decoding into a smaller struct and re-encoding would silently drop any
+field a newer server added, which is exactly the compatibility property the
+`/v1` contract promises. Validating syntax does not touch fields, so an
+additive server change still passes through untouched.
 
 Human output is observational and renders only fields it knows. Response
 decoding never uses `DisallowUnknownFields` — the contract says clients
@@ -161,16 +197,33 @@ one command:
 
 ```text
 eval compare
-  0  HTTP succeeded and gate.verdict == pass
-  1  HTTP succeeded and gate.verdict == fail
+  0  HTTP succeeded and gate.verdict is exactly "pass"
+  1  HTTP succeeded and gate.verdict is exactly "fail"
   2  usage
-  3  API / network / runtime / server error
+  3  API / network / runtime / server error, and any other verdict
 ```
 
 This is **command-scoped**. A 409, a 404, a timeout, a redirect and a malformed
 response are all `3`, never `1`. A CI job that treats any non-zero as "gate
 failed" would otherwise report a broken network as a policy violation, which is
 the failure mode this distinction exists to prevent.
+
+**Exit 1 requires the explicit verdict `fail`.** Only `pass` and `fail` are a
+recognized vocabulary; `unknown`, `pending`, `PASS` with the wrong case, a
+typo, a verdict from a newer server, and a missing field that decodes to `""`
+are all responses the CLI cannot interpret — operational failure, not policy
+failure. Defaulting anything-but-pass to `fail` would fail a build for a
+reason that never happened, and would teach a team that exit `1` is noise.
+
+Only the vocabulary is checked, never the arithmetic: a response reporting
+seven added behaviors under a maximum of zero with a verdict of `pass` is
+still `0`, because `pass` is an authoritative answer.
+
+The verdict is classified **before** anything is written. An uninterpretable
+response is not publishable CI evidence, so it must not reach stdout and then
+be retracted by the exit code — a pipeline redirecting stdout to a file would
+keep the artifact and lose the retraction. For an unsupported verdict, stdout
+is empty and the diagnostic goes to stderr, in both human and `--json` mode.
 
 ## Evaluation Ingest
 
