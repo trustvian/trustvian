@@ -8,6 +8,41 @@ actually depend on.
 
 ## Unreleased
 
+### Added
+
+- **Developer CLI control-plane commands.** `trustvian project`,
+  `trustvian agent`, `trustvian candidate` and `trustvian eval` drive a
+  local control plane over its `/v1` HTTP API, so an evaluation can be
+  run from a shell script or a CI job. The CLI is an adapter: it imports
+  nothing from the platform module, touches no database, and computes no
+  behavioral diff, scorecard or gate verdict. See
+  [docs/platform-cli.md](docs/platform-cli.md) and
+  [ADR 0033](docs/adr/0033-developer-cli-is-a-thin-http-adapter.md).
+
+  Not included, and deliberately: no integrated local server — `--api-url`
+  is required and points at a control plane you are already running. No
+  `watch`/realtime command, no authentication, no list or search
+  commands.
+
+- **Machine-readable CLI output.** Every control-plane command accepts
+  `--json`, which writes the API's own successful response body to stdout
+  and its error envelope to stderr. The CLI adds no wrapper and removes no
+  field, so those fields inherit the `/v1` contract rather than defining a
+  second namespace — additive server fields reach the caller unchanged.
+
+- **CI-safe `eval compare` exit codes.** `0` gate PASS, `1` gate FAIL, `2`
+  usage, `3` API or network failure. The comparison evidence is written to
+  stdout on both `0` and `1`, because a gate FAIL is a result to publish
+  rather than an error.
+
+  Exit codes are **scoped by command family**, which resolves a conflict
+  the roadmap had carried since the milestone was planned. `analyze`,
+  `baseline` and `version` keep `0` success / `1` failure / `2` top-level
+  usage exactly as released; the new families leave `1` unused, which is
+  what frees it to mean gate failure on `eval compare` alone. An API
+  error is never reported as a gate failure. See
+  [docs/compatibility.md § CLI](docs/compatibility.md#cli).
+
 ### Security
 
 - **Per-actor fingerprint state is now bounded.** `Baseline.Fingerprints`

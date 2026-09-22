@@ -1,10 +1,22 @@
-// Command trustvian is the Trustvian CLI: a developer-friendly way to
-// run the behavioral engine against a file of events without writing Go.
+// Command trustvian is the Trustvian CLI.
+//
+// Two surfaces live in one binary, deliberately different because they serve
+// different things.
+//
+// analyze, baseline and version run the behavioral engine in process against a
+// file of events — released, offline, no network. Their behavior and exit
+// codes are unchanged by anything below.
+//
+// project, agent, candidate and eval drive the local control plane over its
+// versioned /v1 HTTP API. They are an adapter: they import nothing from the
+// platform module and reproduce none of its decisions. See
+// docs/adr/0033-developer-cli-is-a-thin-http-adapter.md.
 package main
 
 import (
 	"fmt"
 	"os"
+	"time"
 )
 
 func main() {
@@ -15,6 +27,16 @@ func run(args []string) int {
 	if len(args) == 0 {
 		usage(os.Stderr)
 		return 2
+	}
+
+	// The platform families return their own exit code and are dispatched
+	// before the legacy switch, so they never pass through the error -> 1
+	// mapping below. That mapping is released behavior for analyze and
+	// baseline; routing new commands through it would silently give them a
+	// meaning for exit 1 that eval compare needs for itself.
+	if code, handled := runPlatform(
+		streams{out: os.Stdout, err: os.Stderr}, args, platformRequestTimeout); handled {
+		return code
 	}
 
 	var err error
@@ -41,6 +63,26 @@ func run(args []string) int {
 	return 0
 }
 
+// runPlatform dispatches the control-plane families.
+//
+// Split out so tests can drive it with buffers and a short timeout without a
+// process, and without a public --timeout flag that exists only for tests.
+// Returns handled=false for anything it does not own, leaving the legacy
+// switch untouched.
+func runPlatform(s streams, args []string, timeout time.Duration) (int, bool) {
+	switch args[0] {
+	case "project":
+		return runProject(s, args[1:], timeout), true
+	case "agent":
+		return runAgent(s, args[1:], timeout), true
+	case "candidate":
+		return runCandidate(s, args[1:], timeout), true
+	case "eval":
+		return runEval(s, args[1:], timeout), true
+	}
+	return 0, false
+}
+
 func usage(w *os.File) {
 	fmt.Fprintln(w, `Trustvian - behavioral security and trust engine
 
@@ -51,6 +93,20 @@ Usage:
       Learn a baseline from a corpus of events
   trustvian version
       Print version, commit revision, and build platform
+
+Control-plane commands (require --api-url; see docs/platform-cli.md):
+  trustvian project    create|get
+  trustvian agent      create|get
+  trustvian candidate  create|get
+  trustvian eval       create|get|start|complete|fail|cancel|
+                       progress|ingest-state|ingest|compare
+      Drive a local control plane over its /v1 HTTP API. Each supports
+      --json, which writes the API's own response to stdout.
+
+Exit codes differ by command family. analyze, baseline and version keep
+0 success / 1 failure / 2 usage. The control-plane commands use 0 success
+/ 2 usage / 3 API or network failure, and 'eval compare' additionally uses
+1 for a gate FAIL — only there. See docs/compatibility.md.
 
 --config <path> loads a schema-v1 YAML policy config (see config.LoadFile)
 and uses it instead of the CLI's built-in default policy. Without it,

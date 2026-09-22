@@ -119,6 +119,39 @@ fi
 readonly PLATFORM_IDENTIFIERS='ProjectID|AgentID|CandidateID|EvaluationRunID|BehavioralProfileRef|EnvironmentRef'
 readonly PLATFORM_TYPES='Project|Agent|Candidate|EvaluationRun|Scorecard|Promotion'
 
+# The developer CLI's control-plane adapter (task 060) is exempt from this
+# scan, and only from this scan.
+#
+# ADR 0022's invariant 4 is that *the engine* must not grow platform concepts:
+# no Project type, no EvaluationRunID field on Event. These files are not the
+# engine. They are an HTTP client whose structs mirror the JSON nouns of the
+# /v1 wire contract, so a field named ProjectID there is the contract's own
+# name for a value the caller typed on the command line — not the core
+# acquiring an evaluation concept.
+#
+# What actually keeps them honest is stronger than a name scan and is checked
+# elsewhere: check 3 above proves the root module's build graph contains no
+# platform package, and cmd/trustvian's own architecture test fails on an
+# import of trustvian-platform, on a platform type named in CLI source, and on
+# trustvian-platform appearing in the root go.mod or go.sum. Both still cover
+# these files.
+#
+# Listed explicitly rather than matched by prefix: adding a new control-plane
+# CLI file should require deciding that it belongs here.
+readonly CLI_WIRE_ADAPTER_FILES='
+./cmd/trustvian/platform_client.go
+./cmd/trustvian/platform_command.go
+./cmd/trustvian/platform_output.go
+./cmd/trustvian/project.go
+./cmd/trustvian/agent.go
+./cmd/trustvian/candidate.go
+./cmd/trustvian/eval.go
+'
+
+is_cli_wire_adapter() {
+    printf '%s\n' "$CLI_WIRE_ADAPTER_FILES" | grep -qxF "$1"
+}
+
 core_go_files() {
     find . -name "*.go" -not -name "*_test.go" \
         -not -path "./$PLATFORM_DIR/*" \
@@ -130,6 +163,9 @@ core_go_files() {
 
 leaks=""
 while IFS= read -r f; do
+    if is_cli_wire_adapter "$f"; then
+        continue
+    fi
     # Strip comments before matching so prose explaining the boundary does
     # not read as a violation. gofmt's own printer is not available for
     # this, so: drop //-comments and /* */ blocks, then look for a
@@ -160,6 +196,7 @@ if [ -n "$leaks" ]; then
     printf '%s' "$leaks" >&2
 else
     ok "no platform identity declared in core runtime code"
+    ok "(the task 060 CLI wire adapter is scanned by cmd/trustvian's own architecture test)"
 fi
 
 # ---------------------------------------------------------------------

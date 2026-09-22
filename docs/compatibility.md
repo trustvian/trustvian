@@ -54,7 +54,7 @@ reconstructed later. Everything else in this table is already released.
 | Configuration schema (`policy`, `alerts`, `anomaly`, `storage`) | STABLE | A valid `v1` document keeps loading across `v1.x` | New optional fields; a new schema version alongside `v1` | Major, or a new schema version |
 | Configuration defaults | STABLE WITH DEPRECATION | A default is not changed silently | Documented default changes in a minor, called out in CHANGELOG | See [behavioral compatibility](#behavioral-compatibility) |
 | CLI commands and flags | OPERATIONALLY STABLE | `analyze`, `baseline`, `version`, `--config`, `--anomaly-config`, `--storage-config` keep working | New commands and flags | Major to remove or repurpose |
-| CLI exit codes | OPERATIONALLY STABLE | `0` success, `1` analysis or runtime failure, `2` usage error | Narrowing a class only by adding a new code | Major |
+| CLI exit codes | OPERATIONALLY STABLE | Scoped by command family; `1` means gate failure only for `eval compare` — see [CLI](#cli) | Adding a code, or a new family with its own scoped contract | Major |
 | CLI human-readable output | OBSERVATIONAL | Not a machine interface — no wording, spacing, or ordering promise | Any change | None |
 | Environment variables read by shipped binaries | OPERATIONALLY STABLE | See [environment variables](#environment-variables) | New variables | Major to remove or rename |
 | Collector processor type name and config fields | OPERATIONALLY STABLE | `policy`, `storage`, `health` keys and their meaning | New optional keys | Major |
@@ -227,18 +227,68 @@ accordingly.
 ## CLI
 
 Commands, flags, and exit codes are automation-facing and treated as
-such. Exit codes today: `0` success, `1` the run failed, `2` the
-invocation was wrong.
+such.
 
-Human-readable output is not. It carries no stability promise, and
-parsing it is not a supported integration.
+Exit codes are **scoped by command family**. There is no single global
+meaning for every code, and assuming one will be wrong:
 
-Note the gap that follows from this: the CLI has **no machine-readable
-output mode today** — `analyze` prints a formatted summary, not JSON. So
-automation that needs structured results has to use the Go SDK rather
-than the CLI. Adding a structured output mode would be additive and
-allowed in a minor; it is listed under
+| Commands | `0` | `1` | `2` | `3` |
+|---|---|---|---|---|
+| `analyze`, `baseline`, `version` | success | the run failed | top-level invocation was wrong | — |
+| `project`, `agent`, `candidate`, `eval` except `compare` | success | *unused* | usage | API, network, or server failure |
+| `eval compare` | gate **PASS** | gate **FAIL** | usage | API, network, or server failure |
+
+**Exit code `1` means gate failure only for `trustvian eval compare`; it
+does not change the established meaning of code `1` for legacy
+commands.** It further requires the server to have returned the explicit
+verdict `fail`: `pass` and `fail` are a closed vocabulary, and any other
+value — including a missing field, a different case, or a verdict from a
+newer server — is an unsupported response and exits `3`. Adding a verdict
+to that vocabulary is a minor change; changing what `1` means is major. [Task 060](tasks/v1.0/060-developer-cli.md) resolved the
+conflict by scoping rather than renumbering, so no released automation
+changed meaning. See
+[ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md).
+
+For the control-plane families, an API failure is always `3` and never
+`1`. A 409, a 404, a 500, a timeout, a refused redirect and a malformed
+response are all operational. This distinction is the point: a CI script
+written as "non-zero means the gate failed" must not report a broken
+network as a policy violation.
+
+Within the `analyze`/`baseline` family, note that only top-level
+dispatch — no arguments, or an unknown command — produces `2`. A
+subcommand's own usage error (a missing file argument, an unknown flag)
+has always produced `1`, and still does. That is released behavior, and
+task 060 pinned it with tests rather than tidying it.
+
+Human-readable output is not automation-facing. It carries no stability
+promise, and parsing it is not a supported integration.
+
+The control-plane commands do have a machine-readable mode: `--json`
+writes the API's own successful response body to stdout, and the API's
+error envelope to stderr. A successful response must be a syntactically
+valid, non-empty JSON body in both output modes; a `2xx` carrying
+anything else exits `3` rather than being forwarded as a result. Those fields inherit the `/v1` API contract
+rather than defining a second field namespace — the CLI adds no wrapper
+and removes no field, so a client must tolerate additive fields exactly
+as an HTTP client would. Results go to stdout and diagnostics to stderr,
+including on a gate FAIL, where the comparison evidence is still written
+to stdout.
+
+`analyze` and `baseline` still have no structured output mode; automation
+that needs structured engine results uses the Go SDK. Adding one would be
+additive and allowed in a minor; it is listed under
 [public API review outcome](#public-api-review-outcome).
+
+The control-plane commands accept no positional arguments. A trailing
+argument is a usage error (`2`) raised before any request is sent, so an
+invocation typo cannot be mistaken for an API or gate result. Legacy
+`analyze`, `baseline` and `version` keep their existing operand parsing.
+
+The control-plane commands require `--api-url`. No default address or
+port is defined yet, and no environment variable is read — task 062 owns
+integrated local startup and may add a default then. Adding one is
+additive; changing one scripts depend on would not be.
 
 ## Environment variables
 

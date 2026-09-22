@@ -316,7 +316,10 @@ diff (054), evaluation scorecards (055), deterministic hard gates (056),
 local SQLite persistence (057), the local control-plane API and ingest (058),
 and bounded realtime infrastructure (059).
 
-Still planned: everything from the developer CLI (060) onward. The platform
+Also implemented: the developer CLI (060), which drives all of that from a
+shell or a CI job over the `/v1` API.
+
+Still planned: everything from the realtime TUI (061) onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
 behavioral snapshots, produce fixed-shape comparative scorecards, apply
 deterministic evidence-backed hard gates to them, persist local control and
@@ -505,9 +508,10 @@ administration, policy editing, environment configuration, promotion
 workflows, or deep historical analytics. Those are the WebUI's.
 
 The CLI gains an exit-code contract for CI use: `0` gate passed, `1` gate
-failed, `2` and above configuration, runtime, or execution error. **This
-conflicts with the exit codes the CLI ships today** — see
-[Open conflicts](#open-conflicts-to-resolve-before-implementation).
+failed, `2` and above configuration, runtime, or execution error. This
+conflicted with the exit codes the CLI already shipped;
+[task 060](tasks/v1.0/060-developer-cli.md) resolved it by scoping rather than
+renumbering — see [CLI exit codes](#cli-exit-codes-resolved-in-task-060).
 
 ### Realtime is infrastructure, not a feature of the database
 
@@ -576,7 +580,7 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**Partly implemented:** tasks 049–059 are done; 060 onward remain PLANNED.
+**Partly implemented:** tasks 049–060 are done; 061 onward remain PLANNED.
 
 **Architecture and core boundary** — the only tasks that touch the engine:
 
@@ -639,19 +643,24 @@ justified by the behavioral engine on its own terms, never by platform
 convenience. What stays prohibited outright is platform awareness in the
 core.
 
+### CLI exit codes, resolved in task 060
+
+`1` meant "the run failed" and `2` meant "the invocation was wrong", and
+[the compatibility contract](compatibility.md#cli) treats both as an
+automation-facing interface. The evaluation direction wanted `1` to mean *the
+behavioral gate failed* — a different meaning for the same code.
+
+Resolved by **scoping, not renumbering**. The new control-plane command
+families use `0` success, `2` usage and `3` operational, leaving `1` unclaimed;
+`trustvian eval compare` then takes `1` for a gate FAIL, and only there.
+`analyze`, `baseline` and `version` are untouched, so no released automation
+changes meaning. See
+[ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md) and
+[the compatibility contract](compatibility.md#cli).
+
 ### Open conflicts to resolve before implementation
 
-Two, both found while reconciling this direction against what ships today.
-Neither is blocking now; both are cheaper to decide than to discover.
-
-**CLI exit codes.** Today `1` means the run failed and `2` means the
-invocation was wrong, and
-[the compatibility contract](compatibility.md#cli) treats those as an
-automation-facing interface. The evaluation direction wants `1` to mean *the
-behavioral gate failed* — a different meaning for the same code. Options: give
-`trustvian eval` its own codes and leave existing commands alone; or change
-the meaning, which is a major version under the contract. Task 060 owns the
-decision, and it must not be made by accident.
+One remains.
 
 **Fingerprint admission and long evaluations.** A baseline admits at most 512
 fingerprint identities ([ADR 0019](adr/0019-bounded-fingerprint-admission.md)).
