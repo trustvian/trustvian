@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	platform "trustvian-platform"
+	"trustvian-platform/httpapi"
 )
 
 // The evaluation chain lives in the control plane, once. A handler calling
@@ -33,6 +34,14 @@ func TestHTTPAdapterDoesNotComputeEvaluationLogic(t *testing.T) {
 		"NewBehaviorCollector",
 		"OpenSQLiteStore",
 		"SQLiteStore",
+
+		// Realtime: the adapter subscribes, translates and streams. A
+		// transport able to publish could fabricate state a client would
+		// believe, so it must not reach the publisher side at all.
+		"RealtimePublisher",
+		"WithRealtimePublisher",
+		"NewInMemoryRealtimeBus",
+		"InMemoryRealtimeBus",
 	}
 
 	entries, err := os.ReadDir(".")
@@ -101,5 +110,59 @@ func TestDomainTypesCarryNoJSONTags(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The adapter must not import a database driver or database/sql: persistence
+// is the control plane's concern, reached only through its methods.
+func TestHTTPAdapterImportsNoDatabase(t *testing.T) {
+	forbidden := []string{"database/sql", "modernc.org/sqlite"}
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read package directory: %v", err)
+	}
+
+	fset := token.NewFileSet()
+	var scanned int
+	for _, entry := range entries {
+		name := entry.Name()
+		// Non-test source only: a test may legitimately open a store to build
+		// a fixture, and one does.
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		scanned++
+
+		file, err := parser.ParseFile(fset, filepath.Join(".", name), nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, imported := range file.Imports {
+			path := strings.Trim(imported.Path.Value, `"`)
+			for _, bad := range forbidden {
+				if path == bad {
+					t.Errorf("%s imports %q; persistence belongs behind the control plane", name, bad)
+				}
+			}
+		}
+	}
+	if scanned == 0 {
+		t.Fatal("scanned no source files; the check would pass vacuously")
+	}
+}
+
+// The publisher capability must not be reachable from a Handler at all — not
+// as a field, not as an option.
+func TestHandlerCannotPublish(t *testing.T) {
+	handlerType := reflect.TypeOf(httpapi.Handler{})
+	publisherType := reflect.TypeOf((*platform.RealtimePublisher)(nil)).Elem()
+
+	for i := range handlerType.NumField() {
+		field := handlerType.Field(i)
+		if field.Type == publisherType || field.Type.Implements(publisherType) {
+			t.Errorf("Handler.%s can publish realtime events; a transport must only subscribe",
+				field.Name)
+		}
 	}
 }

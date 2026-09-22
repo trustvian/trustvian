@@ -14,9 +14,10 @@ Tasks for the `v1.0` milestone.
 | [056 — Deterministic Hard Gates](056-deterministic-hard-gates.md) | Specified and implemented |
 | [057 — Local Platform Persistence](057-local-platform-persistence.md) | Specified and implemented |
 | [058 — Local Control-Plane API and Ingest](058-local-control-plane-api-and-ingest.md) | Specified and implemented |
-| 059–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
+| [059 — Realtime Infrastructure](059-realtime-infrastructure.md) | Specified and implemented |
+| 060–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
 
-The numbers 059–072 are the approved plan, not placeholders — the sequence,
+The numbers 060–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
 is the specification for any of them.
 

@@ -40,6 +40,48 @@ actually depend on.
 
 ### Added
 
+- **Bounded realtime infrastructure.** `platform.InMemoryRealtimeBus`
+  publishes notifications about committed control-plane state, and
+  `GET /v1/realtime` streams them over Server-Sent Events with project, agent
+  and run filtering. A future CLI, TUI or WebUI can watch an evaluation live
+  without polling the database.
+
+  **Durable state stays authoritative; realtime is notification.** Publication
+  happens only after a mutation commits, so a subscriber cannot observe state
+  that never existed — and a delivery failure never changes a committed
+  operation's outcome, because reporting one as failed would make a client
+  retry a write that already landed. Failed, conflicted and *replayed*
+  operations publish nothing: a network retry that produced no second durable
+  record produces no second live observation.
+
+  **Bounded at every dimension.** Each subscriber owns a fixed-capacity queue,
+  the subscriber count is capped, and one that falls behind is disconnected
+  rather than blocking the publisher or silently losing events. Filtering
+  happens before enqueue, so a busy run cannot overflow a subscriber watching
+  a quiet one. Worst-case memory is subscribers × queue, with no history term.
+
+  **No replay.** The bus retains nothing after delivery, `Last-Event-ID` is
+  ignored, and no SSE `id:` is emitted. Every connection receives
+  `stream_ready` with `resync_required` — sent *after* the subscription is
+  registered, so nothing occurring during the resync is lost.
+
+  Six event kinds, each matching a mutation that committed: evaluation
+  created, started, completed, failed, cancelled, and one observation per
+  applied record. No `policy_violation`, `baseline_update` or `gate_update` —
+  those name semantics the platform cannot currently prove. An observation is
+  a bounded projection carrying no attributes, tool arguments, prompts,
+  completions, contributors or policy reason, so task 050's privacy boundary
+  holds; a test drives a real engine with a distinctive attribute and asserts
+  it never reaches the wire.
+
+  Realtime is optional: a control plane built without a publisher behaves
+  exactly as before, and a handler without a subscriber reports
+  `realtime_unavailable` while every other route keeps working. No schema
+  change (still version 2), no broker, no polling, no WebSocket, no CORS, no
+  authentication, no listener, no event-history table, and no core runtime
+  change. See [ADR
+  0032](docs/adr/0032-realtime-is-bounded-ephemeral-not-authoritative.md).
+
 - **Local control-plane API and sequenced ingest.** `platform.ControlPlane`
   is the authoritative service layer — it creates and reads the
   project/agent/candidate/run hierarchy, drives a run's lifecycle, ingests

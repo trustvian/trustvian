@@ -680,6 +680,58 @@ service layer and an HTTP adapter over it.
   security model nobody reviewed. That is a later task's decision, and this
   API should not be exposed beyond loopback until it is made.
 
+### Realtime is bounded, ephemeral, and never authoritative
+
+**Threat:** a notification stream becomes a way to leak payloads the record
+boundary excludes, exhaust memory through subscribers or queues, let one
+client stall every other, or quietly become a source of truth clients rely on
+instead of the database.
+
+**Status: bounded at every dimension, and advisory by construction.**
+[Task 059](tasks/v1.0/059-realtime-infrastructure.md) publishes only after a
+committed mutation, over an in-memory bus with no history.
+
+- **No raw event payload.** An observation is a bounded projection —
+  fingerprint, behavioral shape, decision, risk, approval and three numeric
+  signals. No `Event.Attributes`, tool arguments, prompts, completions,
+  contributors, `PolicyReason` or raw record, so task 050's boundary holds on
+  this path. A test drives a real engine with a distinctive attribute value
+  and asserts it never reaches the wire.
+- **Per-subscriber queues are bounded** at a fixed capacity, and **the
+  subscriber count is bounded** too — a bounded queue with unlimited
+  subscribers is still unbounded memory, so worst-case cost is a constant
+  rather than a function of who connected. At the limit a new subscription is
+  refused; an existing one is never evicted to admit it.
+- **Slow consumers are disconnected**, not blocked and not silently trimmed.
+  Blocking would add a stalled client's latency to every committed mutation;
+  dropping silently would leave that client believing it has a complete stream
+  when it does not. Disconnection makes the gap observable while the client
+  can still act on it.
+- **Filters are applied before enqueue**, so a busy run cannot fill the queue
+  of a subscriber watching a quiet one. Without that the per-subscriber bound
+  would be nominal.
+- **One subscriber cannot stall another.** Publishing to one never waits for
+  another, and a dead subscriber affects only itself.
+- **No durable replay history exists.** Nothing is retained after delivery,
+  no offsets are kept, and `Last-Event-ID` is ignored rather than honored —
+  accepting it while unable to replay would promise durability the bus does
+  not have. No SSE `id:` field is emitted.
+- **Every connection requires resynchronization**, and the handshake arrives
+  *after* the subscription is registered, so nothing that happens during the
+  resync is lost.
+- **Delivery failure never falsifies a durable outcome.** A committed write
+  reports success even when the bus is closed, broken or full. The alternative
+  makes a client retry a write that landed, and ambiguity about whether a
+  write happened is worse than a missed notification.
+- **Publication happens after the commit**, never before, so a subscriber
+  cannot observe state that never existed. Failed, conflicted and replayed
+  operations publish nothing.
+- **No message broker, no CORS, no authentication claim, no listener, and no
+  event-history table.** Realtime inherits task 058's local trust boundary
+  exactly; nothing here is authenticated and nothing claims to be.
+- **An SSE disconnect releases its subscription**, so a client that hangs up
+  does not hold a slot.
+
 ### Platform identity cannot become behavioral identity
 
 **Threat:** an evaluation concept leaks into the engine — a candidate becomes

@@ -210,3 +210,61 @@ func newProgressResponse(p platform.EvaluationProgressReport) progressResponse {
 		NextIngestSequence:       u64(p.NextIngestSequence),
 	}
 }
+
+// ---------------------------------------------------------------------
+// Realtime
+// ---------------------------------------------------------------------
+
+func newRealtimeScopeDTO(s platform.RealtimeScope) realtimeScopeDTO {
+	return realtimeScopeDTO{
+		ProjectID:         string(s.ProjectID),
+		AgentID:           string(s.AgentID),
+		CandidateID:       string(s.CandidateID),
+		RunID:             string(s.RunID),
+		Environment:       string(s.Environment),
+		BehavioralProfile: string(s.BehavioralProfile),
+	}
+}
+
+// newRealtimeEventPayload renders one event, populating only the half its kind
+// uses so a client is never handed a zero-valued observation to interpret.
+func newRealtimeEventPayload(e platform.RealtimeEvent) realtimeEventPayload {
+	payload := realtimeEventPayload{
+		Version: WireVersion,
+		Kind:    string(e.Kind),
+		Scope:   newRealtimeScopeDTO(e.Scope),
+	}
+
+	if e.Kind == platform.RealtimeObservationRecorded {
+		o := e.Observation
+		payload.Observation = &realtimeObservationDTO{
+			Sequence:         u64(o.Sequence),
+			RecordCount:      u64(o.RecordCount),
+			BehaviorComplete: o.BehaviorComplete,
+
+			FingerprintID: o.FingerprintID,
+			Behavior:      newBehaviorDescriptorDTO(o.Behavior),
+
+			Decision:       o.Decision,
+			RiskLevel:      o.RiskLevel,
+			ApprovalStatus: string(o.ApprovalStatus),
+
+			TrustScore:        o.TrustScore,
+			AnomalyScore:      o.AnomalyScore,
+			AnomalyConfidence: o.AnomalyConfidence,
+
+			NewBehavior: o.NewBehavior,
+		}
+		return payload
+	}
+
+	evaluation := e.Evaluation
+	payload.Evaluation = &realtimeEvaluationDTO{
+		Status:        string(evaluation.Status),
+		CreatedAt:     formatTime(evaluation.CreatedAt),
+		StartedAt:     formatTime(evaluation.StartedAt),
+		FinishedAt:    formatTime(evaluation.FinishedAt),
+		FailureReason: evaluation.FailureReason,
+	}
+	return payload
+}

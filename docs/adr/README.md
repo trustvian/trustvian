@@ -55,6 +55,7 @@ as long as its own decision holds.
 | [0029](0029-hard-gates-use-explicit-integer-evidence.md) | Hard gates use explicit integer evidence | Accepted |
 | [0030](0030-local-persistence-stores-authoritative-bounded-state.md) | Local persistence stores authoritative bounded state | Accepted |
 | [0031](0031-control-plane-owns-ingest-and-http-is-an-adapter.md) | The control plane owns ingest, and HTTP is an adapter | Accepted |
+| [0032](0032-realtime-is-bounded-ephemeral-not-authoritative.md) | Realtime is bounded, ephemeral, and not authoritative | Accepted |
 
 No ADR is currently Superseded or Deprecated. Several later ADRs build on
 earlier ones — 0006 and 0018 on 0004's narrow port, 0007/0008/0017 on 0002's

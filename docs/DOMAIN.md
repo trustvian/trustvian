@@ -1049,6 +1049,42 @@ and gate result — once, in one place — and stores none of it.
 
 See [ADR 0031](adr/0031-control-plane-owns-ingest-and-http-is-an-adapter.md).
 
+### Realtime notification
+
+Task 059 lets a consumer watch an evaluation live. It is **notification over
+committed state**, never a second source of truth: the bus retains nothing
+after delivery, and a subscriber that falls behind resynchronizes from the
+control plane rather than replaying.
+
+Six kinds, each corresponding to a mutation that committed:
+
+```text
+evaluation_created   evaluation_started   observation
+evaluation_completed evaluation_failed    evaluation_cancelled
+```
+
+Deliberately absent: `policy_violation` (a blocked decision is the policy
+engine working, and "violation" implies severity nothing models),
+`baseline_update` (the platform does not own learned core state), and
+`gate_update` (a gate result is a derived read under caller-supplied limits,
+not durable state).
+
+An **observation** is a bounded projection of one applied record — sequence,
+record count, completeness, fingerprint, behavioral shape, decision, risk,
+approval, the three numeric signals, and whether the behavior was new. Not the
+record itself: no attributes, arguments, prompts, completions, contributors or
+policy reason, so task 050's privacy boundary holds here too.
+
+`NewBehavior` comes from the trusted pre-ingest snapshot. At saturation an
+unseen behavior still reports `NewBehavior=true` with
+`BehaviorComplete=false` — a live fact, even though the bounded snapshot
+cannot retain it.
+
+Every event carries its full immutable hierarchy, so a subscriber filters by
+project, agent or run without reading the database.
+
+See [ADR 0032](adr/0032-realtime-is-bounded-ephemeral-not-authoritative.md).
+
 See [ADR 0025](adr/0025-platform-domain-values-with-caller-owned-identity.md)
 and [task 052](tasks/v1.0/052-evaluation-domain.md).
 

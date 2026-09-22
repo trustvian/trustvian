@@ -1145,6 +1145,45 @@ loads plus a diff of at most 512 behaviors per side. A run that ingested a
 million records compares exactly as fast as one that ingested a thousand,
 because no table grows per event.
 
+### v1.0 task 059 (Realtime Infrastructure)
+
+Publishing one event through the in-memory bus.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `RealtimePublish1Subscriber` | 22.3 | 0 | 0 |
+| `RealtimePublish16Subscribers` | 3,084 | 0 | 0 |
+| `RealtimePublish64Subscribers` | 11,226 | 0 | 0 |
+| `RealtimeFilteredPublish64Subscribers` | 483.6 | 0 | 0 |
+
+Five runs each (sixteen-subscriber row: nine), darwin/arm64, Apple M3 Pro,
+Go 1.27. As everywhere here, `ns/op` is a machine- and session-specific
+measurement — see [reading the numbers](#reading-the-numbers).
+
+**Zero allocations on every path.** The event is a fixed-shape value copied
+into a pre-allocated channel buffer; nothing is built per publish, and no
+history is retained to allocate for.
+
+**The multi-subscriber rows are dominated by receiver wakeup, not fan-out.**
+Every subscriber in those benchmarks is a goroutine parked on its channel, so
+each delivery wakes one. The filtered row isolates the fan-out itself: 64
+subscribers matched and none delivered to, at 483 ns — about 7.6 ns per
+subscriber. That is the `O(S)` term, and `S` is capped at 64.
+
+The sixteen-subscriber row is **bimodal**, from roughly 116 ns to 3.3 µs
+across runs, depending on whether the scheduler has receivers ready or has to
+wake each one. The median is reported; the spread is scheduling, not the
+algorithm, and it is the reason no latency gate is asserted.
+
+These benchmarks are a worst case rather than the live shape: the SSE handler
+does a socket write between receives, so it is rarely parked and waiting the
+way a tight drain loop is.
+
+```text
+publish  O(S) matching + O(matched) delivery, S ≤ 64
+memory   O(S × Q), S ≤ 64 and Q ≤ 64, with no history term
+```
+
 ## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —

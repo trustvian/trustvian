@@ -39,6 +39,29 @@ type ControlPlane struct {
 	control     ControlStore
 	evaluations EvaluationStore
 	ingest      EvaluationIngestStore
+
+	// realtime is optional infrastructure. Nil means the plane behaves exactly
+	// as it did before task 059 — which is why realtime is an option rather
+	// than a constructor parameter: existing callers should not have to build
+	// a bus in order to ignore it.
+	realtime RealtimePublisher
+}
+
+// ControlPlaneOption configures a control plane at construction.
+type ControlPlaneOption func(*ControlPlane)
+
+// WithRealtimePublisher attaches a realtime publisher.
+//
+// A publisher, never a full bus: the service must not be able to subscribe,
+// and a transport must not be able to publish. There is deliberately no
+// post-construction setter — a publisher that could be swapped while requests
+// are in flight would make publication ordering impossible to reason about.
+func WithRealtimePublisher(publisher RealtimePublisher) ControlPlaneOption {
+	return func(c *ControlPlane) {
+		if publisher != nil {
+			c.realtime = publisher
+		}
+	}
 }
 
 // NewControlPlane wires the service to its capabilities.
@@ -46,11 +69,80 @@ func NewControlPlane(
 	control ControlStore,
 	evaluations EvaluationStore,
 	ingest EvaluationIngestStore,
+	options ...ControlPlaneOption,
 ) (*ControlPlane, error) {
 	if control == nil || evaluations == nil || ingest == nil {
 		return nil, errors.New("platform: control plane requires control, evaluation and ingest stores")
 	}
-	return &ControlPlane{control: control, evaluations: evaluations, ingest: ingest}, nil
+	plane := &ControlPlane{control: control, evaluations: evaluations, ingest: ingest}
+	for _, option := range options {
+		option(plane)
+	}
+	return plane, nil
+}
+
+// ---------------------------------------------------------------------
+// Realtime publication
+// ---------------------------------------------------------------------
+
+// publishLifecycle notifies subscribers about a committed run transition.
+//
+// Called only after the durable mutation succeeded, and its outcome is
+// deliberately ignored: the write already landed, and reporting a delivery
+// problem as an operation failure would make a client retry a committed
+// write. Realtime is advisory.
+func (c *ControlPlane) publishLifecycle(
+	ctx context.Context, kind RealtimeEventKind, run EvaluationRun,
+) {
+	if c.realtime == nil {
+		return
+	}
+	scope, ok := c.resolveScope(ctx, run)
+	if !ok {
+		return
+	}
+	c.realtime.Publish(RealtimeEvent{
+		Kind:  kind,
+		Scope: scope,
+		Evaluation: RealtimeEvaluation{
+			Status:        run.Status(),
+			CreatedAt:     run.CreatedAt(),
+			StartedAt:     run.StartedAt(),
+			FinishedAt:    run.FinishedAt(),
+			FailureReason: run.FailureReason(),
+		},
+	})
+}
+
+// resolveScope builds the hierarchy an event belongs to.
+//
+// Two reads, so subscribers need none: every event carries project, agent,
+// candidate and run, and a filter can match without touching the database.
+// Sound because the hierarchy is immutable — task 052 offers no ChangeAgent.
+//
+// A failure here happens *after* the authoritative mutation committed, so it
+// degrades to skipping the notification rather than failing the operation.
+// Authority lives in the database, and a missing notification is recoverable
+// by resync; a committed write reported as failed is not.
+func (c *ControlPlane) resolveScope(
+	ctx context.Context, run EvaluationRun,
+) (RealtimeScope, bool) {
+	candidate, err := c.control.Candidate(ctx, run.CandidateID())
+	if err != nil {
+		return RealtimeScope{}, false
+	}
+	agent, err := c.control.Agent(ctx, candidate.AgentID())
+	if err != nil {
+		return RealtimeScope{}, false
+	}
+	return RealtimeScope{
+		ProjectID:         agent.ProjectID(),
+		AgentID:           agent.ID(),
+		CandidateID:       candidate.ID(),
+		RunID:             run.ID(),
+		Environment:       run.Environment(),
+		BehavioralProfile: run.BehavioralProfile(),
+	}, true
 }
 
 // ---------------------------------------------------------------------
@@ -89,7 +181,13 @@ func (c *ControlPlane) Candidate(ctx context.Context, id CandidateID) (Candidate
 // ---------------------------------------------------------------------
 
 func (c *ControlPlane) CreateEvaluationRun(ctx context.Context, run EvaluationRun) error {
-	return c.evaluations.CreateEvaluationRun(ctx, run)
+	if err := c.evaluations.CreateEvaluationRun(ctx, run); err != nil {
+		return err
+	}
+	// After the commit, never before: publishing first would let a subscriber
+	// observe a run whose creation then failed.
+	c.publishLifecycle(ctx, RealtimeEvaluationCreated, run)
+	return nil
 }
 
 func (c *ControlPlane) EvaluationRun(ctx context.Context, id EvaluationRunID) (EvaluationRun, error) {
@@ -152,7 +250,29 @@ func (c *ControlPlane) transition(
 	if err := c.evaluations.UpdateEvaluationRun(ctx, current, next); err != nil {
 		return EvaluationRun{}, err
 	}
+	if kind, published := lifecycleKindFor(next.Status()); published {
+		c.publishLifecycle(ctx, kind, next)
+	}
 	return next, nil
+}
+
+// lifecycleKindFor maps a committed status to its event kind.
+//
+// Pending has no kind: nothing transitions back to it, so it is only ever the
+// creation state, which CreateEvaluationRun publishes directly.
+func lifecycleKindFor(status RunStatus) (RealtimeEventKind, bool) {
+	switch status {
+	case RunRunning:
+		return RealtimeEvaluationStarted, true
+	case RunCompleted:
+		return RealtimeEvaluationCompleted, true
+	case RunFailed:
+		return RealtimeEvaluationFailed, true
+	case RunCancelled:
+		return RealtimeEvaluationCancelled, true
+	default:
+		return "", false
+	}
 }
 
 // ---------------------------------------------------------------------
@@ -291,6 +411,11 @@ func (c *ControlPlane) applyRecord(
 		return IngestResult{}, err
 	}
 
+	// Captured before the record is folded in: afterwards the fingerprint is
+	// present either way, so "was this new" can only be answered now. Read
+	// from the trusted snapshot rather than a second durable set.
+	newBehavior := !collector.knows(request.Record.FingerprintID)
+
 	aggregate, err = aggregate.AddRecord(request.Record)
 	if err != nil {
 		return IngestResult{}, err
@@ -330,12 +455,64 @@ func (c *ControlPlane) applyRecord(
 	if committed.Disposition == EvaluationIngestAlreadyCommitted {
 		disposition = IngestReplayed
 	}
+
+	// Only an applied record is announced. A replay — whether detected in
+	// preflight or by the commit transaction losing a race — produced no
+	// second durable record, so it must produce no second live observation.
+	if disposition == IngestApplied {
+		c.publishObservation(ctx, run, request, committed, newBehavior)
+	}
+
 	return IngestResult{
 		Disposition:      disposition,
 		NextSequence:     committed.NextSequence,
 		RecordCount:      committed.RecordCount,
 		BehaviorComplete: committed.BehaviorComplete,
 	}, nil
+}
+
+// publishObservation notifies subscribers about one applied record.
+//
+// Counts come from the commit result rather than a fresh read, so the event
+// cannot describe a state assembled from two different moments.
+func (c *ControlPlane) publishObservation(
+	ctx context.Context, run EvaluationRun, request IngestRequest,
+	committed EvaluationIngestCommitResult, newBehavior bool,
+) {
+	if c.realtime == nil {
+		return
+	}
+	scope, ok := c.resolveScope(ctx, run)
+	if !ok {
+		return
+	}
+
+	record := request.Record
+	c.realtime.Publish(RealtimeEvent{
+		Kind:  RealtimeObservationRecorded,
+		Scope: scope,
+		Observation: RealtimeObservation{
+			Sequence:    request.Sequence,
+			RecordCount: committed.RecordCount,
+			// False once the collector saturated. Reported honestly: a live
+			// view must not show complete behavioral evidence when the
+			// snapshot has stopped being the whole truth.
+			BehaviorComplete: committed.BehaviorComplete,
+
+			FingerprintID: record.FingerprintID,
+			Behavior:      record.Behavior,
+
+			Decision:       record.Decision,
+			RiskLevel:      record.RiskLevel,
+			ApprovalStatus: record.ApprovalStatus,
+
+			TrustScore:        record.TrustScore,
+			AnomalyScore:      record.AnomalyScore,
+			AnomalyConfidence: record.AnomalyConfidence,
+
+			NewBehavior: newBehavior,
+		},
+	})
 }
 
 // currentEvidence loads a run's evidence, or starts it empty.

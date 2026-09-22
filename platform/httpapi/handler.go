@@ -42,6 +42,13 @@ type Handler struct {
 	controlPlane *platform.ControlPlane
 	now          func() time.Time
 	mux          *http.ServeMux
+
+	// realtimeSubscriber is optional. A subscriber and never a publisher: a
+	// transport able to publish could fabricate state a client would believe.
+	// Nil means GET /v1/realtime reports the capability as unavailable while
+	// every other route keeps working.
+	realtimeSubscriber platform.RealtimeSubscriber
+	heartbeatInterval  time.Duration
 }
 
 // Option configures a Handler.
@@ -61,12 +68,40 @@ func WithClock(now func() time.Time) Option {
 	}
 }
 
+// WithRealtimeSubscriber enables GET /v1/realtime.
+//
+// Additive, so existing callers need not construct a bus to ignore realtime.
+func WithRealtimeSubscriber(subscriber platform.RealtimeSubscriber) Option {
+	return func(h *Handler) {
+		if subscriber != nil {
+			h.realtimeSubscriber = subscriber
+		}
+	}
+}
+
+// WithHeartbeatInterval replaces the SSE keepalive interval.
+//
+// Exists so tests can observe a heartbeat without waiting on a real clock. It
+// carries no domain meaning.
+func WithHeartbeatInterval(interval time.Duration) Option {
+	return func(h *Handler) {
+		if interval > 0 {
+			h.heartbeatInterval = interval
+		}
+	}
+}
+
 // NewHandler returns an http.Handler over the control plane.
 func NewHandler(controlPlane *platform.ControlPlane, options ...Option) (http.Handler, error) {
 	if controlPlane == nil {
 		return nil, errors.New("httpapi: handler requires a control plane")
 	}
-	h := &Handler{controlPlane: controlPlane, now: time.Now, mux: http.NewServeMux()}
+	h := &Handler{
+		controlPlane:      controlPlane,
+		now:               time.Now,
+		mux:               http.NewServeMux(),
+		heartbeatInterval: defaultHeartbeatInterval,
+	}
 	for _, option := range options {
 		option(h)
 	}
@@ -103,6 +138,8 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /v1/evaluation-runs/{run_id}/records", h.ingestRecord)
 
 	h.mux.HandleFunc("POST /v1/evaluations/compare", h.compare)
+
+	h.mux.HandleFunc("GET /v1/realtime", h.realtime)
 }
 
 // ---------------------------------------------------------------------
