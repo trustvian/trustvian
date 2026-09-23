@@ -234,6 +234,30 @@ func (s *PostgresStore) withTx(ctx context.Context, fn func(tx pgx.Tx) error) er
 	return nil
 }
 
+// testHookInRunMutation runs between the in-transaction read and the write in
+// every run-scoped mutation. Nil in production, and the call costs a nil check.
+//
+// It exists because a concurrency test cannot otherwise force the interleaving
+// it is trying to prove. Against a local database one transaction finishes in
+// microseconds, so eight goroutines released together still run essentially in
+// series: the first commits before the second reads, every loser sees the new
+// state, and the test reports the right answer no matter what the code does.
+// That is a test passing for the wrong reason, and it hides exactly the defect
+// it was written to catch — verified by removing both protections and watching
+// it still pass.
+//
+// With this hook a test can hold every worker inside the read-to-write window
+// at once, which is the state a pool makes possible and a fast database rarely
+// produces on its own.
+var testHookInRunMutation func()
+
+// runMutationHook invokes the hook if a test installed one.
+func runMutationHook() {
+	if testHookInRunMutation != nil {
+		testHookInRunMutation()
+	}
+}
+
 // lockRun takes the run's row lock, which is this store's whole concurrency
 // strategy for run-scoped writes.
 //
@@ -402,6 +426,7 @@ func (s *PostgresStore) UpdateEvaluationRun(ctx context.Context, previous, next 
 				ErrStoreConflict, preview(string(previous.ID())),
 				stored.Status(), previous.Status())
 		}
+		runMutationHook()
 
 		tag, err := tx.Exec(ctx,
 			`UPDATE `+tableRuns+`
@@ -448,6 +473,7 @@ func (s *PostgresStore) SaveEvaluationEvidence(
 		if err := checkEvidenceNotStale(ctx, q, aggregate, snapshot); err != nil {
 			return err
 		}
+		runMutationHook()
 		return s.writeEvidence(ctx, tx, aggregate, snapshot)
 	})
 }
@@ -570,6 +596,7 @@ func (s *PostgresStore) CommitEvaluationIngest(
 		if err := checkEvidenceNotStale(ctx, q, commit.Aggregate, commit.Snapshot); err != nil {
 			return err
 		}
+		runMutationHook()
 		if err := s.writeEvidence(ctx, tx, commit.Aggregate, commit.Snapshot); err != nil {
 			return err
 		}
