@@ -787,24 +787,20 @@ func (s *SQLiteStore) CreateEvaluationRun(ctx context.Context, run EvaluationRun
 
 // EvaluationRun loads a run by id.
 func (s *SQLiteStore) EvaluationRun(ctx context.Context, id EvaluationRunID) (EvaluationRun, error) {
-	return s.loadRun(ctx, s.db, id)
-}
-
-type rowQuerier interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	return s.loadRun(ctx, sqlQuerier{s.db}, id)
 }
 
 func (s *SQLiteStore) loadRun(ctx context.Context, q rowQuerier, id EvaluationRunID) (EvaluationRun, error) {
 	var candidateID, environment, profile, status, createdAt, failureReason string
 	var startedAt, finishedAt sql.NullString
 
-	err := q.QueryRowContext(ctx,
+	err := q.queryRow(ctx, q.rebind(
 		`SELECT candidate_id, environment, behavioral_profile, status,
 		        created_at, started_at, finished_at, failure_reason
-		 FROM `+tableRuns+` WHERE id = ?`, string(id)).
+		 FROM `+tableRuns+` WHERE id = ?`), string(id)).
 		Scan(&candidateID, &environment, &profile, &status,
 			&createdAt, &startedAt, &finishedAt, &failureReason)
-	if errors.Is(err, sql.ErrNoRows) {
+	if q.noRows(err) {
 		return EvaluationRun{}, fmt.Errorf("%w: evaluation run %s", ErrStoreNotFound, preview(string(id)))
 	}
 	if err != nil {
@@ -964,7 +960,7 @@ func (s *SQLiteStore) UpdateEvaluationRun(ctx context.Context, previous, next Ev
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
 
-	stored, err := s.loadRun(ctx, tx, previous.ID())
+	stored, err := s.loadRun(ctx, sqlQuerier{tx}, previous.ID())
 	if err != nil {
 		return err
 	}
@@ -1081,7 +1077,7 @@ func (s *SQLiteStore) SaveEvaluationEvidence(
 
 	// The run must exist and agree — evidence is never stored under a run
 	// merely because a RunID string matched.
-	run, err := s.loadRun(ctx, tx, aggregate.RunID())
+	run, err := s.loadRun(ctx, sqlQuerier{tx}, aggregate.RunID())
 	if err != nil {
 		return err
 	}
@@ -1150,7 +1146,7 @@ func (s *SQLiteStore) checkEvidenceNotStale(
 	ctx context.Context, tx *sql.Tx,
 	aggregate EvaluationAggregate, snapshot BehaviorSnapshot,
 ) error {
-	present, err := evidenceRowsPresent(ctx, tx, aggregate.RunID())
+	present, err := evidenceRowsPresent(ctx, sqlQuerier{tx}, aggregate.RunID())
 	if err != nil {
 		return err
 	}
@@ -1164,7 +1160,7 @@ func (s *SQLiteStore) checkEvidenceNotStale(
 		return partialEvidenceError(aggregate.RunID(), present)
 	}
 
-	storedAggregate, storedSnapshot, err := s.loadEvidence(ctx, tx, aggregate.RunID())
+	storedAggregate, storedSnapshot, err := s.loadEvidence(ctx, sqlQuerier{tx}, aggregate.RunID())
 	if err != nil {
 		return err
 	}
@@ -1363,18 +1359,13 @@ func (s *SQLiteStore) EvaluationEvidence(
 	var snapshot BehaviorSnapshot
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		aggregate, snapshot, err = s.loadEvidence(ctx, tx, id)
+		aggregate, snapshot, err = s.loadEvidence(ctx, sqlQuerier{tx}, id)
 		return err
 	})
 	if err != nil {
 		return EvaluationAggregate{}, BehaviorSnapshot{}, err
 	}
 	return aggregate, snapshot, nil
-}
-
-type evidenceQuerier interface {
-	rowQuerier
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 // evidencePresence is which halves of a run's evidence exist, established
@@ -1395,10 +1386,10 @@ func (p evidencePresence) neither() bool { return !p.aggregate && !p.snapshot }
 func evidenceRowsPresent(ctx context.Context, q rowQuerier, id EvaluationRunID) (evidencePresence, error) {
 	exists := func(table string) (bool, error) {
 		var one int
-		err := q.QueryRowContext(ctx,
-			`SELECT 1 FROM `+table+` WHERE run_id = ?`, string(id)).Scan(&one)
+		err := q.queryRow(ctx,
+			q.rebind(`SELECT 1 FROM `+table+` WHERE run_id = ?`), string(id)).Scan(&one)
 		switch {
-		case errors.Is(err, sql.ErrNoRows):
+		case q.noRows(err):
 			return false, nil
 		case err != nil:
 			return false, fmt.Errorf("platform: inspect evidence: %w", err)
@@ -1572,8 +1563,8 @@ func loadAggregate(ctx context.Context, q rowQuerier, id EvaluationRunID) (Evalu
 			&metricValues[i*3], &metricValues[i*3+1], &metricValues[i*3+2])
 	}
 
-	err := q.QueryRowContext(ctx,
-		`SELECT candidate_id, environment, behavioral_profile,
+	err := q.queryRow(ctx,
+		q.rebind(`SELECT candidate_id, environment, behavioral_profile,
 		        record_count, first_observed_at, last_observed_at,
 		        decision_allow, decision_observe_only, decision_alert,
 		        decision_challenge, decision_require_approval, decision_block,
@@ -1586,8 +1577,8 @@ func loadAggregate(ctx context.Context, q rowQuerier, id EvaluationRunID) (Evalu
 		        anomaly_confidence_count, anomaly_confidence_sum, anomaly_confidence_min, anomaly_confidence_max,
 		        trust_score_count, trust_score_sum, trust_score_min, trust_score_max,
 		        context_risk_count, context_risk_sum, context_risk_min, context_risk_max
-		 FROM `+tableAggregates+` WHERE run_id = ?`, string(id)).Scan(dest...)
-	if errors.Is(err, sql.ErrNoRows) {
+		 FROM `+tableAggregates+` WHERE run_id = ?`), string(id)).Scan(dest...)
+	if q.noRows(err) {
 		return EvaluationAggregate{}, fmt.Errorf("%w: evidence for run %s", ErrStoreNotFound, preview(string(id)))
 	}
 	if err != nil {
@@ -1782,12 +1773,12 @@ func loadSnapshot(ctx context.Context, q evidenceQuerier, id EvaluationRunID) (B
 	var candidateID, environment, profile, observationCount string
 	var distinctCount, complete int
 
-	err := q.QueryRowContext(ctx,
+	err := q.queryRow(ctx, q.rebind(
 		`SELECT candidate_id, environment, behavioral_profile,
 		        observation_count, distinct_count, complete
-		 FROM `+tableSnapshots+` WHERE run_id = ?`, string(id)).
+		 FROM `+tableSnapshots+` WHERE run_id = ?`), string(id)).
 		Scan(&candidateID, &environment, &profile, &observationCount, &distinctCount, &complete)
-	if errors.Is(err, sql.ErrNoRows) {
+	if q.noRows(err) {
 		return BehaviorSnapshot{}, fmt.Errorf("%w: snapshot for run %s", ErrStoreNotFound, preview(string(id)))
 	}
 	if err != nil {
@@ -1831,10 +1822,10 @@ func loadSnapshot(ctx context.Context, q evidenceQuerier, id EvaluationRunID) (B
 // loadBehaviorEntries reads a run's entries in ascending FingerprintID order,
 // matching what Entries() guarantees for a live snapshot.
 func loadBehaviorEntries(ctx context.Context, q evidenceQuerier, id EvaluationRunID) ([]BehaviorEntry, error) {
-	rows, err := q.QueryContext(ctx,
+	rows, err := q.query(ctx, q.rebind(
 		`SELECT fingerprint_id, actor_type, operation_category, operation_name,
 		        target_name, target_category, environment, observations
-		 FROM `+tableEntries+` WHERE run_id = ? ORDER BY fingerprint_id ASC`, string(id))
+		 FROM `+tableEntries+` WHERE run_id = ? ORDER BY fingerprint_id ASC`), string(id))
 	if err != nil {
 		return nil, fmt.Errorf("platform: load behavior entries: %w", err)
 	}
@@ -1973,7 +1964,7 @@ func (s *SQLiteStore) EvaluationIngestState(
 	var state EvaluationIngestState
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		state, err = s.ingestState(ctx, tx, id)
+		state, err = s.ingestState(ctx, sqlQuerier{tx}, id)
 		return err
 	})
 	if err != nil {
@@ -1992,12 +1983,12 @@ func (s *SQLiteStore) ingestState(
 	}
 
 	var nextSequence, lastDigest string
-	err := q.QueryRowContext(ctx,
-		`SELECT next_sequence, last_digest FROM `+tableIngestState+` WHERE run_id = ?`,
+	err := q.queryRow(ctx, q.rebind(
+		`SELECT next_sequence, last_digest FROM `+tableIngestState+` WHERE run_id = ?`),
 		string(id)).Scan(&nextSequence, &lastDigest)
 
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
+	case q.noRows(err):
 		return s.derivedIngestState(ctx, q, id)
 	case err != nil:
 		return EvaluationIngestState{}, fmt.Errorf("platform: load ingest state: %w", err)
@@ -2110,7 +2101,7 @@ func (s *SQLiteStore) CommitEvaluationIngest(
 	// Re-read the cursor inside the transaction. Two requests racing the same
 	// sequence both computed against the same view; only the one whose view
 	// still matches durable state may apply.
-	current, err := s.ingestState(ctx, tx, runID)
+	current, err := s.ingestState(ctx, sqlQuerier{tx}, runID)
 	if err != nil {
 		return EvaluationIngestCommitResult{}, err
 	}
@@ -2141,7 +2132,7 @@ func (s *SQLiteStore) CommitEvaluationIngest(
 	}
 
 	// The run must exist and agree, exactly as a direct evidence save requires.
-	run, err := s.loadRun(ctx, tx, runID)
+	run, err := s.loadRun(ctx, sqlQuerier{tx}, runID)
 	if err != nil {
 		return EvaluationIngestCommitResult{}, err
 	}
