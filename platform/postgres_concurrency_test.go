@@ -202,11 +202,12 @@ func (o *occupancyTracker) peak() int {
 	return o.max
 }
 
-// installMutationHook sets the interleaving hook for one test.
+// installMutationHook sets the interleaving hook for one test and clears it
+// afterwards, so no test inherits another's hook.
 func installMutationHook(t *testing.T, hook func()) {
 	t.Helper()
-	testHookInRunMutation = hook
-	t.Cleanup(func() { testHookInRunMutation = nil })
+	testHookInRunMutation.Store(&hook)
+	t.Cleanup(func() { testHookInRunMutation.Store(nil) })
 }
 
 // TestPostgresRunMutationWindowIsMutuallyExclusive proves the row lock does its

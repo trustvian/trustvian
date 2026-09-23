@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -249,12 +250,22 @@ func (s *PostgresStore) withTx(ctx context.Context, fn func(tx pgx.Tx) error) er
 // With this hook a test can hold every worker inside the read-to-write window
 // at once, which is the state a pool makes possible and a fast database rarely
 // produces on its own.
-var testHookInRunMutation func()
+// An atomic pointer rather than a plain function variable. Today's tests run
+// sequentially so a plain variable would not race, but that is a property of the
+// current tests rather than of the seam — the first t.Parallel() added anywhere
+// in this package would make installing a hook a write racing every reader. An
+// atomic makes the seam safe by construction instead of by convention, and the
+// cost is one atomic load on a path that already opens a transaction.
+var testHookInRunMutation atomic.Pointer[func()]
 
 // runMutationHook invokes the hook if a test installed one.
+//
+// Nil in production: nothing outside this package's tests can reach the variable
+// above, it is never written by any non-test code path, and no configuration can
+// install behaviour into it.
 func runMutationHook() {
-	if testHookInRunMutation != nil {
-		testHookInRunMutation()
+	if hook := testHookInRunMutation.Load(); hook != nil {
+		(*hook)()
 	}
 }
 

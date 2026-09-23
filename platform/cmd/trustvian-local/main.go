@@ -37,15 +37,40 @@ const (
 
 const usage = `usage:
   trustvian-local [--state-dir <dir>] [--listen <loopback-address>]
+                  [--backend sqlite|postgres]
 
-Runs the local Trustvian control plane: SQLite, realtime bus, and the /v1 HTTP
-API on a loopback listener. Clients in the same directory discover it through
-<state-dir>/runtime.json and need no --api-url.
+Runs the local Trustvian control plane: persistence, realtime bus, and the /v1
+HTTP API on a loopback listener. Clients in the same directory discover it
+through <state-dir>/runtime.json and need no --api-url.
 
   --state-dir   project-local state directory (default .trustvian)
   --listen      loopback address to bind (default 127.0.0.1:0)
+  --backend     persistence backend (default sqlite)
+
+The default needs no configuration at all: SQLite, one file under --state-dir.
+
+--backend postgres reads its connection string from the environment:
+
+  ` + postgresDSNEnv + `   PostgreSQL connection string (required)
+
+The DSN is read from the environment rather than a flag because it normally
+carries a password, and a command line is visible to every process on the
+machine through ps. It is never printed, never logged, and never written into
+runtime.json.
+
+Selecting an unknown backend, or postgres without a DSN, fails before the
+listener binds. Nothing ever falls back to SQLite from a backend that was asked
+for explicitly.
 
 This runtime is unauthenticated and binds loopback only. Do not expose it.`
+
+// postgresDSNEnv carries the PostgreSQL connection string.
+//
+// An environment variable rather than a flag: a DSN normally embeds a password,
+// and argv is world-readable through ps on every platform this runs on. The
+// engine's store takes the same value from a config file for the same reason —
+// neither puts it on a command line.
+const postgresDSNEnv = "TRUSTVIAN_PLATFORM_POSTGRES_DSN"
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
@@ -56,6 +81,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		"project-local state directory")
 	listen := fs.String("listen", localruntime.DefaultListenAddress,
 		"loopback address to bind")
+	backend := fs.String("backend", "",
+		"persistence backend: sqlite (default) or postgres")
 
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(stderr, "trustvian-local: %v\n%s\n", err, usage)
@@ -75,15 +102,28 @@ func run(args []string, stdout, stderr io.Writer) int {
 		os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	runtime, err := localruntime.Start(ctx, localruntime.Options{
+	options := localruntime.Options{
 		StateDir:      *stateDir,
 		ListenAddress: *listen,
-	})
+		Backend:       *backend,
+	}
+	// The DSN is attached only when PostgreSQL was asked for, so an environment
+	// variable left set from something else cannot change which backend runs.
+	if *backend == localruntime.BackendPostgres {
+		options.Postgres = &localruntime.PostgresOptions{
+			DSN: os.Getenv(postgresDSNEnv),
+		}
+	}
+
+	runtime, err := localruntime.Start(ctx, options)
 	if err != nil {
+		// The error is printed as-is because every error this can return is
+		// already free of the DSN: localruntime and the store both redact it,
+		// and nothing here adds configuration back.
 		fmt.Fprintf(stderr, "trustvian-local: %v\n", err)
-		// A rejected listen address is the caller's mistake; anything else is
-		// the environment's.
-		if isListenAddressError(err) {
+		// A rejected listen address or a bad backend selection is the caller's
+		// mistake; anything else is the environment's.
+		if isListenAddressError(err) || isBackendConfigurationError(err) {
 			return exitUsage
 		}
 		return exitOperational
@@ -96,7 +136,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// looking for somewhere to click should not have to infer that the API
 	// endpoint is also a web page.
 	fmt.Fprintf(stdout, "Web:   %s\n", runtime.WebURL())
-	fmt.Fprintf(stdout, "State: %s\n", runtime.DatabasePath())
+	// The backend is named so an operator can confirm which one started, and
+	// StateSummary is a safe description rather than a connection string.
+	fmt.Fprintf(stdout, "Store: %s\n", runtime.Backend())
+	fmt.Fprintf(stdout, "State: %s\n", runtime.StateSummary())
 	fmt.Fprintf(stdout, "Local clients in this directory can now omit --api-url.\n")
 	// No browser is launched. There is no --open flag and no OS-specific
 	// launcher: a security tool that opens windows by itself is a surprise,
@@ -134,4 +177,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 // refused, which is the caller's mistake rather than the environment's.
 func isListenAddressError(err error) bool {
 	return err != nil && errors.Is(err, localruntime.ErrListenAddress)
+}
+
+// isBackendConfigurationError reports whether startup failed because the
+// backend selection was wrong — an unknown name, or postgres with no DSN.
+//
+// The caller's mistake, so exit 2 rather than 3. An unreachable database is the
+// environment's and stays operational.
+func isBackendConfigurationError(err error) bool {
+	return err != nil && errors.Is(err, localruntime.ErrBackendConfiguration)
 }

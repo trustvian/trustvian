@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -95,6 +96,21 @@ type Discovery struct {
 	APIURL  string `json:"api_url"`
 }
 
+// Backend names for Options.Backend.
+//
+// Mirrors config.StorageConfig's `type:` convention for the engine's store,
+// including its rule that an unrecognized value is a validation error rather
+// than something to fall back from.
+const (
+	// BackendSQLite is the local default. Selected by an empty Backend, so no
+	// caller has to name it and `make local` needs no configuration at all.
+	BackendSQLite = "sqlite"
+
+	// BackendPostgres is the shared/deployed backend. Requires explicit
+	// selection and a DSN.
+	BackendPostgres = "postgres"
+)
+
 // Options configure one runtime.
 type Options struct {
 	// StateDir defaults to DefaultStateDir.
@@ -102,6 +118,43 @@ type Options struct {
 
 	// ListenAddress defaults to DefaultListenAddress. Loopback only.
 	ListenAddress string
+
+	// Backend selects platform persistence. Empty means BackendSQLite.
+	//
+	// Empty rather than a named default on purpose: every existing caller, and
+	// `make local`, keeps working without mentioning a backend. PostgreSQL is
+	// reached only by asking for it.
+	//
+	// An unrecognized value is refused. It never falls back to SQLite — a
+	// deployment that asked for a shared database and silently got a local file
+	// would look healthy while losing every other process's state.
+	Backend string
+
+	// Postgres is required when Backend is BackendPostgres, ignored otherwise.
+	Postgres *PostgresOptions
+}
+
+// PostgresOptions configure the shared backend.
+//
+// Deliberately the same three fields as config.PostgresStorageConfig: pgx
+// exposes a large tuning surface, and each knob here has to justify itself as
+// something an operator cannot set another way.
+type PostgresOptions struct {
+	// DSN is the connection string. Required.
+	//
+	// **A secret.** It normally embeds a password, so nothing in this package
+	// logs it, returns it inside an error, prints it, or writes it into
+	// runtime.json — including when it cannot be parsed, which is the one case
+	// the driver's own message would otherwise echo verbatim.
+	DSN string
+
+	// MaxConnections caps the pool. Zero means the driver default.
+	MaxConnections int32
+
+	// ConnectTimeout bounds the startup connectivity check. Zero means the
+	// store's default. This is what keeps fail-fast startup fast: unbounded, an
+	// unreachable host would wait out the OS-level TCP timeout.
+	ConnectTimeout time.Duration
 }
 
 // Runtime is a started local control plane.
@@ -110,7 +163,12 @@ type Runtime struct {
 	stateDir string
 	dbPath   string
 
-	store    *platform.SQLiteStore
+	// store is the composite interface, not a concrete backend: composition is
+	// the only layer that knows which one is underneath. Services still take
+	// the narrow interfaces individually.
+	store   platform.Store
+	backend string
+
 	bus      *platform.InMemoryRealtimeBus
 	listener net.Listener
 	server   *http.Server
@@ -149,6 +207,13 @@ func Start(ctx context.Context, options Options) (*Runtime, error) {
 	if err := validateLoopbackAddress(listenAddress); err != nil {
 		return nil, err
 	}
+	// Configuration is validated before any directory, socket or connection
+	// exists. A runtime that discovered its backend was misconfigured after
+	// binding would have advertised an endpoint it cannot serve.
+	backend, err := resolveBackend(options)
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(stateDir, stateDirMode); err != nil {
 		return nil, fmt.Errorf("creating state directory: %w", err)
 	}
@@ -158,10 +223,14 @@ func Start(ctx context.Context, options Options) (*Runtime, error) {
 		return nil, err
 	}
 
+	// The SQLite path is still computed for either backend, because
+	// DatabasePath() reports it and PostgreSQL mode simply never creates a file
+	// there.
 	dbPath := filepath.Join(stateDir, DatabaseFileName)
-	store, err := platform.OpenSQLiteStore(ctx, dbPath)
+
+	store, err := openBackend(ctx, backend, dbPath, options.Postgres)
 	if err != nil {
-		return nil, fmt.Errorf("opening platform database: %w", err)
+		return nil, err
 	}
 
 	bus := platform.NewInMemoryRealtimeBus()
@@ -213,6 +282,7 @@ func Start(ctx context.Context, options Options) (*Runtime, error) {
 	}
 
 	runtime := &Runtime{
+		backend:   backend,
 		apiURL:    "http://" + listener.Addr().String(),
 		stateDir:  stateDir,
 		dbPath:    dbPath,
@@ -297,6 +367,13 @@ func (r *Runtime) Stop(ctx context.Context) error {
 // ---------------------------------------------------------------------
 // Listen address
 // ---------------------------------------------------------------------
+
+// ErrBackendConfiguration reports a persistence backend that cannot be used as
+// configured: an unknown name, or PostgreSQL without a DSN.
+//
+// Separate from ErrListenAddress because the two are different operator
+// mistakes, and trustvian-local maps them to different exit codes.
+var ErrBackendConfiguration = errors.New("localruntime: persistence backend configuration is invalid")
 
 // ErrListenAddress marks a refused --listen value.
 //
@@ -566,4 +643,109 @@ func validateDiscoveryAPIURL(raw string) error {
 			"runtime discovery api_url host %q is not a numeric loopback address", host)
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------
+// Backend composition
+// ---------------------------------------------------------------------
+
+// resolveBackend validates the requested backend and returns its name.
+//
+// Fails closed on anything unrecognized. The alternative — treating an unknown
+// name as "use the default" — is how a typo in a deployment's configuration
+// becomes a control plane quietly running on a local file while every other
+// process uses the shared database, each of them looking healthy.
+//
+// No part of the error mentions the DSN. There is nothing worth quoting from it
+// and the habit of quoting it is what leaks one later.
+func resolveBackend(options Options) (string, error) {
+	switch options.Backend {
+	case "", BackendSQLite:
+		// Empty is SQLite, which is what makes `make local` need no
+		// configuration. A Postgres block supplied alongside it is a
+		// contradiction rather than something to silently ignore.
+		if options.Postgres != nil && options.Backend == "" {
+			return "", fmt.Errorf(
+				"%w: PostgreSQL options were supplied without selecting the %q backend",
+				ErrBackendConfiguration, BackendPostgres)
+		}
+		return BackendSQLite, nil
+
+	case BackendPostgres:
+		if options.Postgres == nil {
+			return "", fmt.Errorf("%w: the %q backend requires connection options",
+				ErrBackendConfiguration, BackendPostgres)
+		}
+		if strings.TrimSpace(options.Postgres.DSN) == "" {
+			return "", fmt.Errorf("%w: the %q backend requires a database DSN",
+				ErrBackendConfiguration, BackendPostgres)
+		}
+		return BackendPostgres, nil
+
+	default:
+		// The value is named because it came from configuration and is not a
+		// secret; a DSN never would be.
+		return "", fmt.Errorf("%w: unknown backend %q; use %q or %q",
+			ErrBackendConfiguration, options.Backend, BackendSQLite, BackendPostgres)
+	}
+}
+
+// openBackend opens the selected store.
+//
+// The only place in the repository that chooses between backends. Everything
+// above it — the control plane, the HTTP adapter, the WebUI, the CLI and the
+// TUI — receives a store and cannot tell which one it got.
+func openBackend(
+	ctx context.Context, backend, dbPath string, postgres *PostgresOptions,
+) (platform.Store, error) {
+	switch backend {
+	case BackendSQLite:
+		store, err := platform.OpenSQLiteStore(ctx, dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("opening platform database: %w", err)
+		}
+		return store, nil
+
+	case BackendPostgres:
+		// OpenPostgresStore constructs the pool, proves connectivity with a
+		// Ping, and creates, verifies or migrates the schema before returning.
+		// So a store in hand means the database is usable, which is what lets
+		// the listener below bind only after this succeeds.
+		store, err := platform.OpenPostgresStore(ctx, platform.PostgresConfig{
+			DSN:            postgres.DSN,
+			MaxConnections: postgres.MaxConnections,
+			ConnectTimeout: postgres.ConnectTimeout,
+		})
+		if err != nil {
+			// Wrapped without re-introducing the DSN. The store's own errors are
+			// already redacted; adding configuration back here would undo that.
+			return nil, fmt.Errorf("opening platform database: %w", err)
+		}
+		return store, nil
+
+	default:
+		// Unreachable: resolveBackend ran first. Stated rather than panicking,
+		// because a future caller could reorder them.
+		return nil, fmt.Errorf("%w: unknown backend %q", ErrBackendConfiguration, backend)
+	}
+}
+
+// Backend reports which persistence backend this runtime opened.
+//
+// For diagnostics and tests. Never carries a DSN, a host or a database name —
+// the name alone is what an operator needs to confirm, and anything more would
+// be a credential surface.
+func (r *Runtime) Backend() string { return r.backend }
+
+// StateSummary describes where state lives, safely.
+//
+// The SQLite path for a local runtime, and the backend name alone for
+// PostgreSQL. Deliberately not the DSN, the host or the database: this string is
+// printed at startup, and a startup line is exactly where a connection string
+// would end up in a terminal, a log file and a screenshot.
+func (r *Runtime) StateSummary() string {
+	if r.backend == BackendPostgres {
+		return "PostgreSQL (shared backend)"
+	}
+	return r.dbPath
 }
