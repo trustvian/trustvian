@@ -8,7 +8,7 @@ GO       := go
 
 .PHONY: help build run demo baseline-demo test test-race bench vet fmt fmt-check tidy coverage install clean check examples \
 	compose-up compose-down compose-smoke recovery-drill integration-postgres \
-	check-modules check-platform-boundary release-dry-run vulncheck container-build container-scan sbom \
+	local check-modules check-platform-boundary release-dry-run vulncheck container-build container-scan sbom \
 	pr-title
 
 help: ## Show this help
@@ -18,6 +18,10 @@ help: ## Show this help
 build: ## Build the trustvian CLI to bin/trustvian
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -o $(BIN_DIR)/$(BINARY) $(CMD)
+
+local: build ## Run the integrated local control plane (see docs/local-development.md)
+	@echo "Starting the local Trustvian runtime. Clients in this directory can omit --api-url."
+	cd platform && GOWORK=off $(GO) run ./cmd/trustvian-local --state-dir "$(CURDIR)/.trustvian"
 
 run: build ## Build and run the CLI, e.g. make run ARGS="analyze events.json"
 	./$(BIN_DIR)/$(BINARY) $(ARGS)

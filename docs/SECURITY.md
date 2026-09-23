@@ -914,6 +914,61 @@ and nothing else; see
   goroutine and the reconnect timer; a test asserts the server observes the
   client going away.
 
+### The local runtime is unauthenticated, and loopback is the boundary
+
+**Threat:** a one-command local platform is the moment an unauthenticated
+control plane becomes reachable from a network — by a helpful flag, a reverse
+proxy, or a discovery file that points somewhere it should not.
+
+**Status: loopback-only, with no way to change that.**
+[Task 062](tasks/v1.0/062-integrated-local-developer-workflow.md) composes the
+runtime; see
+[ADR 0035](adr/0035-local-runtime-composes-platform-without-reversing-modules.md).
+
+- **The listener binds loopback only.** `--listen` accepts numeric loopback
+  addresses and nothing else — `0.0.0.0`, `::`, private ranges, public
+  addresses and hostnames are all refused. Hostnames are refused even when
+  they would resolve to loopback, because resolution is not proof and what
+  `localhost` means is the resolver's opinion. There is no `--allow-remote`,
+  `--insecure` or `--public`: a flag that exposes an unauthenticated control
+  plane is a flag someone will set on a café network.
+- **The port is ephemeral.** `127.0.0.1:0` lets the OS choose, so no address
+  becomes a compatibility surface and nothing collides.
+- **No authentication is claimed or implemented**, and no TLS. This is an HTTP
+  server on loopback, described exactly that way rather than dressed in a
+  self-signed certificate that would imply more. Task 070 owns authentication
+  and remote exposure.
+- **Do not reverse-proxy or expose this runtime.** Loopback is the entire
+  security boundary; putting anything in front of it removes the only
+  protection it has.
+- **Discovery is not authentication.** `.trustvian/runtime.json` carries two
+  fields — version and endpoint. No token, no secret, no identifiers. Finding
+  it proves nothing about who may use the endpoint, and it must never grow a
+  credential: a secret in a project directory looks like security without
+  being it.
+- **A discovered endpoint must be loopback.** A repository can contain a
+  `.trustvian/runtime.json`, so a discovered URL is validated more strictly
+  than one a user types: `http`, numeric loopback host, no credentials, no
+  path, query or fragment. Otherwise checking out a project would be enough to
+  redirect a developer's mutation commands to someone else's server. Explicit
+  `--api-url` always wins and is never overridden by a file.
+- **The discovery file is read under a 4 KiB bound**, checked before opening
+  and again while decoding, because a project-local file is not necessarily
+  trustworthy.
+- **No CORS.** Task 062's clients are a CLI and a TUI, not a browser; task 063
+  can define browser-origin requirements against an interface that exists.
+- **Platform state is separate from engine state.** `.trustvian/platform.db`
+  holds evaluation evidence and never becomes the engine's baseline store —
+  different lifecycles, different correctness properties, and a test asserts
+  the schemas stay apart.
+- **No raw event endpoint.** The producer path stays `Engine.Analyze` →
+  `DecisionRecord` → ingest, so no second scoring implementation appears
+  server-side.
+- **Shutdown releases everything**: the realtime bus closes first so in-flight
+  SSE handlers exit, then the server within a finite bound, then SQLite, and
+  the discovery file is removed **only if it still names this runtime** — a
+  late process must not erase a newer one's endpoint.
+
 ### Platform identity cannot become behavioral identity
 
 **Threat:** an evaluation concept leaks into the engine — a candidate becomes

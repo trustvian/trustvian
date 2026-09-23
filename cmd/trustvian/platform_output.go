@@ -36,8 +36,9 @@ type commonFlags struct {
 
 func registerCommonFlags(fs *flag.FlagSet) commonFlags {
 	return commonFlags{
-		apiURL: fs.String("api-url", "", "base URL of the control-plane API (required)"),
-		json:   fs.Bool("json", false, "write the API's JSON response to stdout"),
+		apiURL: fs.String("api-url", "",
+			"base URL of the control-plane API (default: the local runtime in ./.trustvian)"),
+		json: fs.Bool("json", false, "write the API's JSON response to stdout"),
 	}
 }
 

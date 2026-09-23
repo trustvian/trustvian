@@ -368,9 +368,13 @@ func runEvalCompare(s streams, args []string, timeout time.Duration) int {
 		}
 	}
 
-	client, err := newPlatformClient(*common.apiURL, timeout)
+	client, err := resolveAPIURL(*common.apiURL, timeout)
 	if err != nil {
-		return usageFailure(s, evalUsage, err)
+		if exitCodeFor(err) == exitUsage {
+			return usageFailure(s, evalUsage, err)
+		}
+		// Operational, never exit 1: a missing runtime is not a gate result.
+		return emitError(s, *common.json, err)
 	}
 
 	result, err := client.post(context.Background(), compareBody{

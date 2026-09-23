@@ -58,6 +58,7 @@ as long as its own decision holds.
 | [0032](0032-realtime-is-bounded-ephemeral-not-authoritative.md) | Realtime is bounded, ephemeral, and not authoritative | Accepted |
 | [0033](0033-developer-cli-is-a-thin-http-adapter.md) | The developer CLI is a thin HTTP adapter | Accepted |
 | [0034](0034-tui-is-a-bounded-realtime-http-client.md) | The TUI is a bounded realtime HTTP client | Accepted |
+| [0035](0035-local-runtime-composes-platform-without-reversing-modules.md) | The local runtime composes the platform without reversing modules | Accepted |
 
 No ADR is currently Superseded or Deprecated. Several later ADRs build on
 earlier ones — 0006 and 0018 on 0004's narrow port, 0007/0008/0017 on 0002's

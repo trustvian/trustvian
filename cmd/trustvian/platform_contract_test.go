@@ -1008,8 +1008,14 @@ func TestUnknownSubcommandsAreUsageErrors(t *testing.T) {
 	}
 }
 
-// TestNoRequestIsSentWithoutAnAPIURL proves validation precedes the network.
-func TestNoRequestIsSentWithoutAnAPIURL(t *testing.T) {
+// TestMissingRuntimeIsOperationalNotUsage pins the classification task 062
+// changed.
+//
+// Before local startup existed, omitting --api-url was an invocation error.
+// Now a local runtime advertises itself, so the command is valid and the
+// environment is what failed — reporting usage would tell a developer to fix
+// something they wrote correctly. Exit 3, and never exit 1.
+func TestMissingRuntimeIsOperationalNotUsage(t *testing.T) {
 	commands := [][]string{
 		{"project", "get", "--id", "proj-1"},
 		{"project", "create", "--id", "proj-1", "--name", "n"},
@@ -1023,7 +1029,42 @@ func TestNoRequestIsSentWithoutAnAPIURL(t *testing.T) {
 
 	for _, args := range commands {
 		t.Run(strings.Join(args[:2], " "), func(t *testing.T) {
-			runPlatformCLI(t, args...).mustExit(t, exitUsage, fmt.Sprint(args))
+			// An empty directory, so discovery is definitively absent rather
+			// than absent by accident of where the test happened to run.
+			t.Chdir(t.TempDir())
+
+			result := runPlatformCLI(t, args...)
+			result.mustExit(t, exitOperational, fmt.Sprint(args))
+
+			if result.code == exitGateFail {
+				t.Fatal("a missing runtime produced exit 1, which means gate FAIL")
+			}
+			if result.stdout != "" {
+				t.Errorf("stdout = %q, want empty", result.stdout)
+			}
+			if !strings.Contains(result.stderr, "no local Trustvian runtime") {
+				t.Errorf("stderr does not explain the missing runtime:\n%s", result.stderr)
+			}
+		})
+	}
+}
+
+// TestExplicitInvalidAPIURLIsStillUsage keeps the other half of the
+// distinction: the user supplied the input, so the input is what is wrong.
+func TestExplicitInvalidAPIURLIsStillUsage(t *testing.T) {
+	tests := []struct{ name, apiURL string }{
+		{"relative", "/v1"},
+		{"no scheme", "127.0.0.1:1234"},
+		{"ftp", "ftp://example.test"},
+		{"credentials", "http://u:p@example.test"},
+		{"query", "http://example.test?a=b"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			runPlatformCLI(t, "eval", "get", "--id", "run-42", "--api-url", tt.apiURL).
+				mustExit(t, exitUsage, tt.name)
 		})
 	}
 }

@@ -1,7 +1,7 @@
 # Terminal dashboard
 
 ```bash
-trustvian tui --api-url http://127.0.0.1:PORT --run-id run-42
+trustvian tui --run-id run-42
 ```
 
 Watches **one** evaluation run as it happens. This is the inner-loop
@@ -10,15 +10,25 @@ what it is doing without tailing a log or re-running a query.
 
 For scripting and CI, use [the CLI](platform-cli.md). The TUI is for watching.
 
-## You need a control plane already running
+## You need a control plane running
 
-`--api-url` is required and has no default. Task 062 will provide integrated
-local startup — one command that runs the engine, the control plane and an
-interface together — and it will own the default address when it does.
-Choosing one now would freeze it before the thing that binds it exists.
+Start one with `make local` ([local development](local-development.md)) and the
+dashboard finds it: the runtime publishes its endpoint to
+`.trustvian/runtime.json`, and the TUI reads it from the current directory.
 
-There is also no environment variable. That is a second operational surface,
-and it should arrive with the server lifecycle it configures.
+To watch a run on a different control plane, name it:
+
+```bash
+trustvian tui --api-url http://127.0.0.1:8080 --run-id run-42
+```
+
+Explicit `--api-url` always wins over discovery, and a discovered endpoint must
+be `http` on a numeric loopback address — so a repository cannot redirect the
+dashboard elsewhere.
+
+`--run-id` is still required; nothing can guess which run you meant. With no
+`--api-url` and no local runtime, the TUI exits **3**: the command was valid
+and the environment was not.
 
 The TUI starts no server of its own and binds no port.
 

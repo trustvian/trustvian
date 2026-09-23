@@ -597,6 +597,25 @@ func TestNewBehaviorLabelIsFactual(t *testing.T) {
 // Usage
 // ---------------------------------------------------------------------
 
+// TestTUIMissingRuntimeIsOperational mirrors the CLI classification.
+//
+// --run-id is still required — nothing can guess which run to watch — but
+// --api-url is not, so its absence is an environment problem rather than an
+// invocation one.
+func TestTUIMissingRuntimeIsOperational(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	result := runPlatformCLI(t, "tui", "--run-id", "run-42")
+	result.mustExit(t, exitOperational, "tui without a runtime")
+
+	if result.code == exitGateFail {
+		t.Fatal("the TUI produced exit 1, which means gate FAIL")
+	}
+	if !strings.Contains(result.stderr, "no local Trustvian runtime") {
+		t.Errorf("stderr does not explain the missing runtime:\n%s", result.stderr)
+	}
+}
+
 // TestTUIUsageErrors keeps invocation problems at exit 2 and off the network.
 func TestTUIUsageErrors(t *testing.T) {
 	tests := []struct {
@@ -605,7 +624,6 @@ func TestTUIUsageErrors(t *testing.T) {
 	}{
 		{"no flags", nil},
 		{"missing run id", []string{"--api-url", "http://127.0.0.1:1"}},
-		{"missing api url", []string{"--run-id", "run-42"}},
 		{"unknown flag", []string{"--api-url", "http://127.0.0.1:1", "--run-id", "r", "--nope"}},
 		{"trailing argument", []string{"--api-url", "http://127.0.0.1:1", "--run-id", "r", "oops"}},
 		{"relative url", []string{"--api-url", "/v1", "--run-id", "run-42"}},
@@ -620,6 +638,9 @@ func TestTUIUsageErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// No discovery file, so --api-url genuinely has no fallback.
+			t.Chdir(t.TempDir())
+
 			result := runPlatformCLI(t, append([]string{"tui"}, tt.args...)...)
 			result.mustExit(t, exitUsage, tt.name)
 			if result.stdout != "" {

@@ -20,8 +20,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -326,6 +329,139 @@ func checkStatus(result apiResult) error {
 func decodeJSON(body []byte, target any) error {
 	if err := json.Unmarshal(body, target); err != nil {
 		return operationalErrorf("server response is not valid JSON for this endpoint")
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------
+// Local runtime discovery
+// ---------------------------------------------------------------------
+
+const (
+	// localStateDir and localDiscoveryFile locate the endpoint a local
+	// runtime published.
+	//
+	// Exactly this path in the current working directory: no environment
+	// variable, no parent-directory walk, no $HOME, no network scan. A
+	// directory owns its runtime, and nothing outside it should be able to
+	// redirect a command.
+	localStateDir       = ".trustvian"
+	localDiscoveryFile  = "runtime.json"
+	localDiscoveryLimit = 4 << 10
+
+	// localDiscoveryVersion is the only schema this build understands.
+	localDiscoveryVersion = "1"
+)
+
+// localDiscovery mirrors the runtime's published file.
+//
+// Decoded leniently so version 1 can grow additive fields, exactly like every
+// other wire contract this CLI consumes. An unknown *version* is different and
+// fails closed.
+type localDiscovery struct {
+	Version string `json:"version"`
+	APIURL  string `json:"api_url"`
+}
+
+// resolveAPIURL picks the endpoint for a platform command.
+//
+// Explicit input always wins. A working directory must never be able to
+// redirect a command that named its own endpoint — that is what keeps CI and
+// sandbox invocations unaffected by whatever happens to be checked out.
+func resolveAPIURL(explicit string, timeout time.Duration) (*platformClient, error) {
+	if explicit != "" {
+		return newPlatformClient(explicit, timeout)
+	}
+
+	discovered, err := readLocalDiscovery(filepath.Join(localStateDir, localDiscoveryFile))
+	if err != nil {
+		return nil, err
+	}
+	return newPlatformClient(discovered, timeout)
+}
+
+// readLocalDiscovery reads and validates the runtime file.
+//
+// Every failure here is operational, not usage: after task 062 a command
+// without --api-url is a valid invocation, so a missing or broken runtime
+// means the environment is wrong rather than the command.
+func readLocalDiscovery(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", operationalErrorf(
+				"no local Trustvian runtime found; start one with `make local` or pass --api-url")
+		}
+		return "", operationalErrorf("reading %s: %v", path, err)
+	}
+	// Bounded before opening: the file is project-local and not necessarily
+	// trustworthy, and two fields need nothing like this much.
+	if info.Size() > localDiscoveryLimit {
+		return "", operationalErrorf(
+			"%s is %d bytes, over the %d byte limit", path, info.Size(), localDiscoveryLimit)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return "", operationalErrorf("reading %s: %v", path, err)
+	}
+	defer file.Close()
+
+	// Bounded again while reading: the stat above is a check, not a promise,
+	// since the file can change between the two.
+	var discovery localDiscovery
+	if err := json.NewDecoder(io.LimitReader(file, localDiscoveryLimit+1)).
+		Decode(&discovery); err != nil {
+		return "", operationalErrorf("%s is not valid JSON", path)
+	}
+	if discovery.Version != localDiscoveryVersion {
+		return "", operationalErrorf(
+			"%s has unsupported version %q", path, discovery.Version)
+	}
+	if err := validateDiscoveredURL(discovery.APIURL); err != nil {
+		return "", err
+	}
+	return discovery.APIURL, nil
+}
+
+// validateDiscoveredURL is stricter than the rule for an explicit --api-url.
+//
+// An explicit URL is the user's stated intent. A discovered one comes from a
+// file in the working directory, which a repository can contain — so a
+// checked-out project must not be able to point a developer's mutation
+// commands at https://attacker.example. Loopback only, http only, nothing else
+// in the URL.
+func validateDiscoveredURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return operationalErrorf("local runtime URL is not a valid URL")
+	}
+	if parsed.Scheme != "http" {
+		return operationalErrorf(
+			"local runtime URL scheme %q is not supported; a discovered runtime must be http on loopback",
+			parsed.Scheme)
+	}
+	if parsed.User != nil {
+		return operationalErrorf("local runtime URL must not contain credentials")
+	}
+	if parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return operationalErrorf("local runtime URL must not contain a query or fragment")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return operationalErrorf("local runtime URL must not contain a path")
+	}
+
+	host, _, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		return operationalErrorf("local runtime URL must include a host and port")
+	}
+	// Numeric only. A hostname that resolves to loopback today is still a
+	// name someone else controls, and resolution is not proof.
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return operationalErrorf(
+			"local runtime URL host %q is not a numeric loopback address; "+
+				"a discovered runtime may only be reached on loopback", host)
 	}
 	return nil
 }

@@ -711,6 +711,40 @@ tui                            ──▶  HTTP /v1 authoritative reads
                                  +  SSE /v1/realtime notifications
 ```
 
+[Task 062](tasks/v1.0/062-integrated-local-developer-workflow.md) adds the
+composition that makes those endpoints exist locally:
+
+```text
+Application / Agent
+      │  Engine.Analyze
+      ▼
+DecisionRecord
+      │  HTTP /v1
+      ▼
+┌───────────────────────────────┐
+│ Trustvian local runtime       │
+│                               │
+│ SQLite ← ControlPlane         │
+│             │                 │
+│             ├─ Realtime Bus ───── SSE ──▶ TUI
+│             │                 │
+│             └─ HTTP API ────────────────▶ CLI
+└───────────────────────────────┘
+```
+
+**The engine remains outside the platform service, and that distinction is
+load-bearing.** The runtime owns storage, the control plane, realtime and the
+listener; it does not analyze anything. A producer runs `Engine.Analyze` in its
+own process and posts a `DecisionRecord` — there is no server-side second
+engine, and no raw event route that would become one.
+
+The composition lives in `platform/cmd/trustvian-local`, inside the platform
+module, because the root module still must not import `trustvian-platform`.
+The CLI and TUI find the running endpoint through `.trustvian/runtime.json`
+rather than a Go import, which is what keeps the edge absent while the
+workflow is integrated. See
+[ADR 0035](adr/0035-local-runtime-composes-platform-without-reversing-modules.md).
+
 The engine commands are released offline tools: they run the pipeline against a
 file of events with no platform present. Rewriting them to go through HTTP
 would replace a working local tool with a service dependency and break every

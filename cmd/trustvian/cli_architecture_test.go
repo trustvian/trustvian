@@ -455,3 +455,60 @@ func TestPlatformCommandsDeclareNoTokenFlag(t *testing.T) {
 		})
 	}
 }
+
+// TestLocalRuntimeIsNotImportedByTheRootModule is task 062's boundary guard.
+//
+// Task 062 makes the local platform startable, which is exactly the pressure
+// that would justify "just import the platform from cmd/trustvian" — it would
+// remove the discovery file, the second executable and a whole class of test.
+// It would also reverse ADR 0022 and ADR 0033, and pull the SQLite driver into
+// every shipped CLI.
+//
+// The composition lives in the platform module instead, and the CLI finds it
+// through a file rather than a Go import.
+func TestLocalRuntimeIsNotImportedByTheRootModule(t *testing.T) {
+	for _, name := range goFiles(t, true) {
+		file := parseFile(t, name, parser.ImportsOnly)
+		for _, spec := range file.Imports {
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if strings.HasPrefix(path, "trustvian-platform") {
+				t.Errorf("%s imports %q; the local runtime is composed inside the "+
+					"platform module precisely so this edge stays absent", name, path)
+			}
+		}
+	}
+
+	// And the module graph agrees, including test-only requirements.
+	for _, name := range []string{"go.mod", "go.sum"} {
+		content, err := os.ReadFile(filepath.Join("..", "..", name))
+		if err != nil {
+			t.Fatalf("ReadFile %s: %v", name, err)
+		}
+		if strings.Contains(string(content), "trustvian-platform") {
+			t.Errorf("root %s references trustvian-platform", name)
+		}
+	}
+}
+
+// TestDiscoveryResolverIsTheSinglePathToAClient stops the resolver being
+// bypassed one command at a time.
+//
+// Every platform client must share it: a command that called
+// newPlatformClient directly would silently lose local discovery, and the
+// omission would look like a missing feature rather than a bug.
+func TestDiscoveryResolverIsTheSinglePathToAClient(t *testing.T) {
+	for _, name := range goFiles(t, false) {
+		if name == "platform_client.go" {
+			// Where the resolver and the constructor both live.
+			continue
+		}
+		source := readCode(t, name)
+		if strings.Contains(source, "newPlatformClient(") {
+			t.Errorf("%s constructs a client directly; use resolveAPIURL so local "+
+				"discovery applies to every command", name)
+		}
+	}
+}

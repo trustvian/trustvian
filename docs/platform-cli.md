@@ -14,23 +14,37 @@ The CLI is a client. It computes no diff, no scorecard and no gate — those are
 the control plane's, and the CLI reports what it returned. See
 [ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md).
 
-## `--api-url` is required, on purpose
+## Finding the control plane
 
-Every control-plane command takes `--api-url`. There is no default, and no
-environment variable.
+Explicit `--api-url` is required when you are **not** using the local runtime.
+When `make local` is running from the same working directory, platform commands
+discover `.trustvian/runtime.json` automatically:
 
-[Task 062](tasks/v1.0/) owns integrated local startup — running the engine, the
-control plane and the CLI together from one command. Until the thing that binds
-a port exists, choosing a default port here would freeze an address in advance,
-and a default that scripts already rely on is much harder to change than one
-that arrives later.
-
-So for now, pass it:
+```text
+--api-url given    → that endpoint, always
+--api-url omitted  → ./.trustvian/runtime.json
+```
 
 ```bash
-URL="http://127.0.0.1:8080"
-trustvian project get --api-url "$URL" --id proj-1
+# local: nothing to pass
+trustvian project get --id proj-1
+
+# anywhere else: name the endpoint
+trustvian project get --api-url "https://control.example" --id proj-1
 ```
+
+Explicit input always wins, which is what keeps CI and sandbox invocations
+unaffected by whatever happens to be checked out. There is no environment
+variable, no parent-directory search and no `$HOME` lookup — exactly
+`./.trustvian/runtime.json`.
+
+A **discovered** URL is held to a stricter rule than one you type: `http` on a
+numeric loopback address, nothing else. A repository that ships its own runtime
+file cannot redirect your commands to someone else's server.
+
+With neither available the command exits **3**, not 2: the invocation was valid
+and the runtime was missing, which is operational rather than a usage error.
+See [local development](local-development.md).
 
 The URL must be absolute `http` or `https`, with a host and no path, query,
 fragment, or embedded credentials. A URL carrying a password is rejected — and
