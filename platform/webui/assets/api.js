@@ -89,7 +89,17 @@ async function readBounded(response) {
       if (total > RESPONSE_MAX_BYTES) {
         // Stop the transfer rather than draining it: the point of the bound is
         // not to read the rest.
-        await reader.cancel();
+        //
+        // cancel() is awaited but its failure is swallowed on purpose. On an
+        // already-errored stream it can reject, and letting that propagate
+        // would replace "the response was too large" with whatever the stream
+        // failed with — reporting the wrong reason for a refusal we already
+        // decided on.
+        try {
+          await reader.cancel();
+        } catch (ignored) {
+          // The transfer is over either way.
+        }
         throw new ApiError(
           `response exceeded the ${RESPONSE_MAX_BYTES} byte limit`,
           { status: response.status, operational: true },
@@ -142,69 +152,128 @@ function errorFrom(response, text) {
   return new ApiError(message, { status: response.status, code });
 }
 
+// operationalFrom converts a thrown transport failure into an ApiError.
+//
+// Two outcomes only, and the distinction is what the caller needs: the deadline
+// expired, or the control plane could not be reached. Neither is a server
+// answer, so both are operational and neither may be presented as a gate
+// result.
+//
+// A raw AbortError or DOMException never reaches the UI. Recognising it here is
+// the only place that has the context to say what the abort meant.
+function operationalFrom(cause, deadlineExpired) {
+  const aborted = deadlineExpired ||
+    (cause !== null && cause !== undefined && cause.name === "AbortError");
+  return new ApiError(
+    aborted
+      ? `no response within ${REQUEST_TIMEOUT_MS}ms`
+      : "the control plane could not be reached",
+    { operational: true },
+  );
+}
+
 // request issues one bounded, same-origin call.
 //
 // Relative URLs only: the UI is served from the same origin as the API, so
 // there is no endpoint to configure and nothing that could point this at
 // another host.
+//
+// The deadline covers the **whole** operation — request transmission, response
+// headers, and bounded consumption of the body — and not merely the fetch.
+//
+// fetch() resolves as soon as headers are available, while the body may still
+// be streaming or stalled. A deadline released at that point leaves the read
+// below unbounded, and a server that sends headers promptly and then stops
+// sending bytes would hang the operation forever. The 4 MiB bound does not
+// help: a stalled body never reaches it.
+//
+// Extending the controller over the read is what actually stops it. Per the
+// Fetch standard, aborting after headers have arrived errors the response body
+// stream, so the pending read rejects with an AbortError rather than staying
+// blocked — which is why this is a real bound and not a hopeful one.
+//
+// One AbortController, one timer, cleared in exactly one place: a finally that
+// encloses both the fetch and the body read. Moving the clear earlier is the
+// regression this shape exists to prevent, and
+// TestRequestDeadlineCoversBodyConsumption pins the ordering.
 async function request(method, path, body) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  // Our own deadline, distinguished from any other abort so the reason reported
+  // is right without inspecting DOMException internals.
+  let deadlineExpired = false;
+  const timer = setTimeout(() => {
+    deadlineExpired = true;
+    controller.abort();
+  }, REQUEST_TIMEOUT_MS);
 
-  const init = {
-    method,
-    signal: controller.signal,
-    headers: { Accept: "application/json" },
-    // Same-origin by construction; stated so a redirect to another origin
-    // cannot quietly carry the request there.
-    credentials: "omit",
-    mode: "same-origin",
-    redirect: "error",
-    cache: "no-store",
-  };
+  try {
+    const init = {
+      method,
+      signal: controller.signal,
+      headers: { Accept: "application/json" },
+      // Same-origin by construction; stated so a redirect to another origin
+      // cannot quietly carry the request there.
+      credentials: "omit",
+      mode: "same-origin",
+      redirect: "error",
+      cache: "no-store",
+    };
 
-  if (body !== undefined) {
-    const encoded = JSON.stringify(body);
-    const size = new TextEncoder().encode(encoded).byteLength;
-    if (size > REQUEST_MAX_BYTES) {
-      clearTimeout(timer);
-      throw new ApiError(
-        `request body is ${size} bytes, over the ${REQUEST_MAX_BYTES} byte limit`,
-        { operational: true },
-      );
+    if (body !== undefined) {
+      const encoded = JSON.stringify(body);
+      const size = new TextEncoder().encode(encoded).byteLength;
+      if (size > REQUEST_MAX_BYTES) {
+        throw new ApiError(
+          `request body is ${size} bytes, over the ${REQUEST_MAX_BYTES} byte limit`,
+          { operational: true },
+        );
+      }
+      init.headers["Content-Type"] = "application/json";
+      init.body = encoded;
     }
-    init.headers["Content-Type"] = "application/json";
-    init.body = encoded;
-  }
 
-  let response;
-  try {
-    response = await fetch(path, init);
-  } catch (cause) {
-    const reason = cause && cause.name === "AbortError"
-      ? `no response within ${REQUEST_TIMEOUT_MS}ms`
-      : "the control plane could not be reached";
-    throw new ApiError(reason, { operational: true });
+    let response;
+    try {
+      response = await fetch(path, init);
+    } catch (cause) {
+      throw operationalFrom(cause, deadlineExpired);
+    }
+
+    let text;
+    try {
+      text = await readBounded(response);
+    } catch (cause) {
+      // An over-limit body already arrives as an ApiError and keeps its own
+      // meaning. Reclassifying it here would report a size refusal as a
+      // timeout, and the two call for different fixes.
+      if (cause instanceof ApiError) {
+        throw cause;
+      }
+      // Anything else from the stream — including the deadline firing
+      // mid-transfer — is operational. It is not malformed JSON, not an HTTP
+      // refusal, and not a gate result.
+      throw operationalFrom(cause, deadlineExpired);
+    }
+
+    if (!response.ok) {
+      throw errorFrom(response, text);
+    }
+    if (text === "") {
+      return {};
+    }
+    try {
+      return JSON.parse(text);
+    } catch (ignored) {
+      // A 2xx that is not JSON is the environment misbehaving, not a refusal.
+      throw new ApiError("the control plane returned a malformed response", {
+        status: response.status,
+        operational: true,
+      });
+    }
   } finally {
+    // Every path above leaves through here: success, request too large, HTTP
+    // refusal, malformed JSON, size overflow, transport failure and timeout.
     clearTimeout(timer);
-  }
-
-  const text = await readBounded(response);
-
-  if (!response.ok) {
-    throw errorFrom(response, text);
-  }
-  if (text === "") {
-    return {};
-  }
-  try {
-    return JSON.parse(text);
-  } catch (ignored) {
-    // A 2xx that is not JSON is the environment misbehaving, not a refusal.
-    throw new ApiError("the control plane returned a malformed response", {
-      status: response.status,
-      operational: true,
-    });
   }
 }
 

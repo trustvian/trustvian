@@ -845,3 +845,177 @@ func TestNoCollectionRouteIsCalled(t *testing.T) {
 		}
 	}
 }
+
+// TestRequestDeadlineCoversBodyConsumption is the regression guard for a
+// review blocker, and the ordering it pins is the entire point.
+//
+// fetch() resolves as soon as response headers arrive; the body may still be
+// streaming or stalled. An earlier version released the deadline right there:
+//
+//	try { response = await fetch(...) } finally { clearTimeout(timer) }
+//	const text = await readBounded(response)   // ← unbounded
+//
+// A server that returned headers promptly and then stopped sending bytes would
+// hang the operation forever. The 4 MiB bound cannot catch it, because a stalled
+// body never reaches any size limit — the two protections answer different
+// failure modes and both have to hold.
+//
+// Extending the controller over the read is a real bound rather than a hopeful
+// one: per the Fetch standard, aborting after headers have arrived errors the
+// response body stream, so a pending read rejects with AbortError instead of
+// staying blocked.
+//
+// This asserts source *order*, which is what a deterministic guard can prove
+// without a browser: the timer must be cleared only after the body read, from a
+// finally that encloses both. Task 063's testing strategy forbids adding Node,
+// a headless browser or any frontend tooling, and an executable timing test
+// would have to wait the real 30 seconds to observe the defect.
+func TestRequestDeadlineCoversBodyConsumption(t *testing.T) {
+	// Comments stripped, string literals kept: the comment above request()
+	// describes the rejected shape, and that description must not satisfy the
+	// check that the shape is absent.
+	source := stripJSComments(readAsset(t, "api.js"))
+
+	// One timer, cleared in exactly one place. Two clears would mean two
+	// lifetimes to reason about, and the early one would win.
+	if got := strings.Count(source, "clearTimeout("); got != 1 {
+		t.Fatalf("api.js clears the deadline %d times; there must be exactly one "+
+			"clearTimeout, in the finally that encloses the whole operation", got)
+	}
+	if got := strings.Count(source, "setTimeout("); got != 1 {
+		t.Fatalf("api.js arms %d timers; the operation has one deadline", got)
+	}
+
+	requestStart := strings.Index(source, "async function request(")
+	if requestStart < 0 {
+		t.Fatal("request() was not found; this guard would pass vacuously")
+	}
+	body := source[requestStart:]
+
+	index := func(needle string) int {
+		at := strings.Index(body, needle)
+		if at < 0 {
+			t.Fatalf("request() does not contain %q", needle)
+		}
+		return at
+	}
+
+	arm := index("setTimeout(")
+	fetchCall := index("await fetch(")
+	readCall := index("await readBounded(")
+	clear := index("clearTimeout(")
+
+	// start deadline → fetch → bounded body read → clear deadline
+	if !(arm < fetchCall && fetchCall < readCall && readCall < clear) {
+		t.Errorf("the deadline lifecycle is out of order.\n"+
+			"  got:  setTimeout@%d  fetch@%d  readBounded@%d  clearTimeout@%d\n"+
+			"  want: setTimeout < fetch < readBounded < clearTimeout",
+			arm, fetchCall, readCall, clear)
+	}
+
+	// The specific regression: nothing may clear the deadline between the fetch
+	// and the body read. This is the assertion that fails if someone restores
+	// `response = await fetch(...); clearTimeout(timer); await readBounded(...)`.
+	between := body[fetchCall:readCall]
+	if strings.Contains(between, "clearTimeout(") {
+		t.Error("the deadline is cleared between fetch() and the body read, so a " +
+			"stalled response body would be unbounded. Clear it in the finally " +
+			"that encloses both.")
+	}
+
+	// And the clear must be reached from a finally, so every exit path — success,
+	// HTTP refusal, malformed JSON, size overflow, transport failure, timeout —
+	// releases the timer.
+	finallyAt := strings.Index(body, "} finally {")
+	if finallyAt < 0 || finallyAt > clear || finallyAt < readCall {
+		t.Error("clearTimeout is not inside a finally that encloses the body read; " +
+			"some failure path would leave the timer armed")
+	}
+}
+
+// TestAbortDuringBodyReadIsReportedAsATimeout keeps the classification right.
+//
+// When the deadline fires mid-transfer the body read rejects with an AbortError
+// DOMException. That must surface as the existing operational timeout — not as
+// malformed JSON, not as an HTTP refusal, not as a size overflow, and never as
+// a gate result. A raw AbortError must not reach the UI either.
+func TestAbortDuringBodyReadIsReportedAsATimeout(t *testing.T) {
+	source := stripJSComments(readAsset(t, "api.js"))
+
+	// The body read is guarded at all.
+	readCall := strings.Index(source, "await readBounded(")
+	if readCall < 0 {
+		t.Fatal("readBounded is not called")
+	}
+	guarded := strings.LastIndex(source[:readCall], "try {")
+	if guarded < 0 {
+		t.Fatal("the body read is not inside a try; a stream failure would leak a " +
+			"raw DOMException to the UI")
+	}
+
+	// AbortError is recognised and converted, in one place.
+	if !strings.Contains(source, `name === "AbortError"`) {
+		t.Error("nothing recognises an AbortError, so an aborted read could not be " +
+			"reported as a timeout")
+	}
+	if !strings.Contains(source, "operationalFrom(") {
+		t.Error("no shared conversion from a transport failure to an ApiError")
+	}
+	// Both the fetch and the read failure paths must go through it, or one of
+	// them reports the wrong kind of error.
+	if got := strings.Count(source, "operationalFrom(cause, deadlineExpired)"); got < 2 {
+		t.Errorf("operationalFrom is applied %d times; both the fetch failure and "+
+			"the body-read failure must convert through it", got)
+	}
+	// The timeout wording is preserved.
+	if !strings.Contains(source, "`no response within ${REQUEST_TIMEOUT_MS}ms`") {
+		t.Error("the timeout message changed; the existing contract says " +
+			"\"no response within <ms>ms\"")
+	}
+
+	// An over-limit body must keep its own meaning rather than being rewritten
+	// as a timeout by the catch that handles aborts.
+	if !strings.Contains(source, "cause instanceof ApiError") {
+		t.Error("the body-read catch does not pass an ApiError through, so a size " +
+			"overflow would be reported as a timeout")
+	}
+}
+
+// TestResponseSizeBoundStillStopsTheTransfer guards the other half.
+//
+// The deadline and the size bound protect against different failure modes — a
+// stalled body and an oversized one — and fixing the first must not have
+// weakened the second.
+func TestResponseSizeBoundStillStopsTheTransfer(t *testing.T) {
+	source := readAsset(t, "api.js")
+
+	if got := numericConstant(t, source, "RESPONSE_MAX_BYTES"); got != "4 * 1024 * 1024" {
+		t.Errorf("RESPONSE_MAX_BYTES = %s, want 4 * 1024 * 1024", got)
+	}
+
+	stripped := stripJSComments(source)
+	// Still enforced while reading, and still cancels rather than draining.
+	if !strings.Contains(stripped, "total > RESPONSE_MAX_BYTES") {
+		t.Error("the response bound is no longer compared against bytes read")
+	}
+	if !strings.Contains(stripped, "reader.cancel()") {
+		t.Error("an over-limit transfer is no longer cancelled")
+	}
+	// cancel() must not be able to replace the overflow error with its own
+	// failure: on an already-errored stream it can reject.
+	//
+	// Adjacency, not "inside some enclosing try". Looking for any preceding
+	// `try {` matched readBounded's outer block and let an unguarded cancel
+	// through — the same too-loose shape that let a generation-guard mutation
+	// survive earlier in this task. The cancel has to be the whole try body.
+	wrappedCancel := regexp.MustCompile(
+		`try\s*\{\s*await reader\.cancel\(\);\s*\}\s*catch`)
+	if !wrappedCancel.MatchString(stripped) {
+		t.Error("reader.cancel() is not itself wrapped in try/catch; a rejection " +
+			"there would replace the size-overflow error with the stream's own " +
+			"failure, reporting the wrong reason for a refusal already decided")
+	}
+	if !strings.Contains(stripped, "response exceeded the ${RESPONSE_MAX_BYTES} byte limit") {
+		t.Error("the overflow message changed")
+	}
+}
