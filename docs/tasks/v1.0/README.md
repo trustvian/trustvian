@@ -18,11 +18,15 @@ Tasks for the `v1.0` milestone.
 | [060 — Developer CLI](060-developer-cli.md) | Specified and implemented |
 | [061 — Terminal Dashboard (TUI)](061-terminal-dashboard.md) | Specified and implemented |
 | [062 — Integrated Local Developer Workflow](062-integrated-local-developer-workflow.md) | Specified and implemented |
-| 063–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
+| [063 — Minimal Web Control Plane](063-minimal-web-control-plane.md) | Specified |
+| 064–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
 
-The numbers 063–072 are the approved plan, not placeholders — the sequence,
+The numbers 064–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
 is the specification for any of them.
+
+Task 063 is **specified but not implemented**: the document describes what will
+be built and why, and no WebUI exists yet.
 
 **Each task gets its own written spec before implementation starts**, in the
 shape the completed tasks in [`../../archive/tasks/`](../../archive/tasks/README.md)

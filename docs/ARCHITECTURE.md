@@ -541,7 +541,7 @@ core's build graph contains none of it. See
 Task 058 added the first service layer and a transport over it:
 
 ```text
-producer / CLI (060) · TUI (061) · future WebUI
+producer / CLI (060) · TUI (061) · WebUI (063, specified)
               │
               ▼
         HTTP / JSON  ← adapter only, in platform/httpapi
@@ -596,8 +596,9 @@ The control plane holds a publisher and the transport holds a subscriber, so
 neither gains the other's authority — a transport able to publish could
 fabricate state.
 
-Still absent: the WebUI, promotion, and event history. The API binds no listener — composing one is a later task, and it
-must default to loopback. A gate verdict still has no side effect: it is
+Still absent: the WebUI, promotion, and event history. The API package itself
+binds no listener; task 062's local runtime composes one, and it defaults to
+loopback. A gate verdict still has no side effect: it is
 evidence about acceptance, not an action. This section records the boundary
 all of it respects, decided in
 [ADR 0022](adr/0022-core-platform-boundary.md).
