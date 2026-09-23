@@ -286,6 +286,26 @@ argument is a usage error (`2`) raised before any request is sent, so an
 invocation typo cannot be mistaken for an API or gate result. Legacy
 `analyze`, `baseline` and `version` keep their existing operand parsing.
 
+### Web control plane
+
+The local runtime serves a browser UI from the same listener as the API
+([task 063](tasks/v1.0/063-minimal-web-control-plane.md)).
+
+| Surface | Class | Guarantee | May change | Breaking |
+|---|---|---|---|---|
+| `/` and the WebUI static asset paths | OPERATIONALLY STABLE | The local runtime serves a browser UI at its root origin | Asset filenames, their number and their contents | Major |
+| WebUI visual layout, DOM structure, CSS classes, element IDs | OBSERVATIONAL | Nothing | Anything, in any release | Never |
+
+The page's markup is **not** an interface. Automation reads `/v1`, which is the
+machine contract every client shares; nothing should scrape the DOM or depend on
+a class name. This is the same classification the TUI's rendered dashboard
+carries, for the same reason.
+
+Task 063 changes no `/v1` route, field, status code or error envelope, and no
+realtime protocol semantics. It adds no CORS header, no authentication, and no
+discovery field — the WebUI origin *is* the API origin, so `runtime.json`
+remains two fields.
+
 `trustvian tui --run-id <id> [--api-url <url>]` is intended operational
 surface: the command name, both flag names, and the exit contract above are
 stable. Its **rendered dashboard is not** — layout, spacing, column widths,

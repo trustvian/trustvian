@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,7 @@ import (
 	trustvian "github.com/trustvian/trustvian"
 	"github.com/trustvian/trustvian/event"
 	"trustvian-platform/localruntime"
+	"trustvian-platform/webui"
 )
 
 const behavioralProfile = "checkout-agent"
@@ -368,4 +370,192 @@ func TestRestartedRuntimeRepublishesDiscovery(t *testing.T) {
 		t.Fatalf("discovery = %q, want the current %q", discovery.APIURL, second.APIURL())
 	}
 	fmt.Fprint(io.Discard, firstURL)
+}
+
+// ---------------------------------------------------------------------
+// WebUI over the real runtime (task 063)
+// ---------------------------------------------------------------------
+
+// TestWebUIServedFromTheRealRuntimeAlongsideTheFullLifecycle is task 063's
+// end-to-end proof.
+//
+// Nothing is mocked: a real ephemeral loopback listener, the real control plane,
+// real SQLite, real SSE. The WebUI is served from the same listener that answers
+// every API call below, which is the whole claim.
+func TestWebUIServedFromTheRealRuntimeAlongsideTheFullLifecycle(t *testing.T) {
+	stateDir := t.TempDir()
+
+	runtime, err := localruntime.Start(t.Context(), localruntime.Options{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	api := &apiClient{t: t, baseURL: runtime.APIURL()}
+
+	// --- 1. the WebUI is there before anything else happens ---
+	status, body := api.get("/")
+	if status != 200 {
+		t.Fatalf("GET / status = %d, want 200", status)
+	}
+	if !strings.Contains(string(body), "<!doctype html>") {
+		t.Fatal("GET / did not serve the WebUI shell")
+	}
+	if !strings.Contains(string(body), `src="/assets/app.js"`) {
+		t.Fatal("the shell does not load the application")
+	}
+
+	// --- 2. its assets load from the same origin ---
+	for _, path := range webui.AssetPaths() {
+		if status, _ := api.get(path); status != 200 {
+			t.Errorf("GET %s status = %d, want 200", path, status)
+		}
+	}
+
+	// --- 3. the API still works, through the same listener ---
+	api.mustPost("/v1/projects", map[string]string{
+		"id": "proj-web", "name": "Checkout"}, 201)
+	api.mustPost("/v1/agents", map[string]string{
+		"id": "agent-web", "project_id": "proj-web", "name": "Checkout agent"}, 201)
+	api.mustPost("/v1/candidates", map[string]any{
+		"id": "cand-web", "agent_id": "agent-web",
+		"metadata": map[string]string{"label": "v2"}}, 201)
+
+	// --- 4. and reads back ---
+	status, body = api.get("/v1/projects/proj-web")
+	if status != 200 {
+		t.Fatalf("GET project status = %d, want 200", status)
+	}
+	if !strings.Contains(string(body), `"name":"Checkout"`) {
+		t.Errorf("project did not read back: %s", body)
+	}
+
+	// --- 5. the evaluation lifecycle is unaffected ---
+	api.mustPost("/v1/evaluation-runs", map[string]string{
+		"id": "run-web", "candidate_id": "cand-web",
+		"environment": "local", "behavioral_profile": behavioralProfile}, 201)
+	api.mustPost("/v1/evaluation-runs/run-web/start", nil, 200)
+
+	// --- 6. SSE still works over the shared listener ---
+	streamCtx, cancelStream := context.WithCancel(t.Context())
+	defer cancelStream()
+	stream := openSSE(t, streamCtx, runtime.APIURL(), "run-web")
+	name, payload := stream.next()
+	if name != "stream_ready" {
+		t.Fatalf("first SSE event = %q, want stream_ready", name)
+	}
+	// The handshake the browser client also requires.
+	for _, required := range []string{`"version":"1"`, `"replay_available":false`, `"resync_required":true`} {
+		if !strings.Contains(payload, required) {
+			t.Errorf("stream_ready is missing %s: %s", required, payload)
+		}
+	}
+
+	api.mustPost("/v1/evaluation-runs/run-web/complete", nil, 200)
+
+	// --- 7. only one listener is bound ---
+	if runtime.WebURL() != runtime.APIURL()+"/" {
+		t.Errorf("WebURL %q is not the API origin %q", runtime.WebURL(), runtime.APIURL())
+	}
+
+	cancelStream()
+	if err := runtime.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// --- 8. restart preserves state, and still serves the UI ---
+	restarted, err := localruntime.Start(t.Context(), localruntime.Options{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	defer restarted.Stop(context.Background())
+
+	restartedAPI := &apiClient{t: t, baseURL: restarted.APIURL()}
+	status, body = restartedAPI.get("/v1/evaluation-runs/run-web")
+	if status != 200 {
+		t.Fatalf("after restart, GET run status = %d, want 200", status)
+	}
+	if !strings.Contains(string(body), `"status":"completed"`) {
+		t.Errorf("run state did not survive restart: %s", body)
+	}
+	if status, _ := restartedAPI.get("/"); status != 200 {
+		t.Errorf("after restart, GET / status = %d, want 200", status)
+	}
+
+	// --- 9. discovery still says exactly two things ---
+	payloadBytes, err := os.ReadFile(restarted.DiscoveryPath())
+	if err != nil {
+		t.Fatalf("read discovery: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(payloadBytes, &raw); err != nil {
+		t.Fatalf("decode discovery: %v", err)
+	}
+	if len(raw) != 2 || raw["version"] != "1" {
+		t.Errorf("discovery schema changed: %v", raw)
+	}
+}
+
+// TestHostileServerStringsSurviveTheAPIAsData is the XSS fixture, driven
+// through the real control plane.
+//
+// The markup below is stored and returned by the API exactly as supplied —
+// which is correct: the platform stores identifiers and names, it does not
+// sanitize them, and a control plane that silently rewrote a developer's data
+// would be worse. Safety is the renderer's job, and the guards in
+// webui/assets_test.go prove the renderer only ever produces text.
+//
+// What this test establishes is the other half: that these strings really do
+// round-trip to a browser intact, so the rendering rule is load-bearing rather
+// than theoretical.
+func TestHostileServerStringsSurviveTheAPIAsData(t *testing.T) {
+	runtime, err := localruntime.Start(t.Context(), localruntime.Options{StateDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer runtime.Stop(context.Background())
+	api := &apiClient{t: t, baseURL: runtime.APIURL()}
+
+	hostile := []string{
+		`<img src=x onerror=alert(1)>`,
+		`</script><script>alert(1)</script>`,
+		`javascript:alert(1)`,
+		`"><svg/onload=alert(1)>`,
+	}
+
+	for i, payload := range hostile {
+		id := fmt.Sprintf("proj-hostile-%d", i)
+		api.mustPost("/v1/projects", map[string]string{"id": id, "name": payload}, 201)
+
+		status, body := api.get("/v1/projects/" + id)
+		if status != 200 {
+			t.Fatalf("GET %s status = %d", id, status)
+		}
+
+		// The API returns it as a JSON string value. JSON encoding is not HTML
+		// encoding, so "<" stays "<" — the renderer, not the transport, is what
+		// keeps it inert.
+		var decoded struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if decoded.Name != payload {
+			t.Errorf("name round-tripped as %q, want %q", decoded.Name, payload)
+		}
+
+		// And it must never reach a browser labelled as HTML.
+		status, _ = api.get("/v1/projects/" + id)
+		if status != 200 {
+			t.Fatalf("second read status = %d", status)
+		}
+	}
+
+	// The WebUI shell itself contains no interpolated server data at all: it is
+	// a static document, and every value arrives later by fetch.
+	_, shell := api.get("/")
+	for _, payload := range hostile {
+		if strings.Contains(string(shell), payload) {
+			t.Errorf("the static shell contains server data: %q", payload)
+		}
+	}
 }

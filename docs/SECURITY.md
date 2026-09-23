@@ -28,6 +28,7 @@ here, not moved or rewritten.
 
 | Threat | Test(s) |
 | --- | --- |
+| Browser control plane renders untrusted text inertly | `TestShippedScriptsUseNoDangerousRenderingPrimitive`, `TestShippedScriptsDoNotEnumerateServerObjects`, `TestFieldAllowlistsExcludeEverySensitiveField`, `TestPrivacyFixtureFieldsAreUnreachable`, `TestContentSecurityPolicyForbidsEveryEscapeHatch`, `TestNoBrowserPersistenceOfPlatformState`, `TestUint64CountersAreNeverParsedAsNumbers`, `TestGateVerdictComesFromTheServer` in [`platform/webui/assets_test.go`](../platform/webui/assets_test.go) and [`handler_test.go`](../platform/webui/handler_test.go); `TestHandlerConstructorTakesNoControlPlane`, `TestDependencyGraphContainsNoPlatformOrStoreCode` in [`platform/webui/architecture_test.go`](../platform/webui/architecture_test.go); `TestUnknownAPIRoutesNeverReturnTheShell`, `TestWebUIResponsesCarryNoCORSHeader` in [`platform/localruntime/runtime_test.go`](../platform/localruntime/runtime_test.go); `TestHostileServerStringsSurviveTheAPIAsData` in [`platform/localruntime/endtoend_test.go`](../platform/localruntime/endtoend_test.go) |
 | Identity confusion (cross-actor isolation) | `TestAnalyzeCrossActorIsolation` in [`engine_test.go`](../engine_test.go) |
 | Baseline poisoning | `TestObserveLearnsOnlyFromEligibleDecisions`, `TestAnalyzeSensitiveTargetFloorEndToEnd` in [`engine_test.go`](../engine_test.go); `TestFingerprintStatsIgnoresNonPositiveInterval`, `TestFingerprintStatsOutOfOrderObservationDoesNotDistortNextInterval` in [`internal/baseline/baseline_test.go`](../internal/baseline/baseline_test.go); `TestScoreFrequencyDeviation` (negative-interval subtests) in [`internal/anomaly/anomaly_test.go`](../internal/anomaly/anomaly_test.go) |
 | Malicious agents / privilege escalation | `TestAnalyzeSensitiveTargetFloorEndToEnd` in [`engine_test.go`](../engine_test.go) |
@@ -968,6 +969,103 @@ runtime; see
   SSE handlers exit, then the server within a finite bound, then SQLite, and
   the discovery file is removed **only if it still names this runtime** — a
   late process must not erase a newer one's endpoint.
+
+### The browser control plane renders untrusted text inertly, and stores nothing
+
+**Threat:** a browser is an execution surface in a way a terminal is not. A
+server-supplied string that becomes markup runs as code with the page's
+privileges; a page that can reach other origins can carry local control-plane
+data off the machine; and a UI that keeps its own copy of platform state becomes
+a second source of truth that disagrees with the database.
+
+**Status: text-only rendering, deny-by-default policy, nothing persisted.**
+[Task 063](tasks/v1.0/063-minimal-web-control-plane.md) serves the UI from task
+062's listener; see
+[ADR 0036](adr/0036-webui-is-a-same-origin-adapter-over-v1.md).
+
+- **No server string can create executable DOM.** Identifiers, names, failure
+  reasons, candidate metadata, behaviour descriptors, decision and risk strings
+  and API error messages all originate outside the process and all reach the
+  screen. Every one arrives through `textContent`, and elements are built with
+  `createElement`. `innerHTML`, `outerHTML`, `insertAdjacentHTML`,
+  `document.write`, `eval` and `new Function` are absent from shipped source,
+  enforced by a test that strips comments and string literals before matching —
+  the assets deliberately *name* those primitives in prose explaining why they
+  are unused, and a guard weakened to tolerate that prose would stop catching
+  the real thing. A fixture drives `<img src=x onerror=alert(1)>`,
+  `</script><script>alert(1)</script>` and `javascript:alert(1)` through the
+  real API as project names and asserts they round-trip as data.
+- **The Content Security Policy denies by default.** `default-src 'none'`, with
+  `'self'` for script, style, connect and img, and `'none'` for font and object;
+  `base-uri 'none'`, `frame-ancestors 'none'`, `form-action 'self'`. It contains
+  no `'unsafe-inline'`, no `'unsafe-eval'`, no `*`, no scheme wildcard and no
+  external host, which is achievable only because the shipped HTML carries no
+  inline `<script>`, no inline `<style>` and no inline event handler. A test
+  asserts each of those tokens is absent rather than trusting the string.
+- **No external origin is contacted.** No CDN script, stylesheet or font, and
+  no npm package, lockfile or bundler. The page works offline, and the
+  dependency delta for this task is zero in every module.
+- **No CORS header is ever sent.** The UI is same-origin with the API it calls,
+  so none is needed — and a permissive `Access-Control-Allow-Origin` is the
+  single change that would make an unauthenticated local control plane
+  reachable from any page a developer visits. Tests assert no
+  `Access-Control-*` header appears on any response, including 404s and the
+  SSE stream.
+- **Only allowlisted fields are displayed.** Rendering iterates an explicit list
+  of field names, never the object that arrived, and no `Object.entries`,
+  `Object.keys` or `for…in` walk over a server value exists in shipped source.
+  The compatibility contract permits `/v1` to gain additive fields at any time;
+  a generic renderer would publish the next one without anyone deciding to.
+  Prompts, completions, tool arguments, `Event.Attributes`, `PolicyReason`,
+  contributors and the raw `DecisionRecord` are outside the realtime contract
+  and are not rendered. A fixture asserts the marker values
+  `SECRET_PROMPT_DO_NOT_RENDER`, `SECRET_TOOL_ARGUMENT` and
+  `SECRET_ADDITIVE_FIELD` are unreachable.
+- **Nothing is stored in the browser.** No `localStorage`, `sessionStorage`,
+  `IndexedDB` or cookies. A reload forgets which IDs were open, and the
+  control-plane database stays authoritative. A run ID in the URL fragment is
+  navigation state and is never read back as fact.
+- **Realtime stays bounded and non-authoritative**, inheriting task 059's
+  contract: subscription precedes the authoritative read, 64 pending frames
+  during a resync with overflow abandoning the stream rather than dropping a
+  notification, 100 display rows evicting oldest, rows cleared on every
+  reconnect so two streams are never joined into an apparent sequence, no
+  `Last-Event-ID` and no replay. Every count displayed comes from the database,
+  including the single final read a terminal lifecycle event triggers.
+- **A connection that never synchronizes is bounded.** `EventSource` exposes
+  heartbeat comments to the network layer but not as events, so a server
+  sending only heartbeats would hold a connection open forever while never
+  completing the protocol — and no read-idle bound can see that, because bytes
+  are arriving. A finite handshake deadline, released only by a validated
+  `stream_ready` and never extended by heartbeats, ends it. The page closes the
+  socket itself on protocol failure rather than letting the browser's implicit
+  retry become the reconnect state machine.
+- **Responses are bounded before they are parsed.** The client streams a
+  response body under a 4 MiB cap and cancels the reader on overflow rather
+  than buffering and measuring afterwards, and refuses to send a request body
+  over the server's own 256 KiB limit. A client that read an unbounded body
+  would have made its memory safety a property of the server behaving well.
+- **uint64 counters are never parsed as numbers.** The API encodes them as
+  decimal strings because JSON numbers cannot represent them, and this is the
+  one place a browser client is more exposed than the CLI: JavaScript has no
+  integer type that holds `18446744073709551615`. They stay text end to end,
+  gate limits are validated as canonical decimal syntax, and a test forbids
+  `parseInt`, `parseFloat`, `Number` and unary-plus coercion on those fields.
+- **The server-side package holds no authority.** `webui.NewHandler` takes no
+  arguments and cannot be handed a `ControlPlane`; its dependency graph
+  contains no platform package, no root module and no database driver. It
+  serves embedded bytes and sets headers, and a test asserts the constructor's
+  parameter list is empty so the mutation that grants it authority fails.
+- **The UI cannot decide anything.** Gate verdicts come from
+  `response.gate.verdict`; no arithmetic on limits exists in shipped source, and
+  a test scans for the comparison shapes that would constitute recomputation.
+  Lifecycle legality is the server's — the page shows the actions and renders
+  the refusal. An operational failure is never presented as a gate FAIL.
+
+**Not claimed:** CSP is browser hardening, not authentication. It bounds what
+the page may do and says nothing about who may open it. The runtime remains
+unauthenticated and loopback-only, and
+[task 070](tasks/v1.0/) owns remote authenticated access.
 
 ### Platform identity cannot become behavioral identity
 

@@ -140,9 +140,10 @@ It now holds the evaluation foundation, and nothing built on top of it:
   sequenced `DecisionRecord` ingest (task 058); and bounded, ephemeral
   realtime notification over committed state, streamed over SSE (task 059);
 - also implemented: the developer CLI evaluation workflow (task 060), the
-  terminal dashboard (task 061), and the integrated local runtime that binds a
-  loopback listener and advertises it (task 062);
-- not implemented: the WebUI, the full environment model, promotion, and the
+  terminal dashboard (task 061), the integrated local runtime that binds a
+  loopback listener and advertises it (task 062), and the minimal web control
+  plane served from that same listener (task 063);
+- not implemented: the full environment model, promotion, and the
   event-history capability.
 
 So the platform can now describe an evaluation, aggregate bounded result
@@ -150,8 +151,8 @@ evidence, compare bounded behavioral snapshots, build a comparative scorecard
 from the two, apply deterministic evidence-backed hard gates to it, keep all
 of that across a restart, and accept evidence over a versioned local HTTP API
 that a restarted process resumes rather than restarts. Subscribers can watch an evaluation live without polling the database.
-A developer drives all of it from one command, a CLI and a live terminal
-dashboard. Nothing yet serves a WebUI, shares through PostgreSQL, or promotes —
+A developer drives all of it from one command, a CLI, a live terminal
+dashboard and a browser. Nothing yet shares through PostgreSQL or promotes —
 a gate returns a verdict and has no side effect, and realtime is notification
 over state the database already holds, never a source of truth. Raw event history is
 deliberately still absent. The API itself still binds no listener; task 062's
@@ -328,7 +329,7 @@ Also implemented: the integrated local runtime (062) — `make local` starts
 SQLite, the control plane, the realtime bus and a loopback HTTP listener, and
 local clients discover the endpoint without being told.
 
-Still planned: everything from the WebUI (063) onward. The platform
+Still planned: everything from the PostgreSQL backend (064) onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
 behavioral snapshots, produce fixed-shape comparative scorecards, apply
 deterministic evidence-backed hard gates to them, persist local control and
@@ -336,9 +337,9 @@ evaluation state across a restart, accept public `DecisionRecord` evidence
 through a versioned local HTTP API that resumes a running evaluation after a
 restart, publish bounded live updates over SSE with project, agent and run
 filtering, and drive all of it from one command, a CLI and a live terminal
-dashboard. That makes it usable end to end **locally**. It cannot yet serve a
-WebUI, share through PostgreSQL, promote, retain raw event history, or replay
-realtime history.
+dashboard, and inspect it in a browser. That makes it usable end to end
+**locally**. It cannot yet share through PostgreSQL, promote, retain raw event
+history, or replay realtime history.
 
 The scorecard itself carries no verdict and no threshold; acceptance lives in
 [task 056](tasks/v1.0/056-deterministic-hard-gates.md), which pairs a card
@@ -589,9 +590,7 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**Partly implemented:** tasks 049–062 are done; 063 is **specified but not
-implemented** ([spec](tasks/v1.0/063-minimal-web-control-plane.md)); 064
-onward remain PLANNED.
+**Partly implemented:** tasks 049–063 are done; 064 onward remain PLANNED.
 
 **Architecture and core boundary** — the only tasks that touch the engine:
 
