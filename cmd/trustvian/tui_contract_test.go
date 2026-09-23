@@ -299,6 +299,31 @@ func newFakePlane(t *testing.T) *fakePlane {
 	return p
 }
 
+// serveHeartbeatOnly answers 200 with a valid stream content type and then
+// sends nothing but comment frames — never a handshake.
+//
+// This is the shape the read-idle watchdog cannot catch: the bytes are real,
+// so liveness is genuinely refreshed, and only a separate protocol deadline
+// notices that the connection is useless.
+func (p *fakePlane) serveHeartbeatOnly(every time.Duration) {
+	p.serveSSE(func(w http.ResponseWriter, r *http.Request, stream *fakeStream) {
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		flusher := w.(http.Flusher)
+		for {
+			select {
+			case <-ticker.C:
+				fmt.Fprint(w, ": keepalive\n\n")
+				flusher.Flush()
+			case <-stream.closed:
+				return
+			case <-r.Context().Done():
+				return
+			}
+		}
+	})
+}
+
 // serveSSE replaces the default SSE handler.
 func (p *fakePlane) serveSSE(handler func(w http.ResponseWriter, r *http.Request, s *fakeStream)) {
 	p.mu.Lock()
@@ -383,6 +408,10 @@ func newTestModelIdle(t *testing.T, p *fakePlane, idle time.Duration) (*tuiModel
 
 	opener := newSSEOpener(client.baseURL)
 	opener.idleTimeout = idle
+	// Shortened together so a test never waits on the production handshake
+	// bound; tests that specifically exercise it override this.
+	opener.handshakeTimeout = 5 * time.Second
+	opener.errorBodyTimeout = 2 * time.Second
 
 	model := newTUIModel(ctx, "run-42", opener, &httpAuthoritativeReader{client: client})
 	return model, cancel
@@ -902,5 +931,102 @@ func TestObservationForAnotherRunInvalidatesStream(t *testing.T) {
 		if row.sequence == "1" {
 			t.Fatal("an observation from another run was displayed")
 		}
+	}
+}
+
+// ---------------------------------------------------------------------
+// Startup liveness: a connection that talks but never synchronizes
+// ---------------------------------------------------------------------
+
+// TestHeartbeatWithoutStreamReadyTimesOutHandshake closes the hole the
+// read-idle watchdog cannot see.
+//
+// Heartbeat comments are real activity and deliberately refresh liveness — so
+// a server that sends only heartbeats keeps the idle watchdog satisfied
+// forever while never completing the protocol. The dashboard then sits at
+// CONNECTING with no frame it can act on and no reason to give up.
+//
+// TestSilenceBeforeStreamReadyIsFatal does not cover this: a silent server
+// trips the idle watchdog. Only a separate handshake deadline catches a
+// talkative one.
+func TestHeartbeatWithoutStreamReadyTimesOutHandshake(t *testing.T) {
+	plane := newFakePlane(t)
+	// Heartbeats far more often than the idle bound, so liveness is never in
+	// question — the handshake deadline must be what ends this.
+	plane.serveHeartbeatOnly(20 * time.Millisecond)
+
+	model, _ := newTestModelIdle(t, plane, 2*time.Second)
+	// The deadline under test.
+	model.opener.(*sseOpener).handshakeTimeout = 400 * time.Millisecond
+
+	driver := newDriver(t, model)
+	defer driver.stop()
+
+	stream := plane.streamAt(0)
+
+	if !driver.settleUntil(func() bool { return model.quitting }, 15*time.Second) {
+		t.Fatalf("a heartbeat-only connection left the dashboard at %v forever", model.state)
+	}
+	if model.state != stateFatal {
+		t.Errorf("state = %v, want FATAL", model.state)
+	}
+	if model.finalExitCode() != exitOperational {
+		t.Errorf("exit = %d, want %d", model.finalExitCode(), exitOperational)
+	}
+	// Never reached a gate-shaped exit code.
+	if model.finalExitCode() == exitGateFail {
+		t.Fatal("the TUI produced exit 1, which means gate FAIL")
+	}
+
+	// The request was cancelled, so the server's handler stops too.
+	select {
+	case <-stream.done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the server handler is still running; the request was never cancelled")
+	}
+
+	// And it did not start reconnecting: startup failure is fatal.
+	if sse, _, _ := plane.counts(); sse != 1 {
+		t.Errorf("SSE subscriptions = %d; a failed handshake must not retry", sse)
+	}
+}
+
+// TestHeartbeatKeepsQuietEstablishedStreamLive is the other side, and it fails
+// if the handshake deadline is left armed past synchronization.
+//
+// The injected handshake bound here is far shorter than the observation
+// window, so a deadline that survived a valid stream_ready would tear down a
+// perfectly healthy dashboard mid-test.
+func TestHeartbeatKeepsQuietEstablishedStreamLive(t *testing.T) {
+	plane := newFakePlane(t)
+	plane.heartbeat = 30 * time.Millisecond
+
+	model, _ := newTestModelIdle(t, plane, 300*time.Millisecond)
+	model.opener.(*sseOpener).handshakeTimeout = 250 * time.Millisecond
+
+	driver := newDriver(t, model)
+	defer driver.stop()
+
+	plane.streamAt(0)
+	if !driver.settleUntil(func() bool { return model.state == stateLive }, 5*time.Second) {
+		t.Fatalf("never went live; state = %v", model.state)
+	}
+
+	// Many multiples of both the idle bound and the handshake bound.
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		driver.step(25 * time.Millisecond)
+		if model.state != stateLive {
+			t.Fatalf("state = %v; an established heartbeat-only stream must stay LIVE "+
+				"(a handshake deadline left armed would end it here)", model.state)
+		}
+	}
+
+	sse, runs, progress := plane.counts()
+	if sse != 1 {
+		t.Errorf("subscriptions = %d, want 1", sse)
+	}
+	if runs != 1 || progress != 1 {
+		t.Errorf("authoritative reads = %d/%d, want 1 each: no polling", runs, progress)
 	}
 }

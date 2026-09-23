@@ -170,6 +170,35 @@ disconnect.
 so a closed stream means the stream is incomplete — reconnect and resync. Only
 lifecycle events determine run status.
 
+**Four different time bounds, asking four different questions.** Conflating any
+two of them produced a real bug:
+
+```text
+ResponseHeaderTimeout    30s   waiting for response headers
+sseErrorBodyReadTimeout   5s   consuming a non-200 diagnostic body
+sseHandshakeTimeout      30s   waiting for a valid stream_ready
+sseReadIdleTimeout       60s   silence after bytes stop arriving
+```
+
+There is deliberately **no total client timeout** — that would kill a healthy
+long-lived dashboard on a schedule.
+
+A non-200 response needs its own bound because by then the header timeout has
+already been satisfied and `io.LimitReader` caps bytes, not time: a server that
+sent 404 headers and then never finished its body blocked startup forever. The
+read is now bounded in both, and the request is cancelled and the body closed
+either way.
+
+The handshake bound exists because heartbeat comments are real activity and
+*should* refresh the idle watchdog — which means a server sending nothing but
+heartbeats kept liveness satisfied indefinitely while never completing the
+protocol, leaving the dashboard at `CONNECTING` with no frame to act on and no
+reason to give up. The handshake deadline asks "did the server establish the
+protocol?", and heartbeat traffic does not answer it. It is released the moment
+a *valid* `stream_ready` is accepted — an event merely named `stream_ready`, or
+any other byte, leaves it armed — so it can never disconnect an established
+stream.
+
 **Silence is bounded too.** An active stream that stops delivering bytes
 without closing produces no error and no EOF, which is exactly what a half-open
 connection looks like — and a dashboard that keeps showing LIVE against one is
@@ -190,10 +219,16 @@ tuiObservationCapacity  = 100    displayed rows; oldest evicted
 tuiPendingEventCapacity = 64     frames buffered during resync; overflow reconnects
 maxSSELineBytes         = 64 KiB
 maxSSEFrameBytes        = 64 KiB
+maxSSEErrorBodyBytes    = 8 KiB  non-200 diagnostic body
+sseErrorBodyReadTimeout = 5s     consuming that diagnostic
+sseHandshakeTimeout     = 30s    waiting for a valid stream_ready
 sseReadIdleTimeout      = 60s    silence on an active stream
+total stream lifetime    unbounded, on purpose
 connections              1 SSE + bounded authoritative reads
 reconnect timers         ≤ 1
-idle watchdogs           ≤ 1 per stream, one shared capacity-1 signal
+per stream               1 body, 1 reader goroutine, 1 idle watchdog,
+                         1 handshake timer (released at handshake),
+                         1 bounded frame channel
 durable/replay history   0
 ```
 

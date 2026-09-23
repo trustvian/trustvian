@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -253,5 +254,109 @@ func BenchmarkTerminalSanitizeHostile(b *testing.B) {
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = sanitizeTerminalText(text)
+	}
+}
+
+// TestSSEErrorBodyReadIsTimeBounded covers a non-200 whose body never ends.
+//
+// By the time the status is known, ResponseHeaderTimeout has already been
+// satisfied, and there is deliberately no total client timeout — so the only
+// thing bounding the diagnostic read was io.LimitReader, which bounds bytes
+// and not time. A server that sent 404 headers and then stalled blocked
+// startup indefinitely.
+func TestSSEErrorBodyReadIsTimeBounded(t *testing.T) {
+	requestGone := make(chan struct{})
+	var once sync.Once
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(404)
+		// Headers out, then a body that never completes: fewer bytes than the
+		// cap, so the byte bound can never trigger.
+		fmt.Fprint(w, `{"version":"1","error":{"code":"not_found"`)
+		w.(http.Flusher).Flush()
+
+		<-r.Context().Done()
+		once.Do(func() { close(requestGone) })
+	}))
+	defer server.Close()
+
+	client, err := newPlatformClient(server.URL, 5*time.Second)
+	if err != nil {
+		t.Fatalf("newPlatformClient: %v", err)
+	}
+	opener := newSSEOpener(client.baseURL)
+	opener.errorBodyTimeout = 300 * time.Millisecond
+
+	done := make(chan error, 1)
+	go func() {
+		stream, err := opener.open(context.Background(), "run-42")
+		if stream != nil {
+			stream.close()
+		}
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("open accepted a 404")
+		}
+		if exitCodeFor(err) != exitOperational {
+			t.Errorf("exit = %d, want %d", exitCodeFor(err), exitOperational)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("open never returned; the error-body read has no time bound")
+	}
+
+	// The request was cancelled and the body closed, so the handler unblocks.
+	select {
+	case <-requestGone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the server never saw the request cancelled")
+	}
+}
+
+// TestSSEErrorBodyStaysByteBounded keeps the other half honest: the time bound
+// must not have replaced the size cap.
+//
+// The body is a *valid* error envelope carrying an enormous message, which is
+// what makes this test able to fail at all. An earlier version flooded
+// non-JSON bytes and asserted on the diagnostic length — but a non-JSON body
+// never reaches the diagnostic, so the assertion held whether or not the cap
+// existed, and a mutation removing io.LimitReader survived it. A vacuous
+// assertion is worse than none: it reports coverage it does not have.
+func TestSSEErrorBodyStaysByteBounded(t *testing.T) {
+	const floodMessage = maxSSEErrorBodyBytes * 4
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(503)
+		// Well-formed, so an unbounded read would parse it and carry the whole
+		// message into the error a user sees.
+		fmt.Fprintf(w, `{"version":"1","error":{"code":"internal","message":%q}}`,
+			strings.Repeat("x", floodMessage))
+	}))
+	defer server.Close()
+
+	client, err := newPlatformClient(server.URL, 5*time.Second)
+	if err != nil {
+		t.Fatalf("newPlatformClient: %v", err)
+	}
+	opener := newSSEOpener(client.baseURL)
+
+	stream, err := opener.open(context.Background(), "run-42")
+	if stream != nil {
+		stream.close()
+	}
+	if err == nil {
+		t.Fatal("open accepted a 503")
+	}
+	// Truncated at the cap, the envelope no longer parses, so the diagnostic
+	// falls back to the status alone. Without the cap the full message would
+	// be in it.
+	if len(err.Error()) > maxSSEErrorBodyBytes {
+		t.Errorf("diagnostic is %d bytes; the %d byte cap was not applied",
+			len(err.Error()), maxSSEErrorBodyBytes)
 	}
 }

@@ -158,6 +158,40 @@ Any byte refreshes it, heartbeat comments included. They never become domain
 events, so a client counting only events would disconnect a healthy evaluation
 that simply had nothing to report.
 
+### 11d. Four timeout classes, none of which is a total lifetime
+
+A long-lived stream must have no total timeout, and everything *else* must have
+one. Keeping those apart took four distinct bounds, and each of the two added
+later existed because two of them had been conflated:
+
+```text
+ResponseHeaderTimeout    waiting for response headers
+sseErrorBodyReadTimeout  consuming a non-200 diagnostic body
+sseHandshakeTimeout      waiting for a valid stream_ready
+sseReadIdleTimeout       silence after bytes stop arriving
+```
+
+**A non-200 body needs its own bound.** Once the status is known the header
+timeout has already been satisfied, and `io.LimitReader` caps bytes rather than
+time — so a server that sent 404 headers and stalled left startup blocked
+indefinitely with a perfectly bounded 8 KiB buffer. Both bounds are required;
+neither implies the other.
+
+**Heartbeat activity cannot satisfy the handshake.** This is the subtle one.
+Heartbeat comments are genuine bytes and *should* refresh the idle watchdog —
+that is what keeps a quiet healthy evaluation connected. But it means a server
+sending only heartbeats keeps liveness satisfied forever while never completing
+the protocol, and the dashboard sits at `CONNECTING` with no frame to act on.
+
+The two deadlines answer different questions: *did the server establish the
+protocol?* and *is an established stream still alive?* Heartbeat traffic answers
+only the second. So the handshake deadline is not refreshed by activity, and it
+is released only when a **valid** `stream_ready` is accepted — not by an event
+merely named that, and not by any byte. It must also be released promptly,
+because a deadline left armed past synchronization would eventually disconnect a
+healthy dashboard, which is the failure the no-total-timeout rule exists to
+prevent.
+
 ### 11c. Known events are validated structurally; unknown ones are not
 
 An unknown event name is held to no shape — that is what additive compatibility

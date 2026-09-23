@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -65,6 +66,36 @@ const (
 	// bytes is not idle by this definition and is never touched by it. The
 	// active-stream bound is sseReadIdleTimeout below.
 	sseIdleConnPoolTimeout = 30 * time.Second
+
+	// maxSSEErrorBodyBytes caps a non-200 diagnostic body.
+	maxSSEErrorBodyBytes = 8 << 10
+
+	// sseErrorBodyReadTimeout bounds how long that diagnostic may take.
+	//
+	// ResponseHeaderTimeout has already been satisfied by the time a non-200
+	// status is known, and there is deliberately no total client timeout — so
+	// a server that sends 404 headers and then never finishes its body left
+	// startup blocked indefinitely. io.LimitReader bounds bytes, not time.
+	//
+	// A few seconds is plenty: the body is at most 8 KiB of error text from a
+	// server that has already responded. This is a diagnostic, and failing
+	// without it beats hanging for it.
+	sseErrorBodyReadTimeout = 5 * time.Second
+
+	// sseHandshakeTimeout bounds waiting for a valid stream_ready.
+	//
+	// Distinct from sseReadIdleTimeout, and the distinction is the whole
+	// point: heartbeat comments are real activity, so they refresh the idle
+	// watchdog — which means a server that sends nothing but heartbeats and
+	// never completes the protocol kept the watchdog satisfied forever while
+	// the dashboard sat at CONNECTING with no frame to act on.
+	//
+	// This deadline asks a different question — "did the server establish the
+	// protocol?" — and heartbeat traffic does not answer it. Tens of seconds
+	// is generous for a local control plane under load while staying finite.
+	// Released the moment a valid handshake is accepted, so it can never
+	// disconnect an established stream.
+	sseHandshakeTimeout = 30 * time.Second
 
 	// sseReadIdleTimeout bounds silence on an *active* stream.
 	//
@@ -202,6 +233,30 @@ type realtimeStream struct {
 	// watchdog before it cancels, so the read error it provokes is reported
 	// as what it actually was.
 	idle atomic.Bool
+
+	// handshakeFailed marks the protocol deadline expiring, for the same
+	// reason: the read error it causes should say what actually happened.
+	handshakeFailed atomic.Bool
+
+	// handshakeTimer is armed at open and released once a valid stream_ready
+	// is accepted. Owned by this stream: armed before the reader starts,
+	// stopped once through handshakeAccepted.
+	handshakeTimer *time.Timer
+	handshakeOnce  sync.Once
+}
+
+// handshakeAccepted releases the protocol deadline.
+//
+// Called by the model after validateStreamReady succeeds — not on any byte,
+// and not on an event merely *named* stream_ready. The deadline must not stay
+// armed past synchronization or it would eventually disconnect a healthy
+// dashboard.
+func (s *realtimeStream) handshakeAccepted() {
+	s.handshakeOnce.Do(func() {
+		if s.handshakeTimer != nil {
+			s.handshakeTimer.Stop()
+		}
+	})
 }
 
 // errStreamOverflow means the client could not keep up with its own stream.
@@ -209,6 +264,13 @@ type realtimeStream struct {
 // Not a dropped frame: the stream is abandoned and resynchronized instead,
 // because a client that discarded a notification cannot know what it missed.
 var errStreamOverflow = errors.New("realtime stream outpaced the dashboard")
+
+// errStreamHandshakeTimeout means the protocol never started.
+//
+// Reported separately from silence because the connection was not silent: it
+// delivered bytes, just never the handshake. Both are unusable, and both are
+// fatal before the dashboard has ever synchronized.
+var errStreamHandshakeTimeout = errors.New("realtime stream did not complete its handshake")
 
 // errStreamIdle means the connection went silent without closing.
 //
@@ -233,6 +295,12 @@ type sseOpener struct {
 	// so tests can shorten it; no CLI flag exists for it, because a liveness
 	// tolerance is not something a user should have to reason about.
 	idleTimeout time.Duration
+
+	// handshakeTimeout bounds waiting for a valid stream_ready, and
+	// errorBodyTimeout bounds reading a non-200 diagnostic. Fields for the
+	// same reason: injectable by tests, invisible to users.
+	handshakeTimeout time.Duration
+	errorBodyTimeout time.Duration
 }
 
 // newSSEOpener builds the streaming client.
@@ -240,8 +308,10 @@ type sseOpener struct {
 // Separate from task 060's client on purpose — see this file's header.
 func newSSEOpener(base *url.URL) *sseOpener {
 	return &sseOpener{
-		baseURL:     base,
-		idleTimeout: sseReadIdleTimeout,
+		baseURL:          base,
+		idleTimeout:      sseReadIdleTimeout,
+		handshakeTimeout: sseHandshakeTimeout,
+		errorBodyTimeout: sseErrorBodyReadTimeout,
 		client: &http.Client{
 			// No Timeout: a total response deadline would kill a healthy
 			// dashboard. Every bound below is on establishing the connection.
@@ -290,7 +360,14 @@ func (o *sseOpener) open(ctx context.Context, runID string) (*realtimeStream, er
 	}
 
 	if response.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 8<<10))
+		// Bounded in time as well as bytes. time.AfterFunc cancels the
+		// request context, which aborts the read in progress — so the read
+		// happens on this goroutine with nothing detached behind it, and the
+		// timer has exactly one owner.
+		deadline := time.AfterFunc(o.errorBodyTimeout, cancel)
+		body, _ := io.ReadAll(io.LimitReader(response.Body, maxSSEErrorBodyBytes))
+		deadline.Stop()
+
 		response.Body.Close()
 		cancel()
 		return nil, realtimeStatusError(response.StatusCode, body)
@@ -308,6 +385,13 @@ func (o *sseOpener) open(ctx context.Context, runID string) (*realtimeStream, er
 		body:   response.Body,
 		done:   make(chan struct{}),
 	}
+
+	// The protocol deadline. Armed before the reader starts so it cannot be
+	// assigned concurrently, and stopped by handshakeAccepted.
+	stream.handshakeTimer = time.AfterFunc(o.handshakeTimeout, func() {
+		stream.handshakeFailed.Store(true)
+		cancel()
+	})
 
 	// One watchdog for the one active stream, fed by a capacity-1 signal.
 	// Not a timer per frame and not a queue that grows with traffic: a busy
@@ -387,6 +471,9 @@ func isEventStream(mediaType string) bool {
 // Continuously, not on demand: see this file's header for why pausing here
 // gets the subscriber disconnected.
 func (s *realtimeStream) read(source io.Reader) {
+	// Whatever ends this stream, the protocol deadline is done with.
+	defer s.handshakeAccepted()
+
 	// Defers run last-in-first-out, so: close the body, then the frame
 	// channel, then done. That order matters — a reader blocked on frames
 	// must observe the close and only then find done already closed, or it
@@ -399,9 +486,12 @@ func (s *realtimeStream) read(source io.Reader) {
 	for {
 		frame, err := parser.next()
 		if err != nil {
-			if s.idle.Load() {
+			switch {
+			case s.handshakeFailed.Load():
+				s.reason = errStreamHandshakeTimeout
+			case s.idle.Load():
 				s.reason = errStreamIdle
-			} else {
+			default:
 				s.reason = err
 			}
 			return

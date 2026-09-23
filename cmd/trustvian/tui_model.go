@@ -362,6 +362,12 @@ func (m *tuiModel) handleFrame(frame realtimeFrame) (tea.Model, tea.Cmd) {
 		if err := validateStreamReady(frame.data); err != nil {
 			return m.failStream(err)
 		}
+		// The protocol is established, so the handshake deadline is released.
+		// Only a *valid* handshake does this: an event merely named
+		// stream_ready, or any other byte, leaves it armed.
+		if m.stream != nil {
+			m.stream.handshakeAccepted()
+		}
 		m.state = stateResyncing
 		m.resyncing = true
 		return m, tea.Batch(next, m.resync())

@@ -117,6 +117,16 @@ reconnects rather than continuing to show LIVE against something it can no
 longer refresh. Heartbeats count as activity, so a genuinely quiet evaluation
 stays connected indefinitely.
 
+A connection that talks but never finishes starting up is treated the same way.
+If a server accepts the request and sends heartbeats but never delivers a valid
+handshake, the dashboard gives up rather than waiting at `CONNECTING`
+indefinitely — heartbeats prove the connection is alive, not that the protocol
+works. The same applies to an error response whose body never arrives: the
+diagnostic is worth a few seconds, not forever.
+
+None of this puts a limit on a working stream. A healthy dashboard can stay
+connected for as long as you leave it open.
+
 When a run completes, fails or is cancelled, the dashboard performs one final
 authoritative read so the closing numbers are correct. That happens once, and
 nothing periodic follows it — including when the run finishes while a resync is
