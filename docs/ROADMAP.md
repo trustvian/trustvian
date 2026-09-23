@@ -329,7 +329,8 @@ Also implemented: the integrated local runtime (062) — `make local` starts
 SQLite, the control plane, the realtime bus and a loopback HTTP listener, and
 local clients discover the endpoint without being told.
 
-Still planned: everything from the PostgreSQL backend (064) onward. The platform
+Still planned: everything from the PostgreSQL backend (064) onward, which is
+specified but not built. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
 behavioral snapshots, produce fixed-shape comparative scorecards, apply
 deterministic evidence-backed hard gates to them, persist local control and
@@ -590,7 +591,9 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**Partly implemented:** tasks 049–063 are done; 064 onward remain PLANNED.
+**Partly implemented:** tasks 049–063 are done; 064 is **specified but not
+implemented** ([spec](tasks/v1.0/064-postgresql-platform-backend.md)); 065
+onward remain PLANNED.
 
 **Architecture and core boundary** — the only tasks that touch the engine:
 
