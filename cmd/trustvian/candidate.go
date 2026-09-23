@@ -20,12 +20,12 @@ import (
 )
 
 const candidateUsage = `usage:
-  trustvian candidate create --api-url <url> --id <id> --agent-id <id>
+  trustvian candidate create --id <id> --agent-id <id>
                              [--label <text>] [--source-ref <ref>]
                              [--artifact-digest <digest>] [--model <name>]
                              [--toolset-digest <digest>] [--config-digest <digest>]
-                             [--json]
-  trustvian candidate get    --api-url <url> --id <id> [--json]`
+                             [--api-url <url>] [--json]
+  trustvian candidate get    --id <id> [--api-url <url>] [--json]` + apiURLNote
 
 func runCandidate(s streams, args []string, timeout time.Duration) int {
 	if len(args) == 0 {

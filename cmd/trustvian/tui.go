@@ -21,10 +21,11 @@ import (
 )
 
 const tuiUsage = `usage:
-  trustvian tui --api-url <url> --run-id <id>
+  trustvian tui --run-id <id> [--api-url <url>]
 
-Watch one evaluation run live. Requires an already-running control plane;
-task 062 will provide integrated local startup.
+Watch one evaluation run live. Requires a running control plane: start one
+with ` + "`make local`" + ` and the endpoint is discovered automatically, or pass
+--api-url to reach one elsewhere.
 
   q, ctrl-c   quit
   r           reconnect and resync now
@@ -32,22 +33,28 @@ task 062 will provide integrated local startup.
 
 func runTUI(s streams, args []string, timeout time.Duration) int {
 	fs := newFlagSet("tui")
-	apiURL := fs.String("api-url", "", "base URL of the control-plane API (required)")
+	apiURL := fs.String("api-url", "",
+		"base URL of the control-plane API (default: the local runtime in ./.trustvian)")
 	runID := fs.String("run-id", "", "evaluation run to watch (required)")
 
 	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, tuiUsage, err)
 	}
-	if err := requireAll(fs, map[string]string{
-		"api-url": *apiURL, "run-id": *runID}); err != nil {
+	// --api-url is no longer required: a local runtime advertises itself.
+	// --run-id still is, because nothing can guess which run to watch.
+	if err := requireFlag("run-id", *runID); err != nil {
 		return usageFailure(s, tuiUsage, err)
 	}
 
 	// Authoritative reads reuse task 060's client unchanged: bounded bodies,
 	// refused redirects, rejected credentials, a finite one-shot timeout.
-	client, err := newPlatformClient(*apiURL, timeout)
+	client, err := resolveAPIURL(*apiURL, flagWasSet(fs, "api-url"), timeout)
 	if err != nil {
-		return usageFailure(s, tuiUsage, err)
+		if exitCodeFor(err) == exitUsage {
+			return usageFailure(s, tuiUsage, err)
+		}
+		fmt.Fprintf(s.err, "trustvian: %v\n", err)
+		return exitOperational
 	}
 
 	// The stream gets its own transport. Task 060's 30s total timeout is

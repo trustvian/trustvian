@@ -13,8 +13,9 @@ import (
 )
 
 const agentUsage = `usage:
-  trustvian agent create --api-url <url> --id <id> --project-id <id> --name <name> [--json]
-  trustvian agent get    --api-url <url> --id <id> [--json]`
+  trustvian agent create --id <id> --project-id <id> --name <name>
+                         [--api-url <url>] [--json]
+  trustvian agent get    --id <id> [--api-url <url>] [--json]` + apiURLNote
 
 func runAgent(s streams, args []string, timeout time.Duration) int {
 	if len(args) == 0 {

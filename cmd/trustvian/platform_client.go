@@ -20,8 +20,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -326,6 +329,157 @@ func checkStatus(result apiResult) error {
 func decodeJSON(body []byte, target any) error {
 	if err := json.Unmarshal(body, target); err != nil {
 		return operationalErrorf("server response is not valid JSON for this endpoint")
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------
+// Local runtime discovery
+// ---------------------------------------------------------------------
+
+const (
+	// localStateDir and localDiscoveryFile locate the endpoint a local
+	// runtime published.
+	//
+	// Exactly this path in the current working directory: no environment
+	// variable, no parent-directory walk, no $HOME, no network scan. A
+	// directory owns its runtime, and nothing outside it should be able to
+	// redirect a command.
+	localStateDir       = ".trustvian"
+	localDiscoveryFile  = "runtime.json"
+	localDiscoveryLimit = 4 << 10
+
+	// localDiscoveryVersion is the only schema this build understands.
+	localDiscoveryVersion = "1"
+)
+
+// localDiscovery mirrors the runtime's published file.
+//
+// Decoded leniently so version 1 can grow additive fields, exactly like every
+// other wire contract this CLI consumes. An unknown *version* is different and
+// fails closed.
+type localDiscovery struct {
+	Version string `json:"version"`
+	APIURL  string `json:"api_url"`
+}
+
+// resolveAPIURL picks the endpoint for a platform command.
+//
+// Explicit input always wins — including when it is wrong. A working directory
+// must never be able to redirect a command that named its own endpoint, and
+// that has to hold for an explicitly empty value too: `--api-url ""` is a
+// caller who meant to supply a URL and did not, most often
+//
+//	trustvian eval compare --api-url "$CONTROL_PLANE_URL" ...
+//
+// with the variable unset. Falling back to a local runtime there would compare
+// against the wrong control plane and report a verdict for it.
+//
+// So presence decides, not emptiness. An explicitly supplied value goes
+// straight to parseAPIURL, which rejects empty as a usage error, and no
+// discovery file is read.
+func resolveAPIURL(explicit string, explicitSet bool, timeout time.Duration) (*platformClient, error) {
+	if explicitSet {
+		return newPlatformClient(explicit, timeout)
+	}
+
+	discovered, err := readLocalDiscovery(filepath.Join(localStateDir, localDiscoveryFile))
+	if err != nil {
+		return nil, err
+	}
+	return newPlatformClient(discovered, timeout)
+}
+
+// readLocalDiscovery reads and validates the runtime file.
+//
+// Every failure here is operational, not usage: after task 062 a command
+// without --api-url is a valid invocation, so a missing or broken runtime
+// means the environment is wrong rather than the command.
+func readLocalDiscovery(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", operationalErrorf(
+				"no local Trustvian runtime found; start one with `make local` or pass --api-url")
+		}
+		return "", operationalErrorf("reading %s: %v", path, err)
+	}
+	defer file.Close()
+
+	// The bound is on the bytes actually read, and only there. A stat-based
+	// size check ahead of it would be both redundant and untestable: it can
+	// only ever agree with this one, except in the window where the file grows
+	// between the two calls — where it is the stat that is wrong. One guard,
+	// at the point the bytes are consumed.
+	//
+	// One byte past the limit is read on purpose, so "exactly at the limit"
+	// and "over it" are distinguishable rather than both arriving truncated.
+	payload, err := io.ReadAll(io.LimitReader(file, localDiscoveryLimit+1))
+	if err != nil {
+		return "", operationalErrorf("reading %s: %v", path, err)
+	}
+	if len(payload) > localDiscoveryLimit {
+		return "", operationalErrorf(
+			"%s is over the %d byte limit", path, localDiscoveryLimit)
+	}
+
+	// Unmarshal, not Decode: a decoder reads one value and stops, so a file
+	// carrying a second document — or trailing junk after the first — would be
+	// silently accepted on the strength of its opening object. Unmarshal
+	// requires the whole payload to be exactly one JSON value, while still
+	// tolerating unknown fields inside it and trailing whitespace after it.
+	var discovery localDiscovery
+	if err := json.Unmarshal(payload, &discovery); err != nil {
+		return "", operationalErrorf("%s is not exactly one JSON document", path)
+	}
+	if discovery.Version != localDiscoveryVersion {
+		return "", operationalErrorf(
+			"%s has unsupported version %q", path, discovery.Version)
+	}
+	if err := validateDiscoveredURL(discovery.APIURL); err != nil {
+		return "", err
+	}
+	return discovery.APIURL, nil
+}
+
+// validateDiscoveredURL is stricter than the rule for an explicit --api-url.
+//
+// An explicit URL is the user's stated intent. A discovered one comes from a
+// file in the working directory, which a repository can contain — so a
+// checked-out project must not be able to point a developer's mutation
+// commands at https://attacker.example. Loopback only, http only, nothing else
+// in the URL.
+func validateDiscoveredURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return operationalErrorf("local runtime URL is not a valid URL")
+	}
+	if parsed.Scheme != "http" {
+		return operationalErrorf(
+			"local runtime URL scheme %q is not supported; a discovered runtime must be http on loopback",
+			parsed.Scheme)
+	}
+	if parsed.User != nil {
+		return operationalErrorf("local runtime URL must not contain credentials")
+	}
+	if parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return operationalErrorf("local runtime URL must not contain a query or fragment")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return operationalErrorf("local runtime URL must not contain a path")
+	}
+
+	host, _, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		return operationalErrorf("local runtime URL must include a host and port")
+	}
+	// Numeric only. A hostname that resolves to loopback today is still a
+	// name someone else controls, and resolution is not proof.
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return operationalErrorf(
+			"local runtime URL host %q is not a numeric loopback address; "+
+				"a discovered runtime may only be reached on loopback", host)
 	}
 	return nil
 }

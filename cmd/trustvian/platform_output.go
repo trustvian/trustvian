@@ -29,16 +29,48 @@ type streams struct {
 }
 
 // commonFlags are the two every platform command accepts.
+//
+// The flag set is retained so presence can be recovered after parsing. An
+// empty string is not the same as an absent flag: `--api-url ""` means the
+// caller chose an endpoint and got it wrong, which must stay a usage error
+// rather than quietly becoming "use whatever is in this directory".
 type commonFlags struct {
+	fs     *flag.FlagSet
 	apiURL *string
 	json   *bool
 }
 
 func registerCommonFlags(fs *flag.FlagSet) commonFlags {
 	return commonFlags{
-		apiURL: fs.String("api-url", "", "base URL of the control-plane API (required)"),
-		json:   fs.Bool("json", false, "write the API's JSON response to stdout"),
+		fs: fs,
+		apiURL: fs.String("api-url", "",
+			"base URL of the control-plane API (default: the local runtime in ./.trustvian)"),
+		json: fs.Bool("json", false, "write the API's JSON response to stdout"),
 	}
+}
+
+// apiURLNote is the discovery footer every platform usage block ends with.
+//
+// Shared rather than repeated so the four command families cannot drift into
+// describing the same resolution rule three different ways.
+const apiURLNote = "\n\n" + `--api-url is optional: a runtime started with ` + "`make local`" + ` is found
+through ./.trustvian/runtime.json in the current directory.`
+
+// apiURLSet reports whether --api-url appeared on the command line.
+//
+// fs.Visit walks only the flags actually set, which is the one thing the
+// parsed value cannot tell us. Kept here so no leaf command has to remember
+// the distinction.
+func (c commonFlags) apiURLSet() bool { return flagWasSet(c.fs, "api-url") }
+
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	var found bool
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
 }
 
 // emitSuccess writes one successful result.

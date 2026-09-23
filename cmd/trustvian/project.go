@@ -14,8 +14,8 @@ import (
 )
 
 const projectUsage = `usage:
-  trustvian project create --api-url <url> --id <id> --name <name> [--json]
-  trustvian project get    --api-url <url> --id <id> [--json]`
+  trustvian project create --id <id> --name <name> [--api-url <url>] [--json]
+  trustvian project get    --id <id> [--api-url <url>] [--json]` + apiURLNote
 
 func runProject(s streams, args []string, timeout time.Duration) int {
 	if len(args) == 0 {

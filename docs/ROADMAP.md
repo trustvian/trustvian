@@ -320,7 +320,11 @@ Also implemented: the developer CLI (060), which drives all of that from a
 shell or a CI job over the `/v1` API, and the terminal dashboard (061), which
 watches one run live over SSE.
 
-Still planned: everything from integrated local startup (062) onward. The platform
+Also implemented: the integrated local runtime (062) — `make local` starts
+SQLite, the control plane, the realtime bus and a loopback HTTP listener, and
+local clients discover the endpoint without being told.
+
+Still planned: everything from the WebUI (063) onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
 behavioral snapshots, produce fixed-shape comparative scorecards, apply
 deterministic evidence-backed hard gates to them, persist local control and
@@ -581,7 +585,7 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**Partly implemented:** tasks 049–061 are done; 062 onward remain PLANNED.
+**Partly implemented:** tasks 049–062 are done; 063 onward remain PLANNED.
 
 **Architecture and core boundary** — the only tasks that touch the engine:
 

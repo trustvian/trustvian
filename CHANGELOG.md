@@ -10,8 +10,29 @@ actually depend on.
 
 ### Added
 
+- **Integrated local runtime.** `make local` starts the whole local platform in
+  one command: file-backed SQLite, the control plane, the realtime bus and the
+  `/v1` HTTP API on a loopback listener with an OS-assigned port. See
+  [docs/local-development.md](docs/local-development.md) and
+  [ADR 0035](docs/adr/0035-local-runtime-composes-platform-without-reversing-modules.md).
+
+- **Automatic local endpoint discovery.** The runtime publishes
+  `.trustvian/runtime.json`, and platform commands plus the TUI read it, so
+  `--api-url` is no longer required for the local workflow. Explicit
+  `--api-url` always wins, a discovered endpoint must be `http` on numeric
+  loopback in exactly one JSON document under 4 KiB, and omitting both with no
+  runtime running exits `3` rather than being reported as a usage error.
+  Presence decides, not emptiness: `--api-url ""` is a usage error (`2`) and
+  reads no discovery file, so an unset variable in CI can never redirect a
+  command — a gate comparison least of all.
+
+  The runtime is unauthenticated and binds loopback only — there is no flag to
+  expose it. Authentication and remote access remain task 070, and no WebUI,
+  PostgreSQL backend, environment model, promotion or event history is included
+  here.
+
 - **Interactive `trustvian tui`.** A run-scoped realtime terminal dashboard:
-  `trustvian tui --api-url <url> --run-id <id>` watches one evaluation run
+  `trustvian tui --run-id <id> [--api-url <url>]` watches one evaluation run
   live, combining authoritative HTTP reads with SSE notifications. It is
   read-only — three GET endpoints — and imports nothing from the platform
   module. See [docs/tui.md](docs/tui.md) and

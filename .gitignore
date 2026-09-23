@@ -37,3 +37,8 @@ go.work.sum
 # Release artifacts built by scripts/release-build.sh (make release-dry-run).
 # Generated per-build and attached to GitHub Releases; never committed.
 dist/
+
+# Local developer runtime state (task 062): platform database and the
+# discovery file naming the running endpoint. Project-local and disposable —
+# `rm -rf .trustvian` ends the environment.
+.trustvian/

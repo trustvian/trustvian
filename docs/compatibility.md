@@ -286,14 +286,55 @@ argument is a usage error (`2`) raised before any request is sent, so an
 invocation typo cannot be mistaken for an API or gate result. Legacy
 `analyze`, `baseline` and `version` keep their existing operand parsing.
 
-`trustvian tui --api-url <url> --run-id <id>` is intended operational
+`trustvian tui --run-id <id> [--api-url <url>]` is intended operational
 surface: the command name, both flag names, and the exit contract above are
 stable. Its **rendered dashboard is not** — layout, spacing, column widths,
 row formatting, help wording and connection-status wording are observational
 and may change in any release. Automation reads the `/v1` API, which is the
 machine interface; nothing should parse the terminal.
 
-The control-plane commands require `--api-url`. No default address or
+The control-plane commands and `tui` accept `--api-url`. It is **no longer
+required**: when a local runtime is running in the working directory, they read
+its endpoint from `.trustvian/runtime.json` instead. This is additive —
+existing scripts that pass `--api-url` behave exactly as before, and an
+explicit URL is never overridden by a file.
+
+Omitting `--api-url` with no local runtime is **operational** (`3`), not usage
+(`2`): after task 062 the invocation itself is valid and the environment is
+what failed. An explicitly malformed `--api-url` remains usage.
+
+*Omitting* means absent from the command line. `--api-url ""` is an explicit
+empty endpoint: usage (`2`), and no discovery file is read. The distinction is
+load-bearing for CI, where an empty value is an unset variable rather than a
+request to use whatever runtime the checkout contains.
+
+### Local runtime discovery file
+
+`.trustvian/runtime.json` is written by the local runtime and consumed by the
+shipped CLI and TUI, so its schema is operational surface even though the file
+itself is ephemeral:
+
+| Field | Class | Meaning |
+|---|---|---|
+| `version` | OPERATIONALLY STABLE | Schema version; currently `"1"` |
+| `api_url` | OPERATIONALLY STABLE | Base URL of the running local control plane |
+
+Additive fields may be added within version 1 and clients must tolerate them.
+The meanings of existing version-1 fields do not change; a new meaning requires
+a new version. An **unknown version fails closed** — a client that does not
+understand the file refuses it rather than guessing.
+
+The file must be **exactly one** JSON document under **4 KiB**, measured on the
+bytes read. A second document, trailing content after the first, or anything
+past the bound is refused outright rather than parsed as far as it goes.
+
+The port itself is **not** stable: the runtime binds an ephemeral port and
+republishes it on every start. Nothing should record or hard-code it, which is
+the reason discovery exists.
+
+`trustvian-local` is a repository-internal executable, not a released artifact.
+
+ No default address or
 port is defined yet, and no environment variable is read — task 062 owns
 integrated local startup and may add a default then. Adding one is
 additive; changing one scripts depend on would not be.
