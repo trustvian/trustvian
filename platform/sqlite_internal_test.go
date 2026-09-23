@@ -22,8 +22,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1117,4 +1119,82 @@ func TestConcurrentFreshOpenersConvergeOnValidSchema(t *testing.T) {
 	}
 	defer reopened.Close()
 	seedRun(t, reopened)
+}
+
+// TestUpdateEvaluationRunPredicateRefusesAStaleStatus proves the
+// compare-and-swap lives in the UPDATE statement, not only in the Go check
+// above it.
+//
+// That check is sound for SQLite because this store holds one connection, so
+// nothing interleaves between the read and the write — which makes the safety a
+// property of the configuration rather than of the operation. A backend with a
+// connection pool does not have it: two callers would both read `created`, both
+// pass the check, and both write, the second silently losing the first.
+//
+// Driven through the store's own API: two transitions derived from the same
+// starting value, the second of which must lose.
+func TestUpdateEvaluationRunPredicateRefusesAStaleStatus(t *testing.T) {
+	store, _ := testStore(t)
+	ctx := t.Context()
+	created := seedRun(t, store)
+
+	started, err := created.Start(created.CreatedAt().Add(time.Second))
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := store.UpdateEvaluationRun(ctx, created, started); err != nil {
+		t.Fatalf("first transition error = %v", err)
+	}
+
+	// A second caller still holding `created` retries the same transition. Its
+	// view is stale; the durable row is already running.
+	err = store.UpdateEvaluationRun(ctx, created, started)
+	if !errors.Is(err, ErrStoreConflict) {
+		t.Fatalf("stale previous returned %v, want ErrStoreConflict", err)
+	}
+
+	// The run transitioned exactly once and was not rewritten.
+	final, err := store.EvaluationRun(ctx, created.ID())
+	if err != nil {
+		t.Fatalf("EvaluationRun() error = %v", err)
+	}
+	if final.Status() != RunRunning {
+		t.Errorf("Status() = %s, want %s", final.Status(), RunRunning)
+	}
+	if !final.StartedAt().Equal(started.StartedAt()) {
+		t.Errorf("StartedAt() = %v, want the first transition's %v",
+			final.StartedAt(), started.StartedAt())
+	}
+}
+
+// TestLifecycleUpdateCarriesItsPredicateInSQL is a structural guard, and it
+// exists because the behavioural test above cannot do this job on SQLite.
+//
+// Removing the `AND status = ?` predicate does not change what
+// TestUpdateEvaluationRunPredicateRefusesAStaleStatus observes: this store holds
+// one connection, so the Go-side sameRun check already catches every stale
+// caller. The predicate is behaviourally redundant *here* — and is exactly what
+// a pooled backend needs, where the read and the write can interleave.
+//
+// So the invariant is pinned two ways: structurally on SQLite, where a
+// behavioural test cannot see it, and behaviourally on PostgreSQL, where
+// concurrent connections make its absence observable.
+func TestLifecycleUpdateCarriesItsPredicateInSQL(t *testing.T) {
+	source, err := os.ReadFile("sqlite.go")
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+
+	const want = "WHERE id = ? AND status = ?"
+	if !strings.Contains(string(source), want) {
+		t.Errorf("the lifecycle UPDATE does not carry %q. Without it the "+
+			"compare-and-swap is a property of this store's single connection "+
+			"rather than of the operation, and a pooled backend loses it.", want)
+	}
+	// And the result must be inspected, or the predicate silently becomes a
+	// no-op that updates zero rows and reports success.
+	if !strings.Contains(string(source), "RowsAffected()") {
+		t.Error("the lifecycle UPDATE does not check RowsAffected; a predicate " +
+			"that matches nothing would report success")
+	}
 }

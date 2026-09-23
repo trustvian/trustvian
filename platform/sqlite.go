@@ -973,13 +973,35 @@ func (s *SQLiteStore) UpdateEvaluationRun(ctx context.Context, previous, next Ev
 			ErrStoreConflict, preview(string(previous.ID())), stored.Status(), previous.Status())
 	}
 
-	if _, err := tx.ExecContext(ctx,
+	// The expected previous status is part of the statement, not only of the
+	// Go check above.
+	//
+	// The check alone is sound here because this store holds one connection, so
+	// the read and the write cannot interleave with another writer. That is a
+	// property of the SQLite configuration rather than of this operation, and a
+	// backend with a connection pool does not have it: two callers would both
+	// read `created`, both pass, and both write — the second silently losing
+	// the first. Putting the predicate in SQL makes the compare-and-swap the
+	// doc comment promises true of the operation itself, on every backend.
+	result, err := tx.ExecContext(ctx,
 		`UPDATE `+tableRuns+`
 		 SET status = ?, started_at = ?, finished_at = ?, failure_reason = ?
-		 WHERE id = ?`,
+		 WHERE id = ? AND status = ?`,
 		string(next.Status()), nullTimeText(next.StartedAt()),
-		nullTimeText(next.FinishedAt()), next.FailureReason(), string(next.ID())); err != nil {
+		nullTimeText(next.FinishedAt()), next.FailureReason(),
+		string(next.ID()), string(previous.Status()))
+	if err != nil {
 		return fmt.Errorf("platform: update evaluation run: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("platform: update evaluation run: %w", err)
+	}
+	if affected != 1 {
+		// The row moved between the read above and this write. Same meaning as
+		// the staleness check, reported the same way.
+		return fmt.Errorf("%w: evaluation run %s is no longer %s",
+			ErrStoreConflict, preview(string(previous.ID())), previous.Status())
 	}
 
 	if err := tx.Commit(); err != nil {
