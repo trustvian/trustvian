@@ -787,10 +787,10 @@ func (s *SQLiteStore) CreateEvaluationRun(ctx context.Context, run EvaluationRun
 
 // EvaluationRun loads a run by id.
 func (s *SQLiteStore) EvaluationRun(ctx context.Context, id EvaluationRunID) (EvaluationRun, error) {
-	return s.loadRun(ctx, sqlQuerier{s.db}, id)
+	return loadRun(ctx, sqlQuerier{s.db}, id)
 }
 
-func (s *SQLiteStore) loadRun(ctx context.Context, q rowQuerier, id EvaluationRunID) (EvaluationRun, error) {
+func loadRun(ctx context.Context, q rowQuerier, id EvaluationRunID) (EvaluationRun, error) {
 	var candidateID, environment, profile, status, createdAt, failureReason string
 	var startedAt, finishedAt sql.NullString
 
@@ -960,7 +960,7 @@ func (s *SQLiteStore) UpdateEvaluationRun(ctx context.Context, previous, next Ev
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
 
-	stored, err := s.loadRun(ctx, sqlQuerier{tx}, previous.ID())
+	stored, err := loadRun(ctx, sqlQuerier{tx}, previous.ID())
 	if err != nil {
 		return err
 	}
@@ -1077,7 +1077,7 @@ func (s *SQLiteStore) SaveEvaluationEvidence(
 
 	// The run must exist and agree — evidence is never stored under a run
 	// merely because a RunID string matched.
-	run, err := s.loadRun(ctx, sqlQuerier{tx}, aggregate.RunID())
+	run, err := loadRun(ctx, sqlQuerier{tx}, aggregate.RunID())
 	if err != nil {
 		return err
 	}
@@ -1088,7 +1088,7 @@ func (s *SQLiteStore) SaveEvaluationEvidence(
 			ErrStoreConflict, preview(string(aggregate.RunID())))
 	}
 
-	if err := s.checkEvidenceNotStale(ctx, tx, aggregate, snapshot); err != nil {
+	if err := checkEvidenceNotStale(ctx, sqlQuerier{tx}, aggregate, snapshot); err != nil {
 		return err
 	}
 
@@ -1142,11 +1142,11 @@ func validateEvidencePair(aggregate EvaluationAggregate, snapshot BehaviorSnapsh
 }
 
 // checkEvidenceNotStale refuses writes that would move evidence backwards.
-func (s *SQLiteStore) checkEvidenceNotStale(
-	ctx context.Context, tx *sql.Tx,
+func checkEvidenceNotStale(
+	ctx context.Context, q evidenceQuerier,
 	aggregate EvaluationAggregate, snapshot BehaviorSnapshot,
 ) error {
-	present, err := evidenceRowsPresent(ctx, sqlQuerier{tx}, aggregate.RunID())
+	present, err := evidenceRowsPresent(ctx, q, aggregate.RunID())
 	if err != nil {
 		return err
 	}
@@ -1160,7 +1160,7 @@ func (s *SQLiteStore) checkEvidenceNotStale(
 		return partialEvidenceError(aggregate.RunID(), present)
 	}
 
-	storedAggregate, storedSnapshot, err := s.loadEvidence(ctx, sqlQuerier{tx}, aggregate.RunID())
+	storedAggregate, storedSnapshot, err := loadEvidence(ctx, q, aggregate.RunID())
 	if err != nil {
 		return err
 	}
@@ -1193,99 +1193,17 @@ func (s *SQLiteStore) writeEvidence(
 	ctx context.Context, tx *sql.Tx,
 	a EvaluationAggregate, snapshot BehaviorSnapshot,
 ) error {
-	metrics := []MetricSummary{
-		a.IdentityConfidence(), a.AnomalyScore(), a.AnomalyConfidence(),
-		a.TrustScore(), a.ContextRisk(),
-	}
-	args := []any{
-		string(a.RunID()), string(a.CandidateID()), string(a.Environment()),
-		string(a.BehavioralProfile()),
-		uint64Text(a.RecordCount()),
-		nullTimeText(a.FirstObservedAt()), nullTimeText(a.LastObservedAt()),
-
-		uint64Text(a.Decisions().Allow), uint64Text(a.Decisions().ObserveOnly),
-		uint64Text(a.Decisions().Alert), uint64Text(a.Decisions().Challenge),
-		uint64Text(a.Decisions().RequireApproval), uint64Text(a.Decisions().Block),
-
-		uint64Text(a.Risks().Low), uint64Text(a.Risks().Medium),
-		uint64Text(a.Risks().High), uint64Text(a.Risks().Critical),
-
-		uint64Text(a.Approvals().Unspecified), uint64Text(a.Approvals().NotRequired),
-		uint64Text(a.Approvals().Required), uint64Text(a.Approvals().Approved),
-		uint64Text(a.Approvals().Denied),
-
-		uint64Text(a.PolicySelection().MatchedRule),
-		uint64Text(a.PolicySelection().MatchedDefault),
-	}
-	for _, m := range metrics {
-		args = append(args, uint64Text(m.Count), m.Sum, m.Min, m.Max)
-	}
-
+	// Columns and args both come from the shared list, so this backend and
+	// PostgreSQL cannot disagree about the aggregate's forty-four columns.
+	columns := aggregateInsertColumns()
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO `+tableAggregates+` (
-			run_id, candidate_id, environment, behavioral_profile,
-			record_count, first_observed_at, last_observed_at,
-			decision_allow, decision_observe_only, decision_alert,
-			decision_challenge, decision_require_approval, decision_block,
-			risk_low, risk_medium, risk_high, risk_critical,
-			approval_unspecified, approval_not_required, approval_required,
-			approval_approved, approval_denied,
-			policy_matched_rule, policy_matched_default,
-			identity_confidence_count, identity_confidence_sum, identity_confidence_min, identity_confidence_max,
-			anomaly_score_count, anomaly_score_sum, anomaly_score_min, anomaly_score_max,
-			anomaly_confidence_count, anomaly_confidence_sum, anomaly_confidence_min, anomaly_confidence_max,
-			trust_score_count, trust_score_sum, trust_score_min, trust_score_max,
-			context_risk_count, context_risk_sum, context_risk_min, context_risk_max
-		 ) VALUES (`+placeholders(44)+`)
-		 ON CONFLICT(run_id) DO UPDATE SET
-			record_count = excluded.record_count,
-			first_observed_at = excluded.first_observed_at,
-			last_observed_at = excluded.last_observed_at,
-			decision_allow = excluded.decision_allow,
-			decision_observe_only = excluded.decision_observe_only,
-			decision_alert = excluded.decision_alert,
-			decision_challenge = excluded.decision_challenge,
-			decision_require_approval = excluded.decision_require_approval,
-			decision_block = excluded.decision_block,
-			risk_low = excluded.risk_low,
-			risk_medium = excluded.risk_medium,
-			risk_high = excluded.risk_high,
-			risk_critical = excluded.risk_critical,
-			approval_unspecified = excluded.approval_unspecified,
-			approval_not_required = excluded.approval_not_required,
-			approval_required = excluded.approval_required,
-			approval_approved = excluded.approval_approved,
-			approval_denied = excluded.approval_denied,
-			policy_matched_rule = excluded.policy_matched_rule,
-			policy_matched_default = excluded.policy_matched_default,
-			identity_confidence_count = excluded.identity_confidence_count,
-			identity_confidence_sum = excluded.identity_confidence_sum,
-			identity_confidence_min = excluded.identity_confidence_min,
-			identity_confidence_max = excluded.identity_confidence_max,
-			anomaly_score_count = excluded.anomaly_score_count,
-			anomaly_score_sum = excluded.anomaly_score_sum,
-			anomaly_score_min = excluded.anomaly_score_min,
-			anomaly_score_max = excluded.anomaly_score_max,
-			anomaly_confidence_count = excluded.anomaly_confidence_count,
-			anomaly_confidence_sum = excluded.anomaly_confidence_sum,
-			anomaly_confidence_min = excluded.anomaly_confidence_min,
-			anomaly_confidence_max = excluded.anomaly_confidence_max,
-			trust_score_count = excluded.trust_score_count,
-			trust_score_sum = excluded.trust_score_sum,
-			trust_score_min = excluded.trust_score_min,
-			trust_score_max = excluded.trust_score_max,
-			context_risk_count = excluded.context_risk_count,
-			context_risk_sum = excluded.context_risk_sum,
-			context_risk_min = excluded.context_risk_min,
-			context_risk_max = excluded.context_risk_max`,
-		args...); err != nil {
-		return fmt.Errorf("platform: store aggregate: %w", err)
+		`INSERT INTO `+tableAggregates+` (`+strings.Join(columns, ", ")+`)
+		 VALUES (`+placeholders(len(columns))+`)
+		 ON CONFLICT(run_id) DO UPDATE SET `+onConflictAssignments(columns[1:]),
+		aggregateInsertArgs(a)...); err != nil {
+		return fmt.Errorf("platform: write aggregate: %w", err)
 	}
 
-	complete := 0
-	if snapshot.Complete() {
-		complete = 1
-	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO `+tableSnapshots+`
 		 (run_id, candidate_id, environment, behavioral_profile,
@@ -1298,7 +1216,7 @@ func (s *SQLiteStore) writeEvidence(
 		string(snapshot.RunID()), string(snapshot.CandidateID()),
 		string(snapshot.Environment()), string(snapshot.BehavioralProfile()),
 		uint64Text(snapshot.ObservationCount()), snapshot.DistinctBehaviorCount(),
-		complete); err != nil {
+		boolInt(snapshot.Complete())); err != nil {
 		return fmt.Errorf("platform: store snapshot: %w", err)
 	}
 
@@ -1359,7 +1277,7 @@ func (s *SQLiteStore) EvaluationEvidence(
 	var snapshot BehaviorSnapshot
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		aggregate, snapshot, err = s.loadEvidence(ctx, sqlQuerier{tx}, id)
+		aggregate, snapshot, err = loadEvidence(ctx, sqlQuerier{tx}, id)
 		return err
 	})
 	if err != nil {
@@ -1423,7 +1341,7 @@ func partialEvidenceError(id EvaluationRunID, p evidencePresence) error {
 // both rows exist; the aggregate validates on its own; the snapshot and its
 // entries validate on their own; the two agree with each other; and both
 // agree with the persisted EvaluationRun. Otherwise nothing bound escapes.
-func (s *SQLiteStore) loadEvidence(
+func loadEvidence(
 	ctx context.Context, q evidenceQuerier, id EvaluationRunID,
 ) (EvaluationAggregate, BehaviorSnapshot, error) {
 	present, err := evidenceRowsPresent(ctx, q, id)
@@ -1459,7 +1377,7 @@ func (s *SQLiteStore) loadEvidence(
 	// only that they were edited consistently — the authoritative statement
 	// of what this run is lives in the runs table, and evidence that
 	// contradicts it describes some other evaluation.
-	run, err := s.loadRun(ctx, q, id)
+	run, err := loadRun(ctx, q, id)
 	if err != nil {
 		if errors.Is(err, ErrStoreNotFound) {
 			return EvaluationAggregate{}, BehaviorSnapshot{}, fmt.Errorf(
@@ -1964,7 +1882,7 @@ func (s *SQLiteStore) EvaluationIngestState(
 	var state EvaluationIngestState
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		state, err = s.ingestState(ctx, sqlQuerier{tx}, id)
+		state, err = ingestState(ctx, sqlQuerier{tx}, id)
 		return err
 	})
 	if err != nil {
@@ -1973,12 +1891,12 @@ func (s *SQLiteStore) EvaluationIngestState(
 	return state, nil
 }
 
-func (s *SQLiteStore) ingestState(
+func ingestState(
 	ctx context.Context, q evidenceQuerier, id EvaluationRunID,
 ) (EvaluationIngestState, error) {
 	// The run must exist: a cursor for a run that does not is not a fresh
 	// start, it is a dangling reference.
-	if _, err := s.loadRun(ctx, q, id); err != nil {
+	if _, err := loadRun(ctx, q, id); err != nil {
 		return EvaluationIngestState{}, err
 	}
 
@@ -1989,7 +1907,7 @@ func (s *SQLiteStore) ingestState(
 
 	switch {
 	case q.noRows(err):
-		return s.derivedIngestState(ctx, q, id)
+		return derivedIngestState(ctx, q, id)
 	case err != nil:
 		return EvaluationIngestState{}, fmt.Errorf("platform: load ingest state: %w", err)
 	}
@@ -2011,7 +1929,7 @@ func (s *SQLiteStore) ingestState(
 	// The cursor and the evidence it describes must agree. Disagreement means
 	// one of them was written without the other, and there is no principled
 	// way to choose which is right.
-	aggregate, snapshot, err := s.loadEvidence(ctx, q, id)
+	aggregate, snapshot, err := loadEvidence(ctx, q, id)
 	switch {
 	case errors.Is(err, ErrStoreNotFound):
 		return EvaluationIngestState{}, fmt.Errorf(
@@ -2041,10 +1959,10 @@ func (s *SQLiteStore) ingestState(
 }
 
 // derivedIngestState computes a cursor for a run that has none.
-func (s *SQLiteStore) derivedIngestState(
+func derivedIngestState(
 	ctx context.Context, q evidenceQuerier, id EvaluationRunID,
 ) (EvaluationIngestState, error) {
-	aggregate, snapshot, err := s.loadEvidence(ctx, q, id)
+	aggregate, snapshot, err := loadEvidence(ctx, q, id)
 	switch {
 	case errors.Is(err, ErrStoreNotFound):
 		// A run that has never ingested: no cursor, no evidence, and an empty
@@ -2101,7 +2019,7 @@ func (s *SQLiteStore) CommitEvaluationIngest(
 	// Re-read the cursor inside the transaction. Two requests racing the same
 	// sequence both computed against the same view; only the one whose view
 	// still matches durable state may apply.
-	current, err := s.ingestState(ctx, sqlQuerier{tx}, runID)
+	current, err := ingestState(ctx, sqlQuerier{tx}, runID)
 	if err != nil {
 		return EvaluationIngestCommitResult{}, err
 	}
@@ -2132,7 +2050,7 @@ func (s *SQLiteStore) CommitEvaluationIngest(
 	}
 
 	// The run must exist and agree, exactly as a direct evidence save requires.
-	run, err := s.loadRun(ctx, sqlQuerier{tx}, runID)
+	run, err := loadRun(ctx, sqlQuerier{tx}, runID)
 	if err != nil {
 		return EvaluationIngestCommitResult{}, err
 	}
@@ -2157,7 +2075,7 @@ func (s *SQLiteStore) CommitEvaluationIngest(
 			ErrStoreConflict, preview(string(runID)))
 	}
 
-	if err := s.checkEvidenceNotStale(ctx, tx, commit.Aggregate, commit.Snapshot); err != nil {
+	if err := checkEvidenceNotStale(ctx, sqlQuerier{tx}, commit.Aggregate, commit.Snapshot); err != nil {
 		return EvaluationIngestCommitResult{}, err
 	}
 	if err := s.writeEvidence(ctx, tx, commit.Aggregate, commit.Snapshot); err != nil {
