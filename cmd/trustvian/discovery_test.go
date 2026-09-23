@@ -253,7 +253,7 @@ func TestTUIResolvesThroughDiscovery(t *testing.T) {
 
 	// Resolution is what is under test; the model's behaviour has its own
 	// tests, so this only needs to prove the endpoint was found and used.
-	client, err := resolveAPIURL("", 2*time.Second)
+	client, err := resolveAPIURL("", false, 2*time.Second)
 	if err != nil {
 		t.Fatalf("resolveAPIURL: %v", err)
 	}
@@ -307,4 +307,219 @@ func TestDiscoveryDecodesWithoutRejectingUnknownFields(t *testing.T) {
 	if discovery.APIURL != "http://127.0.0.1:1" {
 		t.Errorf("api_url = %q", discovery.APIURL)
 	}
+}
+
+// ---------------------------------------------------------------------
+// Explicit flag presence
+// ---------------------------------------------------------------------
+
+// TestExplicitEmptyAPIURLDoesNotUseDiscovery is the CI-protecting property.
+//
+// `--api-url ""` is almost always an unset shell variable:
+//
+//	trustvian eval compare --api-url "$CONTROL_PLANE_URL" …
+//
+// Falling back to a local runtime there would run the command against the
+// wrong control plane and report a result for it. An explicitly supplied value
+// is the caller's choice even when it is empty, so it stays a usage error and
+// no discovery file is consulted.
+func TestExplicitEmptyAPIURLDoesNotUseDiscovery(t *testing.T) {
+	commands := [][]string{
+		{"project", "get", "--id", "proj-1"},
+		{"project", "create", "--id", "proj-1", "--name", "n"},
+		{"agent", "get", "--id", "agent-1"},
+		{"candidate", "get", "--id", "cand-1"},
+		{"eval", "get", "--id", "run-42"},
+		{"eval", "start", "--id", "run-42"},
+		{"eval", "progress", "--id", "run-42"},
+	}
+
+	// Both spellings the flag package accepts.
+	for _, form := range []struct {
+		name string
+		args []string
+	}{
+		{"separate argument", []string{"--api-url", ""}},
+		{"equals form", []string{"--api-url="}},
+	} {
+		for _, command := range commands {
+			t.Run(form.name+"/"+strings.Join(command[:2], " "), func(t *testing.T) {
+				discovered := newFakeAPI(t)
+				discovered.reply(200, `{"version":"1","id":"proj-1"}`)
+
+				t.Chdir(t.TempDir())
+				writeDiscoveryFile(t, discoveryFor(discovered.url()))
+
+				result := runPlatformCLI(t, append(append([]string{}, command...), form.args...)...)
+				result.mustExit(t, exitUsage, form.name)
+
+				if len(discovered.captured()) != 0 {
+					t.Fatal("an explicitly empty --api-url fell back to local discovery")
+				}
+				if result.stdout != "" {
+					t.Errorf("stdout = %q, want empty", result.stdout)
+				}
+				if result.stderr == "" {
+					t.Error("stderr is empty; a refused invocation must be diagnosed")
+				}
+			})
+		}
+	}
+}
+
+// TestCompareExplicitEmptyAPIURLIsUsage covers the command where the mistake
+// would be most expensive: a gate verdict against the wrong control plane.
+func TestCompareExplicitEmptyAPIURLIsUsage(t *testing.T) {
+	discovered := newFakeAPI(t)
+	discovered.reply(200, comparisonBody(gateVerdictPass, 0, "0"))
+
+	t.Chdir(t.TempDir())
+	writeDiscoveryFile(t, discoveryFor(discovered.url()))
+
+	args := withoutFlag(compareArgs(""), "--api-url")
+	result := runPlatformCLI(t, append(args, "--api-url", "")...)
+
+	result.mustExit(t, exitUsage, "compare with an empty endpoint")
+	if result.code == exitGateFail || result.code == exitOK {
+		t.Fatal("an unset endpoint produced a gate result")
+	}
+	if len(discovered.captured()) != 0 {
+		t.Fatal("compare fell back to the local runtime after an explicit empty --api-url")
+	}
+}
+
+// TestOmittedAPIURLStillUsesDiscovery keeps the other half working: only
+// explicit input suppresses the fallback.
+func TestOmittedAPIURLStillUsesDiscovery(t *testing.T) {
+	api := newFakeAPI(t)
+	api.reply(200, `{"version":"1","id":"proj-1","name":"Checkout"}`)
+
+	t.Chdir(t.TempDir())
+	writeDiscoveryFile(t, discoveryFor(api.url()))
+
+	runPlatformCLI(t, "project", "get", "--id", "proj-1").
+		mustExit(t, exitOK, "omitted --api-url")
+	if len(api.captured()) != 1 {
+		t.Fatalf("discovery was not used; requests = %d", len(api.captured()))
+	}
+}
+
+// ---------------------------------------------------------------------
+// One bounded JSON document
+// ---------------------------------------------------------------------
+
+// TestDiscoveryMustBeExactlyOneJSONDocument closes a parser gap.
+//
+// json.Decoder reads one value and stops, so a file whose first object is
+// valid was accepted no matter what followed it — including a second object
+// naming a different endpoint. Unmarshal requires the whole payload to be one
+// value.
+func TestDiscoveryMustBeExactlyOneJSONDocument(t *testing.T) {
+	good := newFakeAPI(t)
+	good.reply(200, `{"version":"1","id":"proj-1","name":"Checkout"}`)
+
+	other := newFakeAPI(t)
+	other.reply(200, `{"version":"1","id":"wrong"}`)
+
+	tests := []struct {
+		name    string
+		content string
+		wantOK  bool
+	}{
+		{"single document", discoveryFor(good.url()), true},
+		{"trailing newline", discoveryFor(good.url()) + "\n", true},
+		{"trailing whitespace", discoveryFor(good.url()) + "  \n\t\n", true},
+		{"additive fields", fmt.Sprintf(
+			`{"version":"1","api_url":%q,"future_field":{"x":1}}`, good.url()), true},
+
+		{"second document", discoveryFor(good.url()) + "\n" + discoveryFor(other.url()), false},
+		{"trailing garbage", discoveryFor(good.url()) + "garbage", false},
+		{"trailing garbage after newline", discoveryFor(good.url()) + "\ngarbage", false},
+		{"two documents on one line", discoveryFor(good.url()) + discoveryFor(other.url()), false},
+		{"array wrapper", "[" + discoveryFor(good.url()) + "]", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before := len(good.captured()) + len(other.captured())
+
+			t.Chdir(t.TempDir())
+			writeDiscoveryFile(t, tt.content)
+
+			result := runPlatformCLI(t, "project", "get", "--id", "proj-1")
+			if tt.wantOK {
+				result.mustExit(t, exitOK, tt.name)
+				return
+			}
+
+			result.mustExit(t, exitOperational, tt.name)
+			if len(good.captured())+len(other.captured()) != before {
+				t.Fatal("a request was sent for a discovery file that is not one document")
+			}
+		})
+	}
+}
+
+// TestDiscoveryBoundAppliesToBytesRead proves the cap is on the payload, not
+// on stat metadata.
+//
+// A file can grow between the size check and the read, and a decoder that
+// stops after the first value would never notice. The read itself is capped.
+func TestDiscoveryBoundAppliesToBytesRead(t *testing.T) {
+	api := newFakeAPI(t)
+	api.reply(200, `{"version":"1","id":"proj-1","name":"Checkout"}`)
+
+	build := func(total int) string {
+		base := fmt.Sprintf(`{"version":"1","api_url":%q,"pad":"`, api.url())
+		suffix := `"}`
+		padding := total - len(base) - len(suffix)
+		if padding < 0 {
+			t.Fatalf("total %d too small", total)
+		}
+		content := base + strings.Repeat("x", padding) + suffix
+		if len(content) != total {
+			t.Fatalf("built %d bytes, want %d", len(content), total)
+		}
+		return content
+	}
+
+	t.Run("exactly at the limit is accepted", func(t *testing.T) {
+		t.Chdir(t.TempDir())
+		writeDiscoveryFile(t, build(localDiscoveryLimit))
+		runPlatformCLI(t, "project", "get", "--id", "proj-1").
+			mustExit(t, exitOK, "at the limit")
+	})
+
+	t.Run("one byte over is refused", func(t *testing.T) {
+		before := len(api.captured())
+		t.Chdir(t.TempDir())
+		writeDiscoveryFile(t, build(localDiscoveryLimit+1))
+
+		runPlatformCLI(t, "project", "get", "--id", "proj-1").
+			mustExit(t, exitOperational, "over the limit")
+		if len(api.captured()) != before {
+			t.Fatal("a request was sent for an oversized discovery file")
+		}
+	})
+
+	// The case above alone does not prove the bound is enforced: truncating a
+	// padded object at the limit leaves unterminated JSON, so a reader with no
+	// length check would still refuse it — for a parse error, not for its
+	// size. Padding with whitespace instead makes the truncated payload parse
+	// cleanly, so only an actual comparison of bytes read can reject it.
+	t.Run("oversized whitespace padding is refused, not silently truncated", func(t *testing.T) {
+		before := len(api.captured())
+		t.Chdir(t.TempDir())
+		writeDiscoveryFile(t,
+			discoveryFor(api.url())+strings.Repeat(" ", localDiscoveryLimit))
+
+		result := runPlatformCLI(t, "project", "get", "--id", "proj-1")
+		result.mustExit(t, exitOperational, "oversized with whitespace padding")
+		if len(api.captured()) != before {
+			t.Fatal("an oversized discovery file was truncated and used")
+		}
+		if !strings.Contains(result.stderr, "limit") {
+			t.Errorf("stderr does not name the size bound: %q", result.stderr)
+		}
+	})
 }

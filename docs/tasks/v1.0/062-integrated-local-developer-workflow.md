@@ -176,7 +176,10 @@ production, and it is never persisted into SQLite.
 
 An existing file is not proof of a live server. Before replacing one, the
 runtime probes the advertised endpoint with a bounded TCP dial and refuses to
-start if something is already listening in the same state directory. A
+start if something is already listening in the same state directory. The
+address is validated first, by the same rule the clients apply: the probe must
+never be the way a checked-out repository gets the local runtime to open an
+outbound connection to an address of its choosing. A
 malformed, stale or unreachable file is replaced. This is single-node local
 development; [task 069](069-*) owns multi-node concerns, and no distributed
 locking is introduced here.
@@ -187,9 +190,14 @@ runtime's URL**. A stale process must never delete a newer runtime's endpoint.
 ## CLI/TUI Resolution
 
 ```text
---api-url given  → Task 060 validation → use it
---api-url absent → read ./.trustvian/runtime.json → strict validation → use it
+--api-url present → Task 060 validation → use it
+--api-url absent  → read ./.trustvian/runtime.json → strict validation → use it
 ```
+
+Presence on the command line decides, not emptiness. `--api-url ""` is present
+and invalid: usage (`2`), with no discovery file read. An empty value in a
+script is an unset variable, and falling back there would run the command —
+including a gate decision — against a control plane the caller never chose.
 
 Explicit input always wins; a working directory can never redirect a command
 that named its endpoint. No environment variable, no parent-directory search,
@@ -201,7 +209,14 @@ no fragment. A checked-out repository must not be able to point a developer's
 mutation commands at `https://attacker.example`.
 
 The file is read under a 4 KiB bound — two fields need far less, and the input
-is not necessarily trustworthy.
+is not necessarily trustworthy. The bound is measured on the bytes actually
+read, with no second stat-based check in front of it: the two can only disagree
+in the window where the file grows between them, and a redundant outer layer
+would hide the real one from every test.
+
+It must also be **exactly one** JSON document. Decoding a single value from a
+stream stops at the end of the first one, which accepts a file whose second
+document names a different endpoint.
 
 Unknown fields inside version 1 are tolerated; an unknown `version` fails
 closed.
@@ -266,7 +281,10 @@ No sleep is a sequencing primitive — listener readiness, discovery publication
 ## Mutation Tests
 
 Root importing the platform; default listener on `0.0.0.0`; discovered
-non-loopback accepted; discovery published before bind; size bound removed;
+non-loopback accepted; an explicitly empty `--api-url` falling back to
+discovery; a stream decoder accepting a trailing second document; the read
+bound removed; unknown fields rejected; the liveness probe dialling before
+validation; discovery published before bind; size bound removed;
 discovery overriding an explicit URL; missing runtime classified as usage 2;
 version 2 silently accepted; discovery left behind after shutdown; stale
 shutdown deleting a newer file; publisher or subscriber unwired; in-memory

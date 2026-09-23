@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -476,5 +477,262 @@ func TestShutdownClosesTheBusBeforeWaitingForConnections(t *testing.T) {
 	if elapsed > 2*time.Second {
 		t.Fatalf("shutdown took %v with an open SSE stream; the realtime bus must "+
 			"close first so in-flight handlers can exit", elapsed)
+	}
+}
+
+// TestDiscoveryMustBeExactlyOneJSONDocument closes the parser gap.
+//
+// json.Decoder reads one value and stops, so a file whose first object parsed
+// was accepted regardless of what followed it. Unmarshal requires the whole
+// payload to be one value, while still tolerating unknown fields inside it and
+// whitespace after it.
+func TestDiscoveryMustBeExactlyOneJSONDocument(t *testing.T) {
+	const first = `{"version":"1","api_url":"http://127.0.0.1:1"}`
+	const second = `{"version":"1","api_url":"http://127.0.0.1:2"}`
+
+	tests := []struct {
+		name    string
+		content string
+		wantURL string // empty means the read must fail
+	}{
+		{"single document", first, "http://127.0.0.1:1"},
+		{"trailing newline", first + "\n", "http://127.0.0.1:1"},
+		{"trailing whitespace", first + " \t\n\r\n", "http://127.0.0.1:1"},
+		{"leading whitespace", "\n  " + first, "http://127.0.0.1:1"},
+
+		{"second document", first + "\n" + second, ""},
+		{"second document on one line", first + second, ""},
+		{"trailing garbage", first + "garbage", ""},
+		{"trailing garbage after newline", first + "\ngarbage", ""},
+		{"array wrapper", "[" + first + "]", ""},
+		{"empty file", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), DiscoveryFileName)
+			if err := os.WriteFile(path, []byte(tt.content), discoveryFileMode); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			discovery, err := ReadDiscovery(path)
+			if tt.wantURL == "" {
+				if err == nil {
+					t.Fatalf("accepted %q as a discovery file", tt.content)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ReadDiscovery: %v", err)
+			}
+			if discovery.APIURL != tt.wantURL {
+				t.Errorf("api_url = %q, want %q", discovery.APIURL, tt.wantURL)
+			}
+		})
+	}
+}
+
+// TestDiscoveryBoundAppliesToBytesRead proves the cap is on the payload.
+//
+// The stat check is a courtesy: a file can grow between stat and read, and
+// metadata is not what the parser consumes. The read itself is limited.
+func TestDiscoveryBoundAppliesToBytesRead(t *testing.T) {
+	build := func(t *testing.T, total int) string {
+		t.Helper()
+		const prefix = `{"version":"1","api_url":"http://127.0.0.1:1","pad":"`
+		const suffix = `"}`
+		padding := total - len(prefix) - len(suffix)
+		if padding < 0 {
+			t.Fatalf("total %d is below the envelope size", total)
+		}
+		content := prefix + strings.Repeat("x", padding) + suffix
+		if len(content) != total {
+			t.Fatalf("built %d bytes, want %d", len(content), total)
+		}
+		return content
+	}
+
+	t.Run("exactly at the limit is accepted", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DiscoveryFileName)
+		if err := os.WriteFile(path, []byte(build(t, MaxDiscoveryFileBytes)),
+			discoveryFileMode); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		if _, err := ReadDiscovery(path); err != nil {
+			t.Fatalf("a file exactly at the limit was refused: %v", err)
+		}
+	})
+
+	t.Run("one byte over is refused", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DiscoveryFileName)
+		if err := os.WriteFile(path, []byte(build(t, MaxDiscoveryFileBytes+1)),
+			discoveryFileMode); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		if _, err := ReadDiscovery(path); err == nil {
+			t.Fatal("a file one byte over the limit was accepted")
+		}
+	})
+
+	// That case alone would also pass without any length check: truncating a
+	// padded object at the bound leaves unterminated JSON, so the refusal
+	// could be a parse error wearing a size error's clothes. Whitespace
+	// padding truncates into something that parses, so only comparing the
+	// bytes actually read can reject it.
+	t.Run("oversized whitespace padding is refused, not silently truncated", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), DiscoveryFileName)
+		content := `{"version":"1","api_url":"http://127.0.0.1:1"}` +
+			strings.Repeat(" ", MaxDiscoveryFileBytes)
+		if err := os.WriteFile(path, []byte(content), discoveryFileMode); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		_, err := ReadDiscovery(path)
+		if err == nil {
+			t.Fatal("an oversized discovery file was truncated and accepted")
+		}
+		if !strings.Contains(err.Error(), "limit") {
+			t.Errorf("error does not name the size bound: %v", err)
+		}
+	})
+}
+
+// TestReadDiscoveryEnforcesTheLocalRuntimeURLPolicy makes the validation part
+// of the read, so every caller holds a URL that has already been proven local.
+func TestReadDiscoveryEnforcesTheLocalRuntimeURLPolicy(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiURL string
+		valid  bool
+	}{
+		{"loopback ipv4", "http://127.0.0.1:54321", true},
+		{"loopback ipv4 range", "http://127.9.9.9:8080", true},
+		{"loopback ipv6", "http://[::1]:54321", true},
+		{"trailing slash", "http://127.0.0.1:54321/", true},
+
+		{"remote host", "http://attacker.example:80", false},
+		{"public address", "http://203.0.113.5:8080", false},
+		{"unspecified address", "http://0.0.0.0:8080", false},
+		{"hostname that resolves to loopback", "http://localhost:8080", false},
+		{"https", "https://127.0.0.1:54321", false},
+		{"no scheme", "127.0.0.1:54321", false},
+		{"credentials", "http://user:pass@127.0.0.1:54321", false},
+		{"path", "http://127.0.0.1:54321/v1", false},
+		{"query", "http://127.0.0.1:54321/?redirect=x", false},
+		{"fragment", "http://127.0.0.1:54321/#x", false},
+		{"no port", "http://127.0.0.1", false},
+		{"empty", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), DiscoveryFileName)
+			content, err := json.Marshal(Discovery{Version: DiscoveryVersion, APIURL: tt.apiURL})
+			if err != nil {
+				t.Fatalf("Marshal: %v", err)
+			}
+			if err := os.WriteFile(path, content, discoveryFileMode); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			_, err = ReadDiscovery(path)
+			if tt.valid && err != nil {
+				t.Fatalf("a valid local runtime URL was refused: %v", err)
+			}
+			if !tt.valid && err == nil {
+				t.Fatalf("%q was accepted as a local runtime endpoint", tt.apiURL)
+			}
+		})
+	}
+}
+
+// countingDialer replaces the liveness probe's dialer and records every
+// address it was asked to contact.
+func countingDialer(t *testing.T) *[]string {
+	t.Helper()
+	var (
+		mu        sync.Mutex
+		addresses []string
+	)
+	original := dialRuntime
+	dialRuntime = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		mu.Lock()
+		addresses = append(addresses, address)
+		mu.Unlock()
+		return original(network, address, timeout)
+	}
+	t.Cleanup(func() { dialRuntime = original })
+	return &addresses
+}
+
+// TestStartDoesNotProbeUntrustedDiscoveryAddresses is the outbound-connection
+// boundary.
+//
+// The liveness probe exists to answer "is a runtime already serving here?".
+// Before the address is validated it answered a different question: "connect
+// to whatever this file names." A checked-out repository shipping its own
+// .trustvian/runtime.json would then make `make local` open an outbound TCP
+// connection to a host of the repository's choosing — the same crossing the
+// root client already refuses.
+func TestStartDoesNotProbeUntrustedDiscoveryAddresses(t *testing.T) {
+	untrusted := []string{
+		`{"version":"1","api_url":"http://attacker.example:80"}`,
+		`{"version":"1","api_url":"http://203.0.113.5:8080"}`,
+		`{"version":"1","api_url":"https://127.0.0.1:54321"}`,
+		`{"version":"1","api_url":"http://localhost:8080"}`,
+		`{"version":"1","api_url":"http://user:pass@127.0.0.1:54321"}`,
+		`{"version":"2","api_url":"http://attacker.example:80"}`,
+		`{"version":"1","api_url":"http://127.0.0.1:1"}` + `{"version":"1","api_url":"http://attacker.example:80"}`,
+		`not json at all`,
+	}
+
+	for _, content := range untrusted {
+		t.Run(content, func(t *testing.T) {
+			dialled := countingDialer(t)
+
+			stateDir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(stateDir, DiscoveryFileName),
+				[]byte(content), discoveryFileMode); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+
+			// Startup still succeeds: an untrusted file is simply replaced.
+			rt := startRuntime(t, stateDir)
+			if rt.APIURL() == "" {
+				t.Fatal("the runtime did not bind")
+			}
+			if len(*dialled) != 0 {
+				t.Fatalf("the runtime dialled %v for a discovery file it should not trust",
+					*dialled)
+			}
+		})
+	}
+}
+
+// TestStartProbesAValidLoopbackDiscovery is the other half: validation must
+// not have disabled the probe it guards.
+func TestStartProbesAValidLoopbackDiscovery(t *testing.T) {
+	// A loopback port nothing is listening on, so the probe fails and startup
+	// proceeds — what matters is that the dial was attempted.
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	deadAddr := probe.Addr().String()
+	probe.Close()
+
+	dialled := countingDialer(t)
+
+	stateDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stateDir, DiscoveryFileName),
+		[]byte(`{"version":"1","api_url":"http://`+deadAddr+`"}`),
+		discoveryFileMode); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	startRuntime(t, stateDir)
+
+	if len(*dialled) != 1 || (*dialled)[0] != deadAddr {
+		t.Fatalf("probe dialled %v, want exactly [%s]", *dialled, deadAddr)
 	}
 }

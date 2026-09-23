@@ -48,7 +48,7 @@ func runTUI(s streams, args []string, timeout time.Duration) int {
 
 	// Authoritative reads reuse task 060's client unchanged: bounded bodies,
 	// refused redirects, rejected credentials, a finite one-shot timeout.
-	client, err := resolveAPIURL(*apiURL, timeout)
+	client, err := resolveAPIURL(*apiURL, flagWasSet(fs, "api-url"), timeout)
 	if err != nil {
 		if exitCodeFor(err) == exitUsage {
 			return usageFailure(s, tuiUsage, err)

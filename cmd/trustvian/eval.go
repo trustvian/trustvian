@@ -37,20 +37,21 @@ const (
 const wireVersion = "1"
 
 const evalUsage = `usage:
-  trustvian eval create       --api-url <url> --id <id> --candidate-id <id>
-                              --environment <ref> --behavioral-profile <ref> [--json]
-  trustvian eval get          --api-url <url> --id <id> [--json]
-  trustvian eval start        --api-url <url> --id <id> [--json]
-  trustvian eval complete     --api-url <url> --id <id> [--json]
-  trustvian eval fail         --api-url <url> --id <id> [--reason <text>] [--json]
-  trustvian eval cancel       --api-url <url> --id <id> [--json]
-  trustvian eval progress     --api-url <url> --id <id> [--json]
-  trustvian eval ingest-state --api-url <url> --id <id> [--json]
-  trustvian eval ingest       --api-url <url> --id <id> --sequence <n>
-                              --behavioral-profile <ref> --record <file> [--json]
-  trustvian eval compare      --api-url <url> --reference-run <id> --candidate-run <id>
+  trustvian eval create       --id <id> --candidate-id <id> --environment <ref>
+                              --behavioral-profile <ref> [--api-url <url>] [--json]
+  trustvian eval get          --id <id> [--api-url <url>] [--json]
+  trustvian eval start        --id <id> [--api-url <url>] [--json]
+  trustvian eval complete     --id <id> [--api-url <url>] [--json]
+  trustvian eval fail         --id <id> [--reason <text>] [--api-url <url>] [--json]
+  trustvian eval cancel       --id <id> [--api-url <url>] [--json]
+  trustvian eval progress     --id <id> [--api-url <url>] [--json]
+  trustvian eval ingest-state --id <id> [--api-url <url>] [--json]
+  trustvian eval ingest       --id <id> --sequence <n> --behavioral-profile <ref>
+                              --record <file> [--api-url <url>] [--json]
+  trustvian eval compare      --reference-run <id> --candidate-run <id>
                               --max-added-behaviors <n> --max-block-decisions <n>
-                              --max-critical-risk-observations <n> [--json]`
+                              --max-critical-risk-observations <n>
+                              [--api-url <url>] [--json]` + apiURLNote
 
 func runEval(s streams, args []string, timeout time.Duration) int {
 	if len(args) == 0 {
@@ -368,7 +369,7 @@ func runEvalCompare(s streams, args []string, timeout time.Duration) int {
 		}
 	}
 
-	client, err := resolveAPIURL(*common.apiURL, timeout)
+	client, err := resolveAPIURL(*common.apiURL, common.apiURLSet(), timeout)
 	if err != nil {
 		if exitCodeFor(err) == exitUsage {
 			return usageFailure(s, evalUsage, err)

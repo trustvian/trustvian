@@ -16,14 +16,19 @@ the control plane's, and the CLI reports what it returned. See
 
 ## Finding the control plane
 
-Explicit `--api-url` is required when you are **not** using the local runtime.
-When `make local` is running from the same working directory, platform commands
-discover `.trustvian/runtime.json` automatically:
+`--api-url` is optional. When `make local` is running from the same working
+directory, platform commands discover `.trustvian/runtime.json` automatically;
+pass an endpoint to reach anything else.
 
 ```text
 --api-url given    → that endpoint, always
 --api-url omitted  → ./.trustvian/runtime.json
 ```
+
+*Given* means present on the command line, not non-empty. `--api-url ""` is a
+usage error (exit `2`) and reads no discovery file — in a script that is an
+unset variable, and falling back to a local runtime there would silently run
+the command against the wrong control plane.
 
 ```bash
 # local: nothing to pass
@@ -68,32 +73,34 @@ pipeline could reconstruct.
 ## Commands
 
 ```text
-trustvian project create --api-url <url> --id <id> --name <name>
-trustvian project get    --api-url <url> --id <id>
+trustvian project create --id <id> --name <name>
+trustvian project get    --id <id>
 
-trustvian agent create   --api-url <url> --id <id> --project-id <id> --name <name>
-trustvian agent get      --api-url <url> --id <id>
+trustvian agent create   --id <id> --project-id <id> --name <name>
+trustvian agent get      --id <id>
 
-trustvian candidate create --api-url <url> --id <id> --agent-id <id>
+trustvian candidate create --id <id> --agent-id <id>
                            [--label] [--source-ref] [--artifact-digest]
                            [--model] [--toolset-digest] [--config-digest]
-trustvian candidate get    --api-url <url> --id <id>
+trustvian candidate get    --id <id>
 
-trustvian eval create       --api-url <url> --id <id> --candidate-id <id>
+trustvian eval create       --id <id> --candidate-id <id>
                             --environment <ref> --behavioral-profile <ref>
-trustvian eval get          --api-url <url> --id <id>
-trustvian eval start        --api-url <url> --id <id>
-trustvian eval complete     --api-url <url> --id <id>
-trustvian eval fail         --api-url <url> --id <id> [--reason <text>]
-trustvian eval cancel       --api-url <url> --id <id>
-trustvian eval progress     --api-url <url> --id <id>
-trustvian eval ingest-state --api-url <url> --id <id>
-trustvian eval ingest       --api-url <url> --id <id> --sequence <n>
+trustvian eval get          --id <id>
+trustvian eval start        --id <id>
+trustvian eval complete     --id <id>
+trustvian eval fail         --id <id> [--reason <text>]
+trustvian eval cancel       --id <id>
+trustvian eval progress     --id <id>
+trustvian eval ingest-state --id <id>
+trustvian eval ingest       --id <id> --sequence <n>
                             --behavioral-profile <ref> --record <file>
-trustvian eval compare      --api-url <url> --reference-run <id> --candidate-run <id>
+trustvian eval compare      --reference-run <id> --candidate-run <id>
                             --max-added-behaviors <n> --max-block-decisions <n>
                             --max-critical-risk-observations <n>
 ```
+
+Every command additionally accepts `[--api-url <url>]` and `[--json]`.
 
 All of them accept `--json`.
 

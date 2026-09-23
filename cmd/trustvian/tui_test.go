@@ -597,6 +597,31 @@ func TestNewBehaviorLabelIsFactual(t *testing.T) {
 // Usage
 // ---------------------------------------------------------------------
 
+// TestTUIExplicitEmptyAPIURLIsUsage applies the presence rule to the
+// dashboard.
+//
+// `--api-url ""` names an endpoint badly; it does not ask for whatever runtime
+// happens to be in this directory.
+func TestTUIExplicitEmptyAPIURLIsUsage(t *testing.T) {
+	discovered := newFakeAPI(t)
+	discovered.reply(200, `{"version":"1","id":"run-42"}`)
+
+	t.Chdir(t.TempDir())
+	writeDiscoveryFile(t, discoveryFor(discovered.url()))
+
+	for _, form := range [][]string{{"--api-url", ""}, {"--api-url="}} {
+		result := runPlatformCLI(t, append([]string{"tui", "--run-id", "run-42"}, form...)...)
+		result.mustExit(t, exitUsage, "tui with an empty endpoint")
+
+		if len(discovered.captured()) != 0 {
+			t.Fatal("the TUI fell back to discovery after an explicitly empty --api-url")
+		}
+		if result.code == exitGateFail {
+			t.Fatal("the TUI produced exit 1, which means gate FAIL")
+		}
+	}
+}
+
 // TestTUIMissingRuntimeIsOperational mirrors the CLI classification.
 //
 // --run-id is still required — nothing can guess which run to watch — but

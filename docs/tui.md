@@ -30,6 +30,10 @@ dashboard elsewhere.
 `--api-url` and no local runtime, the TUI exits **3**: the command was valid
 and the environment was not.
 
+An *empty* `--api-url` is different from an absent one: `--api-url ""` exits
+**2** and reads no discovery file, because an empty value is an unset variable
+rather than a request to use whatever runtime is in the directory.
+
 The TUI starts no server of its own and binds no port.
 
 ## What it shows

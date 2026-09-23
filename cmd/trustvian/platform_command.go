@@ -109,7 +109,7 @@ func runLeaf(
 	// Explicit --api-url, else the local runtime's discovery file. A missing
 	// or broken runtime is operational, not usage: after task 062 the command
 	// itself is valid and the environment is what failed.
-	client, err := resolveAPIURL(*common.apiURL, timeout)
+	client, err := resolveAPIURL(*common.apiURL, common.apiURLSet(), timeout)
 	if err != nil {
 		if exitCodeFor(err) == exitUsage {
 			return usageFailure(s, usage, err)

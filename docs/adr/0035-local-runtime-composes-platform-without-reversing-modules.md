@@ -124,6 +124,44 @@ like security.
 
 What protects the endpoint is that it is on loopback.
 
+### 10a. Discovery presence decides resolution, not emptiness
+
+`--api-url ""` is a usage error, and no discovery file is read.
+
+Treating an empty string as "not supplied" reads well until the value came from
+a shell:
+
+```bash
+trustvian eval compare --api-url "$CONTROL_PLANE_URL" …
+```
+
+An unset variable would then silently redirect a gate decision at whatever
+runtime the checked-out working directory happened to advertise, and report a
+verdict for it. Presence on the command line is the signal; what the caller put
+there is validated, never reinterpreted.
+
+### 10b. The discovery file is exactly one bounded JSON document
+
+Both readers `Unmarshal` the whole payload rather than decoding one value from
+a stream. A stream decoder stops at the end of the first value, so a file whose
+first object parsed was accepted no matter what followed it — including a
+second object naming a different endpoint.
+
+The 4 KiB bound is enforced on the bytes actually read, and nowhere else. An
+earlier `os.Stat` size check was removed rather than kept as a second layer: it
+could only ever agree with the read bound, except in the window where the file
+grows between the two calls — where the stat is the one that is wrong — and
+while it was there it masked the read bound from every test, which is how a
+guard ends up unverified.
+
+### 10c. The liveness probe only dials addresses that already passed validation
+
+`ReadDiscovery` applies the full local-runtime URL policy, so the probe cannot
+be handed a host of the file's choosing. Without that, a checked-out repository
+shipping its own `.trustvian/runtime.json` would make `make local` open an
+outbound TCP connection to any address it named — the same crossing the root
+client already refuses, arriving through the server instead.
+
 ### 11. Task 070 still owns authentication and TLS
 
 No token, API key, login, certificate generation or TLS claim appears here. A

@@ -96,16 +96,18 @@ Usage:
   trustvian version
       Print version, commit revision, and build platform
 
-Control-plane commands (require --api-url; see docs/platform-cli.md):
+Control-plane commands (see docs/platform-cli.md):
   trustvian project    create|get
   trustvian agent      create|get
   trustvian candidate  create|get
   trustvian eval       create|get|start|complete|fail|cancel|
                        progress|ingest-state|ingest|compare
       Drive a local control plane over its /v1 HTTP API. Each supports
-      --json, which writes the API's own response to stdout.
+      --json, which writes the API's own response to stdout, and takes an
+      optional --api-url; without one, a runtime started by 'make local'
+      is found through ./.trustvian/runtime.json.
 
-  trustvian tui        --api-url <url> --run-id <id>
+  trustvian tui        --run-id <id> [--api-url <url>]
       Watch one evaluation run live in the terminal. Read-only; requires
       an already-running control plane.
 

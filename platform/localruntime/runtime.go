@@ -377,15 +377,30 @@ func removeOwnedDiscovery(path, apiURL string) {
 	os.Remove(path)
 }
 
+// dialRuntime is the liveness probe's dialer.
+//
+// A package variable so tests can observe whether a dial was attempted at all.
+// Unexported and never part of the API: the guarantee being tested is "this
+// address was never contacted", which nothing else can demonstrate.
+var dialRuntime = net.DialTimeout
+
 // refuseIfRuntimeIsLive avoids replacing a runtime that is still serving.
 //
 // A bounded TCP dial, not an API call: asking the application whether it is
 // alive would be a mutation-shaped question. A malformed, stale or unreachable
 // file is replaced freely. No locking — task 069 owns multi-node concerns, and
 // this is single-node development.
+//
+// The address is validated before anything is dialled. ReadDiscovery now
+// enforces the full local-runtime URL policy, so a file cannot name a host of
+// its choosing — otherwise a checked-out project containing a discovery file
+// would make `make local` open an outbound connection to whatever it named,
+// which is exactly the boundary the root client already refuses to cross.
 func refuseIfRuntimeIsLive(discoveryPath string) error {
 	discovery, err := ReadDiscovery(discoveryPath)
 	if err != nil {
+		// Unreadable, unsupported, or not a loopback runtime URL: nothing
+		// worth probing, and the file may be replaced.
 		return nil
 	}
 	parsed, err := url.Parse(discovery.APIURL)
@@ -393,7 +408,7 @@ func refuseIfRuntimeIsLive(discoveryPath string) error {
 		return nil
 	}
 
-	conn, err := net.DialTimeout("tcp", parsed.Host, livenessProbeTimeout)
+	conn, err := dialRuntime("tcp", parsed.Host, livenessProbeTimeout)
 	if err != nil {
 		return nil
 	}
@@ -410,35 +425,95 @@ func refuseIfRuntimeIsLive(discoveryPath string) error {
 // bounded, version-checked read. Unknown fields inside version 1 are tolerated
 // so the file can grow; an unknown version fails closed.
 func ReadDiscovery(path string) (Discovery, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return Discovery{}, err
-	}
-	if info.Size() > MaxDiscoveryFileBytes {
-		return Discovery{}, fmt.Errorf(
-			"runtime discovery file is %d bytes, over the %d byte limit",
-			info.Size(), MaxDiscoveryFileBytes)
-	}
-
 	file, err := os.Open(path)
 	if err != nil {
 		return Discovery{}, err
 	}
 	defer file.Close()
 
-	// Bounded again while reading: the stat above is a check, not a guarantee,
-	// since the file can change between the two.
+	// The bound is on the bytes actually read, and only there. A stat-based
+	// size check ahead of it could only agree with this one, except in the
+	// window where the file grows between the two calls — where it is the
+	// stat that is wrong. One guard, at the point the bytes are consumed.
+	//
+	// One byte past the limit is read deliberately, so "exactly at the limit"
+	// and "over it" stay distinguishable instead of both arriving truncated.
+	payload, err := io.ReadAll(io.LimitReader(file, MaxDiscoveryFileBytes+1))
+	if err != nil {
+		return Discovery{}, err
+	}
+	if len(payload) > MaxDiscoveryFileBytes {
+		return Discovery{}, fmt.Errorf(
+			"runtime discovery file is over the %d byte limit", MaxDiscoveryFileBytes)
+	}
+
+	// Unmarshal, not Decode: a decoder reads one value and stops, so a second
+	// document or trailing junk would be accepted on the strength of the first
+	// object. Unmarshal requires the payload to be exactly one JSON value,
+	// while tolerating unknown fields inside it and trailing whitespace after.
 	var discovery Discovery
-	decoder := json.NewDecoder(io.LimitReader(file, MaxDiscoveryFileBytes+1))
-	if err := decoder.Decode(&discovery); err != nil {
-		return Discovery{}, fmt.Errorf("runtime discovery file is not valid JSON")
+	if err := json.Unmarshal(payload, &discovery); err != nil {
+		return Discovery{}, errors.New("runtime discovery file is not exactly one JSON document")
 	}
 	if discovery.Version != DiscoveryVersion {
 		return Discovery{}, fmt.Errorf(
 			"runtime discovery version %q is not supported", discovery.Version)
 	}
-	if discovery.APIURL == "" {
-		return Discovery{}, errors.New("runtime discovery file carries no api_url")
+	// The complete contract, not just the envelope: every caller — the
+	// liveness probe, ownership checks on shutdown, tests — then holds a URL
+	// that has already been proven to be a local runtime's.
+	if err := validateDiscoveryAPIURL(discovery.APIURL); err != nil {
+		return Discovery{}, err
 	}
 	return discovery, nil
+}
+
+// validateDiscoveryAPIURL enforces the local-runtime URL policy.
+//
+// One validator for the whole module, matching the root client's rule
+// semantically. The two cannot share code across the module boundary, and
+// duplicating the contract in two places beats making an operational file into
+// a public package — but within each module there is exactly one.
+//
+// A project directory can contain a discovery file, so this is what stops a
+// checked-out repository turning `make local` into an outbound connection to
+// an address of its choosing.
+func validateDiscoveryAPIURL(raw string) error {
+	if raw == "" {
+		return errors.New("runtime discovery file carries no api_url")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return errors.New("runtime discovery api_url is not a valid URL")
+	}
+	if parsed.Scheme != "http" {
+		return fmt.Errorf(
+			"runtime discovery api_url scheme %q is not supported; a local runtime is http",
+			parsed.Scheme)
+	}
+	if parsed.User != nil {
+		return errors.New("runtime discovery api_url must not contain credentials")
+	}
+	if parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return errors.New("runtime discovery api_url must not contain a query or fragment")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return errors.New("runtime discovery api_url must not contain a path")
+	}
+
+	host, port, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		return errors.New("runtime discovery api_url must include a host and port")
+	}
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		return errors.New("runtime discovery api_url has an invalid port")
+	}
+	// Numeric only. A hostname that resolves to loopback today is a name
+	// someone else controls, and resolution is not proof.
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf(
+			"runtime discovery api_url host %q is not a numeric loopback address", host)
+	}
+	return nil
 }

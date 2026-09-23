@@ -87,6 +87,14 @@ An explicit endpoint always wins over discovery:
 That matters for CI: a checked-out working directory can never redirect a
 command that named its own endpoint.
 
+`--api-url ""` counts as naming one — badly. It exits **2** without reading any
+discovery file, because an empty value almost always means an unset variable:
+
+```bash
+# $CONTROL_PLANE_URL is unset → exit 2, not a gate result from the local runtime
+./bin/trustvian eval compare --api-url "$CONTROL_PLANE_URL" …
+```
+
 ## When there is no runtime
 
 ```text
@@ -107,8 +115,10 @@ security boundary.
 
 Discovery is not authentication: `runtime.json` carries no token and no secret,
 and a discovered URL is accepted only if it is `http` on a numeric loopback
-address. A repository that ships its own `.trustvian/runtime.json` cannot
-redirect your commands anywhere else.
+address. It must be exactly one JSON document under 4 KiB. A repository that
+ships its own `.trustvian/runtime.json` cannot redirect your commands anywhere
+else — and cannot make `make local` connect anywhere else either: the startup
+liveness probe validates the address before it dials it.
 
 **Do not expose this runtime, or put a reverse proxy in front of it.** Task 070
 owns authentication and remote access.

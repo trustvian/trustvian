@@ -365,11 +365,21 @@ type localDiscovery struct {
 
 // resolveAPIURL picks the endpoint for a platform command.
 //
-// Explicit input always wins. A working directory must never be able to
-// redirect a command that named its own endpoint — that is what keeps CI and
-// sandbox invocations unaffected by whatever happens to be checked out.
-func resolveAPIURL(explicit string, timeout time.Duration) (*platformClient, error) {
-	if explicit != "" {
+// Explicit input always wins — including when it is wrong. A working directory
+// must never be able to redirect a command that named its own endpoint, and
+// that has to hold for an explicitly empty value too: `--api-url ""` is a
+// caller who meant to supply a URL and did not, most often
+//
+//	trustvian eval compare --api-url "$CONTROL_PLANE_URL" ...
+//
+// with the variable unset. Falling back to a local runtime there would compare
+// against the wrong control plane and report a verdict for it.
+//
+// So presence decides, not emptiness. An explicitly supplied value goes
+// straight to parseAPIURL, which rejects empty as a usage error, and no
+// discovery file is read.
+func resolveAPIURL(explicit string, explicitSet bool, timeout time.Duration) (*platformClient, error) {
+	if explicitSet {
 		return newPlatformClient(explicit, timeout)
 	}
 
@@ -386,7 +396,7 @@ func resolveAPIURL(explicit string, timeout time.Duration) (*platformClient, err
 // without --api-url is a valid invocation, so a missing or broken runtime
 // means the environment is wrong rather than the command.
 func readLocalDiscovery(path string) (string, error) {
-	info, err := os.Stat(path)
+	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", operationalErrorf(
@@ -394,25 +404,33 @@ func readLocalDiscovery(path string) (string, error) {
 		}
 		return "", operationalErrorf("reading %s: %v", path, err)
 	}
-	// Bounded before opening: the file is project-local and not necessarily
-	// trustworthy, and two fields need nothing like this much.
-	if info.Size() > localDiscoveryLimit {
-		return "", operationalErrorf(
-			"%s is %d bytes, over the %d byte limit", path, info.Size(), localDiscoveryLimit)
-	}
+	defer file.Close()
 
-	file, err := os.Open(path)
+	// The bound is on the bytes actually read, and only there. A stat-based
+	// size check ahead of it would be both redundant and untestable: it can
+	// only ever agree with this one, except in the window where the file grows
+	// between the two calls — where it is the stat that is wrong. One guard,
+	// at the point the bytes are consumed.
+	//
+	// One byte past the limit is read on purpose, so "exactly at the limit"
+	// and "over it" are distinguishable rather than both arriving truncated.
+	payload, err := io.ReadAll(io.LimitReader(file, localDiscoveryLimit+1))
 	if err != nil {
 		return "", operationalErrorf("reading %s: %v", path, err)
 	}
-	defer file.Close()
+	if len(payload) > localDiscoveryLimit {
+		return "", operationalErrorf(
+			"%s is over the %d byte limit", path, localDiscoveryLimit)
+	}
 
-	// Bounded again while reading: the stat above is a check, not a promise,
-	// since the file can change between the two.
+	// Unmarshal, not Decode: a decoder reads one value and stops, so a file
+	// carrying a second document — or trailing junk after the first — would be
+	// silently accepted on the strength of its opening object. Unmarshal
+	// requires the whole payload to be exactly one JSON value, while still
+	// tolerating unknown fields inside it and trailing whitespace after it.
 	var discovery localDiscovery
-	if err := json.NewDecoder(io.LimitReader(file, localDiscoveryLimit+1)).
-		Decode(&discovery); err != nil {
-		return "", operationalErrorf("%s is not valid JSON", path)
+	if err := json.Unmarshal(payload, &discovery); err != nil {
+		return "", operationalErrorf("%s is not exactly one JSON document", path)
 	}
 	if discovery.Version != localDiscoveryVersion {
 		return "", operationalErrorf(
