@@ -336,9 +336,37 @@ jobs:
   platform:
     name: Platform module (GOWORK=off)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       GOWORK: "off"
+      # Task 064's PostgreSQL backend. The tests skip without this, which is
+      # what keeps `go test ./...` working on a developer machine with no
+      # database — so CI is where they are actually proven, and the step below
+      # fails the job if they skip here.
+      TRUSTVIAN_TEST_POSTGRES_DSN: postgres://trustvian:trustvian@localhost:5432/trustvian_test?sslmode=disable
+
+    services:
+      # The same service the root module's job already declares, for the same
+      # reason: a real server is the only thing that can demonstrate a row lock,
+      # a SQLSTATE or a collation. SQLite standing in would prove none of them,
+      # and a SQL mock would prove only that the mock agreed.
+      #
+      # These credentials are ephemeral and scoped to this job. They are not
+      # secrets and must never be replaced by one: a workflow needing a real DSN
+      # could not run on fork pull requests.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: trustvian
+          POSTGRES_PASSWORD: trustvian
+          POSTGRES_DB: trustvian_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U trustvian -d trustvian_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
 
     steps:
       - uses: actions/checkout@v7
@@ -370,6 +398,63 @@ jobs:
       - name: Test
         working-directory: platform
         run: go test ./...
+
+      - name: Prove the PostgreSQL tests ran rather than skipped
+        # The gate that makes the DSN above meaningful.
+        #
+        # Every PostgreSQL test skips without TRUSTVIAN_TEST_POSTGRES_DSN, which
+        # is deliberate for developers and dangerous for CI: a broken service, a
+        # renamed variable or a typo'd port would turn this whole backend's
+        # coverage into silent skips, and the job would still pass. So the
+        # verbose output is inspected directly — the named tests must report RUN
+        # and PASS, and none of them may report SKIP.
+        working-directory: platform
+        run: |
+          set -o pipefail
+          go test -count=1 -v \
+            -run 'TestStoreConformance|TestStoreBackendsAgreeOnLogicalState|TestPostgres|TestRuntimeOnPostgres' \
+            . ./localruntime | tee /tmp/pg-tests.log
+
+          if grep -q -- '--- SKIP: TestPostgres' /tmp/pg-tests.log; then
+            echo "::error::PostgreSQL tests skipped in CI; the service or the DSN is wrong"
+            grep -- '--- SKIP' /tmp/pg-tests.log
+            exit 1
+          fi
+
+          # Named explicitly, so deleting a suite is a CI failure rather than a
+          # quietly smaller run.
+          for required in \
+            TestStoreConformance/postgres \
+            TestStoreBackendsAgreeOnLogicalState \
+            TestPostgresConcurrentLifecycleTransitionYieldsOneWinner \
+            TestPostgresConcurrentIngestOfTheSameSequenceCommitsOnce \
+            TestPostgresRunMutationWindowIsMutuallyExclusive \
+            TestPostgresEvidenceSaveWindowIsMutuallyExclusive \
+            TestPostgresConcurrentInitializationYieldsOneSchema \
+            TestPostgresMigrationDoesNotBlockOnTheEngineLock \
+            TestPostgresPreservesMaxUint64 \
+            TestPostgresPreservesTimestampOffsetAndNanoseconds \
+            TestPostgresIdentifierOrderingIsByteOrder \
+            TestPostgresErrorsNeverCarryTheDSN \
+            TestRuntimeOnPostgresServesTheRealAPI
+          do
+            if ! grep -q -- "--- PASS: $required" /tmp/pg-tests.log; then
+              echo "::error::$required did not run and pass against real PostgreSQL"
+              exit 1
+            fi
+          done
+
+          echo "PostgreSQL integration tests executed:"
+          grep -c -- '--- PASS' /tmp/pg-tests.log
+
+      - name: Prove the suite still passes without PostgreSQL
+        # The other half of the contract: an ordinary `go test ./...` on a
+        # machine with no database must work, with the PostgreSQL tests skipping
+        # rather than failing. Run with the variable explicitly unset.
+        working-directory: platform
+        env:
+          TRUSTVIAN_TEST_POSTGRES_DSN: ""
+        run: go test -count=1 ./...
 
       - name: Test with the race detector
         working-directory: platform
