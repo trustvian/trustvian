@@ -28,6 +28,7 @@ here, not moved or rewritten.
 
 | Threat | Test(s) |
 | --- | --- |
+| Shared PostgreSQL backend keeps credentials and internals off every surface | `TestPostgresErrorsNeverCarryTheDSN`, `TestPostgresIdentifierOrderingIsByteOrder`, `TestPostgresBuildsNoSQLFromNonConstants`, `TestPostgresRunScopedWritesTakeTheRowLock`, `TestPostgresUsesReadCommitted`, `TestPostgresRefusesANewerSchema`, `TestPostgresRefusesTablesWithoutAVersionRow`, `TestPostgresConcurrentInitializationYieldsOneSchema`, `TestPostgresMigrationDoesNotBlockOnTheEngineLock` in [`platform/postgres_internal_test.go`](../platform/postgres_internal_test.go), [`postgres_concurrency_test.go`](../platform/postgres_concurrency_test.go) and [`postgres_schema_test.go`](../platform/postgres_schema_test.go); `TestRuntimeErrorsNeverCarryTheDSN`, `TestUnknownBackendFailsClosed`, `TestPostgresBackendWithoutDSNFailsBeforeTheListener`, `TestDiscoveryNeverCarriesBackendConfiguration`, `TestRuntimeOnPostgresServesTheRealAPI`, `TestBackendSelectionDoesNotLeakAboveComposition` in [`platform/localruntime/backend_test.go`](../platform/localruntime/backend_test.go) and [`architecture_test.go`](../platform/localruntime/architecture_test.go) |
 | Browser control plane renders untrusted text inertly | `TestShippedScriptsUseNoDangerousRenderingPrimitive`, `TestShippedScriptsDoNotEnumerateServerObjects`, `TestFieldAllowlistsExcludeEverySensitiveField`, `TestPrivacyFixtureFieldsAreUnreachable`, `TestContentSecurityPolicyForbidsEveryEscapeHatch`, `TestNoBrowserPersistenceOfPlatformState`, `TestUint64CountersAreNeverParsedAsNumbers`, `TestGateVerdictComesFromTheServer` in [`platform/webui/assets_test.go`](../platform/webui/assets_test.go) and [`handler_test.go`](../platform/webui/handler_test.go); `TestHandlerConstructorTakesNoControlPlane`, `TestDependencyGraphContainsNoPlatformOrStoreCode` in [`platform/webui/architecture_test.go`](../platform/webui/architecture_test.go); `TestUnknownAPIRoutesNeverReturnTheShell`, `TestWebUIResponsesCarryNoCORSHeader` in [`platform/localruntime/runtime_test.go`](../platform/localruntime/runtime_test.go); `TestHostileServerStringsSurviveTheAPIAsData` in [`platform/localruntime/endtoend_test.go`](../platform/localruntime/endtoend_test.go) |
 | Identity confusion (cross-actor isolation) | `TestAnalyzeCrossActorIsolation` in [`engine_test.go`](../engine_test.go) |
 | Baseline poisoning | `TestObserveLearnsOnlyFromEligibleDecisions`, `TestAnalyzeSensitiveTargetFloorEndToEnd` in [`engine_test.go`](../engine_test.go); `TestFingerprintStatsIgnoresNonPositiveInterval`, `TestFingerprintStatsOutOfOrderObservationDoesNotDistortNextInterval` in [`internal/baseline/baseline_test.go`](../internal/baseline/baseline_test.go); `TestScoreFrequencyDeviation` (negative-interval subtests) in [`internal/anomaly/anomaly_test.go`](../internal/anomaly/anomaly_test.go) |
@@ -1066,6 +1067,85 @@ a second source of truth that disagrees with the database.
 the page may do and says nothing about who may open it. The runtime remains
 unauthenticated and loopback-only, and
 [task 070](tasks/v1.0/) owns remote authenticated access.
+
+### The shared PostgreSQL backend keeps credentials and internals off every surface
+
+**Threat:** a shared database introduces a connection string, and a connection
+string is a secret that wants to escape — into a log, a startup banner, an error
+message, a discovery file, an HTTP response. It also introduces a driver whose
+errors carry table names, constraint names, SQLSTATE codes and sometimes the SQL
+itself, none of which a caller should ever see. And it removes the property that
+made the local store's read-then-write operations atomic, which was holding one
+connection.
+
+**Status: redacted, mapped, and locked per run.**
+[Task 064](tasks/v1.0/064-postgresql-platform-backend.md) adds the backend; see
+[ADR 0037](adr/0037-postgresql-is-the-shared-platform-persistence-backend.md).
+
+- **The DSN never appears anywhere.** Not in a log, not in `trustvian-local`'s
+  startup output, not in an error, not in `.trustvian/runtime.json`, not in a
+  `/v1` response, not in the CLI or the WebUI. There is a specific driver
+  behaviour behind this and the engine's store already carries the same
+  regression test: pgx redacts the password when it can *parse* a DSN and
+  reproduces the string **verbatim** when it cannot — so a mistyped DSN is the
+  dangerous case, and it is the one an operator is most likely to produce.
+  `redactDSNError` therefore reports the action and nothing derived from the
+  input. Tests drive a distinctive sentinel through four DSN shapes at the store
+  level and four more at the runtime level, asserting it appears in no error and
+  that no wrapper adds the configuration back.
+- **The DSN is read from the environment, not a flag.** A command line is
+  visible to every process on the machine through `ps`; the engine's store takes
+  the same value from a config file for the same reason. Neither puts a
+  credential on argv.
+- **Backend selection fails closed.** An unrecognized backend name is refused
+  rather than defaulted, and PostgreSQL selected without a DSN fails before the
+  listener binds. Nothing ever falls back from an explicit selection: a
+  deployment that asked for a shared database and silently got a local file would
+  look healthy while losing every other process's state.
+- **No usable endpoint is advertised before the database is proven.** The pool is
+  constructed, connectivity is proven with a `Ping`, and the schema is created,
+  verified or migrated — all before the listener binds and before `runtime.json`
+  is written. A test asserts a failed PostgreSQL start leaves no reachable
+  endpoint behind.
+- **Driver internals do not reach `/v1`.** Failures map by SQLSTATE — never by
+  message text, because a driver's English is not a contract — onto the same
+  sentinels the SQLite store already used: `23505` to already-exists, `23503` to
+  not-found, `40001`/`40P01` to conflict, anything else to an unavailability
+  class. A runtime-level test drives the real `/v1` surface on PostgreSQL and
+  asserts no response contains a SQLSTATE, a table or column name, a constraint,
+  raw SQL, the DSN, a host or a username. Cancellation stays the context's own
+  error rather than becoming a conflict, so a caller is never told to retry
+  something they abandoned.
+- **Every value is a bound parameter.** No SQL is assembled from caller input;
+  the only runtime-built SQL is a placeholder list and an upsert assignment list
+  derived from a package-level column list. The one dynamic identifier anywhere
+  is a test-only schema name built from a Go test's name through a constrained
+  alphabet. A source guard fails the build on SQL built from a value.
+- **Concurrency is designed rather than inherited.** SQLite's atomicity came
+  from `SetMaxOpenConns(1)`; a pool has none, so every run-scoped write takes
+  `SELECT … FOR UPDATE` on its run row before the reads it depends on, and the
+  lifecycle update additionally carries its expected status as a predicate with a
+  `RowsAffected` check. The ingest cursor is reached through the run row because
+  `FOR UPDATE` locks nothing when the cursor row does not yet exist. Isolation
+  stays `READ COMMITTED`: raising it globally would make serialization failures a
+  routine outcome and push retry logic onto every caller.
+- **A schema this binary does not understand is refused.** Newer than
+  `SchemaVersion`, or recognized tables with no version row, both fail closed
+  rather than being rewritten — the safe reading of the second is "something else
+  wrote here", not "empty". Create-and-stamp is one transaction, so
+  tables-without-version is unreachable rather than merely unlikely, and
+  concurrent startup is serialized by a transaction-scoped advisory lock whose
+  key is proven distinct from the engine store's.
+- **Least privilege.** The platform's database role needs DML on its own
+  `platform_`-prefixed tables, plus DDL only in the process that migrates. TLS is
+  configured through the DSN (`sslmode`, `sslrootcert`) and nothing defaults it
+  to `disable`.
+
+**Not claimed:** this adds no authentication, no RBAC and no TLS policy — task
+070 owns those. And two control-plane processes sharing one PostgreSQL database
+share authoritative state but **not** realtime notifications: each keeps its own
+in-process bus, which is a documented limitation of task 064 rather than a
+defect. Task 069 owns cross-node realtime.
 
 ### Platform identity cannot become behavioral identity
 

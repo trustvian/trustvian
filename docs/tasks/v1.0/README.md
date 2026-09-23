@@ -19,7 +19,7 @@ Tasks for the `v1.0` milestone.
 | [061 — Terminal Dashboard (TUI)](061-terminal-dashboard.md) | Specified and implemented |
 | [062 — Integrated Local Developer Workflow](062-integrated-local-developer-workflow.md) | Specified and implemented |
 | [063 — Minimal Web Control Plane](063-minimal-web-control-plane.md) | Specified and implemented |
-| [064 — PostgreSQL Platform Backend](064-postgresql-platform-backend.md) | Specified |
+| [064 — PostgreSQL Platform Backend](064-postgresql-platform-backend.md) | Specified and implemented |
 | 065–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
 
 The numbers 065–072 are the approved plan, not placeholders — the sequence,
@@ -31,9 +31,10 @@ specification rather than resolved: the WebUI navigates by caller-known ID, and
 a list route is deferred to the milestone that first has concrete filtering
 requirements.
 
-Task 064 is **specified but not implemented**: it describes a PostgreSQL
-backend alongside SQLite, and no PostgreSQL code or driver exists in the
-platform module yet.
+Task 064 is implemented. SQLite remains the zero-configuration local default;
+PostgreSQL is opt-in and must be selected explicitly. One logical
+`SchemaVersion` governs both physical schemas, and a shared conformance suite
+plus a SQLite/PostgreSQL differential suite is what keeps them from drifting.
 
 **Each task gets its own written spec before implementation starts**, in the
 shape the completed tasks in [`../../archive/tasks/`](../../archive/tasks/README.md)

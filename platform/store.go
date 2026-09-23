@@ -13,6 +13,7 @@ package platform
 import (
 	"context"
 	"errors"
+	"io"
 )
 
 var (
@@ -53,6 +54,21 @@ var (
 	// "something else wrote here", not "empty".
 	ErrStoreSchemaVersion = errors.New("platform: unsupported persistence schema")
 )
+
+// Store is every persistence capability a control plane needs, plus the
+// lifecycle the thing that opened it owns.
+//
+// For composition only. No service takes a Store: ControlPlane takes the three
+// narrow interfaces separately, which is what stops a service reaching a
+// capability it has no business with. This exists so a composition root can
+// hold "the store" without naming a concrete backend — see
+// docs/adr/0037-postgresql-is-the-shared-platform-persistence-backend.md.
+type Store interface {
+	ControlStore
+	EvaluationStore
+	EvaluationIngestStore
+	io.Closer
+}
 
 // ControlStore persists the control-plane entities a local platform owns.
 //
@@ -120,3 +136,9 @@ type EvaluationStore interface {
 	// ErrStoreCorrupt, not a partially trusted value.
 	EvaluationEvidence(ctx context.Context, id EvaluationRunID) (EvaluationAggregate, BehaviorSnapshot, error)
 }
+
+// Compile-time proof that every backend satisfies the composite.
+//
+// Cheap, and it fails at build time rather than when a composition root is
+// wired, which is where the mistake would otherwise surface.
+var _ Store = (*SQLiteStore)(nil)
