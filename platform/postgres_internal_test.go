@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -691,5 +692,103 @@ func TestPostgresIngestCommitsEvidenceAndCursorTogether(t *testing.T) {
 	}
 	if loadedAggregate.RecordCount() != 1 {
 		t.Errorf("record count = %d, want 1", loadedAggregate.RecordCount())
+	}
+}
+
+// TestPostgresIdentifierOrderingIsByteOrder settles ADR 0037's collation
+// question, and the naive form of the experiment is why it is written this way.
+//
+// The obvious test — run the differential suite against a database created with
+// a non-C locale — passes whether or not COLLATE "C" is declared, and removing
+// the declaration does not fail it. That is a false negative with a specific
+// cause: postgres:17-alpine is built on musl, whose strcoll is effectively byte
+// comparison, so `en_US.utf8` and `C` order identically there. The container
+// image, not the code, is what made the test agree.
+//
+// That agreement is not a property to rely on. On glibc-based PostgreSQL — the
+// Debian images, managed services, most production — `en_US.UTF-8` orders
+// `a` before `B` while `C` orders `B` first, and `ORDER BY fingerprint_id` is
+// the one domain ordering either backend performs. SQLite compares TEXT by byte
+// value, so without COLLATE "C" the two backends would return behaviour entries
+// in different orders on any such server.
+//
+// So the property is proven in a way that does not depend on the host's libc:
+// ICU is available on this server and implements real locale-aware ordering, and
+// the assertions below show our columns order by bytes while ICU orders the same
+// identifiers differently. The declaration is therefore load-bearing rather than
+// decorative, and TestPostgresRunScopedWritesTakeTheRowLock's sibling guard pins
+// its presence.
+func TestPostgresIdentifierOrderingIsByteOrder(t *testing.T) {
+	store := newPostgresStore(t)
+	ctx := t.Context()
+
+	// Identifiers whose byte order and locale order differ: uppercase sorts
+	// before lowercase by byte value, and after it under a locale-aware
+	// collation.
+	identifiers := []string{"fp-a", "fp-B", "fp-b", "fp-A"}
+
+	if _, err := store.pool.Exec(ctx,
+		`CREATE TEMP TABLE collation_probe_c (id TEXT COLLATE "C")`); err != nil {
+		t.Fatalf("create probe table: %v", err)
+	}
+	for _, id := range identifiers {
+		if _, err := store.pool.Exec(ctx,
+			`INSERT INTO collation_probe_c (id) VALUES ($1)`, id); err != nil {
+			t.Fatalf("insert probe row: %v", err)
+		}
+	}
+
+	readOrdered := func(query string) []string {
+		rows, err := store.pool.Query(ctx, query)
+		if err != nil {
+			t.Fatalf("query %q: %v", query, err)
+		}
+		defer rows.Close()
+		var got []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				t.Fatalf("scan: %v", err)
+			}
+			got = append(got, id)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows: %v", err)
+		}
+		return got
+	}
+
+	// What our columns do: byte order, matching SQLite's BINARY comparison.
+	byteOrder := readOrdered(`SELECT id FROM collation_probe_c ORDER BY id`)
+	wantByteOrder := []string{"fp-A", "fp-B", "fp-a", "fp-b"}
+	if !slices.Equal(byteOrder, wantByteOrder) {
+		t.Errorf("COLLATE \"C\" ordering = %v, want %v (SQLite's byte order)",
+			byteOrder, wantByteOrder)
+	}
+
+	// What a locale-aware collation does with the same values. If this matched
+	// the byte order, the declaration would be unfalsifiable on this server and
+	// the test below would be meaningless — so it is asserted to differ.
+	localeOrder := readOrdered(
+		`SELECT id FROM collation_probe_c ORDER BY id COLLATE "und-x-icu"`)
+	if slices.Equal(localeOrder, byteOrder) {
+		t.Skipf("this server's locale-aware collation orders identically to C "+
+			"(%v); the experiment cannot distinguish them here", localeOrder)
+	}
+	t.Logf("byte order   %v", byteOrder)
+	t.Logf("locale order %v", localeOrder)
+
+	// And the schema declares COLLATE "C" on every column that is an identifier
+	// or is ordered, which is what makes the byte order above a property of the
+	// schema rather than of this server's libc.
+	for _, statement := range postgresSchemaStatements() {
+		if !strings.Contains(statement, tableEntries) {
+			continue
+		}
+		if !strings.Contains(statement, `fingerprint_id     TEXT COLLATE "C"`) {
+			t.Error("platform_behavior_entries.fingerprint_id is not COLLATE \"C\"; " +
+				"the one ORDER BY in either backend would then follow the server's " +
+				"locale and could disagree with SQLite")
+		}
 	}
 }
