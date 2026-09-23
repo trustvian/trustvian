@@ -538,6 +538,16 @@ driver dependency in that package; the boundary check still holds, and the
 core's build graph contains none of it. See
 [ADR 0030](adr/0030-local-persistence-stores-authoritative-bounded-state.md).
 
+A second backend is **specified but not implemented**.
+[Task 064](tasks/v1.0/064-postgresql-platform-backend.md) adds a PostgreSQL
+implementation of the same three capabilities for shared deployments, keeping
+SQLite as the local default and leaving `/v1`, realtime, the CLI, the TUI and the
+WebUI unable to tell which backend answered. It lands in this same package for
+the reason above — the private bound markers make a subpackage impossible — and
+[ADR 0037](adr/0037-postgresql-is-the-shared-platform-persistence-backend.md)
+records the type, concurrency and migration decisions that keep the two
+backends semantically identical.
+
 Task 058 added the first service layer and a transport over it:
 
 ```text
