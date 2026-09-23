@@ -10,6 +10,18 @@ actually depend on.
 
 ### Added
 
+- **Minimal web control plane.** `make local` now prints a `Web:` URL alongside
+  the API, serving a browser UI from the same loopback listener: open projects,
+  agents, candidates and runs by ID, drive a run's lifecycle, watch one run live
+  over SSE, and compare two runs. It is a static same-origin client of `/v1` —
+  no server-side business logic, no framework, no build toolchain and no new
+  dependency in any module. Server values render as text only under a strict
+  deny-by-default CSP, gate verdicts come from the server, and nothing is stored
+  in the browser. There is deliberately no list or search view: the control
+  plane has no collection route, and adding one would freeze undesigned
+  pagination semantics. See [docs/webui.md](docs/webui.md) and
+  [ADR 0036](docs/adr/0036-webui-is-a-same-origin-adapter-over-v1.md).
+
 - **Integrated local runtime.** `make local` starts the whole local platform in
   one command: file-backed SQLite, the control plane, the realtime bus and the
   `/v1` HTTP API on a loopback listener with an OS-assigned port. See

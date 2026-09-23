@@ -91,8 +91,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stdout, "Trustvian local runtime\n")
 	fmt.Fprintf(stdout, "API:   %s\n", runtime.APIURL())
+	// The browser URL is the same origin as the API, because task 063's WebUI
+	// shares this listener. Printed as its own line anyway: a developer
+	// looking for somewhere to click should not have to infer that the API
+	// endpoint is also a web page.
+	fmt.Fprintf(stdout, "Web:   %s\n", runtime.WebURL())
 	fmt.Fprintf(stdout, "State: %s\n", runtime.DatabasePath())
 	fmt.Fprintf(stdout, "Local clients in this directory can now omit --api-url.\n")
+	// No browser is launched. There is no --open flag and no OS-specific
+	// launcher: a security tool that opens windows by itself is a surprise,
+	// and the URL above is enough.
 	fmt.Fprintf(stdout, "Press Ctrl-C to stop.\n")
 
 	// Either a signal or a server failure ends the wait.

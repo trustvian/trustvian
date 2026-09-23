@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"trustvian-platform/webui"
 )
 
 // startRuntime brings one up in a temp state directory on an ephemeral port.
@@ -734,5 +736,266 @@ func TestStartProbesAValidLoopbackDiscovery(t *testing.T) {
 
 	if len(*dialled) != 1 || (*dialled)[0] != deadAddr {
 		t.Fatalf("probe dialled %v, want exactly [%s]", *dialled, deadAddr)
+	}
+}
+
+// ---------------------------------------------------------------------
+// WebUI coexistence (task 063)
+// ---------------------------------------------------------------------
+
+// fetch issues one GET against the running runtime and returns the response.
+func fetchPath(t *testing.T, rt *Runtime, method, path string) (int, http.Header, string) {
+	t.Helper()
+	request, err := http.NewRequestWithContext(t.Context(), method, rt.APIURL()+path, nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return response.StatusCode, response.Header, string(body)
+}
+
+// TestWebUIAndAPIShareOneListener is the same-origin composition.
+//
+// One port for an unauthenticated service rather than two, and one origin for
+// the page and the API it calls — which is what makes CORS unnecessary rather
+// than merely unconfigured.
+func TestWebUIAndAPIShareOneListener(t *testing.T) {
+	rt := startRuntime(t, t.TempDir())
+
+	// The shell.
+	status, header, body := fetchPath(t, rt, "GET", "/")
+	if status != http.StatusOK {
+		t.Fatalf("GET / status = %d, want 200", status)
+	}
+	if got := header.Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Errorf("GET / Content-Type = %q, want HTML", got)
+	}
+	if !strings.Contains(body, "<!doctype html>") {
+		t.Error("GET / did not return the WebUI shell")
+	}
+
+	// Its assets, enumerated from what the handler actually serves rather than
+	// from a filename list that could drift.
+	for _, path := range webui.AssetPaths() {
+		status, _, _ := fetchPath(t, rt, "GET", path)
+		if status != http.StatusOK {
+			t.Errorf("GET %s status = %d, want 200", path, status)
+		}
+	}
+
+	// The API, unchanged.
+	status, header, _ = fetchPath(t, rt, "GET", "/v1/projects/absent")
+	if status != http.StatusNotFound {
+		t.Errorf("GET /v1/projects/absent status = %d, want 404", status)
+	}
+	if got := header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Errorf("an API 404 has Content-Type %q; the API still answers as the API", got)
+	}
+
+	// And exactly one listener is bound: the WebUI added no second port.
+	if rt.WebURL() != rt.APIURL()+"/" {
+		t.Errorf("WebURL = %q, APIURL = %q; they must be the same origin",
+			rt.WebURL(), rt.APIURL())
+	}
+}
+
+// TestUnknownAPIRoutesNeverReturnTheShell is the invariant that makes the
+// composition safe.
+//
+// This is the mutation the spec names second. A mux that let /v1 fall through
+// to "/" would answer every mistyped API path with 200 and a page full of
+// markup — so a client's typo would look like success, and a JSON decoder would
+// fail somewhere far from the cause.
+//
+// The API's own 404 is plain text (`404 page not found`) rather than the error
+// envelope. That is pre-existing behaviour, verified rather than assumed, and
+// task 063 preserves it instead of "improving" it into HTML or changing it into
+// an envelope — either would be an API change this task has no mandate for.
+func TestUnknownAPIRoutesNeverReturnTheShell(t *testing.T) {
+	rt := startRuntime(t, t.TempDir())
+
+	paths := []string{
+		"/v1",
+		"/v1/",
+		"/v1/does-not-exist",
+		"/v1/projects/x/nope",
+		"/v1/evaluation-runs",
+		"/v1/realtime/extra",
+		// Adjacent to the prefix but not under it. These must reach the WebUI
+		// and 404 there, not be captured by the API's subtree — a mux rule
+		// registered as "/v1" without the trailing-slash companion would get
+		// this wrong in one direction or the other.
+		"/v1extra",
+		"/v10/projects",
+	}
+
+	// Deliberately not tested here: "/v1/../". That path is equivalent to "/"
+	// by URL semantics and is normalized before any routing happens, so
+	// serving the shell for it is correct. Asserting otherwise would be
+	// testing net/http's path cleaning, not this composition.
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			status, header, body := fetchPath(t, rt, "GET", path)
+
+			if strings.Contains(body, "<!doctype html>") || strings.Contains(body, "<html") {
+				t.Fatalf("%s returned the WebUI shell (status %d)", path, status)
+			}
+			if status == http.StatusOK {
+				t.Fatalf("%s returned 200; an unknown API route must not succeed", path)
+			}
+			if got := header.Get("Content-Type"); strings.HasPrefix(got, "text/html") {
+				t.Errorf("%s answered with Content-Type %q", path, got)
+			}
+		})
+	}
+}
+
+// TestAPIResponsesAreUnchangedByTheWebUI checks the real routes still behave.
+//
+// A browser UI landing must not move a status code, a body or a header that the
+// CLI and TUI depend on.
+func TestAPIResponsesAreUnchangedByTheWebUI(t *testing.T) {
+	rt := startRuntime(t, t.TempDir())
+
+	// A real create over the composed handler.
+	request, err := http.NewRequestWithContext(t.Context(), "POST",
+		rt.APIURL()+"/v1/projects",
+		strings.NewReader(`{"id":"proj-web","name":"Checkout"}`))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("POST /v1/projects: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /v1/projects status = %d, want 201", response.StatusCode)
+	}
+
+	// And it reads back through the API, not through the UI.
+	status, header, body := fetchPath(t, rt, "GET", "/v1/projects/proj-web")
+	if status != http.StatusOK {
+		t.Fatalf("GET /v1/projects/proj-web status = %d, want 200", status)
+	}
+	if got := header.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Errorf("Content-Type = %q, want JSON", got)
+	}
+	var decoded struct {
+		Version string `json:"version"`
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+		t.Fatalf("decode: %v (body %.120q)", err, body)
+	}
+	if decoded.Version != "1" || decoded.ID != "proj-web" || decoded.Name != "Checkout" {
+		t.Errorf("unexpected project response: %+v", decoded)
+	}
+}
+
+// TestWebUIResponsesCarryNoCORSHeader is the header that would change the
+// security model.
+//
+// Same-origin means none is needed. Sending one is the single change that would
+// let any page a developer visits reach this unauthenticated control plane.
+func TestWebUIResponsesCarryNoCORSHeader(t *testing.T) {
+	rt := startRuntime(t, t.TempDir())
+
+	for _, path := range []string{"/", "/assets/app.js", "/nope", "/v1/projects/absent"} {
+		_, header, _ := fetchPath(t, rt, "GET", path)
+		for name := range header {
+			if strings.HasPrefix(http.CanonicalHeaderKey(name), "Access-Control-") {
+				t.Errorf("%s sent %s", path, name)
+			}
+		}
+	}
+}
+
+// TestWebUICarriesSecurityHeadersThroughTheRuntime proves the policy survives
+// composition rather than only existing in the handler's own test.
+func TestWebUICarriesSecurityHeadersThroughTheRuntime(t *testing.T) {
+	rt := startRuntime(t, t.TempDir())
+
+	_, header, _ := fetchPath(t, rt, "GET", "/")
+	policy := header.Get("Content-Security-Policy")
+	if policy == "" {
+		t.Fatal("no Content-Security-Policy through the composed runtime")
+	}
+	if policy != webui.ContentSecurityPolicy() {
+		t.Errorf("policy through the runtime = %q, handler's = %q",
+			policy, webui.ContentSecurityPolicy())
+	}
+	for _, forbidden := range []string{"unsafe-inline", "unsafe-eval", "*"} {
+		if strings.Contains(policy, forbidden) {
+			t.Errorf("policy contains %q", forbidden)
+		}
+	}
+	if got := header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q", got)
+	}
+	if got := header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q; a cached shell could run against a restarted "+
+			"runtime on a different port", got)
+	}
+}
+
+// TestDiscoverySchemaIsUnchangedByTheWebUI keeps the file at two fields.
+//
+// The API URL and the WebUI origin are the same endpoint, so there is nothing
+// for a third field to say — and adding one would be a schema change consumers
+// would have to tolerate for no information.
+func TestDiscoverySchemaIsUnchangedByTheWebUI(t *testing.T) {
+	rt := startRuntime(t, t.TempDir())
+
+	payload, err := os.ReadFile(rt.DiscoveryPath())
+	if err != nil {
+		t.Fatalf("read discovery: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		t.Fatalf("decode discovery: %v", err)
+	}
+	if len(raw) != 2 {
+		t.Errorf("discovery has %d fields (%v); task 063 adds none", len(raw), raw)
+	}
+	for _, field := range []string{"version", "api_url"} {
+		if _, ok := raw[field]; !ok {
+			t.Errorf("discovery is missing %q", field)
+		}
+	}
+	for _, unwanted := range []string{"web_url", "ui_url", "webui", "token"} {
+		if _, ok := raw[unwanted]; ok {
+			t.Errorf("discovery gained a %q field", unwanted)
+		}
+	}
+}
+
+// TestServerBoundsAreUnchangedByTheWebUI keeps SSE long-lived.
+//
+// WriteTimeout in particular: it is a total response deadline, and a browser
+// EventSource is exactly as long-lived as the TUI's stream.
+func TestServerBoundsAreUnchangedByTheWebUI(t *testing.T) {
+	rt := startRuntime(t, t.TempDir())
+
+	if rt.server.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v; a total write deadline would kill healthy SSE",
+			rt.server.WriteTimeout)
+	}
+	if rt.server.ReadHeaderTimeout != readHeaderTimeout ||
+		rt.server.ReadTimeout != readTimeout ||
+		rt.server.IdleTimeout != idleTimeout ||
+		rt.server.MaxHeaderBytes != maxHeaderBytes {
+		t.Error("a task 062 server bound changed")
 	}
 }

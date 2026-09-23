@@ -1,6 +1,6 @@
 # 063 — Minimal Web Control Plane
 
-Status: specified
+Status: specified and implemented
 Depends on: [057](057-local-platform-persistence.md),
 [058](058-local-control-plane-api-and-ingest.md),
 [059](059-realtime-infrastructure.md), [061](061-terminal-dashboard.md),

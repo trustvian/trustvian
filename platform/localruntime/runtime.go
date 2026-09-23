@@ -33,6 +33,7 @@ import (
 
 	platform "trustvian-platform"
 	"trustvian-platform/httpapi"
+	"trustvian-platform/webui"
 )
 
 const (
@@ -175,11 +176,18 @@ func Start(ctx context.Context, options Options) (*Runtime, error) {
 		return nil, fmt.Errorf("constructing control plane: %w", err)
 	}
 
-	handler, err := httpapi.NewHandler(plane, httpapi.WithRealtimeSubscriber(bus))
+	apiHandler, err := httpapi.NewHandler(plane, httpapi.WithRealtimeSubscriber(bus))
 	if err != nil {
 		bus.Close()
 		store.Close()
 		return nil, fmt.Errorf("constructing HTTP handler: %w", err)
+	}
+
+	handler, err := composeHandler(apiHandler)
+	if err != nil {
+		bus.Close()
+		store.Close()
+		return nil, fmt.Errorf("composing HTTP handler: %w", err)
 	}
 
 	// Listen before serving so the chosen port is known, and known before
@@ -234,6 +242,14 @@ func Start(ctx context.Context, options Options) (*Runtime, error) {
 
 // APIURL is the bound endpoint, with the port the OS actually chose.
 func (r *Runtime) APIURL() string { return r.apiURL }
+
+// WebURL is where a browser reaches the WebUI.
+//
+// Derived from the API URL with a trailing slash rather than stored, because
+// they are the same origin by construction: task 063's UI shares this
+// listener. If these could ever differ, the discovery file would need a second
+// field — and it deliberately has none, because there is nothing to say.
+func (r *Runtime) WebURL() string { return r.apiURL + "/" }
 
 // DatabasePath is the platform store's location.
 func (r *Runtime) DatabasePath() string { return r.dbPath }
@@ -375,6 +391,40 @@ func removeOwnedDiscovery(path, apiURL string) {
 		return
 	}
 	os.Remove(path)
+}
+
+// composeHandler routes one listener between the API and the WebUI.
+//
+// Task 063 adds a browser client, and it shares this listener rather than
+// getting its own. One port for an unauthenticated service instead of two, the
+// same origin for the page and the API it calls — which is what makes CORS
+// unnecessary rather than merely unconfigured — and one discovery field that
+// already locates both.
+//
+// The order matters and is the point of doing this here rather than inside
+// either handler. "/v1" and "/v1/" are registered to the API, so an unknown
+// API path keeps the API's own 404 instead of falling through to "/" and
+// answering 200 with HTML. Both patterns are needed: Go's ServeMux treats the
+// exact path and the subtree as different rules, and only the second matches
+// descendants.
+//
+// The WebUI handler is constructed with no arguments and is handed nothing —
+// see ADR 0036. This function is the only place the two adapters meet, and
+// they meet as http.Handlers.
+func composeHandler(apiHandler http.Handler) (http.Handler, error) {
+	uiHandler, err := webui.NewHandler()
+	if err != nil {
+		return nil, err
+	}
+
+	mux := http.NewServeMux()
+	// The versioned machine contract, first and unchanged.
+	mux.Handle("/v1", apiHandler)
+	mux.Handle("/v1/", apiHandler)
+	// Everything else is the browser application, which serves its own fixed
+	// set of paths and 404s the rest.
+	mux.Handle("/", uiHandler)
+	return mux, nil
 }
 
 // dialRuntime is the liveness probe's dialer.

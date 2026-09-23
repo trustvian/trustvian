@@ -73,6 +73,9 @@ cat .trustvian/runtime.json
 # {"version":"1","api_url":"http://127.0.0.1:54321"}
 ```
 
+The browser UI is the same endpoint — `make local` prints it as `Web:` — so the
+one field locates both. See [Web control plane](webui.md).
+
 ## Reaching a different control plane
 
 An explicit endpoint always wins over discovery:
@@ -138,6 +141,7 @@ artifact — `trustvian` is the shipped binary.
 ## Related
 
 - [Platform CLI](platform-cli.md) — commands, flags, exit codes
+- [Web control plane](webui.md) — the browser interface on the same listener
 - [Terminal dashboard](tui.md) — watching a run live
 - [ADR 0035](adr/0035-local-runtime-composes-platform-without-reversing-modules.md)
   — why the runtime lives in the platform module
