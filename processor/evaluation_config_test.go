@@ -17,9 +17,16 @@ func boolPtr(b bool) *bool { return &b }
 // TestEvaluationConfigValidation drives validation through the real factory,
 // so a rejected block fails Collector startup rather than the first span.
 func TestEvaluationConfigValidation(t *testing.T) {
-	valid := func() *trustvianprocessor.EvaluationConfig {
+	// valid must point at a reachable control plane, not just a
+	// syntactically acceptable URL: task 073 wired Start to initialize the
+	// evaluation sink (reading its ingest cursor), so the "valid" subtest
+	// below now performs real I/O and a stub server is required for it to
+	// reach Start successfully. The invalid subtests never get past
+	// validate(), so they never dial it.
+	valid := func(t *testing.T) *trustvianprocessor.EvaluationConfig {
+		cp := newIngestAPIServer(t)
 		return &trustvianprocessor.EvaluationConfig{
-			APIURL:            "http://127.0.0.1:54321",
+			APIURL:            cp.URL,
 			RunID:             "run-reference",
 			BehavioralProfile: "support-reference",
 			Required:          boolPtr(true),
@@ -71,7 +78,7 @@ func TestEvaluationConfigValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			evaluation := valid()
+			evaluation := valid(t)
 			tt.mutate(evaluation)
 			cfg := &trustvianprocessor.Config{Evaluation: evaluation}
 

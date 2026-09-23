@@ -32,14 +32,15 @@ go 1.27
 replace github.com/trustvian/trustvian => ../
 
 require (
-	github.com/trustvian/trustvian v0.8.0
 	github.com/go-viper/mapstructure/v2 v2.5.0
+	github.com/trustvian/trustvian v0.8.0
 	go.opentelemetry.io/collector/component v1.66.0
 	go.opentelemetry.io/collector/component/componenttest v0.160.0
 	go.opentelemetry.io/collector/confmap v1.67.0
 	go.opentelemetry.io/collector/confmap/provider/envprovider v1.67.0
 	go.opentelemetry.io/collector/confmap/provider/fileprovider v1.66.0
 	go.opentelemetry.io/collector/consumer v1.66.0
+	go.opentelemetry.io/collector/consumer/consumererror v0.160.0
 	go.opentelemetry.io/collector/consumer/consumertest v0.160.0
 	go.opentelemetry.io/collector/exporter v1.66.0
 	go.opentelemetry.io/collector/exporter/debugexporter v0.160.0
@@ -128,7 +129,6 @@ require (
 	go.opentelemetry.io/collector/connector v0.160.0 // indirect
 	go.opentelemetry.io/collector/connector/connectortest v0.160.0 // indirect
 	go.opentelemetry.io/collector/connector/xconnector v0.160.0 // indirect
-	go.opentelemetry.io/collector/consumer/consumererror v0.160.0 // indirect
 	go.opentelemetry.io/collector/consumer/consumererror/xconsumererror v0.160.0 // indirect
 	go.opentelemetry.io/collector/consumer/xconsumer v0.160.0 // indirect
 	go.opentelemetry.io/collector/exporter/exporterhelper v0.160.0 // indirect

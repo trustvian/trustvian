@@ -13,6 +13,7 @@ import (
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.uber.org/zap"
@@ -20,6 +21,7 @@ import (
 	trustvian "github.com/trustvian/trustvian"
 	"github.com/trustvian/trustvian/config"
 
+	"trustvian-processor/internal/evaluation"
 	"trustvian-processor/internal/health"
 	"trustvian-processor/internal/metrics"
 )
@@ -74,6 +76,15 @@ type trustvianProcessor struct {
 	// healthServer is the listener serving those endpoints, owned by this
 	// component's Start/Shutdown so the Collector's own lifecycle drives it.
 	healthServer *http.Server
+
+	// evaluation is nil unless an `evaluation:` block was configured, which
+	// is what keeps every existing deployment on exactly its previous span
+	// path — no sink, no cursor, and no lock.
+	//
+	// When present it is the durable half of this processor: the span
+	// enrichment beside it is advisory, and this is what an evaluation run
+	// actually reads.
+	evaluation *evaluation.Sink
 
 	processed     atomic.Uint64
 	invalid       atomic.Uint64
@@ -152,6 +163,43 @@ func newTrustvianProcessor(set component.TelemetrySettings, next consumer.Traces
 			zap.String("type", string(sc.Type)))
 	}
 
+	// EvaluationConfig.validate() already ran one call earlier, in
+	// createTracesProcessor (processor/factory.go), and is not repeated
+	// here. Policy and Storage validate inside this function because their
+	// validation is inseparable from compiling a value the Engine actually
+	// needs — CompilePolicy produces the policy.Policy, CompileStorage opens
+	// the Store. EvaluationConfig.validate() is a pure shape check that
+	// produces nothing for the Engine to consume, so it can run one call
+	// earlier and fail Collector startup sooner. newTrustvianProcessor is
+	// unexported and reached only through the factory, so cfg has already
+	// been validated by the time it reaches here.
+	var sink *evaluation.Sink
+	if cfg.Evaluation != nil {
+		s, sinkErr := evaluation.New(
+			cfg.Evaluation.APIURL, cfg.Evaluation.RunID, cfg.Evaluation.BehavioralProfile)
+		if sinkErr != nil {
+			return nil, fmt.Errorf("trustvianprocessor: evaluation: %w", sinkErr)
+		}
+		sink = s
+
+		// The behavioral profile is the platform's name for a learning scope
+		// (ADR 0024), so configuring one selects it here too. Without this, a
+		// Collector with a durable store would train one baseline across
+		// every candidate it evaluated, each teaching the next — the precise
+		// failure task 051 exists to prevent.
+		//
+		// Scope and Environment are separate dimensions of baseline.Key, so
+		// this changes which learned history the analysis is compared
+		// against and changes no field the platform validates.
+		opts = append(opts, trustvian.WithLearningScope(cfg.Evaluation.BehavioralProfile))
+
+		// The run and the profile, never the URL's userinfo — and there is
+		// none, because validate rejected it.
+		set.Logger.Info("trustvianprocessor: evaluation ingest configured",
+			zap.String("run_id", cfg.Evaluation.RunID),
+			zap.String("behavioral_profile", cfg.Evaluation.BehavioralProfile))
+	}
+
 	// The Collector always supplies a MeterProvider; a no-op one yields
 	// no-op instruments, so nothing here branches on whether metrics are
 	// "enabled". Instrumentation is a side effect, never a dependency.
@@ -175,6 +223,7 @@ func newTrustvianProcessor(set component.TelemetrySettings, next consumer.Traces
 		logger:     set.Logger,
 		closeStore: closeStore,
 		metrics:    m,
+		evaluation: sink,
 		decisions:  make(map[string]uint64),
 	}
 
@@ -241,7 +290,23 @@ func (p *trustvianProcessor) Capabilities() consumer.Capabilities {
 // A bind failure is returned rather than logged: a health surface that
 // silently failed to exist is worse than none, because the absence looks
 // identical to a healthy runtime that nobody is probing.
-func (p *trustvianProcessor) Start(_ context.Context, _ component.Host) error {
+func (p *trustvianProcessor) Start(ctx context.Context, _ component.Host) error {
+	// Before the health listener, and deliberately before the early return
+	// below: a Collector with no `health:` block is the common case, and an
+	// initialization that sat behind that return would silently never run.
+	//
+	// Failing here is the fail-closed contract. A Collector that came up
+	// without its ingest cursor would enrich spans while recording nothing,
+	// and the absence looks identical to a healthy runtime nobody is
+	// evaluating.
+	if p.evaluation != nil {
+		if err := p.evaluation.Initialize(ctx); err != nil {
+			return fmt.Errorf("trustvianprocessor: evaluation: %w", err)
+		}
+		p.logger.Info("trustvianprocessor: evaluation ingest ready",
+			zap.String("run_id", p.evaluation.RunID()))
+	}
+
 	if p.healthServer == nil {
 		return nil
 	}
@@ -334,14 +399,21 @@ func (p *trustvianProcessor) ConsumeTraces(ctx context.Context, td ptrace.Traces
 		for _, ss := range rs.ScopeSpans().All() {
 			spans := ss.Spans()
 			for i := range spans.Len() {
-				p.processSpan(ctx, resourceAttrs, spans.At(i))
+				// Only an evaluation ingest failure can return an error here,
+				// and it is already permanent. The batch is abandoned rather
+				// than forwarded: a retry would re-analyze spans whose records
+				// already committed and resend them under new sequence
+				// numbers, silently doubling the evidence.
+				if err := p.processSpan(ctx, resourceAttrs, spans.At(i)); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	return p.next.ConsumeTraces(ctx, td)
 }
 
-func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcommon.Map, span ptrace.Span) {
+func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcommon.Map, span ptrace.Span) error {
 	p.processed.Add(1)
 
 	ev := EventFromSpan(resourceAttrs, span)
@@ -350,7 +422,7 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 		p.metrics.RecordAnalysis(ctx, metrics.OutcomeInvalidEvent, 0)
 		p.logger.Debug("trustvianprocessor: span did not map to a valid Event",
 			zap.String("span", span.Name()), zap.Error(err))
-		return
+		return nil
 	}
 
 	// Measures Trustvian's own analysis only — the engine call and nothing
@@ -367,13 +439,36 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 		p.metrics.RecordAnalysis(ctx, metrics.OutcomeError, analysisDuration)
 		p.logger.Warn("trustvianprocessor: Analyze failed",
 			zap.String("span", span.Name()), zap.Error(err))
-		return
+		return nil
 	}
 	p.metrics.RecordAnalysis(ctx, metrics.OutcomeAnalyzed, analysisDuration)
 
 	SetAttributesFromResult(span.Attributes(), result)
 	p.recordDecision(string(result.Decision))
 	p.metrics.RecordDecision(ctx, string(result.Decision))
+
+	// The record is projected from the Result already computed above — the
+	// same one that produced the attributes written a few lines up. Analyze
+	// is not run again, and nothing is rebuilt from those attributes: they
+	// are a five-value subset of what a record carries, and reconstructing
+	// from them would make an evaluation's evidence a function of the
+	// enrichment format.
+	if p.evaluation != nil {
+		ingestStart := time.Now()
+		disposition, err := p.evaluation.Record(ctx, result.DecisionRecord())
+		ingestDuration := time.Since(ingestStart)
+		if err != nil {
+			p.metrics.RecordEvaluationIngest(ctx, metrics.OutcomeError, ingestDuration)
+			p.logger.Error("trustvianprocessor: evaluation ingest failed",
+				zap.String("span", span.Name()),
+				zap.String("run_id", p.evaluation.RunID()),
+				zap.Error(err))
+			// Permanent, so the pipeline does not retry. See ConsumeTraces.
+			return consumererror.NewPermanent(
+				fmt.Errorf("trustvianprocessor: evaluation ingest: %w", err))
+		}
+		p.metrics.RecordEvaluationIngest(ctx, disposition, ingestDuration)
+	}
 
 	// Observe is always safe to call unconditionally — it is a no-op
 	// for any Decision that isn't learning-eligible (see the core
@@ -395,6 +490,7 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 		// per blocked action.
 		p.metrics.RecordObservation(ctx, metrics.OutcomeNotEligible, observeDuration)
 	}
+	return nil
 }
 
 func (p *trustvianProcessor) recordDecision(decision string) {
