@@ -119,15 +119,15 @@ fi
 readonly PLATFORM_IDENTIFIERS='ProjectID|AgentID|CandidateID|EvaluationRunID|BehavioralProfileRef|EnvironmentRef'
 readonly PLATFORM_TYPES='Project|Agent|Candidate|EvaluationRun|Scorecard|Promotion'
 
-# The developer CLI's control-plane adapter (task 060) is exempt from this
-# scan, and only from this scan.
+# The developer CLI's control-plane adapter (tasks 060 and 061) is exempt from
+# this scan, and only from this scan.
 #
 # ADR 0022's invariant 4 is that *the engine* must not grow platform concepts:
 # no Project type, no EvaluationRunID field on Event. These files are not the
-# engine. They are an HTTP client whose structs mirror the JSON nouns of the
-# /v1 wire contract, so a field named ProjectID there is the contract's own
-# name for a value the caller typed on the command line — not the core
-# acquiring an evaluation concept.
+# engine. They are an HTTP and SSE client whose structs mirror the JSON nouns
+# of the /v1 wire contract, so a field named ProjectID there is the contract's
+# own name for a value the caller typed on the command line or the server sent
+# on the stream — not the core acquiring an evaluation concept.
 #
 # What actually keeps them honest is stronger than a name scan and is checked
 # elsewhere: check 3 above proves the root module's build graph contains no
@@ -146,6 +146,7 @@ readonly CLI_WIRE_ADAPTER_FILES='
 ./cmd/trustvian/agent.go
 ./cmd/trustvian/candidate.go
 ./cmd/trustvian/eval.go
+./cmd/trustvian/tui_realtime.go
 '
 
 is_cli_wire_adapter() {

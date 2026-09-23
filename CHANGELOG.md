@@ -10,6 +10,26 @@ actually depend on.
 
 ### Added
 
+- **Interactive `trustvian tui`.** A run-scoped realtime terminal dashboard:
+  `trustvian tui --api-url <url> --run-id <id>` watches one evaluation run
+  live, combining authoritative HTTP reads with SSE notifications. It is
+  read-only — three GET endpoints — and imports nothing from the platform
+  module. See [docs/tui.md](docs/tui.md) and
+  [ADR 0034](docs/adr/0034-tui-is-a-bounded-realtime-http-client.md).
+
+  Automatic reconnect with bounded backoff, resubscribing before
+  resynchronizing so nothing committed during the gap is lost. A bounded live
+  observation window of 100 rows, cleared on every reconnect and labelled as
+  the current stream rather than history. Terminal-control sanitization of
+  every server-supplied string, so remote text cannot move the cursor, clear
+  the screen or retitle the terminal.
+
+  Exit codes: `0` normal exit, `2` usage, `3` operational. `1` is not used —
+  it means a failed gate, and only for `eval compare`.
+
+  Not included: integrated local startup (`--api-url` is required and has no
+  default), event history or replay, promotion, a WebUI, and authentication.
+
 - **Developer CLI control-plane commands.** `trustvian project`,
   `trustvian agent`, `trustvian candidate` and `trustvian eval` drive a
   local control plane over its `/v1` HTTP API, so an evaluation can be

@@ -12,13 +12,46 @@ package main
 import (
 	"go/ast"
 	"go/parser"
+	"go/printer"
 	"go/token"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 )
+
+// readSource reads one file in this package.
+func readSource(t *testing.T, name string) string {
+	t.Helper()
+	source, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", name, err)
+	}
+	return string(source)
+}
+
+// readCode returns a file's source with comments removed.
+//
+// The guards below assert that certain things are *absent from the code*, and
+// a comment explaining why something is absent is evidence of intent, not a
+// violation — scanning raw text makes documenting a decision fail the build
+// for having documented it. Parsing without ParseComments and reprinting is
+// the structural way to ask the question.
+func readCode(t *testing.T, name string) string {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, name, nil, 0)
+	if err != nil {
+		t.Fatalf("parsing %s: %v", name, err)
+	}
+	var out strings.Builder
+	if err := printer.Fprint(&out, fset, file); err != nil {
+		t.Fatalf("printing %s: %v", name, err)
+	}
+	return out.String()
+}
 
 // forbiddenImports must never appear in the root module's CLI.
 var forbiddenImports = []string{
@@ -176,6 +209,194 @@ func TestCLIStartsNoListener(t *testing.T) {
 			if strings.Contains(string(source), pattern) {
 				t.Errorf("%s contains %q; task 062 owns the local runtime, not the CLI",
 					name, pattern)
+			}
+		}
+	}
+}
+
+// tuiRuntimeFiles are task 061's shipped sources.
+//
+// Listed explicitly so adding a new TUI file is a decision: the guards below
+// are the only thing standing between "a dashboard" and "a second client with
+// its own opinions about durable state".
+var tuiRuntimeFiles = []string{
+	"tui.go", "tui_model.go", "tui_realtime.go", "tui_render.go",
+}
+
+// TestTUIIsReadOnly enforces the three-endpoint rule structurally.
+//
+// A dashboard that could mutate is one where a keystroke changes durable
+// state, and the failure is someone pressing a key while looking at the wrong
+// run. Mutations stay in the CLI, where they are typed deliberately.
+func TestTUIIsReadOnly(t *testing.T) {
+	for _, name := range tuiRuntimeFiles {
+		source := readCode(t, name)
+
+		// The client's only mutating verb, and the raw method.
+		for _, forbidden := range []string{".post(", "http.MethodPost", `"POST"`,
+			"http.MethodPut", "http.MethodDelete", "http.MethodPatch"} {
+			if strings.Contains(source, forbidden) {
+				t.Errorf("%s contains %q; the TUI is read-only", name, forbidden)
+			}
+		}
+
+		// Mutating route segments must not appear at all.
+		for _, route := range []string{`"records"`, `"compare"`, `"start"`, `"complete"`,
+			`"fail"`, `"cancel"`, `"projects"`, `"agents"`, `"candidates"`} {
+			if strings.Contains(source, route) {
+				t.Errorf("%s names route segment %s; the TUI reads three endpoints only",
+					name, route)
+			}
+		}
+	}
+}
+
+// TestTUIUsesNoReplayCursor pins the no-history contract at the source level.
+func TestTUIUsesNoReplayCursor(t *testing.T) {
+	// Structural first: no Header.Set call may name a replay cursor.
+	for _, name := range tuiRuntimeFiles {
+		ast.Inspect(parseFile(t, name, 0), func(node ast.Node) bool {
+			call, isCall := node.(*ast.CallExpr)
+			if !isCall || len(call.Args) == 0 {
+				return true
+			}
+			selector, isSelector := call.Fun.(*ast.SelectorExpr)
+			if !isSelector || (selector.Sel.Name != "Set" && selector.Sel.Name != "Add") {
+				return true
+			}
+			literal, isLiteral := call.Args[0].(*ast.BasicLit)
+			if !isLiteral || literal.Kind != token.STRING {
+				return true
+			}
+			header, err := strconv.Unquote(literal.Value)
+			if err == nil && strings.EqualFold(header, "Last-Event-ID") {
+				t.Errorf("%s sets the %s header; task 059 retains no history", name, header)
+			}
+			return true
+		})
+	}
+
+	for _, name := range tuiRuntimeFiles {
+		source := readCode(t, name)
+		for _, forbidden := range []string{"Last-Event-ID", "LastEventID", "lastEventID"} {
+			// The parser must mention "id" to ignore it, but never as a header.
+			if strings.Contains(source, forbidden) {
+				t.Errorf("%s references %q; task 059 retains no history, so there is "+
+					"no cursor to resume from", name, forbidden)
+			}
+		}
+	}
+}
+
+// TestTUIHasNoPollingTicker catches a refresh loop structurally.
+//
+// The behavioral test (TestQuietStreamDoesNotPoll) proves the current code
+// does not poll; this catches the shape being reintroduced somewhere the
+// behavioral test does not reach.
+func TestTUIHasNoPollingTicker(t *testing.T) {
+	for _, name := range tuiRuntimeFiles {
+		source := readCode(t, name)
+		for _, forbidden := range []string{"time.NewTicker", "time.Tick(", "tea.Every"} {
+			if strings.Contains(source, forbidden) {
+				t.Errorf("%s uses %s; realtime drives the dashboard, not a clock",
+					name, forbidden)
+			}
+		}
+	}
+}
+
+// TestTUIDoesNotReuseTheOneShotTimeout is subtle and load-bearing.
+//
+// Task 060's client carries a 30s total timeout. Correct for one request;
+// fatal for a dashboard, which it would kill every 30 seconds for being
+// healthy. The stream must build its own client.
+func TestTUIDoesNotReuseTheOneShotTimeout(t *testing.T) {
+	source := readCode(t, "tui_realtime.go")
+	if strings.Contains(source, "platformRequestTimeout") {
+		t.Error("tui_realtime.go uses the one-shot request timeout for a long-lived stream")
+	}
+	if !strings.Contains(source, "ResponseHeaderTimeout") {
+		t.Error("the streaming transport has no response-header bound")
+	}
+	// An http.Client literal with a Timeout field in this file would be the
+	// total-lifetime bound this test exists to prevent.
+	file := parseFile(t, "tui_realtime.go", 0)
+	ast.Inspect(file, func(node ast.Node) bool {
+		composite, isComposite := node.(*ast.CompositeLit)
+		if !isComposite {
+			return true
+		}
+		selector, isSelector := composite.Type.(*ast.SelectorExpr)
+		if !isSelector || selector.Sel.Name != "Client" {
+			return true
+		}
+		for _, element := range composite.Elts {
+			pair, isPair := element.(*ast.KeyValueExpr)
+			if !isPair {
+				continue
+			}
+			if key, ok := pair.Key.(*ast.Ident); ok && key.Name == "Timeout" {
+				t.Error("the SSE http.Client sets a total Timeout, which would kill a " +
+					"healthy long-lived stream")
+			}
+		}
+		return true
+	})
+}
+
+// TestTUICollectionsAreBounded proves the two bounds exist and differ.
+func TestTUICollectionsAreBounded(t *testing.T) {
+	if tuiObservationCapacity <= 0 || tuiObservationCapacity > 1000 {
+		t.Errorf("tuiObservationCapacity = %d; a display window must be small and finite",
+			tuiObservationCapacity)
+	}
+	if tuiPendingEventCapacity <= 0 || tuiPendingEventCapacity > 1000 {
+		t.Errorf("tuiPendingEventCapacity = %d; the transport buffer must be finite",
+			tuiPendingEventCapacity)
+	}
+	if maxSSELineBytes <= 0 || maxSSEFrameBytes <= 0 {
+		t.Error("SSE input bounds must be positive")
+	}
+	source := readCode(t, "tui_realtime.go")
+	if !strings.Contains(source, "make(chan realtimeFrame, tuiPendingEventCapacity)") {
+		t.Error("the frame channel is not bounded by tuiPendingEventCapacity")
+	}
+}
+
+// TestUIFrameworkIsConfinedToTheCommand is the dependency-rule check.
+//
+// .claude/rules/go.md permits a fourth dependency on the condition that the
+// single package allowed to import it is named and the confinement verified.
+// This is that verification, in the build rather than in prose.
+func TestUIFrameworkIsConfinedToTheCommand(t *testing.T) {
+	enginePackages := []string{
+		"github.com/trustvian/trustvian",
+		"github.com/trustvian/trustvian/event",
+		"github.com/trustvian/trustvian/config",
+		"github.com/trustvian/trustvian/alert",
+		"github.com/trustvian/trustvian/internal/features",
+		"github.com/trustvian/trustvian/internal/fingerprint",
+		"github.com/trustvian/trustvian/internal/baseline",
+		"github.com/trustvian/trustvian/internal/store",
+		"github.com/trustvian/trustvian/internal/anomaly",
+		"github.com/trustvian/trustvian/internal/trust",
+		"github.com/trustvian/trustvian/internal/policy",
+	}
+
+	for _, pkg := range enginePackages {
+		output, err := exec.Command("go", "list", "-deps", pkg).Output()
+		if err != nil {
+			t.Fatalf("go list -deps %s: %v", pkg, err)
+		}
+		for _, line := range strings.Split(string(output), "\n") {
+			for _, framework := range []string{
+				"charmbracelet", "muesli/", "mattn/go-runewidth", "mattn/go-isatty",
+				"lucasb-eyer", "rivo/uniseg", "xo/terminfo", "aymanbagabas",
+			} {
+				if strings.Contains(line, framework) {
+					t.Errorf("%s depends on %s; the behavioral engine must stay "+
+						"free of the UI framework", pkg, strings.TrimSpace(line))
+				}
 			}
 		}
 	}

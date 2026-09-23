@@ -236,6 +236,7 @@ meaning for every code, and assuming one will be wrong:
 |---|---|---|---|---|
 | `analyze`, `baseline`, `version` | success | the run failed | top-level invocation was wrong | — |
 | `project`, `agent`, `candidate`, `eval` except `compare` | success | *unused* | usage | API, network, or server failure |
+| `tui` | you quit | *unused* | usage | startup, HTTP, SSE, protocol, or terminal failure |
 | `eval compare` | gate **PASS** | gate **FAIL** | usage | API, network, or server failure |
 
 **Exit code `1` means gate failure only for `trustvian eval compare`; it
@@ -284,6 +285,13 @@ The control-plane commands accept no positional arguments. A trailing
 argument is a usage error (`2`) raised before any request is sent, so an
 invocation typo cannot be mistaken for an API or gate result. Legacy
 `analyze`, `baseline` and `version` keep their existing operand parsing.
+
+`trustvian tui --api-url <url> --run-id <id>` is intended operational
+surface: the command name, both flag names, and the exit contract above are
+stable. Its **rendered dashboard is not** — layout, spacing, column widths,
+row formatting, help wording and connection-status wording are observational
+and may change in any release. Automation reads the `/v1` API, which is the
+machine interface; nothing should parse the terminal.
 
 The control-plane commands require `--api-url`. No default address or
 port is defined yet, and no environment variable is read — task 062 owns

@@ -16,9 +16,10 @@ Tasks for the `v1.0` milestone.
 | [058 — Local Control-Plane API and Ingest](058-local-control-plane-api-and-ingest.md) | Specified and implemented |
 | [059 — Realtime Infrastructure](059-realtime-infrastructure.md) | Specified and implemented |
 | [060 — Developer CLI](060-developer-cli.md) | Specified and implemented |
-| 061–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
+| [061 — Terminal Dashboard (TUI)](061-terminal-dashboard.md) | Specified and implemented |
+| 062–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
 
-The numbers 061–072 are the approved plan, not placeholders — the sequence,
+The numbers 062–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
 is the specification for any of them.
 

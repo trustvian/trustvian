@@ -317,9 +317,10 @@ local SQLite persistence (057), the local control-plane API and ingest (058),
 and bounded realtime infrastructure (059).
 
 Also implemented: the developer CLI (060), which drives all of that from a
-shell or a CI job over the `/v1` API.
+shell or a CI job over the `/v1` API, and the terminal dashboard (061), which
+watches one run live over SSE.
 
-Still planned: everything from the realtime TUI (061) onward. The platform
+Still planned: everything from integrated local startup (062) onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
 behavioral snapshots, produce fixed-shape comparative scorecards, apply
 deterministic evidence-backed hard gates to them, persist local control and
@@ -580,7 +581,7 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**Partly implemented:** tasks 049–060 are done; 061 onward remain PLANNED.
+**Partly implemented:** tasks 049–061 are done; 062 onward remain PLANNED.
 
 **Architecture and core boundary** — the only tasks that touch the engine:
 
