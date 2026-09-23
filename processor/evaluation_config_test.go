@@ -77,8 +77,11 @@ func TestEvaluationConfigValidation(t *testing.T) {
 
 			_, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cfg)
 			if tt.wantErr == "" {
-				// A valid block still fails at Start, because nothing is
-				// listening — construction is what must succeed here.
+				// Nothing wires an evaluation sink into the Engine yet, so
+				// a valid block has no further behavior of its own to
+				// assert here — this subtest only proves the thing this
+				// task owns: a valid EvaluationConfig constructs (and
+				// starts) without error.
 				return
 			}
 			if err == nil {

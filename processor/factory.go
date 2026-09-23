@@ -47,13 +47,17 @@ func createTracesProcessor(_ context.Context, set processor.Settings, cfg compon
 	if !ok {
 		return nil, fmt.Errorf("trustvianprocessor: unexpected config type %T", cfg)
 	}
-	// Evaluation, like Policy and Storage below it, is validated before
-	// newTrustvianProcessor runs: an explicitly configured `evaluation:`
-	// block that cannot work must fail Collector startup outright, not
-	// surface as a silently-unrecorded first span. Checked here rather than
-	// in newTrustvianProcessor because that function's actual wiring of the
-	// evaluation sink into the Engine is a separate change; this call is
-	// config validation only.
+	// Evaluation is validated here, one call before newTrustvianProcessor
+	// runs — unlike Policy and Storage, which that function validates
+	// itself, as the first thing it does (see decodePolicy/CompilePolicy
+	// and decodeStorage/CompileStorage in processor.go). That is not an
+	// inconsistency to fix: Policy and Storage validation is inseparable
+	// from compiling a value the Engine actually needs (a policy.Policy,
+	// an open Store), so it has to happen where the Engine is built.
+	// EvaluationConfig.validate() is a pure shape check with no product to
+	// hand the Engine, so it can run one call earlier — failing Collector
+	// startup sooner is strictly better, and there is nothing here for
+	// newTrustvianProcessor to do with the result.
 	if c.Evaluation != nil {
 		if err := c.Evaluation.validate(); err != nil {
 			return nil, err
