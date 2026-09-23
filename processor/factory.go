@@ -47,6 +47,18 @@ func createTracesProcessor(_ context.Context, set processor.Settings, cfg compon
 	if !ok {
 		return nil, fmt.Errorf("trustvianprocessor: unexpected config type %T", cfg)
 	}
+	// Evaluation, like Policy and Storage below it, is validated before
+	// newTrustvianProcessor runs: an explicitly configured `evaluation:`
+	// block that cannot work must fail Collector startup outright, not
+	// surface as a silently-unrecorded first span. Checked here rather than
+	// in newTrustvianProcessor because that function's actual wiring of the
+	// evaluation sink into the Engine is a separate change; this call is
+	// config validation only.
+	if c.Evaluation != nil {
+		if err := c.Evaluation.validate(); err != nil {
+			return nil, err
+		}
+	}
 	p, err := newTrustvianProcessor(set.TelemetrySettings, next, c)
 	if err != nil {
 		return nil, err
