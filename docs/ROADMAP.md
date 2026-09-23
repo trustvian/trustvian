@@ -143,6 +143,8 @@ It now holds the evaluation foundation, and nothing built on top of it:
   terminal dashboard (task 061), the integrated local runtime that binds a
   loopback listener and advertises it (task 062), and the minimal web control
   plane served from that same listener (task 063);
+- also implemented: the PostgreSQL platform backend (task 064), selected
+  explicitly at the composition root with SQLite remaining the default;
 - not implemented: the full environment model, promotion, and the
   event-history capability.
 
@@ -152,7 +154,8 @@ from the two, apply deterministic evidence-backed hard gates to it, keep all
 of that across a restart, and accept evidence over a versioned local HTTP API
 that a restarted process resumes rather than restarts. Subscribers can watch an evaluation live without polling the database.
 A developer drives all of it from one command, a CLI, a live terminal
-dashboard and a browser. Nothing yet shares through PostgreSQL or promotes —
+dashboard and a browser, and a deployment can share one PostgreSQL database
+instead. Nothing yet promotes —
 a gate returns a verdict and has no side effect, and realtime is notification
 over state the database already holds, never a source of truth. Raw event history is
 deliberately still absent. The API itself still binds no listener; task 062's
@@ -329,8 +332,11 @@ Also implemented: the integrated local runtime (062) — `make local` starts
 SQLite, the control plane, the realtime bus and a loopback HTTP listener, and
 local clients discover the endpoint without being told.
 
-Still planned: everything from the PostgreSQL backend (064) onward, which is
-specified but not built. The platform
+Also implemented: the PostgreSQL platform backend (064). SQLite stays the
+zero-configuration local default and PostgreSQL is opt-in, so the same control
+plane runs on either without any layer above persistence knowing which.
+
+Still planned: everything from the environment model (065) onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
 behavioral snapshots, produce fixed-shape comparative scorecards, apply
 deterministic evidence-backed hard gates to them, persist local control and
@@ -591,9 +597,7 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**Partly implemented:** tasks 049–063 are done; 064 is **specified but not
-implemented** ([spec](tasks/v1.0/064-postgresql-platform-backend.md)); 065
-onward remain PLANNED.
+**Partly implemented:** tasks 049–064 are done; 065 onward remain PLANNED.
 
 **Architecture and core boundary** — the only tasks that touch the engine:
 

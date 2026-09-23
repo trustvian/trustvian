@@ -538,15 +538,40 @@ driver dependency in that package; the boundary check still holds, and the
 core's build graph contains none of it. See
 [ADR 0030](adr/0030-local-persistence-stores-authoritative-bounded-state.md).
 
-A second backend is **specified but not implemented**.
-[Task 064](tasks/v1.0/064-postgresql-platform-backend.md) adds a PostgreSQL
-implementation of the same three capabilities for shared deployments, keeping
-SQLite as the local default and leaving `/v1`, realtime, the CLI, the TUI and the
-WebUI unable to tell which backend answered. It lands in this same package for
-the reason above — the private bound markers make a subpackage impossible — and
+[Task 064](tasks/v1.0/064-postgresql-platform-backend.md) added a second
+implementation of the same three capabilities:
+
+```text
+        ControlStore · EvaluationStore · EvaluationIngestStore
+                    ╱                             ╲
+              SQLiteStore                    PostgresStore
+              local · default                shared · deployed
+```
+
+Both live in package `platform`, for the reason above — the private bound
+markers make a subpackage impossible without a public evidence-forging
+constructor. Backend selection exists in exactly one place,
+`localruntime`'s composition, and an architecture test fails if `httpapi`,
+`webui` or any service so much as names a backend. `/v1`, realtime, the CLI,
+the TUI and the WebUI cannot tell which one answered.
+
+One logical `SchemaVersion` governs both physical schemas. The types are chosen
+to preserve observable behaviour rather than to look idiomatic: timestamps and
+uint64 counters are `TEXT` on both backends, because `TIMESTAMPTZ` normalizes
+the caller's zone offset and truncates nanoseconds — both API-visible — and
+`BIGINT` is signed 64-bit while `NUMERIC` would launder the corruption signal a
+non-canonical counter raises. A shared conformance suite and a
+SQLite/PostgreSQL differential suite are what keep the two from drifting.
+
+SQLite's atomicity came from holding one connection; a pool has no such
+property, so every run-scoped write takes a row lock on its run before the reads
+it depends on. Isolation stays `READ COMMITTED`.
 [ADR 0037](adr/0037-postgresql-is-the-shared-platform-persistence-backend.md)
-records the type, concurrency and migration decisions that keep the two
-backends semantically identical.
+records the reasoning.
+
+**Realtime remains in-process.** Two control-plane processes sharing one
+PostgreSQL database share authoritative state and do *not* share realtime
+notifications. Cross-node realtime is [task 069](tasks/v1.0/).
 
 Task 058 added the first service layer and a transport over it:
 

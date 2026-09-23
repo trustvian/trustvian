@@ -286,6 +286,30 @@ argument is a usage error (`2`) raised before any request is sent, so an
 invocation typo cannot be mistaken for an API or gate result. Legacy
 `analyze`, `baseline` and `version` keep their existing operand parsing.
 
+### Platform persistence backends
+
+[Task 064](tasks/v1.0/064-postgresql-platform-backend.md) added PostgreSQL
+alongside SQLite. Backend selection is a deployment concern and appears in none
+of the contracts above.
+
+| Surface | Class | Guarantee | May change | Breaking |
+|---|---|---|---|---|
+| Backend selection names (`sqlite`, `postgres`) | OPERATIONALLY STABLE | The accepted values and that omitting one means SQLite | New backend names | Major |
+| `TRUSTVIAN_PLATFORM_POSTGRES_DSN` | OPERATIONALLY STABLE | `trustvian-local` reads the PostgreSQL DSN from it | An additional configuration source | Major |
+| `platform.SchemaVersion` | INTERNAL | One logical version governs both physical schemas | Incremented with a migration on **both** backends | n/a |
+| Physical SQLite schema | OPERATIONALLY STABLE | Migrated forward only; a newer schema fails closed | Additive tables and columns via a version bump | Major |
+| Physical PostgreSQL schema | OPERATIONALLY STABLE | Same | Same | Major |
+
+`/v1` behaviour is identical on either backend, and no response says which
+database answered. PostgreSQL internals — SQLSTATE, constraint, table and column
+names, raw SQL, the DSN, host or username — never reach a caller: they map to
+the same persistence sentinels the SQLite store already used.
+
+A deployment sharing one PostgreSQL database between processes shares
+authoritative state but **not** realtime notifications; each process keeps its
+own in-process bus. That is a known limitation of task 064, not a defect, and
+task 069 owns cross-node realtime.
+
 ### Web control plane
 
 The local runtime serves a browser UI from the same listener as the API

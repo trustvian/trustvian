@@ -1,6 +1,6 @@
 # 064 — PostgreSQL Platform Backend
 
-Status: specified
+Status: specified and implemented
 Depends on: [057](057-local-platform-persistence.md),
 [058](058-local-control-plane-api-and-ingest.md),
 [062](062-integrated-local-developer-workflow.md),

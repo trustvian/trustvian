@@ -10,6 +10,37 @@ actually depend on.
 
 ### Added
 
+- **PostgreSQL platform backend.** The control plane can now persist to a shared
+  PostgreSQL database instead of a local SQLite file, so several processes can
+  work against one set of authoritative state. **SQLite remains the default and
+  `make local` is unchanged** — it needs no database, no container and no
+  configuration. PostgreSQL is opt-in:
+
+  ```bash
+  TRUSTVIAN_PLATFORM_POSTGRES_DSN=postgres://… trustvian-local --backend postgres
+  ```
+
+  The DSN comes from the environment rather than a flag because a command line is
+  visible through `ps`, and it never appears in a log, an error, the startup
+  output, `runtime.json` or any `/v1` response. An unknown backend, or PostgreSQL
+  without a DSN, fails before the listener binds; nothing ever falls back from a
+  backend that was asked for explicitly.
+
+  Backend selection exists only at the composition root. `/v1`, SSE, the CLI, the
+  TUI and the WebUI cannot tell which database answered, and one logical schema
+  version governs both physical schemas. Timestamps and uint64 counters are
+  stored as text on both backends so a zone offset, nanosecond precision and the
+  full unsigned range survive exactly — a native timestamp type would normalize
+  and truncate values that `/v1` publishes.
+
+  Multiple processes sharing one PostgreSQL database share authoritative state
+  but **not** realtime notifications; each keeps its own in-process bus.
+  Cross-node realtime remains a later milestone. No authentication, environment
+  model, promotion workflow or event history is included. No new dependency: the
+  PostgreSQL driver was already in the repository for the engine's store. See
+  [docs/tasks/v1.0/064-postgresql-platform-backend.md](docs/tasks/v1.0/064-postgresql-platform-backend.md)
+  and [ADR 0037](docs/adr/0037-postgresql-is-the-shared-platform-persistence-backend.md).
+
 - **Minimal web control plane.** `make local` now prints a `Web:` URL alongside
   the API, serving a browser UI from the same loopback listener: open projects,
   agents, candidates and runs by ID, drive a run's lifecycle, watch one run live

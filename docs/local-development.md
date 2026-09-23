@@ -76,6 +76,34 @@ cat .trustvian/runtime.json
 The browser UI is the same endpoint — `make local` prints it as `Web:` — so the
 one field locates both. See [Web control plane](webui.md).
 
+## A shared database, when you need one
+
+`make local` uses SQLite and needs nothing else. That is the default and it is
+not changing.
+
+A deployment that wants several processes against one set of state can select
+PostgreSQL instead:
+
+```bash
+TRUSTVIAN_PLATFORM_POSTGRES_DSN='postgres://user:password@host:5432/trustvian' \
+  ./bin/trustvian-local --backend postgres
+```
+
+The DSN is read from the environment rather than a flag because a command line
+is visible to every process through `ps`. It is never printed, never logged and
+never written into `runtime.json`.
+
+Selecting an unknown backend, or `postgres` without a DSN, fails before the
+listener binds — nothing falls back to SQLite from a backend you asked for. The
+CLI, the TUI and the WebUI behave identically either way; they cannot tell which
+database answered.
+
+Two caveats worth knowing. Two processes sharing one PostgreSQL database share
+authoritative state but **not** realtime notifications: each keeps its own
+in-process bus, so a dashboard connected to one does not see events published by
+the other. And this is still unauthenticated and loopback-only — a shared
+database does not make the listener safe to expose.
+
 ## Reaching a different control plane
 
 An explicit endpoint always wins over discovery:
