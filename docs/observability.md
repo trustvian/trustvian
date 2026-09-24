@@ -220,11 +220,16 @@ only in a Collector configured with `evaluation:`.
 | Value | Meaning |
 |---|---|
 | `applied` | The record was folded into the evaluation run's evidence. |
-| `replayed` | This exact record was already applied — a retried Collector resent it and the control plane recognized it as the same record, so nothing changed. |
-| `error` | The post failed. |
+| `replayed` | This exact record was already applied — a restarted Collector resent it, or the sink reconciled a POST whose response was lost, and the control plane recognized it as the same record. Nothing changed, and no second record exists. |
+| `error` | The post failed, and the sink could not confirm the record either way. |
+
+**A climbing `replayed` count is not an error, but it is a signal.** A
+Collector that is not restarting should replay rarely: a steady rate means
+responses are being lost between it and the control plane, and each one costs
+an extra serialized round trip on the span that lost it.
 
 **A climbing `error` count does not mean one record was skipped.** An
-ingest failure is a permanent consumer error
+unresolved ingest failure is a permanent consumer error
 ([`processor/README.md`](../processor/README.md)), so it aborts the whole
 `ConsumeTraces` batch: every span in that batch — including ones already
 enriched ahead of the failure — is abandoned rather than forwarded to the

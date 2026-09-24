@@ -137,6 +137,18 @@ actually depend on.
   two candidates never train one baseline. Omitting the block changes nothing.
   See [ADR 0038](docs/adr/0038-collector-evaluation-ingest-is-an-http-adapter.md).
 
+  **A lost response is reconciled, not assumed away.** A POST that is written
+  in full, committed, and loses only its reply is indistinguishable from one
+  that never arrived — so the sink does not guess. Failures that prove the
+  record was not applied (a failed dial, a refused redirect, a 4xx) free the
+  sequence; everything else holds it, bound to that exact record, and
+  re-presents the same record at the same sequence, which the control plane's
+  digest rule answers `replayed`. One synchronous attempt, no queue, no
+  background worker, and no record ever sent under a sequence another record
+  already claimed. `Engine.Observe` follows the same line — it runs when the
+  record may be durable and not when the control plane declined it — so a
+  run's evidence and the Collector's own baselines cannot silently diverge.
+
 ### Security
 
 - **Per-actor fingerprint state is now bounded.** `Baseline.Fingerprints`

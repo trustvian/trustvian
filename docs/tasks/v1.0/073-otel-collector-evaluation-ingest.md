@@ -235,7 +235,41 @@ on the span path.
 
 ## Failure Semantics
 
-An ingest failure returns `consumererror.NewPermanent(err)`.
+A transport error is **not** proof that the server did not act. A POST can be
+written in full, committed, and have only its response destroyed. Treating
+that as "it did not happen" leaves the server holding sequence *N* while the
+Collector believes *N* is free — and the next record it sends under *N* is
+refused, correctly, as a different record claiming an occupied position.
+
+So failures are classified, and only one class frees a sequence:
+
+| Class | Examples | Sequence |
+|---|---|---|
+| Definitely not applied | failed dial, DNS failure, refused redirect, request over the body cap, a 4xx from the server | Free. The next record takes it. |
+| Outcome unknown | reset connection, timeout, EOF mid-response, any 5xx, a 2xx whose body cannot be read | **Held**, bound to that exact record. |
+
+Anything unproven is unknown. Calling a definitive failure unknown costs one
+redundant POST the server answers `replayed`; calling an unknown outcome
+definitive frees a sequence the server may already hold.
+
+### Reconciliation, not retry
+
+A held sequence is resolved by re-presenting **the same record** at **the
+same sequence** — the case
+[ADR 0031 §8](../../adr/0031-control-plane-owns-ingest-and-http-is-an-adapter.md)'s
+digest replay rule exists for: identical digest replays, different content
+conflicts. One attempt, synchronous, inside the same `Record` call, under the
+caller's own context. Until it resolves, no other record may use that
+sequence and no other record is accepted.
+
+```text
+idle  ──POST fails, outcome unknown──▶  pending(sequence, record)
+pending ──same record, same sequence, server answers──▶  reconciled ──▶ idle
+pending ──still unknown──▶  pending   (ErrUnresolved; the sink accepts nothing else)
+```
+
+An ingest failure the sink could not resolve returns
+`consumererror.NewPermanent(err)`.
 
 The wrapper is load-bearing. Without it the Collector retries the batch, and a
 retried batch re-analyzes spans whose records already committed, sending them
@@ -245,17 +279,30 @@ its side they are new records, and the evaluation's counts silently inflate.
 duplicate record count twice on purpose, so the corruption is quiet and
 permanent.
 
-Loudly losing a batch is recoverable by rerunning it. Quietly inflating
+Loudly losing a batch is recoverable by starting a new run. Quietly inflating
 evidence is not recoverable at all, because nothing downstream can tell which
 records were doubled. The failure is surfaced, never absorbed.
 
+### Evidence and learning move together
+
+`Engine.Observe` runs when the record may be durable, and does not run when
+the control plane declined it.
+
+Skipping `Observe` on every ingest error — the obvious reading — leaves the
+run holding a record whose behavior this Engine never learned, which is the
+same response-loss failure one layer up. Observing unconditionally trades it
+for the mirror image: learning from records the run refused. `Observe` runs
+at most once per span either way; a reconciled record is one record and one
+observation.
+
 What this deliberately does **not** add:
 
-- No retry, in-line or background. No queue, no goroutine, no timer, no
-  disk spool. Same-sequence retry against the digest replay contract is a
-  coherent future option and is recorded as an alternative rather than built
-  speculatively.
-- No partial success. A span whose record fails to land fails the batch.
+- No blind retry, in-line or background. No queue, no goroutine, no timer,
+  no disk spool, no backoff schedule. Resending a *batch*, or resending a
+  record under a *new* sequence, is what inflates evidence; only
+  same-sequence, same-record reconciliation is safe, and it is safe because
+  the server specifies it.
+- No partial success. A span whose record cannot be confirmed fails the batch.
 - No fallback to "enrich but don't record". That is `required: false` by
   another name.
 
@@ -270,7 +317,8 @@ request timeout    30s per request
 request body       ≤ 256 KiB   (matches the server's own limit)
 response body      ≤ 64 KiB
 redirects          refused
-retries            none
+retries            none, except one same-sequence reconciliation of a record
+                   whose outcome is unknown (see Failure Semantics)
 credentials        never sent, never logged
 ```
 
@@ -311,9 +359,20 @@ and an omitted block preserving the existing construction path exactly;
 malformed `api_url`; a credential-bearing `api_url` rejected with the value
 absent from the diagnostic; redirect refused; response over bound; ingest-state
 initialization and resume from a non-1 cursor; `applied` and `replayed` both
-advancing to the server's number; network failure surfacing as permanent;
-concurrent `ConsumeTraces` allocating a gap-free strictly increasing sequence
-under `-race`.
+advancing to the server's number; an unresolved failure surfacing as
+permanent; concurrent `ConsumeTraces` allocating a gap-free strictly
+increasing sequence under `-race`.
+
+Ambiguous delivery has its own set, because it is the one failure whose
+wrong handling is silent: a record committed by the server with its response
+destroyed is reconciled at the same sequence and reported `replayed`, with
+the next record taking the following sequence and the run holding exactly
+two records; a failure that stays unknown holds its sequence across calls and
+never lets another record take it; a definitive refusal frees the sequence
+and is not retried; reconciliation stays gap-free and duplicate-free under
+concurrency with `-race`. The end-to-end version drives the same loss
+through a proxy in front of a **real** control plane, so the digest rule
+being relied on is the server's own rather than a stub's.
 
 One test exists specifically to pin the point of the task: the posted record is
 byte-identical to `result.DecisionRecord()` for the same `Result`, and carries
@@ -382,8 +441,15 @@ records the adapter contract and why the module edge stays absent.
    the server's `next_sequence`, for both `applied` and `replayed`.
 5. Concurrent `ConsumeTraces` produces a gap-free, strictly increasing
    sequence under `-race`.
-6. An ingest failure surfaces as a permanent consumer error; no configuration
-   silently continues.
+6. An ingest failure the sink could not resolve surfaces as a permanent
+   consumer error; no configuration silently continues.
+6a. A failure that does not prove the record was unapplied holds its sequence
+   bound to that exact record, is reconciled at the same sequence before any
+   other record is accepted, and advances the cursor only to the server's
+   `next_sequence`.
+6b. `Engine.Observe` runs exactly once per analyzed span, and runs when the
+   record may be durable — so a run's evidence and this Engine's learning
+   never diverge in either direction.
 7. Requests are bounded, time out, refuse redirects, and never carry or log
    credentials.
 8. `behavioral_profile` selects the Engine's learning scope.
@@ -399,6 +465,8 @@ stands. No new platform endpoint of any kind, and no collection, list or
 history route. No dynamic reconfiguration or policy reload: like `policy:`, the
 evaluation block compiles once and is fixed for the processor's lifetime, so
 switching runs means a new process. No authentication, TLS or credential store
-(070). No retry, queue or spool. No promotion (066), no event history (067). No
+(070). No blind retry, queue or spool — the only retry is the
+same-sequence reconciliation above, which is the server's replay contract
+rather than a retry policy. No promotion (066), no event history (067). No
 core change: `Engine`, `event`, `Result` and `DecisionRecord` are untouched,
 and no platform concept enters the core.

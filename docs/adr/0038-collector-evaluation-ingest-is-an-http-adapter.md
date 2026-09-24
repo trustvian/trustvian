@@ -92,7 +92,8 @@ guarantee explicitly instead of relying on a default nobody read.
 
 ### 5. Failure is permanent, and that is a correctness property
 
-An ingest failure returns `consumererror.NewPermanent`.
+An ingest failure that the sink could not resolve returns
+`consumererror.NewPermanent`.
 
 Without the wrapper the Collector retries the batch. A retried batch
 re-analyzes spans whose records already committed and resends them under
@@ -101,6 +102,10 @@ are new records.
 [ADR 0026](0026-evaluation-aggregation-is-bounded-evidence.md) made a
 duplicate count twice on purpose, so the corruption is silent and nothing
 downstream can tell which records were doubled.
+
+That is the argument against **blind** retry, and it is unchanged. It is not
+an argument against the one retry the server's own contract defines — see
+§8, which is where a lost response is resolved before it can become this.
 
 Losing a batch is loud, but it is not recoverable by rerunning it into the
 same run: a batch that fails partway leaves its earlier spans' records
@@ -140,6 +145,85 @@ Nothing is derived locally, so a client-side increment cannot disagree with
 durable state, and a server that claims success without advancing fails
 closed rather than freezing the cursor.
 
+### 8. A transport failure does not mean the record was not applied
+
+This is the correction to an assumption the first implementation made
+silently:
+
+```go
+response, err := c.http.Do(request)
+if err != nil {
+    // the operation did not happen   ← not true
+}
+```
+
+A POST can be written in full, committed, and have only its reply destroyed —
+a reset connection, a timeout, an EOF partway through the response. The
+server holds the record at sequence *N*; the client still believes *N* is
+free. The next record takes *N*, and the control plane refuses it for the
+right reason: sequence *N* is already occupied by different content. The run
+is then stuck in a way no operator action inside it can undo.
+
+So failures are classified, and the two classes are handled differently:
+
+| Class | Examples | Sequence |
+|---|---|---|
+| Definitely not applied | failed dial, DNS failure, refused redirect, request over the body cap, a 4xx from the server | Free. The next record takes it. |
+| Outcome unknown | reset connection, timeout, EOF mid-response, any 5xx, a 2xx whose body cannot be read | **Held**, bound to that exact record. |
+
+The asymmetry is deliberate. Calling a definitive failure unknown costs one
+redundant POST the server answers `replayed`. Calling an unknown outcome
+definitive frees a sequence the server may already hold. Anything unproven is
+therefore unknown, and only two transport shapes are treated as proof —
+failed dial and DNS failure, both of which happen before a byte is sent.
+
+A held sequence is reconciled by re-presenting **the same record** at **the
+same sequence**, which is exactly the case
+[ADR 0031 §8](0031-control-plane-owns-ingest-and-http-is-an-adapter.md)'s
+digest replay rule was written for: same sequence and identical digest
+replays, same sequence and different content conflicts. One attempt, made
+synchronously inside the same `Record` call, under the caller's own context.
+Not a background worker, not a queue, not a backoff schedule — a state
+machine with three states and one held record:
+
+```text
+idle  ──POST fails, outcome unknown──▶  pending(sequence, record)
+pending ──same record, same sequence, server answers──▶ reconciled ──▶ idle
+pending ──still unknown──▶ pending   (ErrUnresolved; no other record may proceed)
+```
+
+The pending slot is bounded at one by construction: the mutex in §6 means
+there is never a second record in flight to become unknown. A sink that
+cannot reconcile refuses to accept another record rather than reusing the
+sequence, which is the fail-closed reading of "the producer owns the
+sequence".
+
+### 9. Evidence and learning move together
+
+`Engine.Observe` runs when the record may be durable, and does not run when
+the control plane declined it.
+
+The original order — `Analyze` → `Record` → `Observe`, with `Observe` skipped
+on any ingest error — produced a divergence in the response-loss case: the
+run held the record, and the Engine had never folded that behavior into a
+baseline. The evaluation's evidence then described behavior the Collector
+would not recognize next time, and nothing said so.
+
+§8 resolves the ordinary case before it arises: the reconciliation finishes
+inside `Record`, so the call returns success and `Observe` runs as usual.
+What remains is a record still pending when the call returns. It may be
+durable, so it is observed — and if the reconciliation later succeeds, the
+two agree. The batch still fails; it just does not fail asymmetrically.
+
+The opposite direction is handled by the same rule read backwards: a record
+the control plane **declined** is not in the run, so learning from it would
+teach this Engine from behavior no scorecard can account for. That path
+returns before `Observe`.
+
+`Observe` runs at most once per span on every path. A reconciled record is
+one record and one observation; the retry is a second attempt at delivering
+the same record, never a second record.
+
 ## Alternatives considered
 
 **Import the platform.** Rejected for the reasons in point 1. It is the
@@ -150,13 +234,26 @@ change that would look like a simplification in review.
 before this task existed: a second behavioral execution path with its own
 baseline and its own drift.
 
-**Same-sequence retry against the digest replay contract.** Genuinely
-coherent — a retry of the identical record is exactly what the digest replay
-rule is for, and a network failure leaves the client unable to tell whether
-the record landed. Deferred rather than rejected: it is additive, it needs a
-bounded backoff policy this task has no measurement to choose, and permanent
-failure is correct in the meantime. Building it speculatively would add a
-retry layer nobody had yet needed.
+**Same-sequence retry against the digest replay contract.** Adopted — see
+§8. It was deferred in the first version of this ADR on the grounds that it
+needed a bounded backoff policy and that permanent failure was correct in
+the meantime. Both were wrong in the same way: permanent failure is correct
+only for a record that is *not* there, and the deferral rested on treating
+an unknown outcome as a definite one. No backoff policy is needed either —
+the reconciliation is one synchronous attempt at the same sequence, not a
+schedule.
+
+**A blind retry layer, in-line or background.** Still rejected, and §5 is
+why. Resending a *batch*, or resending a record under a *new* sequence, is
+what inflates evidence. The distinction that makes §8 safe is that the
+retry is not generic: it is the same record at the same sequence, which the
+server is specified to recognize.
+
+**Observing before posting** (`Analyze` → `Observe` → `Record`), to make
+"evidence without learning" structurally impossible. Rejected: it only
+trades the divergence for its mirror image, teaching the Engine from records
+the control plane declined. §9 keeps learning tied to what the run may
+actually hold, in both directions.
 
 **Reconstruct the record from span attributes.** Rejected by point 2.
 
@@ -164,7 +261,16 @@ retry layer nobody had yet needed.
 
 An evaluation-configured Collector is bounded by one control-plane round trip
 per analyzed span, serialized. That is a real throughput ceiling, and it is
-the honest price of not inventing an ordering layer.
+the honest price of not inventing an ordering layer. A lost response costs
+one additional round trip, once, on the span that lost it.
+
+A control plane that is unreachable for both attempts leaves the sink
+holding one record and refusing further ones until it is reconciled. That is
+a hard stop, deliberately: the alternative is reusing a sequence the server
+may already have committed. The state it holds is one record, never a queue,
+and it survives nothing — a restarted Collector re-reads the cursor from the
+server, and any record whose fate was unknown is simply the sequence that
+server reports next.
 
 A Collector serves exactly one evaluation run for its lifetime. Switching
 runs means a new process, the same way switching policy does — the

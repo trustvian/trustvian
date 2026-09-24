@@ -164,17 +164,48 @@ because a run that silently lost evidence would still report as complete and
 its gate would still evaluate.
 
 Bounds: 30s per request, a 256 KiB request body matching the server's own cap,
-a 64 KiB response bound, refused redirects, and no retries. A URL carrying
-credentials is rejected without repeating it into Collector logs.
+a 64 KiB response bound, refused redirects, and no blind retries. A URL
+carrying credentials is rejected without repeating it into Collector logs.
 
-An ingest failure is a **permanent** consumer error: the pipeline does not
-retry the batch, and — worth stating plainly, since it is the first thing an
-operator will notice — the **whole batch is abandoned, not forwarded**,
-including every span already enriched ahead of the failure. An
-evaluation-configured Collector whose control plane goes down therefore stops
-exporting traces entirely, not only evaluation records. Retrying would
-re-analyze spans whose records already committed and resend them under new
-sequence numbers, and duplicate records count twice by design.
+**A lost response is not a lost record.** A POST can be written in full,
+committed by the control plane, and have only its reply destroyed — a reset
+connection, a timeout, an EOF partway through. Treating that as "it did not
+happen" would hand the next record a sequence the server already holds, and
+the run would then reject every record that followed. So failures are
+classified:
+
+| Class | Examples | What happens |
+|---|---|---|
+| Definitely not applied | failed dial, DNS failure, refused redirect, oversized body, a 4xx from the control plane | The sequence is free; the next record takes it. |
+| Outcome unknown | reset connection, timeout, EOF mid-response, any 5xx, an unreadable 2xx | The sequence stays bound to that exact record and is reconciled. |
+
+Reconciliation is the server's own contract, not a retry policy: the same
+record is re-presented at the same sequence, the control plane recognizes the
+identical digest and answers `replayed`, and the cursor advances to the
+`next_sequence` it returns. One attempt, made inside the same call, under the
+same context — no queue, no goroutine, no backoff. The metric shows it as
+`trustvian.evaluation.records{trustvian.outcome="replayed"}`.
+
+Until a held sequence is reconciled, the sink accepts no other record. That
+is deliberate: the alternative is reusing a sequence the control plane may
+already have committed.
+
+An ingest failure the sink could **not** resolve — a declined record, or one
+still unconfirmed after reconciliation — is a **permanent** consumer error:
+the pipeline does not retry the batch, and — worth stating plainly, since it
+is the first thing an operator will notice — the **whole batch is abandoned,
+not forwarded**, including every span already enriched ahead of the failure.
+An evaluation-configured Collector whose control plane goes down therefore
+stops exporting traces entirely, not only evaluation records. A batch retry
+would re-analyze spans whose records already committed and resend them under
+new sequence numbers, and duplicate records count twice by design.
+
+**Learning follows the evidence.** `Engine.Observe` runs when the record may
+be durable — including a record still awaiting reconciliation — and does not
+run when the control plane declined it. That is what keeps the run's evidence
+and this Collector's baselines describing the same history; it runs at most
+once per span either way, so a reconciled record is one record and one
+observation.
 
 **What this leaves behind:** if a batch fails partway through, the spans
 analyzed before the failure already posted durable records and advanced the
