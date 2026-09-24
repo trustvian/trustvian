@@ -3,6 +3,7 @@ package trustvianprocessor_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -37,14 +38,28 @@ type ingestAPIServer struct {
 	mu       sync.Mutex
 	records  []trustvian.DecisionRecord
 	next     uint64
+	status   string
 	failNext atomic.Bool
+
+	// failOnAttempt, when non-zero, fails exactly the Nth POST to /records
+	// (1-indexed) with a 500 rather than every attempt from some point on —
+	// what a multi-span-batch test needs to fail the second record while
+	// letting the first commit.
+	failOnAttempt  atomic.Int64
+	recordAttempts atomic.Int64
 }
 
 func newIngestAPIServer(t *testing.T) *ingestAPIServer {
 	t.Helper()
-	cp := &ingestAPIServer{next: 1}
+	cp := &ingestAPIServer{next: 1, status: "running"}
 	cp.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/progress"):
+			cp.mu.Lock()
+			status := cp.status
+			cp.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"version": "1", "run_id": "run-1", "status": status})
 		case strings.HasSuffix(r.URL.Path, "/ingest-state"):
 			cp.mu.Lock()
 			next := cp.next
@@ -52,7 +67,8 @@ func newIngestAPIServer(t *testing.T) *ingestAPIServer {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"version": "1", "run_id": "run-1", "next_sequence": itoa(next)})
 		case strings.HasSuffix(r.URL.Path, "/records"):
-			if cp.failNext.Load() {
+			attempt := cp.recordAttempts.Add(1)
+			if cp.failNext.Load() || (cp.failOnAttempt.Load() != 0 && attempt == cp.failOnAttempt.Load()) {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
@@ -66,6 +82,21 @@ func newIngestAPIServer(t *testing.T) *ingestAPIServer {
 				return
 			}
 			cp.mu.Lock()
+			// M12: enforce the real gap-free contract, the same as
+			// internal/evaluation's own stub — a test server that accepted
+			// any sequence would prove nothing about the cursor at this
+			// level either.
+			if envelope.Sequence != itoa(cp.next) {
+				cp.mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"version": "1",
+					"error": map[string]string{"code": "conflict",
+						"message": fmt.Sprintf("sequence %s, expected %s", envelope.Sequence, itoa(cp.next))},
+				})
+				return
+			}
 			cp.records = append(cp.records, envelope.Record)
 			cp.next++
 			next := cp.next
@@ -125,6 +156,34 @@ func evaluationTraces(actorID, target string) ptrace.Traces {
 	copy(spanID[:], "span-"+target+"01234567")
 	span.SetTraceID(traceID)
 	span.SetSpanID(spanID)
+	return td
+}
+
+// evaluationTracesN builds a batch of len(targets) spans in one
+// ptrace.Traces, one resource, one scope — what a multi-span-batch test
+// needs and evaluationTraces (deliberately one span) does not provide.
+func evaluationTracesN(actorID string, targets ...string) ptrace.Traces {
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr("service.name", actorID)
+	rs.Resource().Attributes().PutStr("deployment.environment.name", "local")
+
+	spans := rs.ScopeSpans().AppendEmpty().Spans()
+	for _, target := range targets {
+		span := spans.AppendEmpty()
+		span.SetName("GET")
+		span.SetKind(ptrace.SpanKindClient)
+		span.SetStartTimestamp(pcommon.NewTimestampFromTime(spanStart))
+		span.SetEndTimestamp(pcommon.NewTimestampFromTime(spanStart.Add(time.Millisecond)))
+		span.Attributes().PutStr("http.request.method", "GET")
+		span.Attributes().PutStr("server.address", target)
+		var traceID pcommon.TraceID
+		copy(traceID[:], "trace-"+target+"0123456789abcdef")
+		var spanID pcommon.SpanID
+		copy(spanID[:], "span-"+target+"01234567")
+		span.SetTraceID(traceID)
+		span.SetSpanID(spanID)
+	}
 	return td
 }
 
@@ -312,6 +371,79 @@ func TestInvalidSpanConsumesNoSequence(t *testing.T) {
 	}
 	if got := len(cp.recorded()); got != 1 {
 		t.Errorf("control plane received %d records, want 1", got)
+	}
+}
+
+// TestEvaluationBatchFailurePartwayLeavesPrefixDurable (M16) is the factual
+// basis for the permanent-error rationale (ADR 0038 §5) and for the residual
+// documented in processor/README.md: a span 1 record can commit durably while
+// span 2's fails, and the whole batch — including the already-committed
+// span's enriched output — must still not reach the next consumer.
+func TestEvaluationBatchFailurePartwayLeavesPrefixDurable(t *testing.T) {
+	cp := newIngestAPIServer(t)
+	cp.failOnAttempt.Store(2) // the second span's record fails; the first must already have landed
+	next := &capturingConsumer{}
+
+	proc, err := newTestProcessorWithConfig(t, next, cp.config())
+	if err != nil {
+		t.Fatalf("CreateTraces() error = %v", err)
+	}
+
+	td := evaluationTracesN("support-agent", "crm.localhost", "knowledge.localhost")
+	err = proc.ConsumeTraces(context.Background(), td)
+	if err == nil {
+		t.Fatal("ConsumeTraces() error = nil, want the second span's ingest failure surfaced")
+	}
+	if !consumererror.IsPermanent(err) {
+		t.Errorf("error is not permanent; a retried batch would double-count the first span's committed record")
+	}
+
+	records := cp.recorded()
+	if len(records) != 1 {
+		t.Fatalf("control plane received %d records, want 1 — the first span's record must be durable", len(records))
+	}
+	if records[0].Behavior.TargetName != "crm.localhost" {
+		t.Errorf("the durable record is for %q, want the first span (crm.localhost)", records[0].Behavior.TargetName)
+	}
+
+	if next.len() != 0 {
+		t.Errorf("next consumer received %d batches, want 0; the whole batch — including the "+
+			"already-committed first span — must not be forwarded", next.len())
+	}
+}
+
+// TestConsumeTracesConcurrentEvaluationIsGapFree covers acceptance criterion
+// 5 at the level it is actually specified: concurrent ConsumeTraces, not
+// Sink.Record directly (TestRecordConcurrentIsGapFree in
+// internal/evaluation covers that lower level). The stub's own sequence
+// enforcement (added for M12) is what makes a gap or a race visible here:
+// either would surface as a ConsumeTraces error and a short count below.
+func TestConsumeTracesConcurrentEvaluationIsGapFree(t *testing.T) {
+	cp := newIngestAPIServer(t)
+	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cp.config())
+	if err != nil {
+		t.Fatalf("CreateTraces() error = %v", err)
+	}
+
+	const goroutines, each = 8, 5
+	var wg sync.WaitGroup
+	for g := range goroutines {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := range each {
+				target := fmt.Sprintf("target-%d-%d.localhost", g, i)
+				if err := proc.ConsumeTraces(context.Background(),
+					evaluationTraces("support-agent", target)); err != nil {
+					t.Errorf("ConsumeTraces() error = %v", err)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	if got, want := len(cp.recorded()), goroutines*each; got != want {
+		t.Fatalf("control plane received %d records, want %d", got, want)
 	}
 }
 

@@ -206,6 +206,37 @@ func TestIngestSurfacesServerErrorEnvelope(t *testing.T) {
 	}
 }
 
+// TestIngestRejectsOversizedBodyBeforeSending covers acceptance criterion 7's
+// request-body bound, which had no test: a record whose caller-supplied
+// content pushes the encoded envelope over the 256 KiB limit must be refused
+// before any request reaches the network, not merely once the server would
+// have rejected it.
+func TestIngestRejectsOversizedBodyBeforeSending(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	c, err := newClient(server.URL, requestTimeout)
+	if err != nil {
+		t.Fatalf("newClient() error = %v", err)
+	}
+
+	record := trustvian.DecisionRecord{PolicyReason: strings.Repeat("x", maxRequestBody)}
+	_, err = c.ingest(context.Background(), "run-1", 1, "support-reference", record)
+	if err == nil {
+		t.Fatal("ingest() error = nil, want the request body bound enforced")
+	}
+	if !strings.Contains(err.Error(), "byte limit") {
+		t.Errorf("error = %q, want it to name the byte limit", err.Error())
+	}
+	if called {
+		t.Error("the oversized request reached the server; it must be rejected before sending")
+	}
+}
+
 func TestClientRefusesRedirect(t *testing.T) {
 	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("redirect was followed; a mutation must not change host")

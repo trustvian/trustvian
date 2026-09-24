@@ -289,6 +289,7 @@ func TestNilMetricsRecordsNothing(t *testing.T) {
 	m.RecordAnalysis(ctx, tvmetrics.OutcomeAnalyzed, time.Millisecond)
 	m.RecordDecision(ctx, "block")
 	m.RecordObservation(ctx, tvmetrics.OutcomeLearned, time.Millisecond)
+	m.RecordEvaluationIngest(ctx, tvmetrics.OutcomeApplied, time.Millisecond)
 }
 
 // TestZeroValueMetricsRecordsNothing covers the same contract for a
@@ -301,6 +302,7 @@ func TestZeroValueMetricsRecordsNothing(t *testing.T) {
 	m.RecordAnalysis(ctx, tvmetrics.OutcomeAnalyzed, time.Millisecond)
 	m.RecordDecision(ctx, "block")
 	m.RecordObservation(ctx, tvmetrics.OutcomeLearned, time.Millisecond)
+	m.RecordEvaluationIngest(ctx, tvmetrics.OutcomeApplied, time.Millisecond)
 }
 
 // TestRecordEvaluationIngestUsesAClosedVocabulary proves an unrecognized

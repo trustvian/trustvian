@@ -23,16 +23,32 @@ type ingestServer struct {
 
 	mu       sync.Mutex
 	next     uint64
+	status   string
 	accepted []uint64
 	requests atomic.Int64
 }
 
+// newIngestServer builds a stub whose run is already running — the common
+// case every existing test in this file relies on. Use
+// newIngestServerWithStatus directly for a test that needs a different one.
 func newIngestServer(t *testing.T, startAt uint64) *ingestServer {
 	t.Helper()
-	s := &ingestServer{next: startAt}
+	return newIngestServerWithStatus(t, startAt, runStatusRunning)
+}
+
+func newIngestServerWithStatus(t *testing.T, startAt uint64, status string) *ingestServer {
+	t.Helper()
+	s := &ingestServer{next: startAt, status: status}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.requests.Add(1)
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/progress"):
+			s.mu.Lock()
+			status := s.status
+			s.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"version": "1", "run_id": "run-1", "status": status,
+			})
 		case strings.HasSuffix(r.URL.Path, "/ingest-state"):
 			s.mu.Lock()
 			next := s.next
@@ -109,6 +125,25 @@ func TestInitializeSeedsCursorFromServer(t *testing.T) {
 	}
 }
 
+// TestInitializeFailsWhenRunIsNotRunning covers Important finding I1:
+// IngestDecisionRecord refuses every record for a run that is not
+// RunRunning, so Initialize must refuse startup rather than come up clean
+// and fail on the first span.
+func TestInitializeFailsWhenRunIsNotRunning(t *testing.T) {
+	server := newIngestServerWithStatus(t, 1, "pending")
+	sink, err := New(server.URL, "run-1", "support-reference")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	err = sink.Initialize(context.Background())
+	if err == nil {
+		t.Fatal("Initialize() error = nil, want a refusal for a run that is not running")
+	}
+	if !strings.Contains(err.Error(), "pending") {
+		t.Errorf("error = %q, want it to name the actual status %q", err.Error(), "pending")
+	}
+}
+
 func TestRecordBeforeInitializeFails(t *testing.T) {
 	server := newIngestServer(t, 1)
 	sink, err := New(server.URL, "run-1", "support-reference")
@@ -178,6 +213,11 @@ func TestRecordConcurrentIsGapFree(t *testing.T) {
 
 func TestRecordReportsReplayed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/progress") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"version": "1", "run_id": "run-1", "status": runStatusRunning})
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/ingest-state") {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"version": "1", "run_id": "run-1", "next_sequence": "1"})
@@ -197,11 +237,21 @@ func TestRecordReportsReplayed(t *testing.T) {
 	if got != dispositionReplayed {
 		t.Errorf("Record() = %q, want %q", got, dispositionReplayed)
 	}
+	// Criterion 4 covers both dispositions advancing the cursor to the
+	// server's number, not just applied.
+	if got := sink.nextSequence(); got != 2 {
+		t.Errorf("cursor = %d after a replayed record, want 2", got)
+	}
 }
 
 // TestRecordRejectsUnknownDisposition covers Review Focus item 3.
 func TestRecordRejectsUnknownDisposition(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/progress") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"version": "1", "run_id": "run-1", "status": runStatusRunning})
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/ingest-state") {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"version": "1", "run_id": "run-1", "next_sequence": "1"})
@@ -222,6 +272,11 @@ func TestRecordRejectsUnknownDisposition(t *testing.T) {
 // TestRecordRejectsNonAdvancingSequence covers Review Focus item 2.
 func TestRecordRejectsNonAdvancingSequence(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/progress") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"version": "1", "run_id": "run-1", "status": runStatusRunning})
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/ingest-state") {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"version": "1", "run_id": "run-1", "next_sequence": "4"})
@@ -243,6 +298,11 @@ func TestRecordRejectsNonAdvancingSequence(t *testing.T) {
 func TestRecordDoesNotAdvanceOnFailure(t *testing.T) {
 	var fail atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/progress") {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"version": "1", "run_id": "run-1", "status": runStatusRunning})
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/ingest-state") {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"version": "1", "run_id": "run-1", "next_sequence": "1"})

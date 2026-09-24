@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -122,9 +123,12 @@ func postJSON(t *testing.T, apiURL, path string, payload any) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		body := make([]byte, 2048)
-		n, _ := response.Body.Read(body)
-		t.Fatalf("POST %s = HTTP %d: %s", path, response.StatusCode, body[:n])
+		// io.ReadAll, not a single fixed-size Read: a short read (common on
+		// a chunked or slow response) would silently truncate the one
+		// diagnostic this failure has, in the hardest test in this repo to
+		// debug from CI output alone.
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		t.Fatalf("POST %s = HTTP %d: %s", path, response.StatusCode, body)
 	}
 }
 
