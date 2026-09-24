@@ -511,6 +511,37 @@ scorecard with explicit caller-owned limits and returns PASS or FAIL.
 
 ### Local persistence fails closed and stores no raw history
 
+### An evaluation run cannot name an environment nobody registered
+
+**Threat:** a mistyped environment reference silently creates a run whose
+evidence describes a population of one, and every comparison bounded by that
+reference inherits the mistake without anything being positioned to notice.
+
+Before [task 065](tasks/v1.0/065-environment-model.md) an `EnvironmentRef` was
+validated for shape and nothing else. `ControlPlane.CreateEvaluationRun` now
+resolves the run through candidate → agent → project and requires the named
+environment to exist in that project and be active, failing with
+`ErrStoreNotFound` or `ErrEnvironmentUnavailable` **before** the run is
+written and before any realtime event is published. A reference that exists in
+a *different* project does not exist for this run: identity is
+`(ProjectID, EnvironmentRef)`.
+
+`ControlPlane.CompareEvaluations` gained the matching precondition. The
+existing rule that two runs must share an environment reference was standing in
+for "the same environment", and project-scoped references made that a hazard —
+two projects may each own a `staging`, and comparing across them would produce
+a scorecard over unrelated populations while reporting the environment as
+`staging`. Both runs must now resolve to one project, checked before any
+evidence is loaded.
+
+Neither check runs on the ingest path: a record is never resolved against the
+registry, and a run already underway is unaffected by its environment being
+archived afterwards. Environment configuration governs what may start, never
+what is running or what has finished — and there is no delete, so a completed
+run's reference always resolves. An environment stores no URL, credential,
+secret or deployment target, and the platform opens no connection on one's
+behalf.
+
 **Threat:** durable platform state becomes a way to forge evidence, adopt a
 database nobody vetted, silently rewrite what a finished run was evaluated
 against, or accumulate the event history this design deliberately does not

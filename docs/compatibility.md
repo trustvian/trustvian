@@ -74,7 +74,9 @@ reconstructed later. Everything else in this table is already released.
 | Platform error `code` values and HTTP statuses | STABLE | A code and its status keep the condition they name | New codes | Major |
 | Platform error `message` text | OBSERVATIONAL | The code and status are the contract; wording is diagnostic | Any change | None |
 | Platform ingest sequence semantics | STABLE | Monotonic from 1; expected applies, identical retry of the last replays, gap and stale fail | — | Major |
-| Platform SQLite schema | OPERATIONALLY STABLE | Forward-only, version-gated; currently version 2 | Additive tables or columns with a schema-version bump and a migration | Major for a destructive change |
+| Platform SQLite schema | OPERATIONALLY STABLE | Forward-only, version-gated; currently version 3 | Additive tables or columns with a schema-version bump and a migration | Major for a destructive change |
+| Platform environment identity | STABLE | An environment is `(project_id, ref)`; a run keeps recording only the ref, and refs are an open set rather than an enum | New optional environment fields | Major |
+| `GET /v1/projects/{project_id}/environments` paging | STABLE | Traversal by `ref` ascending, exclusive `after` cursor, `limit` 1–64 defaulting to 64, `next_after` present only when another page follows | New optional query parameters | Major, or a new path version |
 | `GET /v1/realtime` route and filter query names | STABLE | Path, method, and the `project_id`, `agent_id`, `run_id` filters | New optional filters | Major, or a new path version |
 | Realtime SSE event names | STABLE | A published event name keeps the condition it names | New event names — **consumers must tolerate unknown names** | Major |
 | Realtime SSE JSON field names | STABLE | A published field name keeps its meaning | New fields — **consumers must tolerate unknown fields** | Major |

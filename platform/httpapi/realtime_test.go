@@ -259,6 +259,9 @@ func (a *realtimeAPI) seedRunning(runID, candidateID string) {
 	a.mustPost("/v1/candidates", map[string]any{
 		"id": candidateID, "agent_id": "agent-1",
 		"metadata": map[string]string{"label": "v1"}}, 201)
+	// Task 065: a run names an environment its project owns.
+	a.mustPost("/v1/environments", map[string]any{
+		"project_id": "proj-1", "ref": testEnvironment, "name": "Staging"}, 201)
 	a.mustPost("/v1/evaluation-runs", map[string]string{
 		"id": runID, "candidate_id": candidateID,
 		"environment": testEnvironment, "behavioral_profile": testProfile}, 201)

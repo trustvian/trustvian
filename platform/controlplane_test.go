@@ -77,11 +77,16 @@ func (f *controlPlaneFixture) seedPending(t *testing.T, runID platform.Evaluatio
 	project, _ := platform.NewProject("proj-1", "Checkout")
 	agent, _ := platform.NewAgent("agent-1", "proj-1", "Deploy agent")
 	candidate, _ := platform.NewCandidate("cand-1", "agent-1", platform.CandidateMetadata{Label: "v1"})
+	// Task 065: a run names an environment its project owns, so the fixture
+	// registers it. A run against an unregistered ref is refused, which is
+	// the point of the registry.
+	environment, _ := platform.NewEnvironment(fixtureEnvironment, "proj-1", "Staging")
 
 	for _, err := range []error{
 		f.plane.CreateProject(ctx, project),
 		f.plane.CreateAgent(ctx, agent),
 		f.plane.CreateCandidate(ctx, candidate),
+		f.plane.CreateEnvironment(ctx, environment),
 	} {
 		if err != nil && !errors.Is(err, platform.ErrStoreAlreadyExists) {
 			t.Fatalf("seed error = %v", err)
@@ -700,10 +705,12 @@ func (f *controlPlaneFixture) completeEvaluation(
 	project, _ := platform.NewProject("proj-1", "Checkout")
 	agent, _ := platform.NewAgent("agent-1", "proj-1", "Deploy agent")
 	candidate, _ := platform.NewCandidate(candidateID, "agent-1", platform.CandidateMetadata{Label: "v1"})
+	environment, _ := platform.NewEnvironment(fixtureEnvironment, "proj-1", "Staging")
 	for _, err := range []error{
 		f.plane.CreateProject(ctx, project),
 		f.plane.CreateAgent(ctx, agent),
 		f.plane.CreateCandidate(ctx, candidate),
+		f.plane.CreateEnvironment(ctx, environment),
 	} {
 		if err != nil && !errors.Is(err, platform.ErrStoreAlreadyExists) {
 			t.Fatalf("seed error = %v", err)
@@ -1238,10 +1245,12 @@ func (f *controlPlaneFixture) completeEmptyRun(
 	project, _ := platform.NewProject("proj-1", "Checkout")
 	agent, _ := platform.NewAgent("agent-1", "proj-1", "Deploy agent")
 	candidate, _ := platform.NewCandidate(candidateID, "agent-1", platform.CandidateMetadata{Label: "v1"})
+	environment, _ := platform.NewEnvironment(fixtureEnvironment, "proj-1", "Staging")
 	for _, err := range []error{
 		f.plane.CreateProject(ctx, project),
 		f.plane.CreateAgent(ctx, agent),
 		f.plane.CreateCandidate(ctx, candidate),
+		f.plane.CreateEnvironment(ctx, environment),
 	} {
 		if err != nil && !errors.Is(err, platform.ErrStoreAlreadyExists) {
 			t.Fatalf("seed error = %v", err)
@@ -1976,10 +1985,15 @@ func TestRealtimeScopeFilteringAcrossHierarchies(t *testing.T) {
 		run, _ := platform.NewEvaluationRun(
 			platform.EvaluationRunID(h.run), platform.CandidateID(h.candidate),
 			fixtureEnvironment, fixtureProfile, aggEpoch)
+		// Each project owns its own "staging": identity is the pair, so the
+		// same ref under two projects is two environments.
+		environment, _ := platform.NewEnvironment(
+			fixtureEnvironment, platform.ProjectID(h.project), "Staging")
 		for _, err := range []error{
 			plane.CreateProject(ctx, project),
 			plane.CreateAgent(ctx, agent),
 			plane.CreateCandidate(ctx, candidate),
+			plane.CreateEnvironment(ctx, environment),
 			plane.CreateEvaluationRun(ctx, run),
 		} {
 			if err != nil {

@@ -801,10 +801,11 @@ module — what is being evaluated, and by whom:
 
 ```text
 Project
-  └─ Agent
-      └─ Candidate
-          └─ EvaluationRun ──▶ EnvironmentRef
-                          └──▶ BehavioralProfileRef
+  ├─ Agent
+  │   └─ Candidate
+  │       └─ EvaluationRun ──▶ EnvironmentRef
+  │                       └──▶ BehavioralProfileRef
+  └─ Environment ◀──────────────────┘
 ```
 
 - **Project** — a local control-plane workspace owning agents. Not a tenant,
@@ -818,9 +819,16 @@ Project
 - **EvaluationRun** — one bounded execution of one Candidate against one
   environment reference and one behavioral profile reference. It carries
   identity and lifecycle, and no results.
-- **EnvironmentRef** / **BehavioralProfileRef** — opaque references. The
-  environment model itself, and how behavioral profiles are allocated, are
-  later tasks.
+- **Environment** — one deployment stage a project owns, identified by the
+  `EnvironmentRef` a run records. It carries a name, an optional promotion
+  rank, and an active/archived status, and nothing else: no URL, credential,
+  secret or deployment target. Identity is `(ProjectID, EnvironmentRef)`, so
+  two projects may each own a `staging` and they are two environments.
+- **EnvironmentRef** — the reference a run records and the environment's
+  identity, not a separate identifier. Still an open set: `local`, `staging`,
+  `production` are plausible values, not a closed enum.
+- **BehavioralProfileRef** — an opaque reference. How behavioral profiles are
+  allocated remains a later task, and an environment is not that choice.
 
 **These two domains never merge, and the separation is the point.** No
 platform identifier is a behavioral dimension: a candidate is not an actor, a
@@ -837,6 +845,14 @@ core     trustvian.WithLearningScope(string)
 
 A run's `Status` is execution state, not a verdict. `completed` means the
 execution finished; whether the candidate passed is a gate's separate answer.
+
+An environment's **rank** is an ordering, not a permission. `CanPromote(from,
+to)` reports whether one environment is forward of another inside one project
+— both active, both ranked, strictly greater — and answers nothing about
+whether a candidate may actually move there. That is a promotion workflow's
+question, and the engine promotes nothing either way. Environments are
+archived rather than deleted, so a completed run's reference always resolves.
+See [ADR 0039](adr/0039-environments-are-project-owned-ranked-references.md).
 
 ### Evaluation evidence
 

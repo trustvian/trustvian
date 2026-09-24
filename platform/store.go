@@ -78,11 +78,16 @@ type Store interface {
 // a finished run was evaluated against. Evaluating a different artifact means
 // a different caller-owned CandidateID.
 //
-// No list, search, filter or pagination method. Task 058 has not specified
-// sort order, cursor semantics, limits or parent scoping, and freezing any of
-// them here would decide them by accident. No delete method either: nothing
-// in this milestone deletes, and a delete API implies a retention model that
-// does not exist.
+// One list method, for one entity, added by task 065 because that is the
+// milestone with a concrete need for it: a caller cannot open an environment
+// by ref when knowing the refs is the question. Its scope, order, cursor and
+// limit are all decided — see ProjectEnvironments. Projects, agents,
+// candidates and runs still have none, and freezing those four decisions for
+// them by accident is what task 058 was avoiding.
+//
+// No delete method: nothing in this milestone deletes, and a delete API
+// implies a retention model that does not exist. An environment is archived
+// instead, which keeps every historical reference resolvable.
 type ControlStore interface {
 	CreateProject(ctx context.Context, project Project) error
 	Project(ctx context.Context, id ProjectID) (Project, error)
@@ -92,6 +97,48 @@ type ControlStore interface {
 
 	CreateCandidate(ctx context.Context, candidate Candidate) error
 	Candidate(ctx context.Context, id CandidateID) (Candidate, error)
+
+	// CreateEnvironment stores one environment, with its checks ordered: a
+	// missing project is ErrStoreNotFound, an existing (project, ref) is
+	// ErrStoreAlreadyExists whatever the project's count, and only then a new
+	// ref into a project at or over maxProjectEnvironments is
+	// ErrEnvironmentLimit.
+	//
+	// That order matters. A caller re-sending a ref that already exists is
+	// adding nothing, so the cap is irrelevant to it — reporting a limit
+	// there would be misleading, and which of two racing callers saw it would
+	// depend on arrival order.
+	//
+	// The cap is a cross-row invariant, so the whole sequence runs in one
+	// transaction serialized on the owning project row. Two creates of
+	// different refs into a project at 63 cannot both succeed.
+	CreateEnvironment(ctx context.Context, env Environment) error
+
+	// Environment loads one by (project, ref). Identity is the pair: the same
+	// ref in two projects is two environments.
+	Environment(ctx context.Context, projectID ProjectID, ref EnvironmentRef) (Environment, error)
+
+	// UpdateEnvironment replaces previous with next, and fails with
+	// ErrStoreConflict if the stored revision is no longer previous's.
+	//
+	// Compare-and-swap rather than a blind write, so two operators editing
+	// one environment cannot silently overwrite each other. next must carry
+	// the same identity as previous — moving a ref or a project is
+	// ErrInvalidID — and must advance the revision by exactly one.
+	UpdateEnvironment(ctx context.Context, previous, next Environment) error
+
+	// ProjectEnvironments returns at most limit of one project's
+	// environments, active and archived, whose ref sorts after `after`, in
+	// ref byte order. An empty `after` starts at the beginning.
+	//
+	// Traversal is by ref because ref is immutable: rank is mutable, and
+	// re-ranking is one of the two operations an environment exists for, so a
+	// cursor over rank could move a row between pages mid-traversal. A
+	// project with none returns an empty slice; one that does not exist
+	// returns ErrStoreNotFound.
+	ProjectEnvironments(
+		ctx context.Context, projectID ProjectID, after EnvironmentRef, limit int,
+	) ([]Environment, error)
 }
 
 // EvaluationStore persists evaluation runs and their evidence.
@@ -140,5 +187,7 @@ type EvaluationStore interface {
 // Compile-time proof that every backend satisfies the composite.
 //
 // Cheap, and it fails at build time rather than when a composition root is
-// wired, which is where the mistake would otherwise surface.
+// wired, which is where the mistake would otherwise surface. PostgresStore's
+// own assertion lives beside it in postgres.go, so neither backend can fall
+// behind the interface without the build saying so.
 var _ Store = (*SQLiteStore)(nil)

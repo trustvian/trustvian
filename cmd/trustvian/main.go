@@ -75,6 +75,8 @@ func runPlatform(s streams, args []string, timeout time.Duration) (int, bool) {
 		return runProject(s, args[1:], timeout), true
 	case "agent":
 		return runAgent(s, args[1:], timeout), true
+	case "env":
+		return runEnvironment(s, args[1:], timeout), true
 	case "candidate":
 		return runCandidate(s, args[1:], timeout), true
 	case "eval":
@@ -100,6 +102,7 @@ Control-plane commands (see docs/platform-cli.md):
   trustvian project    create|get
   trustvian agent      create|get
   trustvian candidate  create|get
+  trustvian env        create|get|list|set|archive|activate
   trustvian eval       create|get|start|complete|fail|cancel|
                        progress|ingest-state|ingest|compare
       Drive a local control plane over its /v1 HTTP API. Each supports

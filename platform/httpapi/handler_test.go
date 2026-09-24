@@ -161,6 +161,10 @@ func (a *api) seedHierarchy() {
 		a.mustStatus(a.do("POST", "/v1/candidates", map[string]any{
 			"id": "cand-1", "agent_id": "agent-1", "metadata": map[string]string{"label": "v1"},
 		}), 201, "create candidate")
+		// Task 065: a run must name an environment its project owns.
+		a.mustStatus(a.do("POST", "/v1/environments", map[string]any{
+			"project_id": "proj-1", "ref": testEnvironment, "name": "Staging",
+		}), 201, "create environment")
 	}
 }
 
@@ -229,18 +233,26 @@ func TestControlEntityRoundTrip(t *testing.T) {
 }
 
 // No collection GET exists, so list semantics are not frozen by accident.
-func TestListRoutesAreAbsent(t *testing.T) {
+// Task 065 added exactly one collection route, for one entity. The others
+// stay absent: their scope, order, cursor and limit are still undesigned, and
+// task 065 neither performs nor pre-empts that design.
+func TestListRoutesAreAbsentExceptEnvironments(t *testing.T) {
 	a := newAPI(t)
 	a.seedHierarchy()
 
 	for _, path := range []string{
 		"/v1/projects", "/v1/agents", "/v1/candidates", "/v1/evaluation-runs",
+		"/v1/environments",
 	} {
 		r := a.do("GET", path, nil)
 		if r.Code == http.StatusOK {
 			t.Errorf("GET %s returned 200; listing semantics are not designed yet", path)
 		}
 	}
+
+	// The one that does exist is project-scoped, because a ref is unique
+	// inside a project and nowhere else.
+	a.mustStatus(a.do("GET", "/v1/projects/proj-1/environments", nil), 200, "list environments")
 }
 
 func TestMissingResourceIsNotFound(t *testing.T) {

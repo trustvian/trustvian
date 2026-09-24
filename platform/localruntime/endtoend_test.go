@@ -154,6 +154,8 @@ func TestLocalRuntimeEndToEnd(t *testing.T) {
 	api.mustPost("/v1/candidates", map[string]any{
 		"id": "cand-1", "agent_id": "agent-1",
 		"metadata": map[string]string{"label": "v2"}}, 201)
+	api.mustPost("/v1/environments", map[string]any{
+		"project_id": "proj-1", "ref": "local", "name": "Local"}, 201)
 	api.mustPost("/v1/evaluation-runs", map[string]string{
 		"id": "run-1", "candidate_id": "cand-1",
 		"environment": "local", "behavioral_profile": behavioralProfile}, 201)
@@ -429,6 +431,8 @@ func TestWebUIServedFromTheRealRuntimeAlongsideTheFullLifecycle(t *testing.T) {
 	}
 
 	// --- 5. the evaluation lifecycle is unaffected ---
+	api.mustPost("/v1/environments", map[string]any{
+		"project_id": "proj-web", "ref": "local", "name": "Local"}, 201)
 	api.mustPost("/v1/evaluation-runs", map[string]string{
 		"id": "run-web", "candidate_id": "cand-web",
 		"environment": "local", "behavioral_profile": behavioralProfile}, 201)

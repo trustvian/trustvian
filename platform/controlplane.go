@@ -30,6 +30,21 @@ import (
 // coherent at the wrong moment.
 var ErrEvaluationState = errors.New("platform: evaluation is not in the required state")
 
+// ErrComparisonScope reports a comparison between two runs that do not belong
+// to the same project.
+//
+// Task 065 made EnvironmentRef explicitly project-scoped, which turned an
+// existing check into a hazard: CompareBehaviorSnapshots requires the two runs
+// to share an environment ref, and two projects may each own a "staging". Two
+// runs from different projects would pass that check and produce a scorecard
+// over unrelated populations, reporting the environment as "staging" and being
+// right and misleading at once.
+//
+// Not a state conflict and not a storage condition: the pairing itself is
+// something that can never succeed, so a caller must change the request rather
+// than retry it.
+var ErrComparisonScope = errors.New("platform: runs belong to different projects")
+
 // ControlPlane serves platform operations over narrow store capabilities.
 //
 // The dependencies are interfaces, never *SQLiteStore, so task 064 can supply
@@ -124,6 +139,46 @@ func (c *ControlPlane) publishLifecycle(
 // degrades to skipping the notification rather than failing the operation.
 // Authority lives in the database, and a missing notification is recoverable
 // by resync; a committed write reported as failed is not.
+// requireUsableEnvironment refuses a run whose environment is missing,
+// archived, or owned by another project.
+//
+// Fails before anything is written and therefore before anything is
+// published. A ref that exists in a *different* project is ErrStoreNotFound
+// here, which is exactly right: it does not exist in this run's project, and
+// identity is the pair.
+func (c *ControlPlane) requireUsableEnvironment(ctx context.Context, run EvaluationRun) error {
+	projectID, err := c.projectOf(ctx, run)
+	if err != nil {
+		return err
+	}
+	environment, err := c.control.Environment(ctx, projectID, run.Environment())
+	if err != nil {
+		return err
+	}
+	if environment.Status() != EnvironmentActive {
+		return fmt.Errorf("%w: environment %s in project %s is %s and accepts no new runs",
+			ErrEnvironmentUnavailable, preview(string(environment.Ref())),
+			preview(string(projectID)), environment.Status())
+	}
+	return nil
+}
+
+// projectOf walks a run to the project that owns it.
+//
+// The same two reads resolveScope performs, kept separate because this one's
+// failure is the operation's failure rather than a skipped notification.
+func (c *ControlPlane) projectOf(ctx context.Context, run EvaluationRun) (ProjectID, error) {
+	candidate, err := c.control.Candidate(ctx, run.CandidateID())
+	if err != nil {
+		return "", err
+	}
+	agent, err := c.control.Agent(ctx, candidate.AgentID())
+	if err != nil {
+		return "", err
+	}
+	return agent.ProjectID(), nil
+}
+
 func (c *ControlPlane) resolveScope(
 	ctx context.Context, run EvaluationRun,
 ) (RealtimeScope, bool) {
@@ -177,10 +232,202 @@ func (c *ControlPlane) Candidate(ctx context.Context, id CandidateID) (Candidate
 }
 
 // ---------------------------------------------------------------------
+// Environments
+// ---------------------------------------------------------------------
+
+// CreateEnvironment records one environment in a project.
+//
+// The store owns the ordered checks and the per-project cap, because the cap
+// is a cross-row invariant that only a transaction can hold. Nothing is
+// published: realtime is scoped to evaluation lifecycle and ingest (ADR 0032),
+// and an environment rename is not something a live dashboard is watching.
+func (c *ControlPlane) CreateEnvironment(ctx context.Context, env Environment) error {
+	return c.control.CreateEnvironment(ctx, env)
+}
+
+// Environment loads one environment by (project, ref).
+func (c *ControlPlane) Environment(
+	ctx context.Context, projectID ProjectID, ref EnvironmentRef,
+) (Environment, error) {
+	// Validated here rather than left to the lookup: a malformed ref that
+	// reached the store would come back as "not found", which tells a caller
+	// the wrong thing about what they got wrong.
+	if err := validateEnvironmentIdentity(projectID, ref); err != nil {
+		return Environment{}, err
+	}
+	return c.control.Environment(ctx, projectID, ref)
+}
+
+// ProjectEnvironments returns one bounded page of a project's environments,
+// in ref byte order, starting after the given ref.
+func (c *ControlPlane) ProjectEnvironments(
+	ctx context.Context, projectID ProjectID, after EnvironmentRef, limit int,
+) ([]Environment, error) {
+	if err := validateID("environment project id", string(projectID)); err != nil {
+		return nil, err
+	}
+	return c.control.ProjectEnvironments(ctx, projectID, after, limit)
+}
+
+// ConfigureEnvironmentRequest is one configuration change.
+//
+// A fixed shape rather than a patch map, and pointers rather than sentinel
+// values, because "leave it alone" and "set it to zero" are different
+// intentions and rank 0 is a legitimate rank. ClearRank is explicit for the
+// same reason.
+type ConfigureEnvironmentRequest struct {
+	// Revision is the revision the caller read. Required: there is no
+	// unconditional write, because two operators reordering ranks would
+	// otherwise overwrite each other and the loser would never know.
+	Revision uint64
+
+	Name      *string
+	Rank      *uint16
+	ClearRank bool
+}
+
+// ConfigureEnvironment applies a name and/or rank change under
+// compare-and-swap.
+//
+// Load, apply the domain transitions, store with the CAS. Not a transaction:
+// the compare-and-swap *is* the serialization point, so a losing writer gets
+// ErrStoreConflict rather than a lost update.
+func (c *ControlPlane) ConfigureEnvironment(
+	ctx context.Context, projectID ProjectID, ref EnvironmentRef,
+	request ConfigureEnvironmentRequest,
+) (Environment, error) {
+	if request.Rank != nil && request.ClearRank {
+		return Environment{}, fmt.Errorf(
+			"%w: a configure may set a rank or clear it, not both", ErrInvalidID)
+	}
+	if request.Name == nil && request.Rank == nil && !request.ClearRank {
+		return Environment{}, fmt.Errorf(
+			"%w: a configure must change the name, the rank, or both", ErrInvalidID)
+	}
+
+	return c.mutateEnvironment(ctx, projectID, ref, request.Revision,
+		func(current Environment) (Environment, error) {
+			next := current
+			var err error
+			if request.Name != nil {
+				if next, err = next.Rename(*request.Name); err != nil {
+					return Environment{}, err
+				}
+			}
+			switch {
+			case request.Rank != nil:
+				if next, err = next.WithRank(*request.Rank); err != nil {
+					return Environment{}, err
+				}
+			case request.ClearRank:
+				next = next.WithoutRank()
+			}
+			return next, nil
+		})
+}
+
+// ArchiveEnvironment closes an environment to new work.
+//
+// Existing runs are untouched: archiving refuses the *next* run against this
+// environment and invalidates nothing already underway or already finished.
+func (c *ControlPlane) ArchiveEnvironment(
+	ctx context.Context, projectID ProjectID, ref EnvironmentRef, revision uint64,
+) (Environment, error) {
+	return c.mutateEnvironment(ctx, projectID, ref, revision,
+		func(current Environment) (Environment, error) { return current.Archive() })
+}
+
+// ActivateEnvironment reopens an archived environment.
+func (c *ControlPlane) ActivateEnvironment(
+	ctx context.Context, projectID ProjectID, ref EnvironmentRef, revision uint64,
+) (Environment, error) {
+	return c.mutateEnvironment(ctx, projectID, ref, revision,
+		func(current Environment) (Environment, error) { return current.Activate() })
+}
+
+// mutateEnvironment is the load-apply-CAS every environment mutation shares.
+//
+// The revision is checked here as well as by the store: a caller presenting a
+// stale one learns that immediately, without a write attempt, and the store's
+// own predicate still decides the race between two callers who both read the
+// same revision.
+func (c *ControlPlane) mutateEnvironment(
+	ctx context.Context, projectID ProjectID, ref EnvironmentRef, revision uint64,
+	apply func(Environment) (Environment, error),
+) (Environment, error) {
+	current, err := c.Environment(ctx, projectID, ref)
+	if err != nil {
+		return Environment{}, err
+	}
+	if current.Revision() != revision {
+		return Environment{}, fmt.Errorf(
+			"%w: environment %s is at revision %d, not %d",
+			ErrStoreConflict, preview(string(ref)), current.Revision(), revision)
+	}
+	next, err := apply(current)
+	if err != nil {
+		return Environment{}, err
+	}
+	// One mutation, one revision. A configure changing both the name and the
+	// rank applies two domain transitions, and each of those increments on its
+	// own; what the store compares against is the single write they add up to.
+	next = next.atRevision(current.Revision() + 1)
+
+	if err := c.control.UpdateEnvironment(ctx, current, next); err != nil {
+		return Environment{}, err
+	}
+	return next, nil
+}
+
+// PromotionOrder reports whether one environment is forward of another in its
+// project's order.
+//
+// A loading wrapper over CanPromote for transports, which hold refs rather
+// than values. It answers an ordering question and authorizes nothing: what a
+// promotion requires, and whether one may happen, is task 066's.
+func (c *ControlPlane) PromotionOrder(
+	ctx context.Context, projectID ProjectID, from, to EnvironmentRef,
+) (bool, error) {
+	source, err := c.Environment(ctx, projectID, from)
+	if err != nil {
+		return false, err
+	}
+	target, err := c.Environment(ctx, projectID, to)
+	if err != nil {
+		return false, err
+	}
+	return CanPromote(source, target), nil
+}
+
+// ---------------------------------------------------------------------
 // Evaluation run lifecycle
 // ---------------------------------------------------------------------
 
+// CreateEvaluationRun records a run after verifying the environment it names.
+//
+// The environment must exist, be active, and belong to the run's own project
+// — resolved through the hierarchy the run already implies:
+//
+//	run.CandidateID → Candidate.AgentID → Agent.ProjectID → Environment
+//
+// Before task 065 a run could name any syntactically valid string, so
+// "stagin" produced a perfectly valid run against an environment that did not
+// exist, and every comparison bounded by that ref silently described a
+// population of one.
+//
+// The check lives here rather than in NewEvaluationRun, which cannot see
+// other entities, and rather than in a foreign key, which would need
+// project_id denormalized onto runs and would make a historical run
+// unloadable if its environment ever became unreachable.
+//
+// It is a create-time check and nothing else. A run already created keeps
+// running, ingesting and completing after its environment is archived:
+// environment configuration governs what may start, never what is underway.
+// Nothing on the per-record ingest path resolves an environment.
 func (c *ControlPlane) CreateEvaluationRun(ctx context.Context, run EvaluationRun) error {
+	if err := c.requireUsableEnvironment(ctx, run); err != nil {
+		return err
+	}
 	if err := c.evaluations.CreateEvaluationRun(ctx, run); err != nil {
 		return err
 	}
@@ -646,6 +893,20 @@ func (c *ControlPlane) CompareEvaluations(
 		return EvaluationComparison{}, err
 	}
 
+	// Both runs must belong to one project, and this is checked before any
+	// evidence is loaded — four reads saved on a request that can never
+	// succeed, and no partial work on a pairing this refuses.
+	//
+	// CompareBehaviorSnapshots already requires the two runs to share an
+	// EnvironmentRef, which has always stood in for "the same environment".
+	// Task 065 made refs explicitly project-scoped, so two projects may each
+	// own a "staging" and that equality alone would no longer establish it.
+	// Together the two checks mean what the comparison always intended: the
+	// same Environment, which is (ProjectID, EnvironmentRef).
+	if err := c.requireSameProject(ctx, reference, candidate); err != nil {
+		return EvaluationComparison{}, err
+	}
+
 	referenceAggregate, referenceSnapshot, err := c.comparisonEvidence(ctx, reference)
 	if err != nil {
 		return EvaluationComparison{}, err
@@ -681,6 +942,34 @@ func (c *ControlPlane) CompareEvaluations(
 		Scorecard: scorecard,
 		Gate:      gate,
 	}, nil
+}
+
+// requireSameProject refuses a comparison spanning two projects.
+//
+// Same project, not same agent. Comparing two candidates of one agent is the
+// intended shape, but comparing two agents inside one project is merely
+// unusual rather than ambiguous — the runs are in the same project's same
+// environment, and the scorecard means what it says. The ambiguity
+// project-scoped refs create sits precisely at the project boundary, and
+// requiring the same agent would change behaviour for existing callers with
+// no requirement behind it. A promotion workflow that needs agent identity
+// adds that narrower precondition alongside itself.
+func (c *ControlPlane) requireSameProject(ctx context.Context, reference, candidate EvaluationRun) error {
+	referenceProject, err := c.projectOf(ctx, reference)
+	if err != nil {
+		return err
+	}
+	candidateProject, err := c.projectOf(ctx, candidate)
+	if err != nil {
+		return err
+	}
+	if referenceProject != candidateProject {
+		return fmt.Errorf(
+			"%w: reference run is in project %s, candidate run is in project %s; "+
+				"an environment reference only identifies an environment within one project",
+			ErrComparisonScope, preview(string(referenceProject)), preview(string(candidateProject)))
+	}
+	return nil
 }
 
 // comparisonEvidence resolves the evidence a completed run should be compared

@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -509,6 +510,80 @@ func TestDiscoveryResolverIsTheSinglePathToAClient(t *testing.T) {
 		if strings.Contains(source, "newPlatformClient(") {
 			t.Errorf("%s constructs a client directly; use resolveAPIURL so local "+
 				"discovery applies to every command", name)
+		}
+	}
+}
+
+// TestCLIDecidesNoPromotionPrecedence keeps the env family a transport.
+//
+// `env list` may sort rows by rank so a human reads them in a sensible order,
+// and that comparator necessarily looks at two ranks. Deciding which
+// environment may promote toward which is a different act with one
+// implementation — `CanPromote`, in the platform — and an adapter that
+// re-derived it from the same ranks would be a second answer nobody could see
+// disagreeing with the first.
+//
+// So: exactly one function in this package may compare two ranks, and it is
+// the display comparator. A new one fails here.
+func TestCLIDecidesNoPromotionPrecedence(t *testing.T) {
+	const displaySort = "renderEnvironmentList"
+
+	isRank := func(expr ast.Expr) bool {
+		selector, ok := expr.(*ast.SelectorExpr)
+		if ok {
+			return selector.Sel.Name == "Rank"
+		}
+		star, ok := expr.(*ast.StarExpr)
+		if !ok {
+			return false
+		}
+		inner, ok := star.X.(*ast.SelectorExpr)
+		return ok && inner.Sel.Name == "Rank"
+	}
+
+	var comparing []string
+	for _, name := range goFiles(t, false) {
+		file := parseFile(t, name, 0)
+		ast.Inspect(file, func(n ast.Node) bool {
+			decl, ok := n.(*ast.FuncDecl)
+			if !ok {
+				return true
+			}
+			ast.Inspect(decl, func(inner ast.Node) bool {
+				binary, ok := inner.(*ast.BinaryExpr)
+				if !ok {
+					return true
+				}
+				switch binary.Op {
+				case token.LSS, token.GTR, token.LEQ, token.GEQ:
+				default:
+					return true
+				}
+				if isRank(binary.X) && isRank(binary.Y) {
+					comparing = append(comparing, decl.Name.Name)
+				}
+				return true
+			})
+			return false
+		})
+	}
+
+	slices.Sort(comparing)
+	comparing = slices.Compact(comparing)
+	if !slices.Equal(comparing, []string{displaySort}) {
+		t.Errorf("functions comparing two ranks = %v, want only %q; promotion "+
+			"precedence has one implementation and it is not in an adapter",
+			comparing, displaySort)
+	}
+
+	// And the CLI never words an answer it does not compute.
+	for _, name := range goFiles(t, false) {
+		source := readCode(t, name)
+		for _, forbidden := range []string{"CanPromote", "promotable", "may promote"} {
+			if strings.Contains(source, forbidden) {
+				t.Errorf("%s contains %q; the CLI reports the rank the server gave "+
+					"and decides nothing", name, forbidden)
+			}
 		}
 	}
 }

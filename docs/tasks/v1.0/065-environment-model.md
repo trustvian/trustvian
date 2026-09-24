@@ -1,6 +1,6 @@
 # 065 — Environment Model
 
-Status: specified, not implemented
+Status: specified and implemented
 Depends on: [052](052-evaluation-domain.md),
 [057](057-local-platform-persistence.md),
 [058](058-local-control-plane-api-and-ingest.md),

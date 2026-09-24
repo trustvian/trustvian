@@ -386,6 +386,140 @@ func (s *PostgresStore) Candidate(ctx context.Context, id CandidateID) (Candidat
 }
 
 // ---------------------------------------------------------------------
+// Environments
+// ---------------------------------------------------------------------
+
+// pgxTxQuerier adapts a pgx transaction to environmentWriter.
+type pgxTxQuerier struct{ tx pgx.Tx }
+
+func (q pgxTxQuerier) queryRow(ctx context.Context, query string, args ...any) rowScanner {
+	return q.tx.QueryRow(ctx, query, args...)
+}
+
+func (q pgxTxQuerier) noRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
+
+func (q pgxTxQuerier) rebind(query string) string { return rebindPositional(query) }
+
+func (q pgxTxQuerier) exec(ctx context.Context, query string, args ...any) (int64, error) {
+	tag, err := q.tx.Exec(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// lockProject takes a row lock on the owning project for the rest of the
+// transaction.
+//
+// SELECT … FOR UPDATE on the project row, which is the same shape lockRun
+// already uses for per-run serialization and for the same reason: the
+// invariant spans rows, so no predicate on the row being written can hold it.
+// Locking the project rather than the table means creates in different
+// projects never wait on each other.
+func (q pgxTxQuerier) lockProject(ctx context.Context, projectID string) error {
+	var locked string
+	err := q.tx.QueryRow(ctx,
+		`SELECT id FROM `+tableProjects+` WHERE id = $1 FOR UPDATE`, projectID).Scan(&locked)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return fmt.Errorf("%w: project %s", ErrStoreNotFound, preview(projectID))
+	case err != nil:
+		return mapPostgresError("project", projectID, err)
+	}
+	return nil
+}
+
+// CreateEnvironment stores one environment under the cap, atomically.
+//
+// The count and the insert happen inside one transaction holding the project
+// row, so two writers cannot each count 63 and each commit a different ref.
+// Checks are ordered — missing project, existing identity, cap — and an
+// existing ref is ErrStoreAlreadyExists whatever the project's count.
+func (s *PostgresStore) CreateEnvironment(ctx context.Context, env Environment) error {
+	if env.Ref() == "" || env.ProjectID() == "" {
+		return fmt.Errorf("%w: environment has no identity", ErrInvalidID)
+	}
+	return s.withTx(ctx, func(tx pgx.Tx) error {
+		writer := pgxTxQuerier{tx}
+		if err := writer.lockProject(ctx, string(env.ProjectID())); err != nil {
+			return err
+		}
+		// Between the lock and the cap decision, so a test can measure how
+		// many writers are inside the window at once rather than inferring
+		// the lock from an outcome a lockless implementation also produces.
+		if hook := testHookInEnvironmentCreate.Load(); hook != nil {
+			(*hook)()
+		}
+		rank, ranked := env.Rank()
+		return insertEnvironmentLocked(ctx, writer, env, rank, ranked)
+	})
+}
+
+// testHookInEnvironmentCreate runs between the project lock and the cap
+// decision. Nil in production, and the call costs one atomic load on a path
+// that already opened a transaction.
+//
+// The same seam, and the same reasoning, as testHookInRunMutation: a local
+// transaction commits in microseconds, so racers released together still run
+// essentially in series and a test that only counted winners would pass with
+// no lock at all. Occupancy inside this window is what FOR UPDATE actually
+// changes.
+var testHookInEnvironmentCreate atomic.Pointer[func()]
+
+// Environment loads one environment by (project, ref).
+func (s *PostgresStore) Environment(
+	ctx context.Context, projectID ProjectID, ref EnvironmentRef,
+) (Environment, error) {
+	return loadEnvironment(ctx, s.querier(), projectID, ref)
+}
+
+// UpdateEnvironment replaces previous with next if the stored revision still
+// matches previous's.
+//
+// One predicated UPDATE and no row lock: the predicate is the revision, so
+// the database serializes concurrent writers without anything held across a
+// round trip. This is the case task 064's locking rule explicitly does not
+// cover, and it does not need to.
+func (s *PostgresStore) UpdateEnvironment(ctx context.Context, previous, next Environment) error {
+	if err := validateEnvironmentUpdate(previous, next); err != nil {
+		return err
+	}
+	rank, ranked := next.Rank()
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE `+tableEnvironments+`
+		 SET name = $1, rank = $2, status = $3, revision = $4
+		 WHERE project_id = $5 AND ref = $6 AND revision = $7`,
+		next.Name(), nullRank(rank, ranked), string(next.Status()), int64(next.Revision()),
+		string(previous.ProjectID()), string(previous.Ref()), int64(previous.Revision()))
+	if err != nil {
+		return mapPostgresError("environment", string(previous.Ref()), err)
+	}
+	if tag.RowsAffected() == 0 {
+		return environmentUpdateMiss(ctx, s.querier(), previous)
+	}
+	return nil
+}
+
+// ProjectEnvironments returns one bounded page in ref byte order.
+func (s *PostgresStore) ProjectEnvironments(
+	ctx context.Context, projectID ProjectID, after EnvironmentRef, limit int,
+) ([]Environment, error) {
+	if err := validateEnvironmentPage(after, limit); err != nil {
+		return nil, err
+	}
+	var exists string
+	err := s.pool.QueryRow(ctx,
+		`SELECT id FROM `+tableProjects+` WHERE id = $1`, string(projectID)).Scan(&exists)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, fmt.Errorf("%w: project %s", ErrStoreNotFound, preview(string(projectID)))
+	case err != nil:
+		return nil, mapPostgresError("project", string(projectID), err)
+	}
+	return queryEnvironmentPage(ctx, s.querier(), projectID, after, limit)
+}
+
+// ---------------------------------------------------------------------
 // EvaluationStore
 // ---------------------------------------------------------------------
 

@@ -25,6 +25,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -658,4 +659,208 @@ func goSourceWithoutCommentsForTest(t *testing.T, name string) string {
 		}
 	}
 	return string(stripped)
+}
+
+// ---------------------------------------------------------------------
+// Environment creation cap (task 065)
+// ---------------------------------------------------------------------
+
+// installEnvironmentCreateHook sets the create-window hook for one test.
+func installEnvironmentCreateHook(t *testing.T, hook func()) {
+	t.Helper()
+	testHookInEnvironmentCreate.Store(&hook)
+	t.Cleanup(func() { testHookInEnvironmentCreate.Store(nil) })
+}
+
+// seedPostgresEnvironments fills one project to count environments.
+func seedPostgresEnvironments(t *testing.T, store *PostgresStore, projectID string, count int) {
+	t.Helper()
+	ctx := context.Background()
+	project, err := NewProject(ProjectID(projectID), "P")
+	if err != nil {
+		t.Fatalf("NewProject() error = %v", err)
+	}
+	if err := store.CreateProject(ctx, project); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	for i := range count {
+		env, err := NewEnvironment(
+			EnvironmentRef(fmt.Sprintf("seed-%03d", i)), ProjectID(projectID), "E")
+		if err != nil {
+			t.Fatalf("NewEnvironment() error = %v", err)
+		}
+		if err := store.CreateEnvironment(ctx, env); err != nil {
+			t.Fatalf("seeding environment %d error = %v", i, err)
+		}
+	}
+}
+
+// TestPostgresEnvironmentCreateWindowIsMutuallyExclusive proves the project
+// row lock, directly.
+//
+// The distinction this measures is the one a result-only test cannot make: a
+// completely unlocked implementation also produces "one winner" most of the
+// time against a fast local database, because each transaction commits before
+// the next one reads. Occupancy inside the count-then-insert window is what
+// SELECT … FOR UPDATE changes, and it is what fails if the lock is dropped.
+func TestPostgresEnvironmentCreateWindowIsMutuallyExclusive(t *testing.T) {
+	store := newConcurrentPostgresStore(t)
+	seedPostgresEnvironments(t, store, "proj-lock", 0)
+
+	var occupancy occupancyTracker
+	installEnvironmentCreateHook(t, occupancy.enter)
+
+	raceStart(concurrentWorkers, func(worker int) error {
+		env, err := NewEnvironment(
+			EnvironmentRef(fmt.Sprintf("racer-%02d", worker)), "proj-lock", "E")
+		if err != nil {
+			return err
+		}
+		// Every one of these should succeed — the project is empty. What is
+		// under test is how many were inside the window at once.
+		return store.CreateEnvironment(context.Background(), env)
+	})
+
+	if peak := occupancy.peak(); peak != 1 {
+		t.Errorf("%d writers were inside one project's count-to-insert window at once, want 1. "+
+			"Without SELECT ... FOR UPDATE on the project row they all count the same "+
+			"total and all insert, which is how a project reaches 65", peak)
+	}
+}
+
+// TestPostgresEnvironmentCapHoldsUnderContention is the invariant itself: a
+// project at the cap minus one cannot be pushed past it by concurrent
+// writers, whatever refs they use.
+func TestPostgresEnvironmentCapHoldsUnderContention(t *testing.T) {
+	store := newConcurrentPostgresStore(t)
+	seedPostgresEnvironments(t, store, "proj-cap", maxProjectEnvironments-1)
+
+	var successes, duplicates, limits atomic.Int64
+	raceStart(concurrentWorkers, func(worker int) error {
+		env, err := NewEnvironment(
+			EnvironmentRef(fmt.Sprintf("racer-%02d", worker)), "proj-cap", "E")
+		if err != nil {
+			return err
+		}
+		switch err := store.CreateEnvironment(context.Background(), env); {
+		case err == nil:
+			successes.Add(1)
+		case errors.Is(err, ErrStoreAlreadyExists):
+			duplicates.Add(1)
+		case errors.Is(err, ErrEnvironmentLimit):
+			limits.Add(1)
+		default:
+			return err
+		}
+		return nil
+	})
+
+	if successes.Load() != 1 {
+		t.Errorf("%d creates succeeded into a project with one slot left, want 1", successes.Load())
+	}
+	if limits.Load() != int64(concurrentWorkers-1) {
+		t.Errorf("%d creates reported the limit, want %d", limits.Load(), concurrentWorkers-1)
+	}
+	if duplicates.Load() != 0 {
+		t.Errorf("%d creates reported a duplicate; every racer used its own ref", duplicates.Load())
+	}
+	if total := countPostgresEnvironments(t, store, "proj-cap"); total != maxProjectEnvironments {
+		t.Errorf("project holds %d environments, want %d", total, maxProjectEnvironments)
+	}
+}
+
+// TestPostgresEnvironmentSameRefRaceReportsDuplicates: below the cap, racing
+// on one previously-absent ref produces one success and duplicates for the
+// rest — never a limit, because the loser found the row rather than the cap.
+func TestPostgresEnvironmentSameRefRaceReportsDuplicates(t *testing.T) {
+	store := newConcurrentPostgresStore(t)
+	seedPostgresEnvironments(t, store, "proj-same", 0)
+
+	var successes, duplicates, limits atomic.Int64
+	raceStart(concurrentWorkers, func(int) error {
+		env, err := NewEnvironment("contested", "proj-same", "E")
+		if err != nil {
+			return err
+		}
+		switch err := store.CreateEnvironment(context.Background(), env); {
+		case err == nil:
+			successes.Add(1)
+		case errors.Is(err, ErrStoreAlreadyExists):
+			duplicates.Add(1)
+		case errors.Is(err, ErrEnvironmentLimit):
+			limits.Add(1)
+		default:
+			return err
+		}
+		return nil
+	})
+
+	if successes.Load() != 1 || duplicates.Load() != int64(concurrentWorkers-1) || limits.Load() != 0 {
+		t.Errorf("successes=%d duplicates=%d limits=%d, want 1/%d/0",
+			successes.Load(), duplicates.Load(), limits.Load(), concurrentWorkers-1)
+	}
+}
+
+// TestPostgresEnvironmentCreatesInDifferentProjectsDoNotBlock: the lock is per
+// project, so unrelated projects proceed together. Measured by occupancy
+// again — with a table lock, or a lock on anything shared, the peak would be
+// one.
+func TestPostgresEnvironmentCreatesInDifferentProjectsDoNotBlock(t *testing.T) {
+	store := newConcurrentPostgresStore(t)
+	for worker := range concurrentWorkers {
+		seedPostgresEnvironments(t, store, fmt.Sprintf("proj-%02d", worker), 0)
+	}
+
+	// A barrier inside the window: every worker waits for all of them to
+	// arrive. If the writers serialized, this would deadlock rather than
+	// report a wrong number, so the test bounds its own wait.
+	var arrived sync.WaitGroup
+	arrived.Add(concurrentWorkers)
+	released := make(chan struct{})
+	var timedOut atomic.Bool
+	installEnvironmentCreateHook(t, func() {
+		arrived.Done()
+		select {
+		case <-released:
+		case <-time.After(5 * time.Second):
+			timedOut.Store(true)
+		}
+	})
+
+	go func() {
+		arrived.Wait()
+		close(released)
+	}()
+
+	raceStart(concurrentWorkers, func(worker int) error {
+		env, err := NewEnvironment("only", ProjectID(fmt.Sprintf("proj-%02d", worker)), "E")
+		if err != nil {
+			return err
+		}
+		return store.CreateEnvironment(context.Background(), env)
+	})
+
+	if timedOut.Load() {
+		t.Error("creates into different projects blocked on each other; " +
+			"the lock must be the owning project row, not something shared")
+	}
+}
+
+// countPostgresEnvironments pages the collection, because a project at the cap
+// does not fit one page.
+func countPostgresEnvironments(t *testing.T, store *PostgresStore, projectID ProjectID) int {
+	t.Helper()
+	total := 0
+	after := EnvironmentRef("")
+	for {
+		page, err := store.ProjectEnvironments(context.Background(), projectID, after, MaxEnvironmentPage)
+		if err != nil {
+			t.Fatalf("ProjectEnvironments() error = %v", err)
+		}
+		total += len(page)
+		if len(page) < MaxEnvironmentPage {
+			return total
+		}
+		after = page[len(page)-1].Ref()
+	}
 }

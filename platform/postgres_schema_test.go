@@ -35,33 +35,62 @@ func schemaTestPool(t *testing.T) (*pgxpool.Pool, string) {
 	return pool, dsn
 }
 
-// createV1Schema builds a task 057 schema: every table except the ingest cursor,
-// stamped version 1.
+// createOlderSchema builds a historical schema by replaying the statements the
+// store uses, minus the ones later versions appended, and stamping the version
+// they belonged to.
 //
-// Assembled from the same statements the store uses, minus the last one, so this
-// cannot drift from what v1 actually was.
-func createV1Schema(t *testing.T, pool *pgxpool.Pool) {
+// Assembled from the live statements rather than copied, so a fixture cannot
+// drift from what that version actually was. The two omitted statements are
+// named and checked: appending a table without extending this would otherwise
+// silently build the wrong past.
+func createOlderSchema(t *testing.T, pool *pgxpool.Pool, version int) {
 	t.Helper()
 	ctx := context.Background()
 
 	statements := postgresSchemaStatements()
-	v1 := statements[:len(statements)-1]
-	// Guard the assumption: the omitted statement must be the cursor table.
-	if !strings.Contains(statements[len(statements)-1], tableIngestState) {
-		t.Fatalf("the last schema statement is no longer %s; createV1Schema would "+
-			"build the wrong version", tableIngestState)
+	if !strings.Contains(statements[len(statements)-1], tableEnvironments) {
+		t.Fatalf("the last schema statement is no longer %s; the fixture would "+
+			"build the wrong version", tableEnvironments)
+	}
+	if !strings.Contains(statements[len(statements)-2], tableIngestState) {
+		t.Fatalf("the second-to-last schema statement is no longer %s; the fixture "+
+			"would build the wrong version", tableIngestState)
 	}
 
-	for _, stmt := range v1 {
+	var older []string
+	switch version {
+	case schemaVersionV1:
+		older = statements[:len(statements)-2]
+	case schemaVersionV2:
+		older = statements[:len(statements)-1]
+	default:
+		t.Fatalf("no fixture for schema version %d", version)
+	}
+
+	for _, stmt := range older {
 		if _, err := pool.Exec(ctx, stmt); err != nil {
-			t.Fatalf("create v1 schema: %v", err)
+			t.Fatalf("create v%d schema: %v", version, err)
 		}
 	}
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO `+tableSchemaVersion+` (id, version) VALUES (1, $1)`,
-		schemaVersionV1); err != nil {
-		t.Fatalf("stamp v1: %v", err)
+		version); err != nil {
+		t.Fatalf("stamp v%d: %v", version, err)
 	}
+}
+
+// createV1Schema builds a task 057 schema: no ingest cursor and no environment
+// registry, stamped version 1.
+func createV1Schema(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	createOlderSchema(t, pool, schemaVersionV1)
+}
+
+// createV2Schema builds a task 058 schema: the ingest cursor, but no
+// environment registry, stamped version 2.
+func createV2Schema(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	createOlderSchema(t, pool, schemaVersionV2)
 }
 
 func storedVersion(t *testing.T, pool *pgxpool.Pool) int {
@@ -142,6 +171,9 @@ func TestPostgresMigratesV1ToCurrent(t *testing.T) {
 	if !tableExists(t, pool, tableIngestState) {
 		t.Error("the migration did not add the cursor table")
 	}
+	if !tableExists(t, pool, tableEnvironments) {
+		t.Error("the migration did not reach v3; the environment registry is absent")
+	}
 
 	// And the migrated database works: a run seeded here reports a cursor
 	// derived from its evidence, which is the edge the v1 → v2 migration exists
@@ -153,6 +185,163 @@ func TestPostgresMigratesV1ToCurrent(t *testing.T) {
 	}
 	if state.NextSequence() != 1 {
 		t.Errorf("NextSequence() = %d, want 1", state.NextSequence())
+	}
+}
+
+// seedPostgresV2Environments writes one project, one agent, one candidate and
+// one run per distinct environment ref — the only way schema 2 could record
+// that an environment existed.
+func seedPostgresV2Environments(t *testing.T, pool *pgxpool.Pool, projectID string, refs []string) {
+	t.Helper()
+	ctx := context.Background()
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, query, args...); err != nil {
+			t.Fatalf("seed v2: %v", err)
+		}
+	}
+	exec(`INSERT INTO `+tableProjects+` (id, name) VALUES ($1, $2)`, projectID, "Checkout")
+	exec(`INSERT INTO `+tableAgents+` (id, project_id, name) VALUES ($1, $2, $3)`,
+		"agent-"+projectID, projectID, "Agent")
+	exec(`INSERT INTO `+tableCandidates+`
+	      (id, agent_id, label, source_ref, artifact_digest, model, toolset_digest, config_digest)
+	      VALUES ($1, $2, '', '', '', '', '', '')`, "cand-"+projectID, "agent-"+projectID)
+
+	for i, ref := range refs {
+		exec(`INSERT INTO `+tableRuns+`
+		      (id, candidate_id, environment, behavioral_profile, status,
+		       created_at, started_at, finished_at, failure_reason)
+		      VALUES ($1, $2, $3, 'profile-1', 'completed', $4, $4, $4, '')`,
+			fmt.Sprintf("run-%s-%03d", projectID, i), "cand-"+projectID, ref, created)
+	}
+}
+
+// listAllPostgresEnvironments pages to completion, which is the only way to
+// read a project migration left above the page bound.
+func listAllPostgresEnvironments(t *testing.T, store *PostgresStore, projectID ProjectID) []Environment {
+	t.Helper()
+	var all []Environment
+	after := EnvironmentRef("")
+	for {
+		page, err := store.ProjectEnvironments(t.Context(), projectID, after, MaxEnvironmentPage)
+		if err != nil {
+			t.Fatalf("ProjectEnvironments() error = %v", err)
+		}
+		all = append(all, page...)
+		if len(page) < MaxEnvironmentPage {
+			return all
+		}
+		after = page[len(page)-1].Ref()
+	}
+}
+
+// TestPostgresMigratesV2ToV3PreservingHistory is the SQLite migration suite's
+// counterpart, and it is a separate test rather than a shared one because the
+// two migrations are different code: transactional DDL and `$1` here, a single
+// connection and `?` there. The policy they implement must come out identical,
+// so the fixtures are the same three boundaries — 63, 64 and 65 — plus the
+// case only a migrated database can reach.
+//
+// The cap governs creation, not existence: a valid v2 database may reference
+// more environments than may now be created, and the 65 case is the one a
+// "just cap it" migration would silently break.
+func TestPostgresMigratesV2ToV3PreservingHistory(t *testing.T) {
+	tests := []struct {
+		name        string
+		historical  int
+		roomForMore bool
+	}{
+		{"below the cap", maxProjectEnvironments - 1, true},
+		{"at the cap", maxProjectEnvironments, false},
+		{"above the cap", maxProjectEnvironments + 1, false},
+		{"far above the cap", 130, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pool, dsn := schemaTestPool(t)
+			createV2Schema(t, pool)
+			refs := environmentRefs(tt.historical)
+			seedPostgresV2Environments(t, pool, "proj-1", refs)
+
+			store, err := OpenPostgresStore(context.Background(), PostgresConfig{DSN: dsn})
+			if err != nil {
+				t.Fatalf("opening a v2 schema: %v", err)
+			}
+			defer store.Close()
+
+			if got := storedVersion(t, pool); got != SchemaVersion {
+				t.Fatalf("version after migration = %d, want %d", got, SchemaVersion)
+			}
+
+			all := listAllPostgresEnvironments(t, store, "proj-1")
+			if len(all) != tt.historical {
+				t.Fatalf("migrated %d environments, want %d — history is not negotiable",
+					len(all), tt.historical)
+			}
+			for _, env := range all {
+				if env.Name() != string(env.Ref()) {
+					t.Errorf("%s name = %q, want the ref", env.Ref(), env.Name())
+				}
+				if _, ranked := env.Rank(); ranked {
+					t.Errorf("%s was migrated with a rank; migration invents no ordering", env.Ref())
+				}
+				if env.Status() != EnvironmentActive || env.Revision() != 1 {
+					t.Errorf("%s = %s revision %d, want active revision 1",
+						env.Ref(), env.Status(), env.Revision())
+				}
+			}
+
+			// Creation from here obeys the cap, and identity still precedes it.
+			err = store.CreateEnvironment(t.Context(),
+				mustEnvironmentValue(t, "brand-new", "proj-1", "New"))
+			if tt.roomForMore {
+				if err != nil {
+					t.Errorf("create with room to spare error = %v", err)
+				}
+				if next := store.CreateEnvironment(t.Context(),
+					mustEnvironmentValue(t, "one-more", "proj-1", "New")); !errors.Is(next, ErrEnvironmentLimit) {
+					t.Errorf("create past the cap error = %v, want ErrEnvironmentLimit", next)
+				}
+			} else if !errors.Is(err, ErrEnvironmentLimit) {
+				t.Errorf("create at or over the cap error = %v, want ErrEnvironmentLimit", err)
+			}
+
+			if err := store.CreateEnvironment(t.Context(),
+				mustEnvironmentValue(t, refs[0], "proj-1", "New")); !errors.Is(err, ErrStoreAlreadyExists) {
+				t.Errorf("re-creating a migrated ref error = %v, want ErrStoreAlreadyExists", err)
+			}
+		})
+	}
+}
+
+// The same ref under two projects is two environments, because identity is the
+// pair — and PostgreSQL is the backend where a global unique index would have
+// been the tempting shortcut.
+func TestPostgresMigrationKeepsProjectsIndependent(t *testing.T) {
+	pool, dsn := schemaTestPool(t)
+	createV2Schema(t, pool)
+	seedPostgresV2Environments(t, pool, "proj-a", []string{"staging", "production"})
+	seedPostgresV2Environments(t, pool, "proj-b", []string{"staging"})
+
+	store, err := OpenPostgresStore(context.Background(), PostgresConfig{DSN: dsn})
+	if err != nil {
+		t.Fatalf("opening a v2 schema: %v", err)
+	}
+	defer store.Close()
+
+	for _, project := range []ProjectID{"proj-a", "proj-b"} {
+		if _, err := store.Environment(t.Context(), project, "staging"); err != nil {
+			t.Errorf("%s has no staging after migration: %v", project, err)
+		}
+	}
+	if _, err := store.Environment(t.Context(), "proj-b", "production"); !errors.Is(err, ErrStoreNotFound) {
+		t.Errorf("proj-b inherited proj-a's production: %v", err)
+	}
+	if got := len(listAllPostgresEnvironments(t, store, "proj-a")); got != 2 {
+		t.Errorf("proj-a has %d environments, want 2", got)
 	}
 }
 

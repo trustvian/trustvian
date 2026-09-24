@@ -336,10 +336,12 @@ Also implemented: the PostgreSQL platform backend (064). SQLite stays the
 zero-configuration local default and PostgreSQL is opt-in, so the same control
 plane runs on either without any layer above persistence knowing which.
 
-Still planned: everything from the environment model (065) onward — 065 now
-has a written specification
-([task 065](tasks/v1.0/065-environment-model.md)) and no implementation, so
-nothing below describes an `Environment` entity that exists. The platform
+Also implemented: the environment model (065). A project now owns
+environments, a run may only name one its project owns and has not archived,
+and `CanPromote` gives a promotion workflow one deterministic ordering
+question to ask — while authorizing nothing.
+
+Still planned: everything from the promotion workflow (066) onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
 behavioral snapshots, produce fixed-shape comparative scorecards, apply
 deterministic evidence-backed hard gates to them, persist local control and
@@ -348,8 +350,7 @@ through a versioned local HTTP API that resumes a running evaluation after a
 restart, publish bounded live updates over SSE with project, agent and run
 filtering, and drive all of it from one command, a CLI and a live terminal
 dashboard, and inspect it in a browser. That makes it usable end to end
-**locally**. It cannot yet share through PostgreSQL, promote, retain raw event
-history, or replay realtime history.
+**locally**. It cannot yet promote, retain raw event history, or replay realtime history.
 
 The scorecard itself carries no verdict and no threshold; acceptance lives in
 [task 056](tasks/v1.0/056-deterministic-hard-gates.md), which pairs a card
@@ -374,7 +375,8 @@ The concepts below are named so that every task shares one vocabulary.
 | **Evaluation Run** | A bounded execution assessing one Candidate, grouping sessions, events, results, detections, policy outcomes and a scorecard | Correlation and evaluation metadata, **not behavioral identity** |
 | **Behavioral Profile** | The platform's reference to a generic core learning scope | The isolation mechanism is solved (task 051); allocation, reuse, ownership and lifecycle remain platform policy — see below |
 | **Scorecard** | An evaluation-level aggregation of evidence | **Distinct from `Trust.Score`**, which stays event-level and is not redefined or overloaded |
-| **Promotion** | A platform workflow moving a candidate between environments | The engine promotes nothing; it supplies evidence |
+| **Environment** | A deployment stage a project owns, identified by the reference a run records, with an optional promotion rank | Not a deployment target: it holds no URL, credential or secret, and nothing connects to one |
+| **Promotion** | A platform workflow moving a candidate between environments | The engine promotes nothing; it supplies evidence. An environment's rank orders stages; it authorizes no movement |
 
 ### Behavioral profile
 
@@ -600,9 +602,8 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**Partly implemented:** tasks 049–064 are done; 065 is specified and not yet
-implemented; 066–072 remain PLANNED. 073, outside that sequence, is also
-done — see the table below.
+**Partly implemented:** tasks 049–065 are done; 066–072 remain PLANNED. 073,
+outside that sequence, is also done — see the table below.
 
 **Architecture and core boundary** — the only tasks that touch the engine:
 
@@ -644,7 +645,7 @@ lost.
 | Task | Milestone |
 |---|---|
 | 064 | PostgreSQL platform backend |
-| 065 | Environment model — [specified](tasks/v1.0/065-environment-model.md), not implemented |
+| 065 | Environment model |
 | 066 | Promotion workflow |
 
 **Closing an unplanned gap:**

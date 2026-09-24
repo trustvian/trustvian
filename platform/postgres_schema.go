@@ -168,17 +168,46 @@ func postgresSchemaStatements() []string {
 			next_sequence TEXT COLLATE "C" NOT NULL,
 			last_digest   TEXT NOT NULL
 		)`,
+
+		postgresEnvironmentsStatement(),
 	}
+}
+
+// postgresEnvironmentsStatement is v3's only addition, kept separate so the
+// v2 → v3 migration applies exactly this and nothing else.
+//
+// COLLATE "C" on ref is load-bearing rather than decorative: the list route
+// traverses by ref in byte order and pages on it, so a locale-aware collation
+// would order two backends' pages differently and, worse, could place a row
+// on a page a cursor had already passed. project_id carries it for the same
+// reason every other key column does.
+//
+// rank is INTEGER and nullable — the only numeric comparison in this schema,
+// bounded at 9999 by the domain, with NULL meaning unranked rather than zero.
+func postgresEnvironmentsStatement() string {
+	return `CREATE TABLE ` + tableEnvironments + ` (
+			project_id TEXT COLLATE "C" NOT NULL REFERENCES ` + tableProjects + `(id),
+			ref        TEXT COLLATE "C" NOT NULL,
+			name       TEXT NOT NULL,
+			rank       INTEGER,
+			status     TEXT NOT NULL,
+			revision   BIGINT NOT NULL,
+			PRIMARY KEY (project_id, ref)
+		)`
 }
 
 // No index beyond the primary keys.
 //
 // PostgreSQL does not index a foreign key automatically, and none is added,
-// because no query searches by project_id, agent_id or candidate_id — there is
-// no collection route, so no such access path exists. An index for a query that
-// does not exist would also quietly imply the list capability task 063
-// declined. A future collection route brings its own index with its own
-// justification.
+// because no query searches by agent_id or candidate_id — there is no
+// collection route for those, so no such access path exists. An index for a
+// query that does not exist would also quietly imply the list capability task
+// 063 declined.
+//
+// The one collection that does exist needs no extra index either: task 065's
+// environment page is `WHERE project_id = $1 AND ref > $2 ORDER BY ref LIMIT
+// $3`, which is a range scan along the `(project_id, ref)` primary key in its
+// own order. Nothing sorts by rank in SQL.
 
 // migrate brings a PostgreSQL schema to SchemaVersion, or refuses it.
 //
@@ -214,7 +243,15 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			return verifyPostgresVersion(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV1()):
-			return migratePostgresV1ToV2(ctx, tx)
+			// A task 057 database reaches v3 through v2, one step at a time,
+			// rather than through a second separately-maintained jump.
+			if err := migratePostgresV1ToV2(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV2ToV3(ctx, tx)
+
+		case slices.Equal(present, sortedSchemaTablesV2()):
+			return migratePostgresV2ToV3(ctx, tx)
 
 		default:
 			// A recognized subset that is neither version. Nothing here knows
@@ -254,6 +291,30 @@ func migratePostgresV1ToV2(ctx context.Context, tx pgx.Tx) error {
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
+		schemaVersionV2); err != nil {
+		return mapPostgresError("schema version", "", err)
+	}
+	return nil
+}
+
+// migratePostgresV2ToV3 adds the environment registry and backfills what
+// history already references, exactly as SQLite's migration does.
+//
+// The backfill statement is shared between the backends, because "which
+// environments did history reference" is one question and two copies of the
+// answer is where they would drift. The creation cap is not applied here: a
+// valid v2 database may hold a project whose runs reference more
+// environments than may now be created, and discarding the excess would
+// orphan the evidence naming it.
+func migratePostgresV2ToV3(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, postgresEnvironmentsStatement()); err != nil {
+		return mapPostgresError("schema migration", "", err)
+	}
+	if _, err := tx.Exec(ctx, backfillEnvironmentsStatement()); err != nil {
+		return mapPostgresError("schema migration", "", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
 		SchemaVersion); err != nil {
 		return mapPostgresError("schema version", "", err)
 	}
@@ -264,7 +325,8 @@ func migratePostgresV1ToV2(ctx context.Context, tx pgx.Tx) error {
 // v1 → v2 migration applies exactly this.
 func postgresIngestStateStatement() string {
 	statements := postgresSchemaStatements()
-	return statements[len(statements)-1]
+	// Second from the end: v3 appended the environments table after it.
+	return statements[len(statements)-2]
 }
 
 // verifyPostgresVersion refuses a schema this binary does not understand.
@@ -331,6 +393,13 @@ func sortedSchemaTables() []string {
 // sortedSchemaTablesV1 is what a complete task 057 database holds, sorted.
 func sortedSchemaTablesV1() []string {
 	sorted := slices.Clone(schemaTablesV1)
+	slices.Sort(sorted)
+	return sorted
+}
+
+// sortedSchemaTablesV2 is what a complete task 058 database holds, sorted.
+func sortedSchemaTablesV2() []string {
+	sorted := slices.Clone(schemaTablesV2)
 	slices.Sort(sorted)
 	return sorted
 }

@@ -524,6 +524,18 @@ fixed-shape comparison of two evaluations. Task 056 added the first layer
 allowed to judge one: `EvaluateEvaluationGate` pairs a card with explicit
 caller-owned integer limits and returns a PASS/FAIL `EvaluationGateResult`.
 
+Task 065 added the environment registry: `Environment`, owned by a project,
+identified by the `EnvironmentRef` a run already records, and carrying a name,
+an optional promotion rank and an active/archived status. A run may now only
+name an environment its own project owns and has not archived, which the
+control plane checks by walking candidate → agent → project before anything is
+written. `CanPromote` is the single ordering primitive a promotion workflow
+will ask, and it authorizes nothing. The engine is untouched: the platform's
+environment and the core's `baseline.Key.Environment` meet at a string
+comparison that already existed, on the platform side, and no core package
+knows this entity exists. See
+[ADR 0039](adr/0039-environments-are-project-owned-ranked-references.md).
+
 Task 057 added the first persistence adapter: a local SQLite store behind two
 narrow capabilities — `ControlStore` for projects, agents and candidates, and
 `EvaluationStore` for runs and their evidence. There is no generic `Database`

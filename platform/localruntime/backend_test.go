@@ -399,6 +399,8 @@ func TestRuntimeOnPostgresServesTheRealAPI(t *testing.T) {
 	client.post("/v1/agents", `{"id":"agent-pg","project_id":"proj-pg","name":"Agent"}`, 201)
 	client.post("/v1/candidates",
 		`{"id":"cand-pg","agent_id":"agent-pg","metadata":{"label":"v2"}}`, 201)
+	client.post("/v1/environments",
+		`{"project_id":"proj-pg","ref":"local","name":"Local"}`, 201)
 	client.post("/v1/evaluation-runs",
 		`{"id":"run-pg","candidate_id":"cand-pg","environment":"local","behavioral_profile":"checkout"}`, 201)
 	client.post("/v1/evaluation-runs/run-pg/start", "", 200)

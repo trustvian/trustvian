@@ -62,13 +62,14 @@ as long as its own decision holds.
 | [0036](0036-webui-is-a-same-origin-adapter-over-v1.md) | The WebUI is a same-origin static adapter over `/v1` | Accepted |
 | [0037](0037-postgresql-is-the-shared-platform-persistence-backend.md) | PostgreSQL is the shared platform persistence backend | Accepted |
 | [0038](0038-collector-evaluation-ingest-is-an-http-adapter.md) | Collector evaluation ingest is an HTTP adapter | Accepted |
+| [0039](0039-environments-are-project-owned-ranked-references.md) | Environments are project-owned ranked references | Accepted |
 
 No ADR is currently Superseded or Deprecated. Several later ADRs build on
 earlier ones — 0006 and 0018 on 0004's narrow port, 0007/0008/0017 on 0002's
 public-API test, 0013 on 0011's minimum-support floor, 0019 on the bounded-state
 mandate 0010/0011/0012/0016 established, 0024 on the mechanism 0022 deliberately
-left open — and each cites the earlier decision as
-still governing rather than replacing it.
+left open, 0039 on the opaque reference 0025 and 0027 both leaned on — and each
+cites the earlier decision as still governing rather than replacing it.
 
 ## Writing one
 
