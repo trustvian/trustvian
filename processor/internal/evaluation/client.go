@@ -60,6 +60,14 @@ const (
 	dispositionReplayed = "replayed"
 )
 
+// runStatusRunning is the one run status ingest may proceed against.
+// IngestDecisionRecord (platform/controlplane.go) refuses every record for a
+// run that is not running, so a Collector that starts up against a run that
+// was never started — or one that already finished — would otherwise pass
+// Initialize and then fail every span from the first one onward. Checking the
+// status here, once, turns that into a clear startup refusal instead.
+const runStatusRunning = "running"
+
 // client issues one-shot requests against a control plane.
 type client struct {
 	baseURL *url.URL
@@ -190,6 +198,16 @@ type ingestBody struct {
 	BehaviorComplete bool   `json:"behavior_complete"`
 }
 
+// progressBody decodes only the field Initialize needs from
+// GET /v1/evaluation-runs/{run_id}/progress. The route's other fields
+// (record_count, behavior_observation_count, …) are decimal-string
+// counters this client has no use for here; leaving them undecoded is what
+// the same lenient-decode discipline as the two bodies above calls for.
+type progressBody struct {
+	Version string `json:"version"`
+	Status  string `json:"status"`
+}
+
 type errorEnvelope struct {
 	Version string `json:"version"`
 	Error   struct {
@@ -226,6 +244,27 @@ func (c *client) ingestState(ctx context.Context, runID string) (uint64, error) 
 		return 0, fmt.Errorf("ingest-state: %w", err)
 	}
 	return next, nil
+}
+
+// runStatus reports a run's current lifecycle status, read from the same
+// progress route the end-to-end test already drives — so this adds no new
+// platform endpoint, only a new caller of an existing one.
+func (c *client) runStatus(ctx context.Context, runID string) (string, error) {
+	status, payload, err := c.do(ctx, http.MethodGet, nil, "evaluation-runs", runID, "progress")
+	if err != nil {
+		return "", err
+	}
+	if err := checkStatus(status, payload); err != nil {
+		return "", err
+	}
+	var body progressBody
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return "", errors.New("progress response is not valid JSON for this endpoint")
+	}
+	if body.Status == "" {
+		return "", errors.New("progress response carries no status")
+	}
+	return body.Status, nil
 }
 
 // ingest posts one record under an explicit sequence.

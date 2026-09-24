@@ -58,14 +58,33 @@ func New(apiURL, runID, behavioralProfile string) (*Sink, error) {
 // RunID is the run this sink feeds.
 func (s *Sink) RunID() string { return s.runID }
 
-// Initialize seeds the cursor from the control plane.
+// Initialize confirms the run is actually running, then seeds the cursor
+// from the control plane.
 //
 // Called from Start rather than lazily on the first span, so a Collector
 // whose control plane is unreachable refuses to come up instead of enriching
 // spans for an unknown period while recording nothing. It is also what lets
 // a restarted Collector resume a running evaluation rather than restarting
 // the count and double-aggregating.
+//
+// The status check exists because IngestDecisionRecord (the control plane's
+// own guard) refuses every record for a run that is not RunRunning — so
+// without this, a Collector pointed at a run that was created but never
+// started, or one that already finished, would pass Initialize, log ready,
+// serve /readyz 200, and then fail every span from the first one onward.
+// Checking once here, against the run's own progress, turns that into one
+// clear startup refusal naming the actual status instead.
 func (s *Sink) Initialize(ctx context.Context) error {
+	status, err := s.client.runStatus(ctx, s.runID)
+	if err != nil {
+		return fmt.Errorf("reading run status for run %s: %w", s.runID, err)
+	}
+	if status != runStatusRunning {
+		return fmt.Errorf(
+			"run %s is %s, not running; evaluation ingest requires a run that has already been started",
+			s.runID, status)
+	}
+
 	next, err := s.client.ingestState(ctx, s.runID)
 	if err != nil {
 		return fmt.Errorf("reading ingest state for run %s: %w", s.runID, err)
