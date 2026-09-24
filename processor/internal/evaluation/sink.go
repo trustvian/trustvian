@@ -103,6 +103,16 @@ type pendingRecord struct {
 	sequence uint64
 	record   trustvian.DecisionRecord
 	learning json.RawMessage
+
+	// state mirrors the durable entry's own, because the two mean different
+	// things to the next call. posting is recoverable in place: the record
+	// can be re-presented and, when the control plane confirms it, learned
+	// from. confirmed is not: the record is in the run and its learning
+	// either happened or did not, so re-presenting it would risk a second
+	// observation and abandoning it would risk none at all. Only a restart
+	// resolves that, deliberately, and this field is what stops a later
+	// record from stepping past it in the meantime.
+	state pendingState
 }
 
 // ErrUnresolved reports that a record's fate is still unknown: the control
@@ -111,6 +121,19 @@ type pendingRecord struct {
 // The sequence stays bound to that record, on disk as well as in memory, so
 // the next call — or the next process — finishes it rather than guessing.
 var ErrUnresolved = errors.New("evaluation ingest outcome is unresolved")
+
+// ErrLearningIndeterminate reports the other half of the same problem: the
+// control plane definitely holds the record, and whether its learning
+// reached the Engine's store cannot be established.
+//
+// It is distinct from ErrUnresolved because the two describe opposite
+// certainties — one is "the record may not be there", the other is "the
+// record is there" — and because only one of them is recoverable in this
+// process. A sink in this state accepts no further records: re-learning
+// could double an observation and dropping the entry could lose one, and
+// neither is a choice the next span gets to make on its own. Restarting the
+// Collector resolves it (ADR 0038 §10).
+var ErrLearningIndeterminate = errors.New("evaluation record learning is indeterminate")
 
 // RecoveryOutcome is what became of a record a previous process left
 // pending.
@@ -205,7 +228,7 @@ func (s *Sink) RunID() string { return s.runID }
 // Collector's learning — the previous process could not be sure it had
 // joined. The state it is in, and the run's own cursor, say which:
 //
-//	confirmed            The run holds the record; whether its learning was
+//	confirmed, cursor N+1  The run holds the record; whether its learning was
 //	                     applied before the process died cannot be known. It
 //	                     is not applied again: an observation that is missing
 //	                     makes a fingerprint look less familiar, which fails
@@ -213,6 +236,13 @@ func (s *Sink) RunID() string { return s.runID }
 //	                     familiar than the evidence supports, which is a
 //	                     silent weakening. The caller is told, so it is not
 //	                     silent.
+//
+//	confirmed, any other cursor  A process that died holding sequence N
+//	                     cannot have produced N+1, so a run expecting
+//	                     anything but N+1 was written by something else —
+//	                     below N+1 it does not hold a record it accepted,
+//	                     above it there is evidence this Collector never
+//	                     analyzed. Refuse.
 //
 //	posting, cursor N    The run still expects that record's own sequence, so
 //	                     the record never reached it. The previous process had
@@ -273,18 +303,27 @@ func (s *Sink) Initialize(ctx context.Context) (Recovery, error) {
 		}
 
 		switch {
+		case entry.State == stateConfirmed && next != sequence+1:
+			// A confirmed entry says the control plane accepted that record
+			// and the process then died before releasing it. Such a process
+			// cannot have produced the record after it, so the run can only
+			// be expecting exactly the next sequence.
+			//
+			// Anything lower is a contradiction: the record was accepted, yet
+			// the run does not hold it — a restored backup, or a run
+			// identifier something else is using. Anything higher means a
+			// second writer added records this Collector never analyzed, and
+			// resuming would step over evidence whose learning is nobody's
+			// to account for. The single-writer assumption is what the whole
+			// sequence contract rests on, so this refuses rather than
+			// guessing, and leaves the entry in place.
+			return Recovery{}, fmt.Errorf(
+				"the pending ingest state records sequence %d as accepted, so run %s should expect %d, "+
+					"but it expects %d; this run has been written by something else "+
+					"and cannot be resumed safely",
+				sequence, s.runID, sequence+1, next)
+
 		case entry.State == stateConfirmed:
-			if next <= sequence {
-				// A confirmed entry is only written after the control plane
-				// accepted the record, so the run cannot still be expecting
-				// that sequence. It is a contradiction — a restored backup,
-				// or a run identifier reused by something else — and the two
-				// halves cannot be reasoned about from here.
-				return Recovery{}, fmt.Errorf(
-					"the pending ingest state records sequence %d as accepted, but run %s expects %d; "+
-						"the run's evidence and this Collector's state cannot both be right",
-					sequence, s.runID, next)
-			}
 			if err := s.journal.clear(); err != nil {
 				return Recovery{}, fmt.Errorf("releasing the pending ingest state: %w", err)
 			}
@@ -312,7 +351,8 @@ func (s *Sink) Initialize(ctx context.Context) (Recovery, error) {
 			// the learning applied — exactly once, because a posting entry
 			// proves the previous process never got that far.
 			s.pending = &pendingRecord{
-				sequence: sequence, record: entry.Record, learning: entry.Learning}
+				sequence: sequence, record: entry.Record,
+				learning: entry.Learning, state: statePosting}
 			s.next = sequence
 			disposition, err := s.reconcile(ctx)
 			if err != nil {
@@ -347,13 +387,16 @@ func (s *Sink) Initialize(ctx context.Context) (Recovery, error) {
 // Record delivers one record and, once the control plane confirms it,
 // applies its learning — exactly once, in that order, never the reverse.
 //
-// Three states, and every call leaves the sink in one of them:
+// Every call leaves the sink in one of four states, each of them durable:
 //
-//	idle       no sequence is held; the next record takes the cursor
-//	pending    one sequence is bound to one record whose fate is unknown,
-//	           durably, so the fact survives this process
-//	settled    the control plane holds the record, its learning has been
-//	           applied, and the sequence has been released
+//	idle           no sequence is held; the next record takes the cursor
+//	posting        one sequence is bound to one record whose delivery is
+//	               unknown; nothing has been learned from it
+//	confirmed      the control plane holds the record and its learning is
+//	               not established; no further record is accepted, because
+//	               only a restart can settle that (see ErrLearningIndeterminate)
+//	settled        the run holds the record, its learning has been applied,
+//	               and the sequence has been released
 //
 // The intent is written to disk *before* the request is sent. That ordering
 // is what a restart depends on: a record the control plane may hold can
@@ -391,13 +434,25 @@ func (s *Sink) Record(
 	// to this record would either conflict against the committed one or
 	// silently take its place.
 	if s.pending != nil {
+		if s.pending.state == stateConfirmed {
+			// The control plane holds that record and its learning is
+			// indeterminate. Nothing this call can do settles that: applying
+			// the learning again could double an observation, and stepping
+			// over it could lose one. Both are decisions about a record this
+			// span has nothing to do with, so the sink stops instead.
+			return "", fmt.Errorf(
+				"%w: sequence %d is in the run but its learning was never confirmed; "+
+					"restart the Collector to settle it before recording another span",
+				ErrLearningIndeterminate, s.pending.sequence)
+		}
 		if _, err := s.reconcile(ctx); err != nil {
 			return "", err
 		}
 	}
 
 	sequence := s.next
-	held := &pendingRecord{sequence: sequence, record: record, learning: learning}
+	held := &pendingRecord{
+		sequence: sequence, record: record, learning: learning, state: statePosting}
 	if err := s.journal.write(entryFor(s.runID, statePosting, held)); err != nil {
 		// Nothing has been sent, so the sequence is untouched and this
 		// record simply did not happen. Refusing here is what keeps the
@@ -466,30 +521,41 @@ func (s *Sink) settle(ctx context.Context) error {
 	if err := s.journal.write(entryFor(s.runID, stateConfirmed, held)); err != nil {
 		// The record is in the run, but nothing may be learned from it until
 		// that fact is durable: a crash now must re-present the record rather
-		// than assume the learning happened. The entry is still posting, so
-		// that is exactly what the next attempt — or the next process — does.
+		// than assume the learning happened. The entry stays posting in
+		// memory, so that is exactly what the next attempt — or the next
+		// process — does. If the failure was the directory sync, the disk may
+		// already say confirmed; both readings are safe, because one
+		// re-presents and learns once and the other reports an indeterminate
+		// state and learns nothing.
 		return fmt.Errorf(
 			"%w: sequence %d was accepted but its pending state could not be updated: %w",
 			ErrUnresolved, held.sequence, err)
 	}
+	held.state = stateConfirmed
 
 	if err := s.learn(ctx, held.learning); err != nil {
-		// The record is in the run and the learning failed. It is not
-		// retried: a second attempt against a store that may have applied
-		// the first is how one observation becomes two. The sequence is
-		// released and the caller reports the failure.
-		s.pending = nil
-		if clearErr := s.journal.clear(); clearErr != nil {
-			return errors.Join(err, fmt.Errorf("releasing the pending ingest state: %w", clearErr))
-		}
-		return fmt.Errorf("applying the record's learning: %w", err)
+		// The record is in the run and the learning failed. Whether anything
+		// reached the store cannot be known from here — a FileStore updates
+		// its in-memory baseline before the flush that failed, and a database
+		// error can arrive on either side of a commit — so the entry stays,
+		// confirmed, as the note that says exactly that. Deleting it would
+		// leave the run holding a record with nothing anywhere to say its
+		// learning was never established, which is the divergence this whole
+		// mechanism exists to prevent.
+		//
+		// It is not retried either: a second attempt against a store that may
+		// have applied the first is how one observation becomes two.
+		return fmt.Errorf(
+			"%w: sequence %d is in the run but applying its learning failed: %w",
+			ErrLearningIndeterminate, held.sequence, err)
 	}
 
 	s.pending = nil
 	if err := s.journal.clear(); err != nil {
-		// Both halves are done; only the marker is stale. That is still
-		// safe — a confirmed entry tells the next process not to learn
-		// again — but a filesystem that cannot delete is about to fail a
+		// Both halves are done; only the release is unproven. That is safe in
+		// either direction — an entry that survives tells the next process
+		// the learning is indeterminate, and it will not be applied twice —
+		// but a filesystem that cannot delete durably is about to fail a
 		// write too, so it is reported rather than swallowed.
 		return fmt.Errorf("releasing the pending ingest state: %w", err)
 	}

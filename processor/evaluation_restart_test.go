@@ -25,16 +25,19 @@ package trustvianprocessor_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/consumer/consumertest"
 
 	trustvian "github.com/trustvian/trustvian"
 	trustvianprocessor "trustvian-processor"
+	"trustvian-processor/internal/evaluation"
 )
 
 // durablePaths is one Collector's two durable files: the learned baseline
@@ -518,4 +521,123 @@ func TestRestartWithPostgresBaseline(t *testing.T) {
 				"durable baseline must hold its learning", records[1].AnomalyConfidence)
 		}
 	})
+}
+
+// pendingStateOnDisk decodes the sink's pending entry as plain JSON.
+//
+// Generic rather than typed: the entry's Go type is unexported in
+// internal/evaluation, and what this level needs to assert is the contract a
+// restart reads — a state and a sequence — not the struct that carries it.
+func pendingStateOnDisk(t *testing.T, path string) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading the pending state: %v", err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("decoding the pending state: %v", err)
+	}
+	return entry
+}
+
+// TestStoreFailureKeepsRecoveryInformation is the processor-level statement
+// of the same blocker the sink tests cover: a real store failure, through
+// the real Engine, must not end with the run holding a record and nothing
+// anywhere saying its learning was never established.
+//
+// The store failure is real rather than mocked, and no production code knows
+// which store it is: a FileStore whose directory is made read-only updates
+// its in-memory baseline and then fails to flush it — the ambiguous case
+// exactly, since from the caller's side "failed" and "may have happened" are
+// the same observation.
+//
+// Before Engine.Observe's error reached the sink, this test's first half
+// passed with the journal deleted and ConsumeTraces reporting success.
+func TestStoreFailureKeepsRecoveryInformation(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: directory permissions do not block a write")
+	}
+	baselineDir := t.TempDir()
+	paths := durablePaths{
+		baseline: filepath.Join(baselineDir, "baseline.json"),
+		pending:  filepath.Join(t.TempDir(), "pending.json"),
+	}
+	cp := newIngestAPIServer(t)
+
+	first, err := newTestProcessorWithConfig(t, consumertest.NewNop(),
+		cp.configAt(t, paths.pending, paths.storage()))
+	if err != nil {
+		t.Fatalf("CreateTraces() error = %v", err)
+	}
+
+	// The store can no longer persist: Observe still folds the event into
+	// the in-memory baseline, then fails to write it out.
+	if err := os.Chmod(baselineDir, 0o500); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(baselineDir, 0o700) })
+
+	err = first.ConsumeTraces(context.Background(),
+		evaluationTraces("support-agent", "crm.localhost"))
+	if err == nil {
+		t.Fatal("ConsumeTraces() error = nil, want the store failure surfaced; the run holds a record " +
+			"whose learning was never established")
+	}
+	if !consumererror.IsPermanent(err) {
+		t.Error("error is not permanent")
+	}
+	if !errors.Is(err, evaluation.ErrLearningIndeterminate) {
+		t.Errorf("error = %v, want it reported as indeterminate learning", err)
+	}
+	if got := len(cp.recorded()); got != 1 {
+		t.Fatalf("control plane holds %d records, want 1 — its half succeeded", got)
+	}
+
+	entry := pendingStateOnDisk(t, paths.pending)
+	if entry["state"] != "confirmed" || entry["sequence"] != "1" {
+		t.Fatalf("pending state = %v, want sequence 1 confirmed — the note that the run holds a "+
+			"record whose learning is unproven", entry)
+	}
+
+	// Nothing may be sent past it while it is unsettled.
+	if err := first.ConsumeTraces(context.Background(),
+		evaluationTraces("support-agent", "knowledge.localhost")); err == nil {
+		t.Error("ConsumeTraces() error = nil, want the sink to refuse while a record is unsettled")
+	}
+	if got := len(cp.recorded()); got != 1 {
+		t.Errorf("control plane holds %d records, want 1 — nothing may be posted past an unsettled record", got)
+	}
+
+	// The store recovers, and so does the Collector: the record's learning
+	// is indeterminate, so it is not applied again, and the run resumes.
+	if err := os.Chmod(baselineDir, 0o700); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+	second, err := newTestProcessorWithConfig(t, consumertest.NewNop(),
+		cp.configAt(t, paths.pending, paths.storage()))
+	if err != nil {
+		t.Fatalf("CreateTraces() error = %v", err)
+	}
+	if _, statErr := os.Stat(paths.pending); !os.IsNotExist(statErr) {
+		t.Errorf("the pending state survived a settled recovery: %v", statErr)
+	}
+	if got := totalObservations(learnedFingerprints(t, paths.baseline)); got != 0 {
+		t.Errorf("the durable baseline holds %v observations after recovery, want 0 — an observation "+
+			"that may already have been applied must not be applied again", got)
+	}
+
+	if err := second.ConsumeTraces(context.Background(),
+		evaluationTraces("support-agent", "knowledge.localhost")); err != nil {
+		t.Fatalf("ConsumeTraces() error = %v after recovery", err)
+	}
+	if got := len(cp.recorded()); got != 2 {
+		t.Errorf("control plane holds %d records, want 2", got)
+	}
+	if got := totalObservations(learnedFingerprints(t, paths.baseline)); got != 1 {
+		t.Errorf("the durable baseline holds %v observations, want 1 — the new record's, and only its", got)
+	}
+	if got := cp.nextSequence(); got != 3 {
+		t.Errorf("the run's next sequence = %d, want 3", got)
+	}
 }

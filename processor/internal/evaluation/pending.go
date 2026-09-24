@@ -69,7 +69,23 @@ type pendingEntry struct {
 }
 
 // journal stores exactly one pendingEntry at a fixed path.
-type journal struct{ path string }
+//
+// Every operation on it — writing an entry and releasing one — is a
+// durability operation, because both are facts a restart reads back. A write
+// whose rename never reached the disk loses a record that may be in the run;
+// a delete whose removal never reached the disk resurrects an entry for a
+// record that is already settled. So both sync the parent directory, and
+// both report failure rather than assuming it worked.
+type journal struct {
+	path string
+
+	// syncDir makes a directory entry durable. A field rather than a
+	// package-level function so a test can inject a failure at exactly the
+	// point where a rename has already happened and its durability has not
+	// — the state this file exists to reason about, and one no temporary
+	// directory can produce on demand.
+	syncDir func(dir string) error
+}
 
 // newJournal validates the location before any span depends on it.
 //
@@ -89,14 +105,19 @@ func newJournal(path string) (*journal, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("pending_state_path parent %s is not a directory", dir)
 	}
-	return &journal{path: path}, nil
+	return &journal{path: path, syncDir: syncDirectory}, nil
 }
 
-// write replaces the entry atomically.
+// write replaces the entry durably.
 //
-// Temp file, sync, rename — the same sequence internal/store's FileStore
-// uses, and for the same reason: a torn entry is worse than no entry,
-// because a reader cannot tell a truncated record from a different one.
+// Temp file, fsync, close, rename, fsync the parent directory. The first
+// four are what internal/store's FileStore does, and for the same reason: a
+// torn entry is worse than no entry, because a reader cannot tell a
+// truncated record from a different one. The fifth is what this file needs
+// and a baseline snapshot does not: fsyncing a file's contents says nothing
+// about the directory entry that names it, so on a typical POSIX filesystem
+// a host that loses power after the rename can come back with the old entry,
+// or none. A write-ahead record that can vanish is not one.
 func (j *journal) write(entry pendingEntry) error {
 	raw, err := json.Marshal(entry)
 	if err != nil {
@@ -124,6 +145,14 @@ func (j *journal) write(entry pendingEntry) error {
 	}
 	if err := os.Rename(tmpName, j.path); err != nil {
 		return fmt.Errorf("rename into place: %w", err)
+	}
+	if err := j.syncDir(dir); err != nil {
+		// The rename happened; whether it survives a host crash is now
+		// unknown. Reported rather than swallowed, and never reported as
+		// "the write did not happen" — the caller treats an entry whose
+		// durability is unproven the same way it treats any other unproven
+		// fact, by failing closed.
+		return fmt.Errorf("the entry was renamed into place but %w", err)
 	}
 	return nil
 }
@@ -177,10 +206,23 @@ func (j *journal) load() (pendingEntry, bool, error) {
 	return entry, true, nil
 }
 
-// clear releases the entry. A missing file is already the desired state.
+// clear releases the entry, durably.
+//
+// The directory sync is not symmetry for its own sake: an unlink that
+// reached only the page cache can be undone by a host crash, and the entry
+// that comes back describes a record whose learning has already been
+// applied. Recovery would then report an indeterminate state for a record
+// that is in fact settled — conservative, but noise the operator would have
+// to investigate, and noise that hides the real thing.
+//
+// A missing file is already the desired state; the directory is still
+// synced, because a previous clear may be what left it missing.
 func (j *journal) clear() error {
 	if err := os.Remove(j.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove %s: %w", j.path, err)
+	}
+	if err := j.syncDir(filepath.Dir(j.path)); err != nil {
+		return fmt.Errorf("the entry was removed but %w", err)
 	}
 	return nil
 }

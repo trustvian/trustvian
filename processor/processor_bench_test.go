@@ -95,17 +95,19 @@ func BenchmarkConsumeTracesWithMetricsSDK(b *testing.B) {
 // evaluation-configured span, measured rather than asserted.
 //
 // Against a loopback stub the request itself is cheap, so what this number
-// actually shows is the cost of the restart guarantee: two durable writes of
-// the pending entry per span — before the request, and after the control
-// plane confirms it (ADR 0038 §10) — plus the JSON round trip of the Result
-// that entry carries. Each write is fsynced, so this measurement is mostly a
-// measurement of the filesystem: on macOS, where Sync means F_FULLFSYNC, it
-// is milliseconds; on a Linux SSD it is a fraction of one.
+// actually shows is the cost of the restart guarantee: the pending entry
+// written before the request, rewritten when the control plane confirms it,
+// and released after the learning (ADR 0038 §10), plus the JSON round trip
+// of the Result that entry carries. Each write syncs the file and the
+// directory that names it, and the release syncs the directory too — five
+// durability points per span — so this is largely a measurement of the
+// filesystem underneath, and it is milliseconds wherever a sync really
+// reaches the media (macOS F_FULLFSYNC being the strictest case).
 //
-// The fsync is the point rather than an oversight. An entry that reached
+// Those syncs are the point rather than an oversight. An entry that reached
 // only the page cache survives a process dying, which is the common case,
-// but not the host dying — and a lost entry is exactly the ambiguity this
-// design removes.
+// but not the host dying — and a rename a host crash undoes is exactly the
+// ambiguity this design removes.
 //
 // Compare it against BenchmarkConsumeTraces, which is the same span path
 // with no evaluation block: that one takes no lock, writes no file, and is

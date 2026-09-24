@@ -451,11 +451,12 @@ func (p *trustvianProcessor) ConsumeTraces(ctx context.Context, td ptrace.Traces
 		for _, ss := range rs.ScopeSpans().All() {
 			spans := ss.Spans()
 			for i := range spans.Len() {
-				// Only an unresolved or declined evaluation ingest can return
-				// an error here, and it is already permanent. The batch is
-				// abandoned rather than forwarded: a retry would re-analyze
-				// spans whose records already committed and resend them under
-				// new sequence numbers, silently doubling the evidence.
+				// Only a declined, unresolved or indeterminately-learned
+				// evaluation ingest can return an error here, and it is
+				// already permanent. The batch is abandoned rather than
+				// forwarded: a retry would re-analyze spans whose records
+				// already committed and resend them under new sequence
+				// numbers, silently doubling the evidence.
 				if err := p.processSpan(ctx, resourceAttrs, spans.At(i)); err != nil {
 					return err
 				}
@@ -528,10 +529,16 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 		ingestDuration := time.Since(ingestStart)
 		if err != nil {
 			p.metrics.RecordEvaluationIngest(ctx, metrics.OutcomeError, ingestDuration)
+			// Two flags rather than one message, because the two say
+			// opposite things about the run: unresolved means the record may
+			// not be there, indeterminate means it is there and its learning
+			// is what could not be established. The second is the one that
+			// needs a restart to clear.
 			p.logger.Error("trustvianprocessor: evaluation ingest failed",
 				zap.String("span", span.Name()),
 				zap.String("run_id", p.evaluation.RunID()),
 				zap.Bool("unresolved", errors.Is(err, evaluation.ErrUnresolved)),
+				zap.Bool("learning_indeterminate", errors.Is(err, evaluation.ErrLearningIndeterminate)),
 				zap.Error(err))
 			// Permanent, so the pipeline does not retry. See ConsumeTraces.
 			return consumererror.NewPermanent(
@@ -543,7 +550,10 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 		return nil
 	}
 
-	p.observe(ctx, span.Name(), result)
+	// Without an evaluation run there is nothing for a learning failure to
+	// diverge from, so it stays what it has always been: reported by
+	// observe, never fatal to the batch.
+	_, _ = p.observe(ctx, span.Name(), result)
 	return nil
 }
 
@@ -556,6 +566,13 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 // what a restart would apply is exactly what this process applies, so a
 // payload that could not carry the learning fails on the first span rather
 // than after a crash.
+//
+// Its error is the sink's, not a log line. A store that accepted the record
+// into memory and then failed to persist it — a FileStore flush, a database
+// commit — leaves the run holding a record whose learning may or may not
+// exist, and the sink is the only thing that can keep the note saying so.
+// Swallowing the error here would delete that note and call it success,
+// which is the one outcome the pending state exists to prevent.
 func (p *trustvianProcessor) learn(ctx context.Context, learning []byte) error {
 	var result trustvian.Result
 	if err := json.Unmarshal(learning, &result); err != nil {
@@ -563,23 +580,27 @@ func (p *trustvianProcessor) learn(ctx context.Context, learning []byte) error {
 		// that cannot be read is one whose record can never be learned from.
 		return fmt.Errorf("decoding the pending learning: %w", err)
 	}
-	p.observe(ctx, "evaluation ingest", result)
-	return nil
+	_, err := p.observe(ctx, "evaluation ingest", result)
+	return err
 }
 
-// observe folds one Result into the baseline and records the outcome.
+// observe folds one Result into the baseline, records the outcome, and
+// reports what happened.
 //
 // Observe is always safe to call unconditionally — it is a no-op for any
 // Decision that isn't learning-eligible (see the core repository's
 // docs/SECURITY.md § baseline poisoning).
 //
-// A failure is reported and never fatal, which is deliberate and unchanged:
-// the alternative is a store blip stopping a Collector from forwarding
-// traces. With `evaluation:` configured it means the run can hold a record
-// this baseline did not learn from — reported, in the direction that fails
-// safe, since a fingerprint short one observation looks less familiar rather
-// than more.
-func (p *trustvianProcessor) observe(ctx context.Context, source string, result trustvian.Result) {
+// The error is returned rather than absorbed, and what to do with it differs
+// by caller. Without `evaluation:` a failure is logged and the span
+// continues, unchanged from before this processor could record anything: a
+// store blip must not stop a Collector forwarding traces. With
+// `evaluation:` the same failure means the run holds a record whose learning
+// did not demonstrably happen, which is a fact that has to survive — so the
+// sink keeps its pending entry and the batch fails.
+func (p *trustvianProcessor) observe(
+	ctx context.Context, source string, result trustvian.Result,
+) (bool, error) {
 	observeStart := time.Now()
 	learned, err := p.engine.Observe(ctx, result)
 	observeDuration := time.Since(observeStart)
@@ -599,6 +620,7 @@ func (p *trustvianProcessor) observe(ctx context.Context, source string, result 
 		// per blocked action.
 		p.metrics.RecordObservation(ctx, metrics.OutcomeNotEligible, observeDuration)
 	}
+	return learned, err
 }
 
 func (p *trustvianProcessor) recordDecision(decision string) {
