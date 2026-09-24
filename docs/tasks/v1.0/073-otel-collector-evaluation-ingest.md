@@ -137,6 +137,13 @@ pending_state_path  non-empty, in a directory that exists — where the one
                     record in flight is made durable before it is sent
 ```
 
+`pending_state_path` must live on the same durable medium as the baseline
+store: a mounted volume, never a container's own writable layer or a tmpfs.
+A note that disappears with the container answers nothing after the restart
+it exists for. One file per Collector and per run — the entry names its run,
+and a sink configured for a different one refuses to start rather than
+discarding an unsettled record.
+
 `api_url` validation reuses the rules `--api-url` already enforces, including
 the one that matters most: a URL carrying credentials is rejected **without
 echoing the value**, because a diagnostic that repeats the secret into
@@ -305,6 +312,16 @@ proves the record never arrived. Neither is acceptable, so learning is tied
 to the control plane's answer rather than to a guess about it, and the sink
 owns that ordering rather than the caller.
 
+A learning failure is inside that boundary, not beside it. `LearnFunc`
+returns `Engine.Observe`'s error to the sink, and the error is ambiguous in
+the same way a lost response is: `FileStore.Observe` folds the event into its
+in-memory baseline and then flushes, so a flush error leaves one changed and
+the other not, and a database error can land on either side of a commit. The
+entry therefore stays, `confirmed`, and the sink accepts no further record
+until a restart settles it. A Collector without `evaluation:` is unchanged —
+an `Observe` failure there is reported and never fatal, because there is
+nothing for it to diverge from.
+
 ### An unsettled record is durable state
 
 Evidence lives in the control plane, learning lives in the Engine's store,
@@ -326,20 +343,34 @@ Startup reads that entry and the run's cursor together:
 |---|---|---|---|
 | `posting` at *N* | *N* | the request never arrived | discard; nothing learned, nothing posted, *N* goes to the next record |
 | `posting` at *N* | *N+1* | something occupies *N* | re-present it there — identical replays, anything else conflicts — then apply the learning exactly once |
-| `confirmed` at *N* | past *N* | the run holds it; the learning may or may not have been applied | do not apply it again; report it at ERROR |
-| `confirmed` at *N* | *N* or earlier | a contradiction: accepted, yet the run does not hold it | refuse to start |
-| anything else | — | another writer has been in this run | refuse to start |
+| `confirmed` at *N* | *N+1* | the run holds it; the learning may or may not have been applied | do not apply it again; report it at ERROR, then resume |
+| anything else | — | another writer advanced the run, or the run does not hold a record it accepted | refuse to start, entry intact |
 
-The `confirmed` window is the only state a restart cannot settle, and it
-fails safe: a missing observation makes a fingerprint look less familiar, a
-doubled one makes it look more familiar than the evidence supports.
+`confirmed` resumes at exactly *N+1* and nothing else: a process that died
+holding *N* never released it, so it cannot have produced *N+1*, and a run
+expecting *N+2* or beyond holds records this Collector never analyzed. Their
+learning is nobody's to account for, so the run is not resumed at all.
 
-Both writes are fsynced, which is the cost of the guarantee rather than an
-oversight: an entry that reached only the page cache survives the process
-dying but not the host dying. `BenchmarkConsumeTracesWithEvaluation`
-measures it against a loopback control plane, beside `BenchmarkConsumeTraces`
-for the same span path with no `evaluation:` block — which writes nothing,
-takes no lock, and is unchanged.
+The `confirmed` window is the only state a restart cannot settle, and the
+ambiguity is resolved deliberately toward a *possibly missing* observation
+rather than a *possibly doubled* one: a missing one makes a fingerprint look
+less familiar, a doubled one makes it look more familiar than the evidence
+supports.
+
+Durability here is the file *and* its directory entry. Syncing the temp file
+commits its contents; the name that points at it is committed with the parent
+directory, so a write is temp → fsync → close → rename → fsync the directory,
+and a release is remove → fsync the directory. Clearing is a durability
+operation too: an unlink undone by a crash brings back a note for a record
+that is already settled. Both report a directory sync failure as durability
+that could not be proven — never as a write that did not happen — and every
+such outcome is safe in both readings. On Windows the directory sync is a
+documented no-op, so host-crash durability is claimed only on POSIX.
+
+That cost is the guarantee rather than an oversight.
+`BenchmarkConsumeTracesWithEvaluation` measures it against a loopback control
+plane, beside `BenchmarkConsumeTraces` for the same span path with no
+`evaluation:` block — which writes nothing, takes no lock, and is unchanged.
 
 What this deliberately does **not** add:
 
@@ -520,11 +551,15 @@ records the adapter contract and why the module edge stays absent.
 6b. `Engine.Observe` runs at most once per record, and only once the control
    plane has accepted it — never for a declined record, and never for one
    whose outcome is unknown.
-6c. A record in flight is durable before its request is sent, so a restart
-   settles it against the run's own cursor: never delivered means discarded
-   and unlearned, already delivered means replayed and learned exactly once.
-   After any restart the durable baseline and the run's evidence do not
-   silently disagree.
+6c. A record in flight is durable before its request is sent — contents and
+   directory entry both — so a restart settles it against the run's own
+   cursor: never delivered means discarded and unlearned, already delivered
+   means replayed and learned exactly once. After any restart the durable
+   baseline and the run's evidence do not silently disagree.
+6d. A learning failure keeps the confirmed entry and stops the sink; it is
+   never released as though the learning had happened. A confirmed entry
+   resumes only at cursor *N+1*, and any other cursor fails startup closed
+   with the entry intact.
 7. Requests are bounded, time out, refuse redirects, and never carry or log
    credentials.
 8. `behavioral_profile` selects the Engine's learning scope.

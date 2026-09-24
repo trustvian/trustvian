@@ -221,6 +221,17 @@ not: with a durable `storage:` backend that learning is written to disk, so
 it survives the restart that proves the record never arrived, and every later
 span is then scored against history the run's evidence has no trace of.
 
+**A failed `Observe` stops the sink rather than being logged past.** Without
+`evaluation:` a store failure is reported and the span continues, unchanged:
+a database blip must not stop a Collector forwarding traces. With
+`evaluation:` the same failure means the run holds a record whose learning
+did not demonstrably happen — and "failed" and "may have happened" are the
+same observation from here, since a file-backed store updates its in-memory
+baseline before the flush that failed, and a database error can land on
+either side of a commit. So the pending entry stays, the batch fails, and the
+Collector accepts no further record for that run until it is restarted. The
+log line carries `learning_indeterminate=true`; restarting settles it.
+
 **The record in flight is durable, which is what `pending_state_path` is
 for.** Evidence lives in the control plane and learning lives in the Engine's
 store; no transaction spans both, so the one record in flight is written
@@ -234,25 +245,39 @@ Startup reads it together with the run's cursor:
 |---|---|---|---|
 | sequence *N*, not yet confirmed | *N* | the request never arrived | discarded: nothing was learned, nothing is posted now, and *N* goes to the next record |
 | sequence *N*, not yet confirmed | *N+1* | something occupies *N* | the same record is re-presented there — an identical one replays, anything else conflicts — and only then is its learning applied, exactly once |
-| sequence *N*, confirmed | past *N* | the run holds it; whether its learning was applied is unknowable | it is not applied again, and startup logs an ERROR naming the sequence |
-| anything else | — | another writer has been in this run | the Collector refuses to start |
+| sequence *N*, confirmed | *N+1* | the run holds it; whether its learning was applied is unknowable | it is not applied again, startup logs an ERROR naming the sequence, and the run resumes |
+| anything else | — | another writer advanced the run, or it does not hold a record it accepted | the Collector refuses to start, and the entry is left in place |
+
+A confirmed entry resumes at exactly *N+1* and nothing else. A Collector that
+died holding *N* never released it, so it cannot have produced *N+1*: a run
+expecting more than that holds records this Collector never analyzed, and
+resuming would step over evidence nothing local accounts for. One Collector
+per run is not a style preference — it is what the sequence contract rests
+on, and a run that shows a second writer is refused rather than guessed at.
 
 Put the file on the same durable medium as the baseline store — a volume,
 not the container's writable layer — and give each run its own. The file
 names its run, and a Collector configured for a different one refuses to
 start rather than discarding an unsettled record.
 
-The cost is two fsynced writes and a delete per analyzed span, beside the
-serialized round trip this configuration already pays. Both writes are
-fsynced on purpose: an entry that reached only the page cache survives the
-process dying but not the host dying, and a lost entry is precisely the
-ambiguity it exists to remove. On a Linux SSD that is a fraction of a
-millisecond per span; `BenchmarkConsumeTracesWithEvaluation` measures it
-against a loopback control plane, beside `BenchmarkConsumeTraces` for the
-same span path with no `evaluation:` block, which writes nothing and takes
-no lock. An evaluation-configured Collector is a Collector dedicated to one
-run, and this is the price of its evidence and its baseline not being able
-to disagree.
+The cost is two durable writes and a durable delete per analyzed span,
+beside the serialized round trip this configuration already pays. Durable
+means the file's contents *and* the directory entry naming it: fsyncing the
+data alone leaves a rename a host crash can undo, so the parent directory is
+synced after the rename and after the removal. A delete is a durability
+operation for the same reason an entry that comes back describes a record
+that is already settled. (On Windows the directory sync is a documented
+no-op, so host-crash durability is claimed only on POSIX.)
+
+That is five durability points per span — two file syncs and three directory
+syncs — so this configuration's throughput is set by how expensive a real
+flush to media is on the volume you give it, not by Trustvian. Expect
+milliseconds per span wherever `fsync` genuinely reaches the disk.
+`BenchmarkConsumeTracesWithEvaluation` measures it against a loopback control
+plane, beside `BenchmarkConsumeTraces` for the same span path with no
+`evaluation:` block, which writes nothing and takes no lock. An
+evaluation-configured Collector is a Collector dedicated to one run, and this
+is the price of its evidence and its baseline not being able to disagree.
 
 **What this leaves behind:** if a batch fails partway through, the spans
 analyzed before the failure already posted durable records and advanced the

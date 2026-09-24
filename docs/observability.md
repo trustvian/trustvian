@@ -263,8 +263,29 @@ in flight reports what became of it:
   Collector's baseline learned from it is unknowable, so it was not learned
   again. At most one observation is missing, in the direction that fails
   safe. Repeated occurrences mean the process is dying inside the window
-  between confirming a record and releasing it, which is worth investigating
-  on its own.
+  between confirming a record and releasing it, or that the store keeps
+  failing (below), and either is worth investigating on its own.
+
+A refused startup is the other thing to watch for. A pending entry the run's
+own cursor cannot account for — a second writer, or a run that does not hold
+a record it accepted — fails `Start` with the entry left in place, so the
+Collector reports unhealthy rather than resuming over evidence nothing local
+learned from.
+
+### The one failure that stops a Collector
+
+`evaluation ingest failed` with `learning_indeterminate=true` means the
+control plane took the record and `Engine.Observe` did not demonstrably
+apply its learning — a file-backed store that could not flush, a database
+that failed around its commit. The sink keeps its pending entry and accepts
+no further record for that run: re-learning could double an observation and
+dropping the entry could lose one, and neither is a decision the next span
+gets to make.
+
+An evaluation-configured Collector in this state stops exporting traces
+entirely, which is intended and is why it is loud. Fix the store, then
+restart the Collector: startup reports the record as indeterminate, declines
+to learn from it a second time, and resumes from the run's cursor.
 
 ## Cardinality is a hard bound
 

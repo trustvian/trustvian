@@ -232,6 +232,22 @@ processor hands `Record` the serialized `Result` beside the record and a
 sequence. The engine's types stay out of the sink — what it holds is opaque
 bytes — and the sink's HTTP contract stays out of the engine.
 
+**A learning failure is part of that ordering, not a log line.** The
+processor's own `Observe` failures are non-fatal by design: a store blip must
+not stop a Collector forwarding traces, and without `evaluation:` there is
+nothing for the failure to diverge *from*. With `evaluation:` the same
+failure means the run holds a record whose learning did not demonstrably
+happen, which is a fact that has to survive the process. So `LearnFunc`
+returns `Engine.Observe`'s error to the sink, and the sink treats it as what
+it is: the second half of a two-system commit that did not complete.
+
+And it is genuinely ambiguous, in the same way a lost HTTP response is.
+`FileStore.Observe` folds the event into its in-memory baseline and *then*
+flushes, so a flush error leaves a baseline that has already changed and a
+file that has not. A database error can arrive on either side of a commit.
+"Observe returned an error" therefore does not mean "nothing was persisted",
+and the design never claims it does.
+
 ### 10. An unsettled record is durable state, not process memory
 
 A record's two halves live in two places that cannot share a transaction:
@@ -258,11 +274,31 @@ Startup reads it and the run's cursor together:
 |---|---|---|---|
 | `posting` at *N* | *N* | the request never arrived | discard it; nothing was learned, nothing is posted, *N* goes to the next record |
 | `posting` at *N* | *N+1* | something occupies *N* | re-present the record there: an identical one replays, anything else conflicts. On a replay, apply the learning — exactly once, because `posting` proves the dead process had not |
-| `confirmed` at *N* | past *N* | the run holds the record; the learning may or may not have been applied | do not apply it again; report it at ERROR |
-| `confirmed` at *N* | *N* or earlier | a contradiction: the record was accepted, yet the run does not hold it | refuse to start |
-| anything else | — | another writer has been in this run | refuse to start |
+| `posting` at *N* | anything else | another writer advanced the run | refuse to start |
+| `confirmed` at *N* | *N+1* | the run holds the record; the learning may or may not have been applied | do not apply it again; report it at ERROR, then resume |
+| `confirmed` at *N* | anything else | another writer advanced the run, or the run does not hold a record it accepted | refuse to start |
 
-Three consequences worth stating plainly.
+**`confirmed` resumes at exactly *N+1*, never merely "past *N*".** A process
+that died holding *N* cannot have produced *N+1* — it never released *N* — so
+a run expecting *N+2* or beyond contains records this Collector did not
+analyze and did not learn from. Resuming there would step over evidence whose
+local learning is nobody's to account for, silently, which is the same
+divergence in a different disguise. A cursor at or below *N* is the opposite
+contradiction: the record was accepted, yet the run does not hold it. Both
+refuse, and both leave the entry in place — it is the only record that the
+record existed. Single-writer is not an assumption the sequence contract can
+drop, so a run that shows a second writer is not resumed at all.
+
+**A `confirmed` entry survives a failed or ambiguous learning.** That is what
+makes the state reachable in the first place, rather than only by a crash:
+`Engine.Observe` returning an error leaves the entry exactly where it is,
+`Record` returns `ErrLearningIndeterminate`, and the sink accepts no further
+record until a restart settles it. Deleting the entry and reporting success —
+what the processor's swallowed `Observe` error used to produce — is the one
+outcome this whole mechanism exists to prevent: the run holding a record with
+nothing, anywhere, saying its learning was never established.
+
+Three further consequences worth stating plainly.
 
 **The discarded case posts nothing.** A record whose request never arrived
 belonged to a batch that was already abandoned; delivering it alone after a
@@ -270,8 +306,9 @@ restart would add evidence for a span the pipeline dropped. Both halves agree
 at nothing, which is the invariant, and the run is one record short — the
 documented, recoverable outcome (§5), not the silent one.
 
-**The `confirmed` window is the one thing a restart cannot settle**, and it
-is chosen to fail safe rather than to fail silently. An observation that is
+**The `confirmed` window is the one thing a restart cannot settle**, and the
+ambiguity is resolved deliberately toward a *possibly missing* observation
+rather than a *possibly doubled* one. An observation that is
 missing makes a fingerprint look *less* familiar; one applied twice makes it
 look *more* familiar than the run's evidence supports, which is a silent
 weakening of the signal every later decision is made from. So it is not
@@ -286,6 +323,31 @@ path encodes and decodes it too, rather than observing the in-memory value —
 so what a restart would apply is exactly what this process applies, and a
 payload that could not carry the learning fails on the first span instead of
 after a crash.
+
+**Durability is the file and its directory entry.** `fsync` on a file commits
+that file's contents; the name that points at it lives in the parent
+directory and is committed separately. A journal that synced only the temp
+file would survive a process dying — the common case — and not a host losing
+power, because the rename that put it in place could still be undone. So a
+write is temp file → fsync → close → rename → **fsync the parent directory**,
+and a release is remove → **fsync the parent directory**: clearing an entry
+is a durability operation too, since an unlink a crash undoes brings back a
+note for a record that is already settled.
+
+Both halves report failure rather than assuming it. A rename whose directory
+sync failed *did happen*, and the error says so — it is reported as
+durability that could not be proven, never as a write that did not occur.
+Every one of those outcomes is safe in both readings: an unproven `posting`
+write means nothing was sent, so the entry is at worst stale; an unproven
+`confirmed` write means the record is re-presented and learned once if the
+entry reverts, or reported indeterminate if it does not; an unproven release
+means at worst one conservative indeterminate report for a record that was in
+fact settled.
+
+On Windows there is no portable way to flush a directory handle, so
+`syncDirectory` is a documented no-op there and the guarantee is stated
+honestly rather than claimed: the journal survives a process dying on every
+supported platform, and a host losing power on POSIX ones.
 
 `pending_state_path` is required whenever `evaluation:` is configured, and
 not conditional on which store is configured. Branching on the backend would

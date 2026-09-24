@@ -157,10 +157,26 @@ actually depend on.
   entry, written before the request leaves), and startup settles it against
   the run's own cursor: a record the run never received is discarded
   unlearned, and one it already holds is replayed at its own sequence and
-  learned exactly once. The only state a restart cannot settle — the process
+  learned exactly once. A confirmed record resumes only when the run expects
+  exactly the sequence after it; anything else means a second writer advanced
+  the run, and startup refuses rather than stepping over evidence nothing
+  local learned from. The only state a restart cannot settle — the process
   dying between confirming a record and releasing it — is reported at ERROR
   and not learned from twice, because a fingerprint that looks more familiar
   than the evidence supports is a silent weakening.
+
+  **A store failure is part of that contract.** `Engine.Observe`'s error
+  reaches the sink rather than a log line: with `evaluation:` configured, a
+  store that could not persist means the run holds a record whose learning
+  did not demonstrably happen — and a file-backed store updates its in-memory
+  baseline before the flush that failed, so "failed" and "may have happened"
+  are the same observation. The pending entry stays, the batch fails, and the
+  Collector accepts no further record for that run until it is restarted.
+  Without `evaluation:`, an `Observe` failure is still reported and still
+  never fatal. The pending entry itself is durable in both halves — contents
+  fsynced and the parent directory synced after the rename and after the
+  removal — because a rename that reached only the page cache is one a host
+  crash can undo.
 
 ### Security
 
