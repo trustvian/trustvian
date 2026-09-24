@@ -624,7 +624,7 @@ fail the build if either does not.
 
 | Operation | Semantics |
 |---|---|
-| `CreateEnvironment` | Create means create, under the transaction described below. An existing `(project, ref)` is `ErrStoreAlreadyExists` and nothing is overwritten. A missing project is `ErrStoreNotFound`. A project already at the creation cap is `ErrEnvironmentLimit`. |
+| `CreateEnvironment` | Create means create, under the transaction described below, and its checks are ordered: a missing project is `ErrStoreNotFound`; an existing `(project, ref)` is `ErrStoreAlreadyExists` and nothing is overwritten, whatever the project's count; and only then, a **new** ref into a project at or over the creation cap is `ErrEnvironmentLimit`. |
 | `Environment` | By `(project, ref)`. Missing is `ErrStoreNotFound`. A stored row that cannot reconstruct a valid domain value is `ErrStoreCorrupt` — nothing is clamped or repaired on the way out. |
 | `UpdateEnvironment` | Compare-and-swap on `(project, ref, revision)`: the stored revision must equal `previous.Revision()`, and `next.Revision()` must be `previous.Revision() + 1`. A stale revision is `ErrStoreConflict`. `ref` and `project_id` differing between `previous` and `next` is `ErrInvalidID` — the store refuses to move an identity. |
 | `ProjectEnvironments` | A bounded page of one project's environments, active and archived, in `ref` byte order, starting after an optional `ref`. A project with none returns an empty slice and no error. A project that does not exist returns `ErrStoreNotFound`. See [Listing](#listing-one-collection-two-bounds). |
@@ -678,10 +678,24 @@ Four decisions inside that sequence:
   would serialize unrelated projects.
 - **The identity check precedes the cap check**, deliberately. A caller
   re-sending a ref that already exists is adding nothing, so the cap is
-  irrelevant to it — and answering `ErrEnvironmentLimit` there would be both
-  misleading and nondeterministic, since which of a same-ref pair arrived
-  first would decide which error the loser saw. With this ordering, a
-  duplicate is a duplicate whether the project is empty or over cap.
+  irrelevant to it, and answering `ErrEnvironmentLimit` there would describe
+  a limit the request was never going to consume.
+
+  That ordering decides three cases, and they are worth separating because
+  only the first two look alike:
+
+  | The ref | The project | Outcome |
+  |---|---|---|
+  | already exists | any count, including at or over the cap | `ErrStoreAlreadyExists` |
+  | absent, and the project is below the cap | two creates race on it | one inserts; the second now finds it present and gets `ErrStoreAlreadyExists` |
+  | absent, and the project is at or over the cap | any number of creates | every one is `ErrEnvironmentLimit`, and nothing is inserted |
+
+  The third case is the one a loose reading of "identity wins over the cap"
+  gets wrong. Identity winning means an *existing* identity is always
+  reported as one; it does not mean a ref that does not exist yet can be
+  created past the cap because two callers happened to ask for the same name.
+  A create that would add a row is subject to the cap whoever else is asking
+  for it.
 - **Reads take no lock.** `Environment` and `ProjectEnvironments` are single
   statements outside any transaction; the cap constrains writes, and a
   reader has nothing to serialize against.
@@ -786,8 +800,8 @@ grows from here, not a claim about what a project already contains:
 
 | Migrated count | New `CreateEnvironment` | Existing rows |
 |---|---|---|
-| < 64 | succeeds until the project reaches 64 | readable, configurable, archivable |
-| ≥ 64 | `ErrEnvironmentLimit` | unchanged — readable, configurable, archivable |
+| < 64 | a new ref succeeds until the project reaches 64 | readable, configurable, archivable |
+| ≥ 64 | `ErrEnvironmentLimit` for a new ref; `ErrStoreAlreadyExists` for one it already has | unchanged — readable, configurable, archivable |
 
 Every historical `EnvironmentRef` stays resolvable, every historical run
 stays loadable, and every environment above the cap remains a full
@@ -951,7 +965,7 @@ not `rank`.
 | `(project, ref)` already exists | 409 | `already_exists` |
 | stale `revision` | 409 | `conflict` |
 | environment archived, on run creation | 409 | `conflict` |
-| creation cap reached for that project | 409 | `conflict` |
+| a new ref into a project at the creation cap | 409 | `conflict` |
 | body over 256 KiB | 413 | `payload_too_large` |
 
 `classify` gains `ErrEnvironmentUnavailable`, `ErrEnvironmentLimit` and
@@ -1152,7 +1166,9 @@ scope — worth stating plainly rather than leaving implied.
 
 | Situation | Behaviour |
 |---|---|
-| Two concurrent creates of the same `(project, ref)` | They serialize on the project row. One wins; the other finds the row already there and gets `ErrStoreAlreadyExists`. Deterministic whatever the project's count is, because the identity check precedes the cap check — a duplicate is never reported as a limit. |
+| Two concurrent creates of one **previously-absent** ref, project **below** the cap | They serialize on the project row. The first finds the ref absent and room to spare, inserts, and commits; the second now finds the ref present and gets `ErrStoreAlreadyExists`. One success, one duplicate. |
+| Two concurrent creates of one **previously-absent** ref, project **at or over** the cap | Both serialize, both find the ref absent and the project full, and both return `ErrEnvironmentLimit`. No insert. Sharing a name with another caller does not create room. |
+| A create naming a ref that **already exists**, at any count | `ErrStoreAlreadyExists`, including when the project is at or over the cap: the identity check precedes the cap check, and a request that adds nothing consumes nothing. |
 | Two concurrent creates of **different** refs into a project at 63 | They serialize on the project row. The first counts 63, inserts, and commits at 64; the second counts 64 and returns `ErrEnvironmentLimit`. Exactly one succeeds, and the project ends at 64 — never 65. |
 | Concurrent creates into **different** projects | No contention: each locks its own project row. |
 | Two concurrent configures | Both read revision *n*; one commits *n+1*, the other's CAS matches no row and returns `ErrStoreConflict` → `409`. The loser re-reads and retries, knowing what changed. |
@@ -1288,9 +1304,13 @@ backends; the differential suite compares resulting logical state.
 - A create naming a missing project is `ErrStoreNotFound`.
 - The 65th environment in a project is `ErrEnvironmentLimit`; the 64th
   succeeds. The cap is per project: a second project is unaffected.
-- A duplicate ref in a project **at or over** the cap is
+- Re-creating a ref a project **already has**, at or over the cap, is
   `ErrStoreAlreadyExists`, not `ErrEnvironmentLimit` — the identity check
   precedes the cap check, and a caller adding nothing is not hitting a limit.
+- A **previously-absent** ref in a project at or over the cap is
+  `ErrEnvironmentLimit` and is not inserted. The two bullets together are the
+  boundary: identity before cap means an existing identity is always reported
+  as one, not that a new row can be added past the cap.
 - `UpdateEnvironment` with a stale revision is `ErrStoreConflict` and changes
   nothing.
 - `UpdateEnvironment` whose `next` changes `ref` or `project_id` is refused.
@@ -1319,23 +1339,42 @@ PostgreSQL-specific test proves the **locking** that produces it, because
 SQLite reaches the same answer through a different mechanism and would hide a
 missing lock.
 
-Shared conformance, both backends:
+Shared conformance, both backends. Four races, because the answer depends on
+both what the ref is and where the project already stands:
 
 ```text
-seed 63 environments in one project
-start two CreateEnvironment calls with distinct refs, released together
-assert: successes == 1
-        ErrEnvironmentLimit == 1
-        final row count == 64
+seed 63, two creates with DISTINCT refs, released together
+  → successes == 1
+  → ErrEnvironmentLimit == 1
+  → final count == 64
+
+seed 63, two creates with the SAME previously-absent ref
+  → successes == 1
+  → ErrStoreAlreadyExists == 1
+  → ErrEnvironmentLimit == 0
+  → final count == 64
+
+seed 64, two creates with the SAME previously-absent ref
+  → successes == 0
+  → ErrEnvironmentLimit == 2
+  → final count == 64          (sharing a name creates no room)
+
+seed 64, two creates with DISTINCT previously-absent refs
+  → successes == 0
+  → ErrEnvironmentLimit == 2
+  → final count == 64
 ```
 
-- The same shape with the **same** ref in both calls: one success, one
-  `ErrStoreAlreadyExists`, never `ErrEnvironmentLimit`, final count 64.
-- The same shape against two different projects at 63 each: both succeed,
-  because the transactions lock different rows.
-- Repeated enough times to be meaningful rather than once — the loop count
-  belongs to the implementation, and the test fails on the first run that
-  ends at 65.
+- Identity before cap, as a direct single-threaded assertion rather than a
+  race: a project at 64 — and again at 65, from a migrated fixture —
+  re-creating a ref it **already has** returns `ErrStoreAlreadyExists`, not
+  `ErrEnvironmentLimit`. This is the assertion that fails if the two checks
+  are ever reordered, and it needs no concurrency to do it.
+- Two different projects at 63 each, raced together: both succeed, because
+  the transactions lock different rows.
+- Every race repeated enough times to be meaningful rather than once — the
+  loop count belongs to the implementation, and the test fails on the first
+  run that ends at 65 or that reports a limit where the ref already existed.
 
 PostgreSQL-specific, against a real server:
 
@@ -1346,9 +1385,12 @@ PostgreSQL-specific, against a real server:
   second blocks until it commits. This is what distinguishes "serialized by a
   lock" from "serialized by luck", and it is the assertion that fails if
   `FOR UPDATE` is ever dropped.
-- Contention across N goroutines into one project seeded near the cap ends at
-  exactly the cap, with the remainder reporting `ErrEnvironmentLimit`, under
-  `-race`.
+- Contention across N goroutines with distinct refs into one project seeded
+  near the cap ends at exactly the cap, with the remainder reporting
+  `ErrEnvironmentLimit`, under `-race`.
+- The same N goroutines all requesting **one** previously-absent ref: below
+  the cap exactly one succeeds and the rest are `ErrStoreAlreadyExists`; at
+  the cap none succeeds and all are `ErrEnvironmentLimit`.
 - Creates into distinct projects run concurrently without blocking each
   other.
 
@@ -1379,7 +1421,8 @@ boundary:
                  → the next create is ErrEnvironmentLimit
 
 64 distinct refs → migrate → 64 rows
-                 → every create is ErrEnvironmentLimit
+                 → every create of a NEW ref is ErrEnvironmentLimit
+                 → re-creating one of the 64 is ErrStoreAlreadyExists
 
 65 distinct refs → migrate → 65 rows, none dropped, merged, renamed,
                              archived or ranked
@@ -1388,7 +1431,8 @@ boundary:
                  → the list route enumerates all 65 through its pages
                  → every row is readable, configurable, archivable and
                    re-activatable
-                 → every create is ErrEnvironmentLimit
+                 → every create of a NEW ref is ErrEnvironmentLimit
+                 → re-creating one of the 65 is ErrStoreAlreadyExists
 ```
 
 The 65-ref case is the one that would have failed the first version of this
@@ -1573,15 +1617,24 @@ It must record, with the alternatives each rejected:
     concurrent renaming, re-ranking and archiving.
 15. New creation cannot take a project past 64 environments, including under
     concurrent writers on PostgreSQL: creation serializes on the owning
-    project row, a same-ref race reports `ErrStoreAlreadyExists` rather than
-    the cap, and — on PostgreSQL, where the lock is per row — creates in
-    different projects do not block each other. Both backends produce the
-    same outcomes; only their contention differs.
+    project row, and the identity check precedes the cap check, giving
+    exactly these outcomes —
+    - a ref the project **already has** is `ErrStoreAlreadyExists` at any
+      count, including at or over the cap;
+    - below the cap, concurrent creates of one **previously-absent** ref
+      yield one success and `ErrStoreAlreadyExists` for the rest;
+    - at or over the cap, a **previously-absent** ref is
+      `ErrEnvironmentLimit` and is never inserted, however many callers ask
+      for it at once.
+
+    On PostgreSQL, where the lock is per row, creates in different projects
+    do not block each other. Both backends produce the same outcomes; only
+    their contention differs.
 16. Migration preserves every distinct historical `(project, environment)`
     pair — nothing dropped, merged, renamed, archived, ranked or synthesized
     — even when a project exceeds the creation cap; such a project keeps
     every row readable, configurable, archivable and enumerable, and refuses
-    only new creation.
+    only the creation of refs it does not already have.
 17. `CompareEvaluations` refuses two runs from different projects with
     `ErrComparisonScope`, before loading evidence, and
     `CompareBehaviorSnapshots` and `NewEvaluationScorecard` keep their
