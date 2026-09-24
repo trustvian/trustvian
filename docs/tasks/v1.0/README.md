@@ -47,8 +47,10 @@ specification rather than resolved: the WebUI navigates by caller-known ID, and
 a list route was deferred to the milestone that first has concrete filtering
 requirements. [Task 065](065-environment-model.md) is that milestone, and it
 resolves the question narrowly: one collection, for one entity, scoped to a
-project, ordered by promotion rank, and bounded by capping the entity rather
-than paginating the response. No other list route is added.
+project, traversed by an immutable key, and bounded twice — the entity capped
+at creation and the response capped per page, because a migrated database may
+already hold more than the cap allows anyone to create. No other list route
+is added.
 
 Task 064 is implemented. SQLite remains the zero-configuration local default;
 PostgreSQL is opt-in and must be selected explicitly. One logical
