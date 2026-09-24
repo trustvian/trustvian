@@ -75,11 +75,14 @@ duplicated.
 
 ## Configuration
 
-`Config` has two fields, `policy` and `storage`, each declaring real
-Trustvian configuration in exactly the same schema the Go SDK and the CLI
-already consume — see the core repository's [Policy
-Guide](../docs/policy-guide.md) and [Storage
-Guide](../docs/storage-guide.md) for the field references.
+`Config` has four fields: `policy`, `storage`, `health`, and `evaluation`.
+`policy` and `storage` each declare real Trustvian configuration in exactly
+the same schema the Go SDK and the CLI already consume — see the core
+repository's [Policy Guide](../docs/policy-guide.md) and [Storage
+Guide](../docs/storage-guide.md) for the field references. `health` and
+`evaluation` decode directly through their own `mapstructure` tags instead:
+neither has a canonical Trustvian type to defer to, because each is a
+property of this runtime rather than of the engine.
 
 `storage` (added by core task 037) is what lets a Collector persist. Before
 it, this processor called `NewEngine` with at most `WithPolicy` and never

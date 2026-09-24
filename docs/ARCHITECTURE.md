@@ -484,7 +484,7 @@ bound, and the inventory is short enough to state in full:
 | Channels, queues, tickers, timers | None exist | — |
 | PostgreSQL pool | `MaxConns`; lifetime 1h, idle 30m | Trustvian (`Shutdown` → `Close`, exactly once) |
 | In-memory store | O(distinct actors), each capped | Process lifetime |
-| Meter and instruments | Fixed, 15 time series | **The Collector** |
+| Meter and instruments | Fixed, 19 time series (15 always, 4 evaluation-only) | **The Collector** |
 | Engine | One, synchronous per call | Process lifetime |
 
 Two entries carry the architectural weight. The `MeterProvider` is the
