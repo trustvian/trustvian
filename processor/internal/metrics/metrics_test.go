@@ -208,6 +208,11 @@ func TestNoForbiddenAttributes(t *testing.T) {
 	} {
 		m.RecordDecision(ctx, d)
 	}
+	for _, o := range []string{
+		tvmetrics.OutcomeApplied, tvmetrics.OutcomeReplayed, tvmetrics.OutcomeError,
+	} {
+		m.RecordEvaluationIngest(ctx, o, time.Millisecond)
+	}
 
 	allowedKeys := map[string]bool{
 		"trustvian.outcome":  true,
@@ -219,6 +224,7 @@ func TestNoForbiddenAttributes(t *testing.T) {
 		tvmetrics.OutcomeNotEligible: true, tvmetrics.DecisionOther: true,
 		"allow": true, "observe_only": true, "alert": true,
 		"challenge": true, "require_approval": true, "block": true,
+		tvmetrics.OutcomeApplied: true, tvmetrics.OutcomeReplayed: true,
 	}
 
 	seriesCount := 0
@@ -241,9 +247,11 @@ func TestNoForbiddenAttributes(t *testing.T) {
 
 	// Exact, not an upper bound: every vocabulary value was just
 	// recorded, so this is the package's full cardinality. A new series
-	// — or a lost one — fails here.
-	if seriesCount != 15 {
-		t.Errorf("package produces %d time series, want the documented 15", seriesCount)
+	// — or a lost one — fails here. 15 from analysis, decisions and
+	// observations, plus 4 from evaluation ingest (three outcomes and one
+	// histogram).
+	if seriesCount != 19 {
+		t.Errorf("package produces %d time series, want the documented 19", seriesCount)
 	}
 }
 
@@ -281,6 +289,7 @@ func TestNilMetricsRecordsNothing(t *testing.T) {
 	m.RecordAnalysis(ctx, tvmetrics.OutcomeAnalyzed, time.Millisecond)
 	m.RecordDecision(ctx, "block")
 	m.RecordObservation(ctx, tvmetrics.OutcomeLearned, time.Millisecond)
+	m.RecordEvaluationIngest(ctx, tvmetrics.OutcomeApplied, time.Millisecond)
 }
 
 // TestZeroValueMetricsRecordsNothing covers the same contract for a
@@ -293,4 +302,39 @@ func TestZeroValueMetricsRecordsNothing(t *testing.T) {
 	m.RecordAnalysis(ctx, tvmetrics.OutcomeAnalyzed, time.Millisecond)
 	m.RecordDecision(ctx, "block")
 	m.RecordObservation(ctx, tvmetrics.OutcomeLearned, time.Millisecond)
+	m.RecordEvaluationIngest(ctx, tvmetrics.OutcomeApplied, time.Millisecond)
+}
+
+// TestRecordEvaluationIngestUsesAClosedVocabulary proves an unrecognized
+// outcome records nothing rather than opening a new series.
+func TestRecordEvaluationIngestUsesAClosedVocabulary(t *testing.T) {
+	m, gather := collect(t)
+	ctx := context.Background()
+
+	m.RecordEvaluationIngest(ctx, tvmetrics.OutcomeApplied, time.Millisecond)
+	m.RecordEvaluationIngest(ctx, tvmetrics.OutcomeReplayed, time.Millisecond)
+	m.RecordEvaluationIngest(ctx, tvmetrics.OutcomeError, time.Millisecond)
+	m.RecordEvaluationIngest(ctx, "queued", time.Millisecond)
+
+	points := counterPoints(t, findMetric(t, gather(), "trustvian.evaluation.records"))
+	if len(points) != 3 {
+		t.Errorf("trustvian.evaluation.records has %d data points, want 3; "+
+			"an unrecognized outcome must not open a series", len(points))
+	}
+}
+
+// TestEvaluationInstrumentsAreAbsentUntilRecorded proves the new instruments
+// cost an unconfigured Collector nothing. Instruments exist; series do not,
+// until something records one.
+func TestEvaluationInstrumentsAreAbsentUntilRecorded(t *testing.T) {
+	_, gather := collect(t)
+
+	for _, sm := range gather().ScopeMetrics {
+		for _, metric := range sm.Metrics {
+			if strings.HasPrefix(metric.Name, "trustvian.evaluation.") {
+				t.Errorf("%s exists with no recording; an unconfigured Collector must emit none",
+					metric.Name)
+			}
+		}
+	}
 }

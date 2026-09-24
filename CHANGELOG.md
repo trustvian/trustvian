@@ -127,6 +127,57 @@ actually depend on.
   error is never reported as a gate failure. See
   [docs/compatibility.md § CLI](docs/compatibility.md#cli).
 
+- **OTel Collector evaluation ingest** (task 073). An optional `evaluation:`
+  block makes the Collector processor post `Result.DecisionRecord()` to an
+  existing evaluation run over `/v1`, so a workload instrumented with
+  OpenTelemetry and nothing else can be evaluated rather than only enriched.
+  The record is projected from the same `Result` that produces the
+  `trustvian.*` attributes — `Analyze` still runs once per span — and the
+  configured behavioral profile also selects the Engine's learning scope, so
+  two candidates never train one baseline. Omitting the block changes nothing.
+  See [ADR 0038](docs/adr/0038-collector-evaluation-ingest-is-an-http-adapter.md).
+
+  **A lost response is reconciled, not assumed away.** A POST that is written
+  in full, committed, and loses only its reply is indistinguishable from one
+  that never arrived — so the sink does not guess. Failures that prove the
+  record was not applied (a failed dial, a refused redirect, a 4xx) free the
+  sequence; everything else holds it, bound to that exact record, and
+  re-presents the same record at the same sequence, which the control plane's
+  digest rule answers `replayed`. One synchronous attempt, no queue, no
+  background worker, and no record ever sent under a sequence another record
+  already claimed.
+
+  **Learning follows confirmation, and survives a restart.**
+  `Engine.Observe` runs once the control plane has accepted a record —
+  never for one it declined, and never for one whose outcome is unknown.
+  "Unknown" is not "committed", and with a durable `storage:` backend the
+  difference outlives the process: learning applied on the chance a record
+  landed is written to disk, and survives the restart that proves it never
+  did. So the record in flight is itself durable (`pending_state_path`, one
+  entry, written before the request leaves), and startup settles it against
+  the run's own cursor: a record the run never received is discarded
+  unlearned, and one it already holds is replayed at its own sequence and
+  learned exactly once. A confirmed record resumes only when the run expects
+  exactly the sequence after it; anything else means a second writer advanced
+  the run, and startup refuses rather than stepping over evidence nothing
+  local learned from. The only state a restart cannot settle — the process
+  dying between confirming a record and releasing it — is reported at ERROR
+  and not learned from twice, because a fingerprint that looks more familiar
+  than the evidence supports is a silent weakening.
+
+  **A store failure is part of that contract.** `Engine.Observe`'s error
+  reaches the sink rather than a log line: with `evaluation:` configured, a
+  store that could not persist means the run holds a record whose learning
+  did not demonstrably happen — and a file-backed store updates its in-memory
+  baseline before the flush that failed, so "failed" and "may have happened"
+  are the same observation. The pending entry stays, the batch fails, and the
+  Collector accepts no further record for that run until it is restarted.
+  Without `evaluation:`, an `Observe` failure is still reported and still
+  never fatal. The pending entry itself is durable in both halves — contents
+  fsynced and the parent directory synced after the rename and after the
+  removal — because a rename that reached only the page cache is one a host
+  crash can undo.
+
 ### Security
 
 - **Per-actor fingerprint state is now bounded.** `Baseline.Fingerprints`

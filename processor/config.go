@@ -1,12 +1,16 @@
 package trustvianprocessor
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-viper/mapstructure/v2"
 
 	"github.com/trustvian/trustvian/config"
+
+	"trustvian-processor/internal/evaluation"
 )
 
 // Config is this processor's Collector configuration. Policy, when
@@ -49,9 +53,10 @@ import (
 // by decodeStorage below into the real config.StorageConfig. See
 // docs/tasks/037-reference-docker-compose-deployment.md.
 type Config struct {
-	Policy  map[string]any `mapstructure:"policy,omitempty"`
-	Storage map[string]any `mapstructure:"storage,omitempty"`
-	Health  *HealthConfig  `mapstructure:"health,omitempty"`
+	Policy     map[string]any    `mapstructure:"policy,omitempty"`
+	Storage    map[string]any    `mapstructure:"storage,omitempty"`
+	Health     *HealthConfig     `mapstructure:"health,omitempty"`
+	Evaluation *EvaluationConfig `mapstructure:"evaluation,omitempty"`
 }
 
 // HealthConfig enables the runtime's liveness and readiness endpoints.
@@ -162,4 +167,106 @@ func decodeStorage(raw map[string]any) (config.StorageConfig, error) {
 		return config.StorageConfig{}, fmt.Errorf("trustvianprocessor: storage: %w", err)
 	}
 	return cfg, nil
+}
+
+// EvaluationConfig points this Collector at one evaluation run.
+//
+// A pointer, so its absence is distinguishable from a zero value: omitting
+// the block leaves every pre-existing Collector behaving exactly as before,
+// with no sink, no learning scope, and no lock on the span path.
+//
+// Unlike Policy and Storage, this decodes directly through mapstructure tags
+// rather than via a generic map. Those two defer to config.PolicyConfig and
+// config.StorageConfig because a canonical Trustvian type already exists to
+// decode into. There is none here — which evaluation run a Collector feeds is
+// a property of this runtime rather than of the engine — so the indirection
+// would buy nothing.
+type EvaluationConfig struct {
+	// APIURL is the control plane's base URL. Absolute http or https, with a
+	// host and nothing else: no path, query, fragment or credentials.
+	APIURL string `mapstructure:"api_url"`
+
+	// RunID is the evaluation run this Collector feeds. The run must already
+	// exist and be running; nothing here creates one, because run lifecycle
+	// is the control plane's (ADR 0031).
+	RunID string `mapstructure:"run_id"`
+
+	// BehavioralProfile travels beside every record, because DecisionRecord
+	// carries no learning scope (ADR 0024), and must match the run's own
+	// profile or ingest is refused.
+	//
+	// It also selects the Engine's learning scope. Without that, a Collector
+	// with a durable store would train one baseline across every candidate it
+	// evaluated, each teaching the next — the precise failure task 051 exists
+	// to prevent, reappearing at the one boundary that had no way to select a
+	// scope.
+	BehavioralProfile string `mapstructure:"behavioral_profile"`
+
+	// Required must be set to true.
+	//
+	// A pointer so nil, false and true are three distinguishable states. An
+	// optional mode would have to answer what a Collector does when evidence
+	// cannot be delivered, and both available answers are wrong: dropping the
+	// record produces a run whose counts are internally consistent and whose
+	// evidence has holes nothing in the response describes, and reporting the
+	// gap needs a partial-evidence concept the platform deliberately does not
+	// have (ADR 0031 §10a).
+	//
+	// The field exists rather than being omitted so the configuration states
+	// the guarantee explicitly instead of relying on a default nobody read.
+	Required *bool `mapstructure:"required"`
+
+	// PendingStatePath is where this Collector keeps the durable intent for
+	// the one record it may have in flight: the sequence, the record, and
+	// the learning that record owes once the control plane confirms it.
+	//
+	// Required, for the same reason Required is. Evidence lives in the
+	// control plane and learning lives in the Engine's store, and neither
+	// can be written inside the other's transaction — so a process that dies
+	// between them leaves a question only a durable local note can answer:
+	// had the record been confirmed, and had its learning been applied? With
+	// nowhere to write that note, a restart with a durable `storage:` block
+	// can silently resume with a baseline holding a record the run does not,
+	// or a run holding a record the baseline never learned from. See ADR
+	// 0038 §10.
+	//
+	// It must live on the same durable medium as the baseline store, not on
+	// a container's own writable layer: a note that disappears with the
+	// process answers nothing. One file per Collector, and per run — the
+	// file names its run, and a sink refuses to start against a different
+	// one rather than discarding an unsettled record.
+	PendingStatePath string `mapstructure:"pending_state_path"`
+}
+
+// validate rejects an evaluation block that cannot work, at construction.
+//
+// Every failure fails Collector startup rather than the first span, for the
+// same reason an invalid policy does: a security component that came up
+// half-configured would enrich spans while recording nothing, and the absence
+// looks identical to a healthy runtime nobody is evaluating.
+func (e EvaluationConfig) validate() error {
+	// The URL is checked through the same parser the client uses, so the
+	// rules cannot drift — and its credential rejection never echoes the
+	// value, which matters here because this message reaches startup logs.
+	if _, err := evaluation.ParseAPIURL(e.APIURL); err != nil {
+		return err
+	}
+	if e.RunID == "" {
+		return errors.New("run_id is required")
+	}
+	if e.BehavioralProfile == "" {
+		return errors.New("behavioral_profile is required")
+	}
+	if e.Required == nil {
+		return errors.New("required must be set to true; an evaluation that may silently lose evidence is not supported")
+	}
+	if strings.TrimSpace(e.PendingStatePath) == "" {
+		return errors.New(
+			"pending_state_path is required; without durable pending state a restart cannot tell " +
+				"a record the control plane holds from one it never received")
+	}
+	if !*e.Required {
+		return errors.New("required must be true; required: false is not supported, because a run with missing evidence would still report as complete")
+	}
+	return nil
 }

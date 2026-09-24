@@ -484,15 +484,20 @@ bound, and the inventory is short enough to state in full:
 | Channels, queues, tickers, timers | None exist | — |
 | PostgreSQL pool | `MaxConns`; lifetime 1h, idle 30m | Trustvian (`Shutdown` → `Close`, exactly once) |
 | In-memory store | O(distinct actors), each capped | Process lifetime |
-| Meter and instruments | Fixed, 15 time series | **The Collector** |
+| Meter and instruments | Fixed, 19 time series (15 always, 4 evaluation-only) | **The Collector** |
 | Engine | One, synchronous per call | Process lifetime |
+| Evaluation sink HTTP client | No goroutine, timer, or dedicated transport — rides the shared `http.DefaultTransport`, whose idle connections are already bounded and reaped | Nothing to shut down |
 
-Two entries carry the architectural weight. The `MeterProvider` is the
+Three entries carry the architectural weight. The `MeterProvider` is the
 Collector's, so Trustvian records through it and never shuts it down —
 doing so would double-shut-down the framework's own telemetry, the same
-second-owner mistake the signal-handling row above avoids. And no global
+second-owner mistake the signal-handling row above avoids. No global
 concurrency limiter exists: the Collector owns pipeline concurrency, and a
-second limiter would put two control layers on one throughput number.
+second limiter would put two control layers on one throughput number. And
+the evaluation sink's client never constructs its own `http.Transport`, so
+there is no per-client connection pool for `Shutdown` to close — the
+absence from `Shutdown`'s three steps below is correct, not an omission this
+inventory previously failed to notice.
 
 `Shutdown` orders its three steps for a reason: mark draining, then stop
 the health server, then release the store. Stopping the store first would
@@ -602,6 +607,26 @@ durable state, with gaps, stale numbers and divergent retries all failing
 closed. The schema moved to version 2 for that cursor, with a real migration
 from version 1. See
 [ADR 0031](adr/0031-control-plane-owns-ingest-and-http-is-an-adapter.md).
+
+[Task 073](tasks/v1.0/073-otel-collector-evaluation-ingest.md) added the
+second producer for that contract. Until then the only way to reach ingest was
+to embed the engine and post records yourself, so a workload observable only
+through OpenTelemetry could be scored on every span and evaluated on none. The
+Collector processor now projects the `Result` it already computed and posts it
+over `/v1`:
+
+```text
+OTLP ─▶ processor ─▶ Engine.Analyze ─▶ Result ─┬─▶ trustvian.* attributes ─▶ exporter
+                                               └─▶ DecisionRecord ──HTTP /v1──▶ ControlPlane
+```
+
+The edge is HTTP, exactly as it is for the CLI, and for the same reason:
+`trustvian-processor` importing `trustvian-platform` would put the platform's
+driver, schema and domain into every Collector distribution built from the
+component. A test in that module fails on the import, on a platform identifier
+in its source, and on the module appearing in its `go.mod` or `go.sum` —
+tests included, since `go.mod` does not distinguish a test-only dependency.
+See [ADR 0038](adr/0038-collector-evaluation-ingest-is-an-http-adapter.md).
 
 Task 059 added realtime as a third adapter over the same service:
 

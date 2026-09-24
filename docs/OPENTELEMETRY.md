@@ -205,6 +205,19 @@ this lives in a separate module at all, and
 [`tasks/009-otel-collector.md`](archive/tasks/v0.2/009-otel-collector.md) for the
 task this closes.
 
+Since core task 073 the processor can also post its results to a Trustvian
+control plane. An optional `evaluation:` block makes it project
+`Result.DecisionRecord()` from the same `Result` that produced the attributes
+above and send it to `POST /v1/evaluation-runs/{run_id}/records`, so a
+workload instrumented with OpenTelemetry and nothing else can be evaluated
+rather than only enriched. It reaches the control plane over HTTP and imports
+no platform package — see
+[ADR 0038](adr/0038-collector-evaluation-ingest-is-an-http-adapter.md) and
+[`processor/README.md` § Configuration](../processor/README.md#configuration).
+
+The output attributes and the posted record are two projections of one
+`Result`, not two computations: `Analyze` still runs exactly once per span.
+
 ## Potential AI-agent (GenAI) mappings — documented, not implemented
 
 `v0.7` ([task 014](archive/tasks/v0.7/014-ai-agent.md)) added `event.Context.SessionID`/

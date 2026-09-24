@@ -21,10 +21,18 @@ Tasks for the `v1.0` milestone.
 | [063 — Minimal Web Control Plane](063-minimal-web-control-plane.md) | Specified and implemented |
 | [064 — PostgreSQL Platform Backend](064-postgresql-platform-backend.md) | Specified and implemented |
 | 065–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
+| [073 — OTel Collector Evaluation Ingest](073-otel-collector-evaluation-ingest.md) | Specified and implemented |
 
 The numbers 065–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
 is the specification for any of them.
+
+Task 073 sits **after** that reserved block rather than inside it. It was not
+in the approved sequence: it closes a gap the sequence did not anticipate — the
+Collector produces a `Result` and the control plane accepts a `DecisionRecord`,
+and nothing joined them, so a workload observable only through OpenTelemetry
+could not be evaluated at all. Taking 065 for it would have renamed a milestone
+whose scope is already decided.
 
 Task 063's open question — collection semantics — is recorded in its
 specification rather than resolved: the WebUI navigates by caller-known ID, and

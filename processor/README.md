@@ -75,11 +75,14 @@ duplicated.
 
 ## Configuration
 
-`Config` has two fields, `policy` and `storage`, each declaring real
-Trustvian configuration in exactly the same schema the Go SDK and the CLI
-already consume — see the core repository's [Policy
-Guide](../docs/policy-guide.md) and [Storage
-Guide](../docs/storage-guide.md) for the field references.
+`Config` has four fields: `policy`, `storage`, `health`, and `evaluation`.
+`policy` and `storage` each declare real Trustvian configuration in exactly
+the same schema the Go SDK and the CLI already consume — see the core
+repository's [Policy Guide](../docs/policy-guide.md) and [Storage
+Guide](../docs/storage-guide.md) for the field references. `health` and
+`evaluation` decode directly through their own `mapstructure` tags instead:
+neither has a canonical Trustvian type to defer to, because each is a
+property of this runtime rather than of the engine.
 
 `storage` (added by core task 037) is what lets a Collector persist. Before
 it, this processor called `NewEngine` with at most `WithPolicy` and never
@@ -110,6 +113,185 @@ the store; `GET /readyz` reports whether it can safely process work and does.
 When PostgreSQL is configured and unusable, readiness is 503 — never a
 silent fall back to non-durable storage. Both bodies carry a status string
 and nothing else. Omitting the block binds no listener.
+
+**Readiness reflects the configured `storage:` store only, never the
+evaluation control plane.** When `evaluation:` is also configured, a control
+plane that is down is not what `/readyz` answers: adding it would put
+third-party network I/O inside a health probe, and — the reason that matters
+more than convenience — a Collector serves exactly one evaluation run, so
+every replica feeding it points at the same control plane. A false readiness
+there would fail every replica at once and trigger a restart storm that
+cannot help, since the control plane is not in any of those processes. That
+is the identical reasoning liveness already gives for never probing the
+store, applied one layer further out. Watch
+`trustvian.evaluation.records{trustvian.outcome="error"}` and the ERROR-level
+`evaluation ingest failed` log line (which carries `run_id`) for this
+instead — see [Observability](../docs/observability.md).
+
+`evaluation` (added by core task 073) posts every decision to a Trustvian
+control plane, so a workload observable only through OpenTelemetry can be
+evaluated:
+
+```yaml
+processors:
+  trustvian:
+    evaluation:
+      api_url: http://127.0.0.1:54321
+      run_id: run-reference
+      behavioral_profile: support-reference
+      required: true
+      pending_state_path: /var/lib/trustvian/evaluation-pending.json
+```
+
+`pending_state_path` is required, like `required: true`, and for the same
+kind of reason: it states where the guarantee lives instead of leaving it to
+a default nobody read. It is not conditional on which store is configured —
+an operator who starts on `memory` and later configures `postgres` would
+otherwise lose the guarantee at the moment it starts to matter.
+
+The run must already exist and be **running** — nothing here creates one,
+because run lifecycle belongs to the control plane. This is checked, not just
+documented: `Start` reads the run's own status before seeding the ingest
+cursor, and refuses to come up — naming the actual status — against a run
+that is still pending or has already finished, rather than coming up clean
+and then failing every span from the first one onward once the control plane
+itself refuses records for a run that is not running. `behavioral_profile`
+must match the run's, and it also selects the Engine's learning scope, so two
+candidates evaluated against the same store never train each other's
+baseline.
+
+The record posted is `Result.DecisionRecord()` projected from the same
+`Result` that produced the `trustvian.*` attributes. `Analyze` runs once, and
+nothing is reconstructed from those attributes — they are five values, and a
+record carries contributors, policy reason, confidence and context risk that
+none of them contains.
+
+`required: true` is the only accepted value. `required: false` fails startup,
+because a run that silently lost evidence would still report as complete and
+its gate would still evaluate.
+
+Bounds: 30s per request, a 256 KiB request body matching the server's own cap,
+a 64 KiB response bound, refused redirects, and no blind retries. A URL
+carrying credentials is rejected without repeating it into Collector logs.
+
+**A lost response is not a lost record.** A POST can be written in full,
+committed by the control plane, and have only its reply destroyed — a reset
+connection, a timeout, an EOF partway through. Treating that as "it did not
+happen" would hand the next record a sequence the server already holds, and
+the run would then reject every record that followed. So failures are
+classified:
+
+| Class | Examples | What happens |
+|---|---|---|
+| Definitely not applied | failed dial, DNS failure, refused redirect, oversized body, a 4xx from the control plane | The sequence is free; the next record takes it. |
+| Outcome unknown | reset connection, timeout, EOF mid-response, any 5xx, an unreadable 2xx | The sequence stays bound to that exact record and is reconciled. |
+
+Reconciliation is the server's own contract, not a retry policy: the same
+record is re-presented at the same sequence, the control plane recognizes the
+identical digest and answers `replayed`, and the cursor advances to the
+`next_sequence` it returns. One attempt, made inside the same call, under the
+same context — no queue, no goroutine, no backoff. The metric shows it as
+`trustvian.evaluation.records{trustvian.outcome="replayed"}`.
+
+Until a held sequence is reconciled, the sink accepts no other record. That
+is deliberate: the alternative is reusing a sequence the control plane may
+already have committed.
+
+An ingest failure the sink could **not** resolve — a declined record, or one
+still unconfirmed after reconciliation — is a **permanent** consumer error:
+the pipeline does not retry the batch, and — worth stating plainly, since it
+is the first thing an operator will notice — the **whole batch is abandoned,
+not forwarded**, including every span already enriched ahead of the failure.
+An evaluation-configured Collector whose control plane goes down therefore
+stops exporting traces entirely, not only evaluation records. A batch retry
+would re-analyze spans whose records already committed and resend them under
+new sequence numbers, and duplicate records count twice by design.
+
+**Learning follows confirmation.** `Engine.Observe` runs when the control
+plane has accepted the record, and not before:
+
+| Ingest outcome | Learning |
+|---|---|
+| `applied` or `replayed` | applied, exactly once |
+| declined (a 4xx) | never — the run does not hold the record |
+| unknown | not yet — it waits for an answer, in this process or the next |
+
+Observing a record the control plane merely *might* hold looks safe and is
+not: with a durable `storage:` backend that learning is written to disk, so
+it survives the restart that proves the record never arrived, and every later
+span is then scored against history the run's evidence has no trace of.
+
+**A failed `Observe` stops the sink rather than being logged past.** Without
+`evaluation:` a store failure is reported and the span continues, unchanged:
+a database blip must not stop a Collector forwarding traces. With
+`evaluation:` the same failure means the run holds a record whose learning
+did not demonstrably happen — and "failed" and "may have happened" are the
+same observation from here, since a file-backed store updates its in-memory
+baseline before the flush that failed, and a database error can land on
+either side of a commit. So the pending entry stays, the batch fails, and the
+Collector accepts no further record for that run until it is restarted. The
+log line carries `learning_indeterminate=true`; restarting settles it.
+
+**The record in flight is durable, which is what `pending_state_path` is
+for.** Evidence lives in the control plane and learning lives in the Engine's
+store; no transaction spans both, so the one record in flight is written
+there first — its sequence, the record, its learning, and how far delivery
+got. It is one entry, never a queue, released as soon as that record is
+settled.
+
+Startup reads it together with the run's cursor:
+
+| Left behind | Run expects | What it means | What happens |
+|---|---|---|---|
+| sequence *N*, not yet confirmed | *N* | the request never arrived | discarded: nothing was learned, nothing is posted now, and *N* goes to the next record |
+| sequence *N*, not yet confirmed | *N+1* | something occupies *N* | the same record is re-presented there — an identical one replays, anything else conflicts — and only then is its learning applied, exactly once |
+| sequence *N*, confirmed | *N+1* | the run holds it; whether its learning was applied is unknowable | it is not applied again, startup logs an ERROR naming the sequence, and the run resumes |
+| anything else | — | another writer advanced the run, or it does not hold a record it accepted | the Collector refuses to start, and the entry is left in place |
+
+A confirmed entry resumes at exactly *N+1* and nothing else. A Collector that
+died holding *N* never released it, so it cannot have produced *N+1*: a run
+expecting more than that holds records this Collector never analyzed, and
+resuming would step over evidence nothing local accounts for. One Collector
+per run is not a style preference — it is what the sequence contract rests
+on, and a run that shows a second writer is refused rather than guessed at.
+
+Put the file on the same durable medium as the baseline store — a volume,
+not the container's writable layer — and give each run its own. The file
+names its run, and a Collector configured for a different one refuses to
+start rather than discarding an unsettled record.
+
+The cost is two durable writes and a durable delete per analyzed span,
+beside the serialized round trip this configuration already pays. Durable
+means the file's contents *and* the directory entry naming it: fsyncing the
+data alone leaves a rename a host crash can undo, so the parent directory is
+synced after the rename and after the removal. A delete is a durability
+operation for the same reason an entry that comes back describes a record
+that is already settled. (On Windows the directory sync is a documented
+no-op, so host-crash durability is claimed only on POSIX.)
+
+That is five durability points per span — two file syncs and three directory
+syncs — so this configuration's throughput is set by how expensive a real
+flush to media is on the volume you give it, not by Trustvian. Expect
+milliseconds per span wherever `fsync` genuinely reaches the disk.
+`BenchmarkConsumeTracesWithEvaluation` measures it against a loopback control
+plane, beside `BenchmarkConsumeTraces` for the same span path with no
+`evaluation:` block, which writes nothing and takes no lock. An
+evaluation-configured Collector is a Collector dedicated to one run, and this
+is the price of its evidence and its baseline not being able to disagree.
+
+**What this leaves behind:** if a batch fails partway through, the spans
+analyzed before the failure already posted durable records and advanced the
+run's cursor past them, but nothing in the run describes that the batch was
+cut short — its counts stay internally consistent, just short of what would
+otherwise have arrived. Recovering means starting a **new run**, not
+rerunning the same batch into this one: a rerun would re-post the
+already-committed prefix under new sequence numbers, which the control plane
+accepts as new records and silently doubles them — the exact corruption the
+permanent-error wrapper exists to prevent.
+
+**Omitting `evaluation:` entirely** preserves this processor's behavior
+exactly — no sink, no learning scope, no lock on the span path, and no
+evaluation metrics.
 
 `WithAnomalyConfig`, `WithTrustConfig`, and `WithContextRisk` remain
 unconfigurable from here for the same reason they always were: those
@@ -243,7 +425,7 @@ version" (this task's own words) has no use for.
 
 ## Observability
 
-The processor emits five OpenTelemetry metrics through the
+The processor emits seven OpenTelemetry metrics through the
 `MeterProvider` the Collector injects — no configuration, no vendor
 client, and nothing to turn on:
 
@@ -254,9 +436,12 @@ client, and nothing to turn on:
 | `trustvian.analysis.duration` | Histogram | `s` | *(none)* |
 | `trustvian.observations` | Counter | `{observation}` | `trustvian.outcome`: `learned`, `not_eligible`, `error` |
 | `trustvian.observe.duration` | Histogram | `s` | *(none)* |
+| `trustvian.evaluation.records` | Counter | `{record}` | `trustvian.outcome`: `applied`, `replayed`, `error` |
+| `trustvian.evaluation.duration` | Histogram | `s` | *(none)* |
 
-Fifteen time series in total, fixed no matter how many actors or
-environments the deployment sees. Every attribute has a closed
+Nineteen time series in total, fixed no matter how many actors or
+environments the deployment sees — and the last four exist only in a
+Collector configured to feed an evaluation run. Every attribute has a closed
 vocabulary whose measurement options are pre-built at construction, so
 an actor ID, trace ID, or raw error string cannot become a label even by
 mistake. Instrumentation is allocation-free on the span path.
@@ -303,8 +488,10 @@ whole span path driven concurrently under `-race`.
 
 No distributed/multi-instance Trustvian server. No Kubernetes/Helm
 packaging. No new policy language, matchable condition, or dynamic
-policy reload (the configured Policy compiles once, at processor
-creation, and is fixed for the processor's lifetime). No dashboards,
+policy reload — and no dynamic evaluation reconfiguration either. Both
+the configured Policy and the configured evaluation run compile once, at
+processor creation, and are fixed for the processor's lifetime, so
+feeding a different run means a new process. No dashboards,
 Grafana packaging, or vendor metrics client — the Collector's exporters
 already reach every backend. No Alert configuration (`alerts:`/`sinks:`/`webhook:` in Collector
 config) — a separate, future task. These match the scope boundaries in

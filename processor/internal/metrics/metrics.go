@@ -13,13 +13,14 @@
 // # Cardinality is a hard bound, not a guideline
 //
 // Every attribute here has a closed vocabulary enumerated as constants.
-// Nothing is derived from input. The whole package produces a fixed 15 time
+// Nothing is derived from input. The whole package produces a fixed 19 time
 // series no matter how many actors, events, or environments a deployment
 // sees — which is what makes it safe to leave on permanently.
 //
-// 15, not 14: the decision vocabulary is the six policy.Decision values
-// plus DecisionOther, which exists precisely so an unrecognized value
-// cannot open a new series.
+// 15 of those come from analysis, decisions and observations; the remaining
+// 4 from evaluation ingest, and only in a Collector configured to feed an
+// evaluation run. An instrument with nothing recorded against it produces no
+// series at all.
 //
 // Actor IDs, session IDs, trace and span IDs, target and operation names,
 // fingerprints, environments, and raw error strings are all forbidden as
@@ -69,6 +70,14 @@ const (
 	OutcomeNotEligible = "not_eligible"
 )
 
+// Evaluation ingest outcomes — the control plane's two dispositions plus the
+// failure case. OutcomeError is shared with the other instruments, because it
+// means the same thing in all three: the operation did not complete.
+const (
+	OutcomeApplied  = "applied"
+	OutcomeReplayed = "replayed"
+)
+
 // knownDecisions is the closed vocabulary of policy decisions.
 //
 // Enumerated rather than accepting whatever string arrives: a decision
@@ -88,8 +97,9 @@ var knownDecisions = []string{
 // analysisOutcomes and observeOutcomes are the two outcome vocabularies,
 // each exhaustive for its instrument.
 var (
-	analysisOutcomes = []string{OutcomeAnalyzed, OutcomeInvalidEvent, OutcomeError}
-	observeOutcomes  = []string{OutcomeLearned, OutcomeNotEligible, OutcomeError}
+	analysisOutcomes   = []string{OutcomeAnalyzed, OutcomeInvalidEvent, OutcomeError}
+	observeOutcomes    = []string{OutcomeLearned, OutcomeNotEligible, OutcomeError}
+	evaluationOutcomes = []string{OutcomeApplied, OutcomeReplayed, OutcomeError}
 )
 
 // DecisionOther is recorded for any decision value not in knownDecisions.
@@ -128,6 +138,9 @@ type Metrics struct {
 	observations    metric.Int64Counter
 	observeLatency  metric.Float64Histogram
 
+	evaluationRecords metric.Int64Counter
+	evaluationLatency metric.Float64Histogram
+
 	// One pre-built measurement option per vocabulary entry, so recording
 	// is a map lookup instead of building an attribute.Set per span.
 	//
@@ -140,9 +153,10 @@ type Metrics struct {
 	// It also makes the cardinality bound structural rather than checked:
 	// a value with no entry in these maps has no option to record with, so
 	// an unbounded label cannot reach an instrument even by mistake.
-	analysisOpts map[string][]metric.AddOption
-	decisionOpts map[string][]metric.AddOption
-	observeOpts  map[string][]metric.AddOption
+	analysisOpts   map[string][]metric.AddOption
+	decisionOpts   map[string][]metric.AddOption
+	observeOpts    map[string][]metric.AddOption
+	evaluationOpts map[string][]metric.AddOption
 }
 
 // attributeOptions pre-builds one measurement option per value in a
@@ -224,8 +238,26 @@ func New(meter metric.Meter) (*Metrics, error) {
 		return nil, err
 	}
 
+	if m.evaluationRecords, err = meter.Int64Counter(
+		"trustvian.evaluation.records",
+		metric.WithUnit("{record}"),
+		metric.WithDescription("Decision records offered to an evaluation run, by outcome."),
+	); err != nil {
+		return nil, err
+	}
+
+	if m.evaluationLatency, err = meter.Float64Histogram(
+		"trustvian.evaluation.duration",
+		metric.WithUnit("s"),
+		metric.WithDescription("Duration of posting one decision record to the control plane."),
+		metric.WithExplicitBucketBoundaries(durationBucketsSeconds...),
+	); err != nil {
+		return nil, err
+	}
+
 	m.analysisOpts = attributeOptions(attrOutcome, analysisOutcomes)
 	m.observeOpts = attributeOptions(attrOutcome, observeOutcomes)
+	m.evaluationOpts = attributeOptions(attrOutcome, evaluationOutcomes)
 	// Concat, not append: appending to a package-level slice would
 	// share its backing array with every other caller.
 	m.decisionOpts = attributeOptions(attrDecision, slices.Concat(knownDecisions, []string{DecisionOther}))
@@ -283,4 +315,31 @@ func (m *Metrics) RecordObservation(ctx context.Context, outcome string, d time.
 	}
 	m.observations.Add(ctx, 1, opt...)
 	m.observeLatency.Record(ctx, d.Seconds())
+}
+
+// RecordEvaluationIngest records one attempt to post a decision record, and
+// its duration.
+//
+// Duration is recorded for every outcome, like observation and unlike
+// analysis: a failed post has still paid the network round trip, and that
+// latency is exactly what an operator investigating a slow or wedged control
+// plane wants to see.
+//
+// The run ID and behavioral profile are deliberately not attributes. A
+// Collector serves one run per process by construction, so they would be
+// constant labels — and a constant label is how a bounded metric acquires an
+// unbounded one the first time that assumption stops holding.
+func (m *Metrics) RecordEvaluationIngest(ctx context.Context, outcome string, d time.Duration) {
+	if m == nil || m.evaluationRecords == nil {
+		return
+	}
+	opt, ok := m.evaluationOpts[outcome]
+	if !ok {
+		// Unreachable from this module — every caller passes a constant or a
+		// disposition the sink already validated — but recording nothing
+		// beats recording an unbounded label.
+		return
+	}
+	m.evaluationRecords.Add(ctx, 1, opt...)
+	m.evaluationLatency.Record(ctx, d.Seconds())
 }

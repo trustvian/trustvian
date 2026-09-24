@@ -96,7 +96,7 @@ trustvian_observe_duration_count 60
 
 ## Metric reference
 
-Five instruments. Names follow OpenTelemetry conventions: namespaced,
+Seven instruments. Names follow OpenTelemetry conventions: namespaced,
 lowercase, no `total`/`count` suffix on counters (exporters add those per
 their own conventions), UCUM units, durations in seconds.
 
@@ -109,10 +109,15 @@ Scope name: `trustvian-processor`.
 | `trustvian.analysis.duration` | Histogram | `s` | *(none)* | 1 |
 | `trustvian.observations` | Counter | `{observation}` | `trustvian.outcome` | 3 |
 | `trustvian.observe.duration` | Histogram | `s` | *(none)* | 1 |
+| `trustvian.evaluation.records` | Counter | `{record}` | `trustvian.outcome` | 3 |
+| `trustvian.evaluation.duration` | Histogram | `s` | *(none)* | 1 |
 
-**Total: 15 time series**, fixed — regardless of how many actors,
-events, environments, or tenants the deployment sees. That property is
-the point, and it is [enforced by construction](#cardinality-is-a-hard-bound).
+**Total: 19 time series**, fixed — regardless of how many actors,
+events, environments, or tenants the deployment sees. Fifteen come from
+analysis, decisions and observations and exist on every Collector; the
+remaining four are evaluation ingest and exist only when `evaluation:` is
+configured. That property is the point, and it is [enforced by
+construction](#cardinality-is-a-hard-bound).
 
 ### `trustvian.analyses`
 
@@ -207,6 +212,81 @@ With the in-memory or file store this is sub-microsecond; with
 PostgreSQL it is your database round trip, and it is the metric that
 tells you so.
 
+### `trustvian.evaluation.records`
+
+Decision records offered to a control plane, by `trustvian.outcome`. Exists
+only in a Collector configured with `evaluation:`.
+
+| Value | Meaning |
+|---|---|
+| `applied` | The record was folded into the evaluation run's evidence. |
+| `replayed` | This exact record was already applied — a restarted Collector resent it, or the sink reconciled a POST whose response was lost, and the control plane recognized it as the same record. Nothing changed, and no second record exists. |
+| `error` | The post failed: the control plane declined the record, or the sink could not confirm it either way. Nothing was learned from it. |
+
+**A climbing `replayed` count is not an error, but it is a signal.** A
+Collector that is not restarting should replay rarely: a steady rate means
+responses are being lost between it and the control plane, and each one costs
+an extra serialized round trip on the span that lost it.
+
+**A climbing `error` count does not mean one record was skipped.** An
+unresolved ingest failure is a permanent consumer error
+([`processor/README.md`](../processor/README.md)), so it aborts the whole
+`ConsumeTraces` batch: every span in that batch — including ones already
+enriched ahead of the failure — is abandoned rather than forwarded to the
+next consumer. An evaluation-configured Collector whose control plane is
+down is therefore not losing evaluation coverage alone; it has stopped
+exporting traces entirely. This is the single most useful alert in this
+list for an evaluation-configured Collector, the same way a sustained
+`trustvian.observations{trustvian.outcome="error"}` rate is for learning.
+
+### `trustvian.evaluation.duration`
+
+Duration of delivering one decision record: the request, and — once the
+control plane confirms it — the durable pending-state writes and the
+`Engine.Observe` they gate. Recorded for **every** outcome, including errors
+— the same reasoning as `trustvian.observe.duration`: a failed post has still
+paid the network round trip, and that latency is exactly what an operator
+investigating a slow or wedged control plane wants to see. The observation's
+own share is isolated in `trustvian.observe.duration`.
+
+### Two startup lines worth alerting on
+
+With `evaluation:` configured, a Collector that restarts while a record was
+in flight reports what became of it:
+
+- `a record left pending by a previous process never reached the run and was
+  discarded` (WARN) — the run is one record short, which is the documented
+  outcome of a batch that failed. Frequent ones mean the control plane is
+  unreachable often enough to be losing evidence.
+- `a record the run holds may not have been learned from` (ERROR) — the one
+  case a restart cannot settle. The run holds the record; whether this
+  Collector's baseline learned from it is unknowable, so it was not learned
+  again. At most one observation is missing, in the direction that fails
+  safe. Repeated occurrences mean the process is dying inside the window
+  between confirming a record and releasing it, or that the store keeps
+  failing (below), and either is worth investigating on its own.
+
+A refused startup is the other thing to watch for. A pending entry the run's
+own cursor cannot account for — a second writer, or a run that does not hold
+a record it accepted — fails `Start` with the entry left in place, so the
+Collector reports unhealthy rather than resuming over evidence nothing local
+learned from.
+
+### The one failure that stops a Collector
+
+`evaluation ingest failed` with `learning_indeterminate=true` means the
+control plane took the record and `Engine.Observe` did not demonstrably
+apply its learning — a file-backed store that could not flush, a database
+that failed around its commit. The sink keeps its pending entry and accepts
+no further record for that run: re-learning could double an observation and
+dropping the entry could lose one, and neither is a decision the next span
+gets to make.
+
+An evaluation-configured Collector in this state stops exporting traces
+entirely, which is intended and is why it is loud. Fix the store, then
+restart the Collector: startup reports the record as indeterminate, declines
+to learn from it a second time, and resumes from the run's cursor.
+
 ## Cardinality is a hard bound
 
 Every attribute has a closed vocabulary enumerated as constants in code.
@@ -281,9 +361,11 @@ Two things worth reading off that table:
   each call site cost 3 extra allocations per span even when the meter
   was a no-op, because the attribute set was built regardless.
 - **The ~350 ns is the SDK's own aggregation**, across five recorded
-  measurements per span (~70 ns each), and is paid only when a metrics
-  pipeline is actually configured. It is inherent to synchronous OTel
-  instruments, not something Trustvian is doing inefficiently.
+  measurements per span (~70 ns each) — six when `evaluation:` is
+  configured, since `RecordEvaluationIngest` adds one more — and is paid
+  only when a metrics pipeline is actually configured. It is inherent to
+  synchronous OTel instruments, not something Trustvian is doing
+  inefficiently.
 
 Reproduce with:
 
@@ -300,12 +382,27 @@ traffic reach it." They are separate on purpose.
 | Endpoint | Answers | Consults the store |
 |---|---|---|
 | `/livez` | Is the process alive and not wedged? | **Never** |
-| `/readyz` | Can it do useful work right now? | Yes, with a bounded timeout |
+| `/readyz` | Can the configured store do useful work right now? | Yes, with a bounded timeout |
 
 Liveness deliberately never probes the store: a database outage must not
 get the process killed and restarted, because restarting fixes nothing
 and drops the in-flight pipeline. Readiness reports it, so traffic
 drains instead.
+
+**Readiness does not cover the evaluation control plane.** With
+`evaluation:` configured, `storeProbe` — the only input `/readyz` has — still
+reflects the configured `storage:` store alone; a control plane that is
+unreachable is invisible to it, and `/readyz` keeps returning 200 while every
+trace batch fails. That is deliberate, for the same reason liveness never
+probes the store: adding the control plane would put third-party network I/O
+inside a health probe, and a Collector serves exactly one evaluation run, so
+every replica feeding it shares one control plane. A false readiness there
+would take every replica down at once — a restart storm that cannot help,
+since the control plane being down is not a condition restarting any of them
+fixes. A down control plane surfaces instead as the ERROR-level `evaluation
+ingest failed` log (carrying `run_id`) and as
+`trustvian.evaluation.records{trustvian.outcome="error"}` climbing — see
+[below](#trustvianevaluationrecords).
 
 Configuration, payloads, and shutdown ordering are in
 [`processor/README.md`](../processor/README.md); the fail-closed
@@ -326,8 +423,17 @@ contains **one** goroutine, **zero** channels, **zero** tickers, and
 | Channels, queues, tickers, timers | None exist | — |
 | PostgreSQL pool | `MaxConns`; connection lifetime 1h, idle 30m | `Shutdown` → `Close`, exactly once |
 | In-memory store | O(distinct actors), each actor's baseline capped | Process lifetime |
-| Meter and instruments | Fixed, 15 series | **The Collector** — never Trustvian |
+| Meter and instruments | Fixed, 19 series (15 always, 4 evaluation-only) | **The Collector** — never Trustvian |
 | Engine | One, fully synchronous per call | Process lifetime |
+| Evaluation sink HTTP client | Holds no goroutine, timer, or dedicated transport of its own — it uses the shared `http.DefaultTransport`, whose idle connections are already bounded and reaped | Nothing to shut down |
+
+The evaluation sink's client is worth being explicit about, since it is the
+one resource this task added: it never sets its own `http.Transport`, so it
+rides `net/http`'s process-wide default — the same one already bounding and
+reaping idle connections for everything else in the process. That absence is
+*why* `Shutdown` correctly never touches it, not an oversight this inventory
+missed until now: there is no per-client pool, goroutine, or timer for a
+teardown step to release.
 
 No Trustvian-owned queue exists, bounded or otherwise, and the pipeline
 adds no per-event goroutine — `Analyze` and `Observe` are synchronous,

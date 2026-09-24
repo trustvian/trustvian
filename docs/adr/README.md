@@ -61,6 +61,7 @@ as long as its own decision holds.
 | [0035](0035-local-runtime-composes-platform-without-reversing-modules.md) | The local runtime composes the platform without reversing modules | Accepted |
 | [0036](0036-webui-is-a-same-origin-adapter-over-v1.md) | The WebUI is a same-origin static adapter over `/v1` | Accepted |
 | [0037](0037-postgresql-is-the-shared-platform-persistence-backend.md) | PostgreSQL is the shared platform persistence backend | Accepted |
+| [0038](0038-collector-evaluation-ingest-is-an-http-adapter.md) | Collector evaluation ingest is an HTTP adapter | Accepted |
 
 No ADR is currently Superseded or Deprecated. Several later ADRs build on
 earlier ones — 0006 and 0018 on 0004's narrow port, 0007/0008/0017 on 0002's
