@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -35,8 +36,15 @@ import (
 type ingestAPIServer struct {
 	*httptest.Server
 
-	mu       sync.Mutex
-	records  []trustvian.DecisionRecord
+	mu      sync.Mutex
+	records []trustvian.DecisionRecord
+
+	// digests[i] is the encoded record durably stored at sequence i+1. The
+	// control plane recognizes a retry by content, so a stub without this
+	// could not replay one — and a replay that ignored content would prove
+	// nothing about which record occupies a sequence.
+	digests []string
+
 	next     uint64
 	status   string
 	failNext atomic.Bool
@@ -45,7 +53,19 @@ type ingestAPIServer struct {
 	// (1-indexed) with a 500 rather than every attempt from some point on —
 	// what a multi-span-batch test needs to fail the second record while
 	// letting the first commit.
-	failOnAttempt  atomic.Int64
+	failOnAttempt atomic.Int64
+
+	// rejectOnAttempt is failOnAttempt's definitive counterpart: a
+	// well-formed 4xx envelope, which is the control plane declining a
+	// record rather than failing to report on one it may have applied.
+	rejectOnAttempt atomic.Int64
+
+	// dropOnAttempt names a POST that is committed and then has its response
+	// destroyed — the ambiguous delivery this module has to survive. Zero
+	// means none; dropAlways destroys every response.
+	dropOnAttempt atomic.Int64
+	dropAlways    atomic.Bool
+
 	recordAttempts atomic.Int64
 }
 
@@ -69,7 +89,24 @@ func newIngestAPIServer(t *testing.T) *ingestAPIServer {
 		case strings.HasSuffix(r.URL.Path, "/records"):
 			attempt := cp.recordAttempts.Add(1)
 			if cp.failNext.Load() || (cp.failOnAttempt.Load() != 0 && attempt == cp.failOnAttempt.Load()) {
+				// A bare 500: the server did not say whether it applied the
+				// record, so the sink must reconcile rather than assume.
 				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			if cp.rejectOnAttempt.Load() != 0 && attempt == cp.rejectOnAttempt.Load() {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"version": "1",
+					"error": map[string]string{
+						"code": "invalid_record", "message": "the record was declined"},
+				})
+				return
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
 			var envelope struct {
@@ -77,40 +114,88 @@ func newIngestAPIServer(t *testing.T) *ingestAPIServer {
 				BehavioralProfile string                   `json:"behavioral_profile"`
 				Record            trustvian.DecisionRecord `json:"record"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
+			if err := json.Unmarshal(body, &envelope); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
+			var wire struct {
+				Record json.RawMessage `json:"record"`
+			}
+			if err := json.Unmarshal(body, &wire); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			digest := string(wire.Record)
+
 			cp.mu.Lock()
+			switch {
 			// M12: enforce the real gap-free contract, the same as
 			// internal/evaluation's own stub — a test server that accepted
 			// any sequence would prove nothing about the cursor at this
 			// level either.
-			if envelope.Sequence != itoa(cp.next) {
+			case envelope.Sequence == itoa(cp.next):
+				cp.records = append(cp.records, envelope.Record)
+				cp.digests = append(cp.digests, digest)
+				cp.next++
+				next := cp.next
+				cp.mu.Unlock()
+				if cp.dropAlways.Load() || cp.dropOnAttempt.Load() == attempt {
+					// Committed, then the reply is destroyed. From the
+					// client's side this is indistinguishable from a record
+					// that never arrived.
+					hijackAndClose(w)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"version": "1", "disposition": "applied",
+					"next_sequence": itoa(next), "record_count": itoa(next - 1),
+					"behavior_complete": true})
+
+			case envelope.Sequence == itoa(cp.next-1) && cp.digests[cp.next-2] == digest:
+				// The replay contract: the same record re-presented at the
+				// sequence it already occupies changes nothing.
+				next := cp.next
+				cp.mu.Unlock()
+				if cp.dropAlways.Load() {
+					hijackAndClose(w)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"version": "1", "disposition": "replayed",
+					"next_sequence": itoa(next), "record_count": itoa(next - 1),
+					"behavior_complete": true})
+
+			default:
+				expected := itoa(cp.next)
 				cp.mu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusConflict)
 				_ = json.NewEncoder(w).Encode(map[string]any{
 					"version": "1",
 					"error": map[string]string{"code": "conflict",
-						"message": fmt.Sprintf("sequence %s, expected %s", envelope.Sequence, itoa(cp.next))},
+						"message": fmt.Sprintf("sequence %s, expected %s", envelope.Sequence, expected)},
 				})
-				return
 			}
-			cp.records = append(cp.records, envelope.Record)
-			cp.next++
-			next := cp.next
-			cp.mu.Unlock()
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"version": "1", "disposition": "applied",
-				"next_sequence": itoa(next), "record_count": itoa(next - 1),
-				"behavior_complete": true})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	t.Cleanup(cp.Close)
 	return cp
+}
+
+// hijackAndClose destroys the connection without writing a response, which
+// is what a client sees as an EOF after its request was already delivered.
+func hijackAndClose(w http.ResponseWriter) {
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		panic("test server response writer does not support hijacking")
+	}
+	conn, _, err := hijacker.Hijack()
+	if err != nil {
+		panic(err)
+	}
+	_ = conn.Close()
 }
 
 // itoa renders a counter the way the wire contract requires: canonical
@@ -268,6 +353,11 @@ func TestEvaluationOmittedLeavesSpanPathUnchanged(t *testing.T) {
 // exists: a retried batch would re-analyze spans whose records already
 // committed and resend them under new sequence numbers, silently inflating
 // the evidence.
+//
+// The stub fails every attempt here, including the sink's reconciliation, so
+// this is the case that stays unresolved — which is still a permanent
+// failure, because the one thing a Collector must never do about it is send
+// the record again under a different sequence.
 func TestEvaluationFailureIsPermanent(t *testing.T) {
 	cp := newIngestAPIServer(t)
 	cp.failNext.Store(true)
@@ -379,9 +469,14 @@ func TestInvalidSpanConsumesNoSequence(t *testing.T) {
 // documented in processor/README.md: a span 1 record can commit durably while
 // span 2's fails, and the whole batch — including the already-committed
 // span's enriched output — must still not reach the next consumer.
+//
+// The second span is *declined*, not lost. That distinction is the point of
+// the recovery mechanism: a lost response is reconciled and the batch
+// continues (TestEvaluationLostResponseIsReconciled), while a record the
+// control plane refuses is not there and never will be.
 func TestEvaluationBatchFailurePartwayLeavesPrefixDurable(t *testing.T) {
 	cp := newIngestAPIServer(t)
-	cp.failOnAttempt.Store(2) // the second span's record fails; the first must already have landed
+	cp.rejectOnAttempt.Store(2) // the second span's record is declined; the first must already have landed
 	next := &capturingConsumer{}
 
 	proc, err := newTestProcessorWithConfig(t, next, cp.config())

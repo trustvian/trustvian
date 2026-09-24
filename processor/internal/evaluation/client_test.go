@@ -3,6 +3,7 @@ package evaluation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -288,5 +289,169 @@ func TestClientTimesOut(t *testing.T) {
 	c, _ := newClient(server.URL, 50*time.Millisecond)
 	if _, err := c.ingestState(context.Background(), "run-1"); err == nil {
 		t.Fatal("ingestState() error = nil, want a timeout")
+	}
+}
+
+// TestIngestClassifiesFailureOutcomes is the table the recovery design rests
+// on: which failures prove the record was not applied, and which only prove
+// the client did not hear about it.
+//
+// Getting a row wrong here is not a cosmetic error. A failure wrongly called
+// definitive frees a sequence the server may already hold, and the next
+// record collides with it; one wrongly called unknown costs a single
+// redundant POST the server answers "replayed". The asymmetry is why
+// anything unproven belongs in the second column.
+func TestIngestClassifiesFailureOutcomes(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler http.HandlerFunc
+		unknown bool
+		reason  string
+	}{
+		{
+			name: "4xx envelope",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"version": "1",
+					"error":   map[string]string{"code": "ingest_sequence", "message": "stale"}})
+			},
+			unknown: false,
+			reason:  "the control plane declined the request, so it did not apply it",
+		},
+		{
+			name: "5xx envelope",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"version": "1",
+					"error":   map[string]string{"code": "internal", "message": "boom"}})
+			},
+			unknown: true,
+			reason:  "a server failure may follow a commit it could not then report",
+		},
+		{
+			name: "bare 502 from something in between",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadGateway)
+			},
+			unknown: true,
+			reason:  "a gateway error says a hop gave up, never whether the record landed",
+		},
+		{
+			name: "connection destroyed after the request was delivered",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				hijackAndClose(w)
+			},
+			unknown: true,
+			reason:  "this is exactly a lost response to a committed record",
+		},
+		{
+			name: "2xx that is not JSON",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("<html>ok</html>"))
+			},
+			unknown: true,
+			reason:  "a 2xx means the record was accepted; the reply only hides which disposition",
+		},
+		{
+			name: "2xx with an unusable next_sequence",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"version": "1", "disposition": "applied", "next_sequence": "007"})
+			},
+			unknown: true,
+			reason:  "same: accepted, then unreadable",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(tt.handler)
+			defer server.Close()
+
+			c, err := newClient(server.URL, requestTimeout)
+			if err != nil {
+				t.Fatalf("newClient() error = %v", err)
+			}
+			_, err = c.ingest(context.Background(), "run-1", 1, "p", trustvian.DecisionRecord{})
+			if err == nil {
+				t.Fatal("ingest() error = nil, want a failure")
+			}
+			if got := outcomeUnknown(err); got != tt.unknown {
+				t.Errorf("outcomeUnknown(%v) = %t, want %t — %s", err, got, tt.unknown, tt.reason)
+			}
+		})
+	}
+}
+
+// TestIngestTreatsAnUnreachableHostAsDefinitive is the one transport failure
+// that can be proven: the dial never completed, so no byte of the request
+// reached anything and its sequence is free.
+func TestIngestTreatsAnUnreachableHostAsDefinitive(t *testing.T) {
+	dead := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := dead.URL
+	dead.Close()
+
+	c, err := newClient(url, requestTimeout)
+	if err != nil {
+		t.Fatalf("newClient() error = %v", err)
+	}
+	_, err = c.ingest(context.Background(), "run-1", 1, "p", trustvian.DecisionRecord{})
+	if err == nil {
+		t.Fatal("ingest() error = nil, want a refused connection surfaced")
+	}
+	if outcomeUnknown(err) {
+		t.Errorf("error = %v is classified unknown; a failed dial delivered nothing", err)
+	}
+}
+
+// TestIngestTreatsAnOversizedBodyAsDefinitive covers the checks that run
+// before anything is sent. Nothing left this process, so the sequence the
+// record was holding is untouched.
+func TestIngestTreatsAnOversizedBodyAsDefinitive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("the request must never be sent")
+	}))
+	defer server.Close()
+
+	c, err := newClient(server.URL, requestTimeout)
+	if err != nil {
+		t.Fatalf("newClient() error = %v", err)
+	}
+	_, err = c.ingest(context.Background(), "run-1", 1, "p",
+		trustvian.DecisionRecord{EventID: strings.Repeat("x", maxRequestBody+1)})
+	if err == nil {
+		t.Fatal("ingest() error = nil, want the body cap enforced")
+	}
+	if outcomeUnknown(err) {
+		t.Errorf("error = %v is classified unknown; the request was never sent", err)
+	}
+}
+
+// TestRefusedRedirectIsDefinitive: a 3xx is a complete response from an
+// endpoint that answered without implementing ingest, and this route never
+// redirects. Nothing was applied, so the sequence is free.
+func TestRefusedRedirectIsDefinitive(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://elsewhere.invalid/v1", http.StatusTemporaryRedirect)
+	}))
+	defer server.Close()
+
+	c, err := newClient(server.URL, requestTimeout)
+	if err != nil {
+		t.Fatalf("newClient() error = %v", err)
+	}
+	_, err = c.ingest(context.Background(), "run-1", 1, "p", trustvian.DecisionRecord{})
+	if err == nil {
+		t.Fatal("ingest() error = nil, want the redirect refused")
+	}
+	if !errors.Is(err, errRefusedRedirect) {
+		t.Errorf("error = %v, want it to report the redirect refusal", err)
+	}
+	if outcomeUnknown(err) {
+		t.Errorf("error = %v is classified unknown; a redirect is not an applied record", err)
 	}
 }

@@ -3,6 +3,7 @@ package evaluation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -264,8 +265,17 @@ func TestRecordRejectsUnknownDisposition(t *testing.T) {
 	defer server.Close()
 
 	sink := newTestSink(t, server.URL)
-	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}); err == nil {
+	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{})
+	if err == nil {
 		t.Fatal("Record() error = nil, want an unrecognized disposition to fail closed")
+	}
+	// The server answered 2xx, so it may well have applied the record. The
+	// sequence stays bound to it rather than being handed to the next one.
+	if got := sink.pendingSequence(); got != 1 {
+		t.Errorf("held sequence = %d, want 1", got)
+	}
+	if got := sink.nextSequence(); got != 1 {
+		t.Errorf("cursor = %d, want 1 — an unreadable disposition advances nothing", got)
 	}
 }
 
@@ -290,13 +300,28 @@ func TestRecordRejectsNonAdvancingSequence(t *testing.T) {
 	defer server.Close()
 
 	sink := newTestSink(t, server.URL)
-	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}); err == nil {
+	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{})
+	if err == nil {
 		t.Fatal("Record() error = nil, want a non-advancing cursor to fail closed")
+	}
+	if got := sink.nextSequence(); got != 4 {
+		t.Errorf("cursor = %d, want 4 — a cursor that did not advance must not be advanced locally", got)
+	}
+	if got := sink.pendingSequence(); got != 4 {
+		t.Errorf("held sequence = %d, want 4", got)
 	}
 }
 
+// TestRecordDoesNotAdvanceOnFailure pins the definitive half of the failure
+// model: a record the control plane declined — a well-formed 4xx envelope,
+// not a lost response — was never applied, so it consumes no sequence and
+// the next record reuses it.
+//
+// Its counterpart is TestUnresolvedRecordHoldsItsSequenceAcrossCalls in
+// reconcile_test.go: a failure that does *not* prove the record is absent
+// keeps the sequence bound to it instead.
 func TestRecordDoesNotAdvanceOnFailure(t *testing.T) {
-	var fail atomic.Bool
+	var refuse atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/progress") {
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -308,8 +333,14 @@ func TestRecordDoesNotAdvanceOnFailure(t *testing.T) {
 				"version": "1", "run_id": "run-1", "next_sequence": "1"})
 			return
 		}
-		if fail.Load() {
-			w.WriteHeader(http.StatusInternalServerError)
+		if refuse.Load() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"version": "1",
+				"error": map[string]string{
+					"code": "invalid_record", "message": "the record was declined"},
+			})
 			return
 		}
 		var envelope struct {
@@ -329,19 +360,26 @@ func TestRecordDoesNotAdvanceOnFailure(t *testing.T) {
 		t.Fatalf("Record() error = %v", err)
 	}
 
-	fail.Store(true)
-	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}); err == nil {
-		t.Fatal("Record() error = nil, want the server failure surfaced")
+	refuse.Store(true)
+	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{})
+	if err == nil {
+		t.Fatal("Record() error = nil, want the server refusal surfaced")
+	}
+	if errors.Is(err, ErrUnresolved) {
+		t.Errorf("error = %v, want a definitive refusal; a 4xx is the server declining the record", err)
 	}
 
-	// The cursor must still be at 2: a failed post consumes no sequence, or
+	// The cursor must still be at 2: a declined post consumes no sequence, or
 	// the next successful one would leave a gap the run never recovers from.
 	if got := sink.nextSequence(); got != 2 {
-		t.Fatalf("cursor = %d after a failed post, want 2", got)
+		t.Fatalf("cursor = %d after a refused post, want 2", got)
+	}
+	if got := sink.pendingSequence(); got != 0 {
+		t.Fatalf("sequence %d is held after a refusal, want none", got)
 	}
 
 	// And the next successful record must therefore be sequence 2.
-	fail.Store(false)
+	refuse.Store(false)
 	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}

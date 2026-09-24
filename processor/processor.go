@@ -394,23 +394,28 @@ func (p *trustvianProcessor) Shutdown(ctx context.Context) error {
 // un-enriched and counted, but never stops the batch: one malformed
 // span must not drop every other span in the same trace.
 //
-// The one exception is an evaluation ingest failure: td is abandoned rather
-// than forwarded, and the method returns that (already permanent) error
-// instead. A retried batch would re-analyze spans whose records already
-// committed and resend them under new sequence numbers, silently doubling
-// the evidence — so losing the rest of this batch is preferable to risking
-// that.
+// The one exception is an evaluation ingest failure that the sink could not
+// resolve: td is abandoned rather than forwarded, and the method returns
+// that (already permanent) error instead. A retried batch would re-analyze
+// spans whose records already committed and resend them under new sequence
+// numbers, silently doubling the evidence — so losing the rest of this batch
+// is preferable to risking that.
+//
+// A lost response is not that failure. The sink re-presents the same record
+// at the same sequence and the control plane replays it, so that case
+// resolves inside Record and the batch continues; only a record whose fate
+// is still unknown, or one the control plane declined outright, gets here.
 func (p *trustvianProcessor) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
 	for _, rs := range td.ResourceSpans().All() {
 		resourceAttrs := rs.Resource().Attributes()
 		for _, ss := range rs.ScopeSpans().All() {
 			spans := ss.Spans()
 			for i := range spans.Len() {
-				// Only an evaluation ingest failure can return an error here,
-				// and it is already permanent. The batch is abandoned rather
-				// than forwarded: a retry would re-analyze spans whose records
-				// already committed and resend them under new sequence
-				// numbers, silently doubling the evidence.
+				// Only an unresolved or declined evaluation ingest can return
+				// an error here, and it is already permanent. The batch is
+				// abandoned rather than forwarded: a retry would re-analyze
+				// spans whose records already committed and resend them under
+				// new sequence numbers, silently doubling the evidence.
 				if err := p.processSpan(ctx, resourceAttrs, spans.At(i)); err != nil {
 					return err
 				}
@@ -460,26 +465,53 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 	// are a five-value subset of what a record carries, and reconstructing
 	// from them would make an evaluation's evidence a function of the
 	// enrichment format.
+	//
+	// ingestErr is held rather than returned here. Observe is what keeps
+	// this processor's own learning aligned with the run's evidence, and
+	// whether it may run depends on which kind of failure this was — see the
+	// two branches below.
+	var ingestErr error
 	if p.evaluation != nil {
 		ingestStart := time.Now()
 		disposition, err := p.evaluation.Record(ctx, result.DecisionRecord())
 		ingestDuration := time.Since(ingestStart)
-		if err != nil {
+		if err == nil {
+			p.metrics.RecordEvaluationIngest(ctx, disposition, ingestDuration)
+		} else {
 			p.metrics.RecordEvaluationIngest(ctx, metrics.OutcomeError, ingestDuration)
 			p.logger.Error("trustvianprocessor: evaluation ingest failed",
 				zap.String("span", span.Name()),
 				zap.String("run_id", p.evaluation.RunID()),
+				zap.Bool("unresolved", errors.Is(err, evaluation.ErrUnresolved)),
 				zap.Error(err))
 			// Permanent, so the pipeline does not retry. See ConsumeTraces.
-			return consumererror.NewPermanent(
+			ingestErr = consumererror.NewPermanent(
 				fmt.Errorf("trustvianprocessor: evaluation ingest: %w", err))
+
+			if !errors.Is(err, evaluation.ErrUnresolved) {
+				// The control plane declined the record, so the run does not
+				// hold it. Learning from it would put this Result into the
+				// baseline that scores later spans while the evidence a
+				// scorecard reads has no trace of it — divergence in the
+				// direction nothing downstream could detect. Return before
+				// Observe.
+				return ingestErr
+			}
+			// The record may be durable: the sink holds its sequence and
+			// will re-present it. Observe therefore runs, so that if the
+			// record is there — or lands on the next reconciliation — the
+			// learning that belongs with it is already recorded. The batch
+			// still fails, loudly; it just does not fail asymmetrically.
 		}
-		p.metrics.RecordEvaluationIngest(ctx, disposition, ingestDuration)
 	}
 
 	// Observe is always safe to call unconditionally — it is a no-op
 	// for any Decision that isn't learning-eligible (see the core
 	// repository's docs/SECURITY.md § baseline poisoning).
+	//
+	// Exactly once per span on every path above: a Result is never observed
+	// twice, and one whose record is merely unconfirmed is not observed a
+	// second time when that record is later reconciled.
 	observeStart := time.Now()
 	learned, err := p.engine.Observe(ctx, result)
 	observeDuration := time.Since(observeStart)
@@ -497,7 +529,7 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 		// per blocked action.
 		p.metrics.RecordObservation(ctx, metrics.OutcomeNotEligible, observeDuration)
 	}
-	return nil
+	return ingestErr
 }
 
 func (p *trustvianProcessor) recordDecision(decision string) {

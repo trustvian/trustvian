@@ -8,9 +8,17 @@
 // spoken as JSON over HTTP with the client-side DTOs below, the same
 // arrangement cmd/trustvian uses for the CLI.
 //
-// No retries, no queue, no background goroutine. Ingest carries explicit
-// sequence semantics, and a retry layer that did not understand them would
-// turn a network blip into duplicated evidence.
+// No queue, no background goroutine, and no blind retry layer. Ingest
+// carries explicit sequence semantics, and a retry that did not understand
+// them — resending a batch, or re-posting a record under a fresh sequence —
+// would turn a network blip into duplicated evidence.
+//
+// What this client does provide is the classification that a *safe* retry
+// needs: whether a failure proves the server did not apply the request, or
+// leaves that unknown. An unknown outcome is not a failure to be reported as
+// "it did not happen" — the request may have been written in full, applied,
+// and its response lost on the way back. Sink reconciles those against the
+// server's same-sequence digest replay contract; see sink.go.
 package evaluation
 
 import (
@@ -20,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -68,6 +77,74 @@ const (
 // status here, once, turns that into a clear startup refusal instead.
 const runStatusRunning = "running"
 
+// ---------------------------------------------------------------------
+// Outcome classification
+// ---------------------------------------------------------------------
+
+// unknownOutcomeError marks a failure that does not prove the server left the
+// request unapplied.
+//
+// This is the distinction the whole recovery design rests on. A POST that
+// fails at the transport layer may have been written in full, committed, and
+// had only its response lost — the server's state and the client's belief
+// then disagree, and every later record posted under the client's stale
+// cursor conflicts. Treating "I did not hear back" as "it did not happen" is
+// the specific mistake that produces that.
+//
+// It is deliberately asymmetric. Misclassifying a definitive failure as
+// unknown costs one redundant POST of an identical record, which the server
+// answers "replayed" and which changes nothing. Misclassifying an unknown
+// outcome as definitive frees a sequence the server may already have
+// committed, so the next record claims a position that is taken. When it
+// cannot be proven, it is unknown.
+type unknownOutcomeError struct{ err error }
+
+func (e unknownOutcomeError) Error() string { return e.err.Error() }
+func (e unknownOutcomeError) Unwrap() error { return e.err }
+
+// unknownOutcome marks err as leaving the server-side outcome unknown.
+func unknownOutcome(err error) error { return unknownOutcomeError{err: err} }
+
+// outcomeUnknown reports whether err leaves the server-side outcome unknown,
+// i.e. whether the request it describes may nonetheless have been applied.
+func outcomeUnknown(err error) bool {
+	var unknown unknownOutcomeError
+	return errors.As(err, &unknown)
+}
+
+// errRefusedRedirect is the sentinel behind the redirect refusal, so the
+// classification below can recognize it rather than matching on message text.
+var errRefusedRedirect = errors.New("refusing to follow a redirect")
+
+// requestNeverSent reports whether err proves the request never reached a
+// server at all.
+//
+// Only two shapes prove it, and both are pre-connection: a DNS failure and a
+// failed dial. Neither can have delivered a byte of the request, so the
+// sequence they were carrying is free for the next record.
+//
+// A refused redirect qualifies for a different reason: a 3xx is a complete
+// response from an endpoint that answered without implementing ingest, and
+// the control plane never redirects this route. Nothing was applied.
+//
+// Everything else — a reset connection, a timeout, an EOF mid-response — is
+// deliberately absent. Those all happen after the request may have been
+// written, and none of them says whether the server acted on it.
+func requestNeverSent(err error) bool {
+	if errors.Is(err, errRefusedRedirect) {
+		return true
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "dial" {
+		return true
+	}
+	return false
+}
+
 // client issues one-shot requests against a control plane.
 type client struct {
 	baseURL *url.URL
@@ -87,8 +164,10 @@ func newClient(raw string, timeout time.Duration) (*client, error) {
 			CheckRedirect: func(req *http.Request, _ []*http.Request) error {
 				// A mutation addressed to one host must not silently become a
 				// mutation against another. Redacted() keeps any credential
-				// the redirect target carries out of the diagnostic.
-				return fmt.Errorf("refusing to follow redirect to %s", req.URL.Redacted())
+				// the redirect target carries out of the diagnostic, and the
+				// sentinel lets requestNeverSent recognize this without
+				// matching on the message.
+				return fmt.Errorf("%w to %s", errRefusedRedirect, req.URL.Redacted())
 			},
 		},
 	}, nil
@@ -268,6 +347,12 @@ func (c *client) runStatus(ctx context.Context, runID string) (string, error) {
 }
 
 // ingest posts one record under an explicit sequence.
+//
+// Errors are classified: those the caller may treat as "this record was not
+// applied" are returned plain, and those that leave the outcome unknown are
+// marked, so Sink can tell a sequence it may reuse from one it must
+// reconcile. Everything before the request is written — encoding, the body
+// cap — is definitive by construction.
 func (c *client) ingest(
 	ctx context.Context, runID string, sequence uint64,
 	profile string, record trustvian.DecisionRecord,
@@ -295,13 +380,18 @@ func (c *client) ingest(
 		return ingestResult{}, err
 	}
 
+	// Past this point the server answered 2xx, so it accepted the record;
+	// a reply this client cannot read hides which disposition it chose, not
+	// whether it committed. Both failures are therefore unknown outcomes,
+	// and the record keeps its sequence until a readable reply settles it.
 	var body ingestBody
 	if err := json.Unmarshal(payload, &body); err != nil {
-		return ingestResult{}, errors.New("ingest response is not valid JSON for this endpoint")
+		return ingestResult{}, unknownOutcome(
+			errors.New("ingest response is not valid JSON for this endpoint"))
 	}
 	next, err := parseSequence(body.NextSequence)
 	if err != nil {
-		return ingestResult{}, fmt.Errorf("ingest response: %w", err)
+		return ingestResult{}, unknownOutcome(fmt.Errorf("ingest response: %w", err))
 	}
 	return ingestResult{Disposition: body.Disposition, NextSequence: next}, nil
 }
@@ -348,10 +438,18 @@ func (c *client) do(
 
 	response, err := c.http.Do(request)
 	if err != nil {
-		// Timeouts, connection failures and the refused redirect all arrive
-		// here and all mean the same thing: the operation did not happen.
+		// A transport error does not say the request was not applied. A
+		// timeout, a reset connection or an EOF can all follow a request that
+		// was written in full and committed, with only the reply lost — so
+		// these are reported as an unknown outcome unless the failure
+		// provably happened before anything was sent.
 		// Redacted() because the wrapped *url.Error carries the URL.
-		return 0, nil, fmt.Errorf("%s %s: %w", method, target.Redacted(), unwrapURLError(err))
+		unwrapped := unwrapURLError(err)
+		failure := fmt.Errorf("%s %s: %w", method, target.Redacted(), unwrapped)
+		if requestNeverSent(unwrapped) {
+			return 0, nil, failure
+		}
+		return 0, nil, unknownOutcome(failure)
 	}
 	defer response.Body.Close()
 
@@ -359,10 +457,13 @@ func (c *client) do(
 	// detectable without reading the rest of whatever is being sent.
 	payload, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBody+1))
 	if err != nil {
-		return 0, nil, fmt.Errorf("reading response: %w", err)
+		// The server had already begun answering, so it had already handled
+		// the request; the truncation hides what it decided, not whether it
+		// decided.
+		return 0, nil, unknownOutcome(fmt.Errorf("reading response: %w", err))
 	}
 	if len(payload) > maxResponseBody {
-		return 0, nil, fmt.Errorf("response exceeds the %d byte limit", maxResponseBody)
+		return 0, nil, unknownOutcome(fmt.Errorf("response exceeds the %d byte limit", maxResponseBody))
 	}
 	return response.StatusCode, payload, nil
 }
@@ -383,14 +484,28 @@ func unwrapURLError(err error) error {
 // The raw body is never echoed when the envelope is unusable: it may be
 // arbitrarily large or not text at all, and the status is the part a caller
 // can act on.
+//
+// The status class carries as much as the message. A 4xx is the request
+// being declined — a sequence conflict, a profile mismatch, a body over the
+// cap — and a declined request was not applied. A 5xx is not that: the
+// control plane's own failure may have followed a commit it could not then
+// report, and a 502 or 504 from anything in between says only that some hop
+// gave up, never whether the record landed first. So 5xx is an unknown
+// outcome, to be reconciled rather than assumed away.
 func checkStatus(status int, payload []byte) error {
 	if status >= 200 && status < 300 {
 		return nil
 	}
+	var refusal error
 	var envelope errorEnvelope
 	if err := json.Unmarshal(payload, &envelope); err == nil && envelope.Error.Code != "" {
-		return fmt.Errorf("control plane refused the request: %s: %s",
+		refusal = fmt.Errorf("control plane refused the request: %s: %s",
 			envelope.Error.Code, envelope.Error.Message)
+	} else {
+		refusal = fmt.Errorf("control plane returned HTTP %d", status)
 	}
-	return fmt.Errorf("control plane returned HTTP %d", status)
+	if status >= 500 {
+		return unknownOutcome(refusal)
+	}
+	return refusal
 }

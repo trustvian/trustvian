@@ -18,9 +18,12 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -273,6 +276,137 @@ func TestEndToEndResumesFromTheServerCursor(t *testing.T) {
 	progress := readProgress(t, apiURL, runID)
 	if progress.RecordCount != "2" {
 		t.Errorf("record_count = %q, want 2; the second Collector restarted the count", progress.RecordCount)
+	}
+	if progress.NextIngestSequence != "3" {
+		t.Errorf("next_ingest_sequence = %q, want 3", progress.NextIngestSequence)
+	}
+}
+
+// lossyProxy forwards /v1 to the real control plane and destroys the
+// response to the first POST it is told to lose — after the upstream has
+// already answered, so the record is durably committed and only the reply is
+// gone.
+//
+// This is the one seam that cannot be faked. Every other test in this
+// repository asserts the reconciliation against a stub that implements the
+// replay rule as this module understands it; this one asserts it against the
+// control plane's own RecordDigest, which is the only authority on whether a
+// re-presented record is recognized as the same one.
+type lossyProxy struct {
+	*httptest.Server
+	upstream string
+	lose     atomic.Bool
+	lost     atomic.Int64
+}
+
+func newLossyProxy(t *testing.T, upstream string) *lossyProxy {
+	t.Helper()
+	p := &lossyProxy{upstream: upstream}
+	p.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		forward, err := http.NewRequestWithContext(
+			r.Context(), r.Method, p.upstream+r.URL.RequestURI(), bytes.NewReader(body))
+		if err != nil {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		forward.Header = r.Header.Clone()
+		response, err := http.DefaultClient.Do(forward)
+		if err != nil {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		defer response.Body.Close()
+		payload, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		if err != nil {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/records") &&
+			p.lose.CompareAndSwap(true, false) {
+			// The upstream has committed and answered. Destroying the
+			// connection here is precisely the failure the Collector cannot
+			// distinguish from a record that never arrived.
+			p.lost.Add(1)
+			hijackAndClose(w)
+			return
+		}
+
+		for key, values := range response.Header {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(response.StatusCode)
+		_, _ = w.Write(payload)
+	}))
+	t.Cleanup(p.Close)
+	return p
+}
+
+// TestEndToEndLostResponseIsReplayedUpstream drives the blocker's
+// exact scenario through the real chain: the record commits at sequence 1,
+// its response is destroyed, the sink re-presents the same record at the
+// same sequence, and the control plane's own digest rule replays it.
+//
+// The assertions that matter are the run's own counters. record_count must
+// be 2 for two spans, never 3 — ADR 0026 makes a duplicate record count
+// twice on purpose, so an evidence inflation would be visible here and
+// nowhere else.
+func TestEndToEndLostResponseIsReplayedUpstream(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end test builds and runs the platform runtime")
+	}
+
+	apiURL := startLocalRuntime(t)
+	const runID, profile = "run-lost-response", "support-lost-response"
+
+	postJSON(t, apiURL, "/v1/projects", map[string]string{"id": "p", "name": "P"})
+	postJSON(t, apiURL, "/v1/agents", map[string]string{
+		"id": "a", "project_id": "p", "name": "A"})
+	postJSON(t, apiURL, "/v1/candidates", map[string]any{
+		"id": "c", "agent_id": "a", "metadata": map[string]string{}})
+	postJSON(t, apiURL, "/v1/evaluation-runs", map[string]string{
+		"id": runID, "candidate_id": "c",
+		"environment": "local", "behavioral_profile": profile})
+	postJSON(t, apiURL, "/v1/evaluation-runs/"+runID+"/start", nil)
+
+	proxy := newLossyProxy(t, apiURL)
+	required := true
+	cfg := evaluationConfigFor(proxy.URL, runID, profile, &required)
+
+	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cfg)
+	if err != nil {
+		t.Fatalf("CreateTraces() error = %v", err)
+	}
+
+	// Lose the first record's response, after the control plane commits it.
+	proxy.lose.Store(true)
+	if err := proc.ConsumeTraces(context.Background(),
+		evaluationTraces("support-agent", "crm.localhost")); err != nil {
+		t.Fatalf("ConsumeTraces() error = %v; the control plane's replay rule must resolve this", err)
+	}
+	if proxy.lost.Load() != 1 {
+		t.Fatal("the proxy never destroyed a response; this test proved nothing")
+	}
+
+	// A second, different span must take sequence 2 and land normally.
+	if err := proc.ConsumeTraces(context.Background(),
+		evaluationTraces("support-agent", "knowledge.localhost")); err != nil {
+		t.Fatalf("ConsumeTraces() error = %v; sequence 2 must be free and uncontested", err)
+	}
+
+	progress := readProgress(t, apiURL, runID)
+	if progress.RecordCount != "2" {
+		t.Errorf("record_count = %q, want 2 — a replay must not add a second record", progress.RecordCount)
+	}
+	if progress.DistinctBehaviorCount != 2 {
+		t.Errorf("distinct_behavior_count = %d, want 2", progress.DistinctBehaviorCount)
 	}
 	if progress.NextIngestSequence != "3" {
 		t.Errorf("next_ingest_sequence = %q, want 3", progress.NextIngestSequence)

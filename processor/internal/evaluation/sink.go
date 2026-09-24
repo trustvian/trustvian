@@ -15,6 +15,10 @@ import (
 // cursor is seeded from the server by Initialize and thereafter advances
 // only to the number the server returned — nothing is derived locally, so a
 // client-side increment can never disagree with durable state.
+//
+// Delivery is not assumed. A POST whose outcome is unknown binds its
+// sequence to its record until the server settles it, which is the one thing
+// that makes a lost response recoverable rather than corrupting: see Record.
 type Sink struct {
 	client  *client
 	runID   string
@@ -35,7 +39,42 @@ type Sink struct {
 	mu          sync.Mutex
 	next        uint64
 	initialized bool
+
+	// pending is the one record whose fate is unknown, or nil.
+	//
+	// Bounded at one by construction: mu serializes allocate → POST →
+	// advance, so there is never a second record in flight to become
+	// unknown. It is a held position, not a queue — nothing is buffered for
+	// later delivery, and nothing is dropped.
+	pending *pendingRecord
 }
+
+// pendingRecord is a sequence bound to the exact record that claimed it.
+//
+// Both halves matter. The sequence must not be handed to another record,
+// because the server may already have committed this one there. The record
+// must be kept byte-identical, because the server's replay rule recognizes a
+// retry by digest: the same sequence carrying different content is two
+// records claiming one position, and the control plane rejects it —
+// correctly — as a conflict.
+//
+// The behavioral profile is the third part of the logical request and is not
+// copied here: it is fixed for the sink's lifetime, so a re-presented record
+// necessarily carries the same one.
+type pendingRecord struct {
+	sequence uint64
+	record   trustvian.DecisionRecord
+}
+
+// ErrUnresolved reports that a record's fate is still unknown: the control
+// plane may hold it durably, and the sink could not confirm either way.
+//
+// It exists so a caller can tell this apart from a definitive refusal
+// without inspecting transport details. The two demand opposite handling of
+// whatever local bookkeeping accompanies the record — the processor observes
+// a Result whose record may be durable, and does not observe one that
+// certainly is not (see processor.go).
+var ErrUnresolved = errors.New("evaluation ingest outcome is unresolved")
 
 // New validates the configuration and returns an uninitialized Sink.
 //
@@ -74,6 +113,10 @@ func (s *Sink) RunID() string { return s.runID }
 // serve /readyz 200, and then fail every span from the first one onward.
 // Checking once here, against the run's own progress, turns that into one
 // clear startup refusal naming the actual status instead.
+//
+// Called once, from Start, before any Record — so seeding the cursor can
+// never discard a held sequence, and a restarted Collector begins from the
+// server's own number with nothing pending.
 func (s *Sink) Initialize(ctx context.Context) error {
 	status, err := s.client.runStatus(ctx, s.runID)
 	if err != nil {
@@ -98,9 +141,28 @@ func (s *Sink) Initialize(ctx context.Context) error {
 
 // Record posts one record and reports the server's disposition.
 //
-// The cursor advances only on success, and only to the server's number. A
-// failed post consumes no sequence: if it did, the next successful record
-// would leave a gap the run could never recover from.
+// Three states, and every call leaves the sink in one of them:
+//
+//	idle      — no sequence is held; the next record takes the cursor
+//	pending   — one sequence is bound to one record whose fate is unknown
+//	reconciled — that record's fate is settled and the cursor has moved
+//
+// A record whose outcome is unknown is not forgotten and its sequence is not
+// reused. It is re-presented, unchanged, at the same sequence: the control
+// plane replays an identical record at the previous sequence rather than
+// conflicting on it, so a lost response costs one redundant POST and nothing
+// else. That reconciliation happens inside this call, before it returns, so
+// the ordinary response-loss case ends in success — which is what keeps a
+// caller's own bookkeeping (the Engine.Observe that follows this in
+// processor.go) from being skipped for a record the run actually holds.
+//
+// Nothing retries on a timer, in the background, or with a fresh context.
+// There is exactly one extra attempt per call, made synchronously under the
+// same ctx; a sink that still cannot resolve the record reports
+// ErrUnresolved and refuses to accept another one until it can.
+//
+// The cursor advances only to the server's number, and only on a recognized
+// disposition. Nothing is derived locally.
 func (s *Sink) Record(ctx context.Context, record trustvian.DecisionRecord) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -109,7 +171,64 @@ func (s *Sink) Record(ctx context.Context, record trustvian.DecisionRecord) (str
 		return "", errors.New("evaluation sink used before its ingest state was read")
 	}
 
+	// Anything left unresolved by an earlier call is settled first. Until it
+	// is, the cursor still points at its sequence, and handing that sequence
+	// to this record would either conflict against the committed one or
+	// silently take its place.
+	if s.pending != nil {
+		if _, err := s.reconcile(ctx); err != nil {
+			return "", err
+		}
+	}
+
 	sequence := s.next
+	disposition, err := s.attempt(ctx, sequence, record)
+	if err == nil {
+		return disposition, nil
+	}
+	if !outcomeUnknown(err) {
+		// The server declined it, so the record is not there and the
+		// sequence was never consumed. The next record takes it.
+		return "", err
+	}
+
+	// The outcome is unknown: this record may already be durable at this
+	// sequence. Bind the two together before anything else can use either,
+	// then settle it in this same call.
+	s.pending = &pendingRecord{sequence: sequence, record: record}
+	return s.reconcile(ctx)
+}
+
+// reconcile re-presents the pending record at its own sequence.
+//
+// Success — applied or replayed, the server's choice — is what proves the
+// record's fate and releases the sequence. Any failure, definitive or not,
+// leaves it pending: once the first attempt's outcome was unknown, nothing a
+// later attempt reports can prove the record is absent, so its sequence
+// stays bound to it rather than being handed on.
+func (s *Sink) reconcile(ctx context.Context) (string, error) {
+	held := s.pending
+	disposition, err := s.attempt(ctx, held.sequence, held.record)
+	if err != nil {
+		return "", fmt.Errorf(
+			"%w: sequence %d holds a record the control plane may already have; "+
+				"it must be reconciled before another record can use that sequence: %w",
+			ErrUnresolved, held.sequence, err)
+	}
+	s.pending = nil
+	return disposition, nil
+}
+
+// attempt posts one record at one sequence and advances the cursor on a
+// recognized success.
+//
+// Both refusals below mark the outcome unknown rather than definitive: the
+// server answered 2xx, so it accepted the record, and a reply this client
+// cannot make sense of hides what it did rather than proving it did nothing.
+// Failing closed and holding the sequence are the same decision here.
+func (s *Sink) attempt(
+	ctx context.Context, sequence uint64, record trustvian.DecisionRecord,
+) (string, error) {
 	result, err := s.client.ingest(ctx, s.runID, sequence, s.profile, record)
 	if err != nil {
 		return "", err
@@ -121,15 +240,16 @@ func (s *Sink) Record(ctx context.Context, record trustvian.DecisionRecord) (str
 		// Fail closed. An unrecognized disposition may or may not mean the
 		// record landed, and recording it as a success would report evidence
 		// that might not exist.
-		return "", fmt.Errorf("control plane reported unrecognized disposition %q", result.Disposition)
+		return "", unknownOutcome(fmt.Errorf(
+			"control plane reported unrecognized disposition %q", result.Disposition))
 	}
 
 	if result.NextSequence <= sequence {
 		// A server claiming success without advancing would freeze the
 		// cursor, and every later span would conflict against it forever.
-		return "", fmt.Errorf(
+		return "", unknownOutcome(fmt.Errorf(
 			"control plane accepted sequence %d but reports %d next; the cursor did not advance",
-			sequence, result.NextSequence)
+			sequence, result.NextSequence))
 	}
 	s.next = result.NextSequence
 
@@ -141,4 +261,15 @@ func (s *Sink) nextSequence() uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.next
+}
+
+// pendingSequence reports the held sequence, or 0 when none is held, for
+// tests.
+func (s *Sink) pendingSequence() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pending == nil {
+		return 0
+	}
+	return s.pending.sequence
 }
