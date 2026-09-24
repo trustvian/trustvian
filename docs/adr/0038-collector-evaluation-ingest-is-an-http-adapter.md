@@ -344,6 +344,18 @@ entry reverts, or reported indeterminate if it does not; an unproven release
 means at worst one conservative indeterminate report for a record that was in
 fact settled.
 
+**The entry is bounded at both ends, by one limit.** The reader refuses a
+file over 4 MiB, so the writer refuses an entry that would produce one —
+before the temp file, and therefore before the record can be posted. Without
+that, a process could write a pending state its own restart then refuses to
+read: the record delivered, the note unreadable, and nothing left to say
+which. The ingest request limit does not imply this one, because the entry
+carries a serialized `Result` and the `Result` carries the `Event`'s
+attributes, while a `DecisionRecord` carries none of them — one large span
+attribute makes a small record and a large entry. A record whose entry does
+not fit is refused locally, definitively, before any delivery: nothing is
+sent, nothing is learned, and its sequence goes to the next record.
+
 On Windows there is no portable way to flush a directory handle, so
 `syncDirectory` is a documented no-op there and the guarantee is stated
 honestly rather than claimed: the journal survives a process dying on every

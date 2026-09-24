@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -639,5 +640,80 @@ func TestStoreFailureKeepsRecoveryInformation(t *testing.T) {
 	}
 	if got := cp.nextSequence(); got != 3 {
 		t.Errorf("the run's next sequence = %d, want 3", got)
+	}
+}
+
+// TestOversizedLearningPayloadIsRefusedBeforeDelivery pins the production
+// shape of the bound, rather than handing the sink artificial bytes.
+//
+// The path is real and specific to this design: EventFromSpan copies a
+// span's attributes into Event.Attributes, Result carries that Event, and
+// the sink's pending entry carries a serialized Result — while the
+// DecisionRecord carries no attributes at all. So a span with one large
+// attribute produces a record the control plane would happily accept and an
+// entry the journal cannot hold, and the ingest request limit says nothing
+// about it.
+//
+// A record whose pending entry cannot be written is one a restart could
+// never recover, so nothing is sent: the failure is definitive, local, and
+// before the request.
+func TestOversizedLearningPayloadIsRefusedBeforeDelivery(t *testing.T) {
+	paths := newDurablePaths(t)
+	cp := newIngestAPIServer(t)
+
+	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(),
+		cp.configAt(t, paths.pending, paths.storage()))
+	if err != nil {
+		t.Fatalf("CreateTraces() error = %v", err)
+	}
+
+	// Comfortably past the journal's bound once serialized, and carried by a
+	// field the record itself does not have.
+	td := evaluationTraces("support-agent", "crm.localhost")
+	td.ResourceSpans().At(0).ScopeSpans().At(0).Spans().At(0).
+		Attributes().PutStr("app.payload", strings.Repeat("x", 5<<20))
+
+	err = proc.ConsumeTraces(context.Background(), td)
+	if err == nil {
+		t.Fatal("ConsumeTraces() error = nil, want a record whose pending entry cannot be written refused")
+	}
+	if !consumererror.IsPermanent(err) {
+		t.Error("error is not permanent")
+	}
+	if errors.Is(err, evaluation.ErrUnresolved) ||
+		errors.Is(err, evaluation.ErrLearningIndeterminate) {
+		t.Errorf("error = %v, want a definitive failure: nothing was sent, nothing was accepted, "+
+			"and nothing was learned", err)
+	}
+
+	if got := len(cp.recorded()); got != 0 {
+		t.Errorf("control plane holds %d records, want 0 — the entry precedes the request", got)
+	}
+	if got := totalObservations(learnedFingerprints(t, paths.baseline)); got != 0 {
+		t.Errorf("the durable baseline holds %v observations, want 0", got)
+	}
+	if _, statErr := os.Stat(paths.pending); !os.IsNotExist(statErr) {
+		t.Errorf("a pending entry exists at %s: %v — an entry that cannot be written must leave "+
+			"nothing a restart would then refuse to read", paths.pending, statErr)
+	}
+
+	// The sequence the refused span did not take is still sequence 1.
+	if err := proc.ConsumeTraces(context.Background(),
+		evaluationTraces("support-agent", "knowledge.localhost")); err != nil {
+		t.Fatalf("ConsumeTraces() error = %v; sequence 1 must still be usable", err)
+	}
+	records := cp.recorded()
+	if len(records) != 1 {
+		t.Fatalf("control plane holds %d records, want 1", len(records))
+	}
+	if records[0].Behavior.TargetName != "knowledge.localhost" {
+		t.Errorf("sequence 1 holds %q, want the span that followed the refused one",
+			records[0].Behavior.TargetName)
+	}
+	if got := cp.nextSequence(); got != 2 {
+		t.Errorf("the run's next sequence = %d, want 2", got)
+	}
+	if got := totalObservations(learnedFingerprints(t, paths.baseline)); got != 1 {
+		t.Errorf("the durable baseline holds %v observations, want 1", got)
 	}
 }

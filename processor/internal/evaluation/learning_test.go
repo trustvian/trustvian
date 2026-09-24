@@ -352,3 +352,68 @@ func TestUnprovenReleaseIsReportedAndRecoverable(t *testing.T) {
 		t.Errorf("evidence holds %d records, want 2", got)
 	}
 }
+
+// TestOversizedLearningSendsNothing proves the write-ahead ordering still
+// holds when the intent itself cannot be represented.
+//
+// A record whose pending entry does not fit the journal is one a restart
+// could never recover, so it must not reach the control plane: the entry
+// comes first precisely so that nothing is ever in flight without a durable
+// note of it, and "the note cannot be written" is the same answer as "the
+// note could not be made durable".
+//
+// The failure is definitive and must stay that way. No request was sent, no
+// evidence was accepted and no learning was attempted, so it is neither an
+// unresolved delivery nor an indeterminate learning — and the sequence it
+// did not consume belongs to the next record.
+func TestOversizedLearningSendsNothing(t *testing.T) {
+	server := newReplayServer(t)
+	path := filepath.Join(t.TempDir(), "pending.json")
+	sink, learner := newTestSinkWith(t, server.URL, path)
+
+	oversized := []byte(`{"pad":"` + strings.Repeat("x", maxPendingFile) + `"}`)
+	_, err := sink.Record(context.Background(),
+		trustvian.DecisionRecord{EventID: "A"}, oversized)
+	if err == nil {
+		t.Fatal("Record() error = nil, want an entry its own reader would reject refused")
+	}
+	if !strings.Contains(err.Error(), "limit") {
+		t.Errorf("error = %q, want it to name the limit", err.Error())
+	}
+	if errors.Is(err, ErrUnresolved) || errors.Is(err, ErrLearningIndeterminate) {
+		t.Errorf("error = %v, want a definitive failure: nothing was sent, nothing was accepted, "+
+			"and nothing was learned", err)
+	}
+
+	if got := server.postCount(); got != 0 {
+		t.Errorf("server saw %d POSTs, want 0 — the intent must be durable before the request", got)
+	}
+	if got := len(server.durable()); got != 0 {
+		t.Errorf("evidence holds %d records, want 0", got)
+	}
+	if got := len(learner.calls()); got != 0 {
+		t.Errorf("learning applied %d times, want 0", got)
+	}
+	if got := sink.nextSequence(); got != 1 {
+		t.Errorf("cursor = %d, want 1 — an unsent record consumes no sequence", got)
+	}
+	if got := sink.pendingSequence(); got != 0 {
+		t.Errorf("held sequence = %d, want none — nothing is in flight", got)
+	}
+	if pendingExists(t, path) {
+		t.Error("a pending entry was left behind for a record that was never sent")
+	}
+
+	// The sequence it did not take is still there for the next record.
+	recordB := trustvian.DecisionRecord{EventID: "B"}
+	if _, err := sink.Record(context.Background(), recordB, learningFor("B")); err != nil {
+		t.Fatalf("Record(B) error = %v; sequence 1 must still be usable", err)
+	}
+	durable := server.durable()
+	if len(durable) != 1 || durable[0] != recordDigest(t, recordB) {
+		t.Errorf("evidence = %v, want only B at sequence 1", durable)
+	}
+	if got := learner.calls(); len(got) != 1 || got[0] != string(learningFor("B")) {
+		t.Errorf("learning applied = %v, want only B's", got)
+	}
+}

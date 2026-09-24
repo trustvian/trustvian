@@ -31,8 +31,19 @@ const (
 	// re-presenting a record or re-applying learning.
 	pendingVersion = "1"
 
-	// maxPendingFile bounds what is read back. The entry is one record and
-	// one Result; anything far larger is not a file this wrote.
+	// maxPendingFile bounds the entry, on the way out as well as back in.
+	//
+	// One bound, enforced at both ends, because the reader and the writer are
+	// the same implementation: an entry this writer accepts must be one this
+	// reader can recover. Bounding only the read is what lets a process write
+	// a pending state its own restart then refuses — the record delivered,
+	// the note unreadable, and no way left to tell which.
+	//
+	// It is not implied by the ingest request limit. The learning payload is
+	// a serialized Result, which carries the Event, which carries whatever
+	// attributes the span had; a DecisionRecord carries none of them (see the
+	// core module's decision_record.go), so a span with one large attribute
+	// produces a small record and a large entry.
 	maxPendingFile = 4 << 20
 )
 
@@ -66,6 +77,19 @@ type pendingEntry struct {
 	State    pendingState             `json:"state"`
 	Record   trustvian.DecisionRecord `json:"record"`
 	Learning json.RawMessage          `json:"learning"`
+}
+
+// stateHeadroom is how many bytes this entry grows by if it is written again
+// in the longest state it can reach.
+//
+// The two renderings differ in nothing but the state string, so this is
+// exact rather than an estimate.
+func stateHeadroom(state pendingState) int {
+	longest := len(statePosting)
+	if len(stateConfirmed) > longest {
+		longest = len(stateConfirmed)
+	}
+	return longest - len(state)
 }
 
 // journal stores exactly one pendingEntry at a fixed path.
@@ -122,6 +146,20 @@ func (j *journal) write(entry pendingEntry) error {
 	raw, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("encode: %w", err)
+	}
+	// Checked against the largest form this entry can take, not the one
+	// being written. A posting entry becomes a confirmed one in place, and
+	// "confirmed" is the longer word: an entry that fit on the way in and
+	// not on the way to confirmed would be a record the control plane has
+	// already accepted and nothing can ever settle, in this process or any
+	// after it.
+	//
+	// Before the temp file, so an entry that cannot be represented leaves
+	// nothing behind — and, because the sink writes this before it posts,
+	// before the record can reach the control plane at all.
+	if size := len(raw) + stateHeadroom(entry.State); size > maxPendingFile {
+		return fmt.Errorf(
+			"pending ingest state is %d bytes, over the %d byte limit", size, maxPendingFile)
 	}
 
 	dir := filepath.Dir(j.path)

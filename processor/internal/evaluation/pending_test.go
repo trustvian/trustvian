@@ -1,6 +1,7 @@
 package evaluation
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -192,5 +193,120 @@ func TestJournalClearReportsAnUnprovenRemoval(t *testing.T) {
 func TestSyncDirectoryOnARealDirectory(t *testing.T) {
 	if err := syncDirectory(t.TempDir()); err != nil {
 		t.Fatalf("syncDirectory() error = %v", err)
+	}
+}
+
+// entryOfEncodedSize builds an entry whose JSON encoding is exactly size
+// bytes, by padding the learning payload.
+//
+// Sizes are derived rather than assumed: the payload is plain ASCII inside a
+// JSON string, so each byte added to it adds exactly one byte to the
+// encoding, and the difference from a one-byte payload gives the overhead
+// without this test having to know anything about the entry's shape.
+func entryOfEncodedSize(t *testing.T, state pendingState, size int) pendingEntry {
+	t.Helper()
+	entry := testEntry(state)
+	entry.Learning = []byte(`{"pad":""}`)
+	base, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	pad := size - len(base)
+	if pad < 0 {
+		t.Fatalf("an entry cannot be smaller than its own %d byte envelope", len(base))
+	}
+	entry.Learning = []byte(`{"pad":"` + strings.Repeat("x", pad) + `"}`)
+
+	encoded, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if len(encoded) != size {
+		t.Fatalf("built an entry of %d bytes, want %d", len(encoded), size)
+	}
+	return entry
+}
+
+// TestJournalRefusesAnEntryItsReaderWouldReject is the invariant the two
+// bounds exist to hold together: what this writer accepts, this reader
+// recovers. A file over the limit is not "not one this wrote" — without the
+// write-side check it is exactly what this wrote, and what the next process
+// then refuses to read.
+//
+// The limit is approached from both sides rather than with an arbitrary
+// large payload, so the two ends cannot drift apart unnoticed.
+func TestJournalRefusesAnEntryItsReaderWouldReject(t *testing.T) {
+	// A posting entry is checked in the form it will take once confirmed,
+	// because that is the write that has to succeed after the record is
+	// already in the run.
+	largest := maxPendingFile - stateHeadroom(statePosting)
+
+	tests := []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{name: "at the limit", size: largest},
+		{name: "one byte over", size: largest + 1, wantErr: true},
+		{name: "far over", size: maxPendingFile * 2, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "pending.json")
+			j, err := newJournal(path)
+			if err != nil {
+				t.Fatalf("newJournal() error = %v", err)
+			}
+
+			entry := entryOfEncodedSize(t, statePosting, tt.size)
+			err = j.write(entry)
+
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("write() error = %v, want an entry at the limit accepted", err)
+				}
+				got, found, loadErr := j.load()
+				if loadErr != nil || !found {
+					t.Fatalf("load() = (found %t, %v), want the entry this writer accepted",
+						found, loadErr)
+				}
+				if string(got.Learning) != string(entry.Learning) {
+					t.Error("the recovered learning payload differs from the written one")
+				}
+				// And the confirmed rewrite — the one that happens after the
+				// control plane has the record — must fit too.
+				confirmed := entry
+				confirmed.State = stateConfirmed
+				if err := j.write(confirmed); err != nil {
+					t.Errorf("write(confirmed) error = %v; an entry that fit on the way in must "+
+						"still fit once the record is in the run, or it could never be settled", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatal("write() error = nil, want an entry its own reader would reject refused")
+			}
+			if !strings.Contains(err.Error(), "limit") {
+				t.Errorf("error = %q, want it to name the limit", err.Error())
+			}
+			// Nothing written, and nothing left behind: no entry, and no
+			// temp file for a reader to find either.
+			if _, found, loadErr := j.load(); found || loadErr != nil {
+				t.Errorf("load() = (found %t, %v), want nothing to recover", found, loadErr)
+			}
+			names, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatalf("ReadDir() error = %v", err)
+			}
+			if len(names) != 0 {
+				left := make([]string, 0, len(names))
+				for _, n := range names {
+					left = append(left, n.Name())
+				}
+				t.Errorf("directory holds %v, want nothing — the check precedes the temp file", left)
+			}
+		})
 	}
 }

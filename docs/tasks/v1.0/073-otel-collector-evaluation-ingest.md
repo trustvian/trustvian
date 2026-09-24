@@ -393,8 +393,13 @@ today. They are not evaluation failures; there is no decision to record.
 ## HTTP Bounds
 
 ```text
-pending state      one entry, written before each request and released when
-                   its record is settled (pending_state_path)
+pending state      one entry, ≤ 4 MiB encoded, written before each request
+                   and released when its record is settled
+                   (pending_state_path). The writer enforces the bound the
+                   reader enforces, so an entry a restart could not read is
+                   refused before the record is sent — it is not implied by
+                   the request limit, since the entry carries the Result's
+                   Event attributes and a DecisionRecord carries none
 request timeout    30s per request
 request body       ≤ 256 KiB   (matches the server's own limit)
 response body      ≤ 64 KiB
