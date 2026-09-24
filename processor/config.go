@@ -3,6 +3,7 @@ package trustvianprocessor
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -214,6 +215,27 @@ type EvaluationConfig struct {
 	// The field exists rather than being omitted so the configuration states
 	// the guarantee explicitly instead of relying on a default nobody read.
 	Required *bool `mapstructure:"required"`
+
+	// PendingStatePath is where this Collector keeps the durable intent for
+	// the one record it may have in flight: the sequence, the record, and
+	// the learning that record owes once the control plane confirms it.
+	//
+	// Required, for the same reason Required is. Evidence lives in the
+	// control plane and learning lives in the Engine's store, and neither
+	// can be written inside the other's transaction — so a process that dies
+	// between them leaves a question only a durable local note can answer:
+	// had the record been confirmed, and had its learning been applied? With
+	// nowhere to write that note, a restart with a durable `storage:` block
+	// can silently resume with a baseline holding a record the run does not,
+	// or a run holding a record the baseline never learned from. See ADR
+	// 0038 §10.
+	//
+	// It must live on the same durable medium as the baseline store, not on
+	// a container's own writable layer: a note that disappears with the
+	// process answers nothing. One file per Collector, and per run — the
+	// file names its run, and a sink refuses to start against a different
+	// one rather than discarding an unsettled record.
+	PendingStatePath string `mapstructure:"pending_state_path"`
 }
 
 // validate rejects an evaluation block that cannot work, at construction.
@@ -237,6 +259,11 @@ func (e EvaluationConfig) validate() error {
 	}
 	if e.Required == nil {
 		return errors.New("required must be set to true; an evaluation that may silently lose evidence is not supported")
+	}
+	if strings.TrimSpace(e.PendingStatePath) == "" {
+		return errors.New(
+			"pending_state_path is required; without durable pending state a restart cannot tell " +
+				"a record the control plane holds from one it never received")
 	}
 	if !*e.Required {
 		return errors.New("required must be true; required: false is not supported, because a run with missing evidence would still report as complete")

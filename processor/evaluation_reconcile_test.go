@@ -34,7 +34,7 @@ func TestEvaluationLostResponseIsReconciled(t *testing.T) {
 	cp.dropOnAttempt.Store(1) // committed, then the reply is destroyed
 
 	next := &capturingConsumer{}
-	proc, err := newTestProcessorWithConfig(t, next, cp.config())
+	proc, err := newTestProcessorWithConfig(t, next, cp.config(t))
 	if err != nil {
 		t.Fatalf("CreateTraces() error = %v", err)
 	}
@@ -79,7 +79,7 @@ func TestEvaluationLostResponseStillObserves(t *testing.T) {
 	cp := newIngestAPIServer(t)
 	cp.dropOnAttempt.Store(1)
 
-	proc, gather := newMeteredProcessor(t, cp.config())
+	proc, gather := newMeteredProcessor(t, cp.config(t))
 	if err := proc.ConsumeTraces(context.Background(),
 		evaluationTraces("support-agent", "crm.localhost")); err != nil {
 		t.Fatalf("ConsumeTraces() error = %v", err)
@@ -104,16 +104,21 @@ func TestEvaluationLostResponseStillObserves(t *testing.T) {
 	}
 }
 
-// TestEvaluationUnresolvedRecordStillObserves covers the case reconciliation
-// cannot finish inside the call: every attempt's response is destroyed. The
-// batch fails permanently — but the record may well be durable, and the sink
-// is holding its sequence to re-present it, so the learning that belongs with
-// it must already be recorded rather than lost with the batch.
-func TestEvaluationUnresolvedRecordStillObserves(t *testing.T) {
+// TestEvaluationUnresolvedRecordIsNotObserved covers the case reconciliation
+// cannot finish inside the call: every attempt's response is destroyed.
+//
+// Nothing is learned from that record. "Unknown" is not "committed", and
+// with a durable store the difference outlives the process: an observation
+// applied here survives a restart the sink's own pending state would
+// otherwise have completed, and the run may never have received the record
+// at all. The learning waits for the control plane's answer — in this
+// process or the next one (see the restart tests in
+// evaluation_restart_test.go).
+func TestEvaluationUnresolvedRecordIsNotObserved(t *testing.T) {
 	cp := newIngestAPIServer(t)
 	cp.dropAlways.Store(true)
 
-	proc, gather := newMeteredProcessor(t, cp.config())
+	proc, gather := newMeteredProcessor(t, cp.config(t))
 	err := proc.ConsumeTraces(context.Background(),
 		evaluationTraces("support-agent", "crm.localhost"))
 	if err == nil {
@@ -122,11 +127,15 @@ func TestEvaluationUnresolvedRecordStillObserves(t *testing.T) {
 	if !consumererror.IsPermanent(err) {
 		t.Errorf("error is not permanent; a retried batch would resend the record under a new sequence")
 	}
+	if !errors.Is(err, evaluation.ErrUnresolved) {
+		t.Errorf("error = %v, want it reported as unresolved", err)
+	}
 
 	counts := outcomes(t, gather())
-	if total := sumValues(counts["trustvian.observations"]); total != 1 {
-		t.Errorf("observations total = %d, want 1: %v — the record may be durable, so the "+
-			"Engine must not be left behind the evidence", total, counts["trustvian.observations"])
+	if total := sumValues(counts["trustvian.observations"]); total != 0 {
+		t.Errorf("observations total = %d, want 0: %v — an unconfirmed record must not be learned from, "+
+			"because a durable baseline would keep that learning across the restart that settles it",
+			total, counts["trustvian.observations"])
 	}
 	if got := counts["trustvian.evaluation.records"][tvmetrics.OutcomeError]; got != 1 {
 		t.Errorf("evaluation.records{error} = %d, want 1 — an unresolved record is still a failure", got)
@@ -141,7 +150,7 @@ func TestEvaluationDeclinedRecordIsNotObserved(t *testing.T) {
 	cp := newIngestAPIServer(t)
 	cp.rejectOnAttempt.Store(1)
 
-	proc, gather := newMeteredProcessor(t, cp.config())
+	proc, gather := newMeteredProcessor(t, cp.config(t))
 	err := proc.ConsumeTraces(context.Background(),
 		evaluationTraces("support-agent", "crm.localhost"))
 	if err == nil {
@@ -174,7 +183,7 @@ func TestEvaluationObservesExactlyOncePerSpan(t *testing.T) {
 	cp := newIngestAPIServer(t)
 	cp.dropOnAttempt.Store(2) // the second span's response is destroyed
 
-	proc, gather := newMeteredProcessor(t, cp.config())
+	proc, gather := newMeteredProcessor(t, cp.config(t))
 	td := evaluationTracesN("support-agent", "crm.localhost", "knowledge.localhost", "files.localhost")
 	if err := proc.ConsumeTraces(context.Background(), td); err != nil {
 		t.Fatalf("ConsumeTraces() error = %v", err)
@@ -202,7 +211,7 @@ func TestEvaluationUnresolvedErrorIsReportedAsSuch(t *testing.T) {
 	t.Run("lost response is unresolved", func(t *testing.T) {
 		cp := newIngestAPIServer(t)
 		cp.dropAlways.Store(true)
-		proc, err := newTestProcessorWithConfig(t, &capturingConsumer{}, cp.config())
+		proc, err := newTestProcessorWithConfig(t, &capturingConsumer{}, cp.config(t))
 		if err != nil {
 			t.Fatalf("CreateTraces() error = %v", err)
 		}
@@ -219,7 +228,7 @@ func TestEvaluationUnresolvedErrorIsReportedAsSuch(t *testing.T) {
 	t.Run("declined record is not unresolved", func(t *testing.T) {
 		cp := newIngestAPIServer(t)
 		cp.rejectOnAttempt.Store(1)
-		proc, err := newTestProcessorWithConfig(t, &capturingConsumer{}, cp.config())
+		proc, err := newTestProcessorWithConfig(t, &capturingConsumer{}, cp.config(t))
 		if err != nil {
 			t.Fatalf("CreateTraces() error = %v", err)
 		}

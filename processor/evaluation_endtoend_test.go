@@ -164,14 +164,16 @@ func readProgress(t *testing.T, apiURL, runID string) progressBody {
 // forgotten in the other. It returns a pointer because component.Config is
 // an interface and CreateTraces expects *Config.
 func evaluationConfigFor(
-	apiURL, runID, profile string, required *bool,
+	t *testing.T, apiURL, runID, profile string, required *bool,
 ) *trustvianprocessor.Config {
+	t.Helper()
 	return &trustvianprocessor.Config{
 		Evaluation: &trustvianprocessor.EvaluationConfig{
 			APIURL:            apiURL,
 			RunID:             runID,
 			BehavioralProfile: profile,
 			Required:          required,
+			PendingStatePath:  filepath.Join(t.TempDir(), "pending.json"),
 		},
 	}
 }
@@ -201,7 +203,7 @@ func TestEndToEndSpanReachesEvaluationProgress(t *testing.T) {
 	postJSON(t, apiURL, "/v1/evaluation-runs/"+runID+"/start", nil)
 
 	required := true
-	cfg := evaluationConfigFor(apiURL, runID, profile, &required)
+	cfg := evaluationConfigFor(t, apiURL, runID, profile, &required)
 
 	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cfg)
 	if err != nil {
@@ -259,7 +261,7 @@ func TestEndToEndResumesFromTheServerCursor(t *testing.T) {
 
 	required := true
 	consume := func() {
-		cfg := evaluationConfigFor(apiURL, runID, profile, &required)
+		cfg := evaluationConfigFor(t, apiURL, runID, profile, &required)
 		proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cfg)
 		if err != nil {
 			t.Fatalf("CreateTraces() error = %v", err)
@@ -296,7 +298,13 @@ type lossyProxy struct {
 	*httptest.Server
 	upstream string
 	lose     atomic.Bool
-	lost     atomic.Int64
+
+	// loseAll destroys every record response rather than the next one —
+	// what a restart test needs, since the sink's own in-call
+	// reconciliation would otherwise settle the record before the process
+	// could be discarded with it pending.
+	loseAll atomic.Bool
+	lost    atomic.Int64
 }
 
 func newLossyProxy(t *testing.T, upstream string) *lossyProxy {
@@ -328,7 +336,7 @@ func newLossyProxy(t *testing.T, upstream string) *lossyProxy {
 		}
 
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/records") &&
-			p.lose.CompareAndSwap(true, false) {
+			(p.loseAll.Load() || p.lose.CompareAndSwap(true, false)) {
 			// The upstream has committed and answered. Destroying the
 			// connection here is precisely the failure the Collector cannot
 			// distinguish from a record that never arrived.
@@ -378,7 +386,7 @@ func TestEndToEndLostResponseIsReplayedUpstream(t *testing.T) {
 
 	proxy := newLossyProxy(t, apiURL)
 	required := true
-	cfg := evaluationConfigFor(proxy.URL, runID, profile, &required)
+	cfg := evaluationConfigFor(t, proxy.URL, runID, profile, &required)
 
 	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cfg)
 	if err != nil {
@@ -410,5 +418,92 @@ func TestEndToEndLostResponseIsReplayedUpstream(t *testing.T) {
 	}
 	if progress.NextIngestSequence != "3" {
 		t.Errorf("next_ingest_sequence = %q, want 3", progress.NextIngestSequence)
+	}
+}
+
+// TestEndToEndRestartCompletesAPendingRecord drives the restart path through
+// the real chain: the control plane commits the record, every reply is
+// destroyed, the processor is discarded with the record unsettled, and a
+// second one starts over the same pending state.
+//
+// The stub servers elsewhere implement the replay rule as this module
+// understands it. This asserts it against the control plane's own
+// RecordDigest — the only authority on whether a re-presented record is
+// recognized as the same one — using the run's own counters, where a second
+// copy would show up as record_count 3 rather than 2.
+func TestEndToEndRestartCompletesAPendingRecord(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end test builds and runs the platform runtime")
+	}
+
+	apiURL := startLocalRuntime(t)
+	const runID, profile = "run-restart", "support-restart"
+
+	postJSON(t, apiURL, "/v1/projects", map[string]string{"id": "p", "name": "P"})
+	postJSON(t, apiURL, "/v1/agents", map[string]string{
+		"id": "a", "project_id": "p", "name": "A"})
+	postJSON(t, apiURL, "/v1/candidates", map[string]any{
+		"id": "c", "agent_id": "a", "metadata": map[string]string{}})
+	postJSON(t, apiURL, "/v1/evaluation-runs", map[string]string{
+		"id": runID, "candidate_id": "c",
+		"environment": "local", "behavioral_profile": profile})
+	postJSON(t, apiURL, "/v1/evaluation-runs/"+runID+"/start", nil)
+
+	// One pending state file, inherited by the second processor exactly as a
+	// restarted container inherits its volume.
+	pending := filepath.Join(t.TempDir(), "pending.json")
+	required := true
+	withPending := func(apiURL string) *trustvianprocessor.Config {
+		cfg := evaluationConfigFor(t, apiURL, runID, profile, &required)
+		cfg.Evaluation.PendingStatePath = pending
+		return cfg
+	}
+
+	proxy := newLossyProxy(t, apiURL)
+	proxy.loseAll.Store(true)
+
+	first, err := newTestProcessorWithConfig(t, consumertest.NewNop(), withPending(proxy.URL))
+	if err != nil {
+		t.Fatalf("CreateTraces() error = %v", err)
+	}
+	if err := first.ConsumeTraces(context.Background(),
+		evaluationTraces("support-agent", "crm.localhost")); err == nil {
+		t.Fatal("ConsumeTraces() error = nil, want the unresolved ingest surfaced")
+	}
+	if proxy.lost.Load() == 0 {
+		t.Fatal("the proxy never destroyed a response; this test proved nothing")
+	}
+
+	progress := readProgress(t, apiURL, runID)
+	if progress.RecordCount != "1" || progress.NextIngestSequence != "2" {
+		t.Fatalf("progress = %+v, want one record and next sequence 2 — the control plane committed "+
+			"before the reply was destroyed", progress)
+	}
+
+	// The first processor is discarded with that record unsettled. The
+	// second talks to the control plane directly.
+	second, err := newTestProcessorWithConfig(t, consumertest.NewNop(), withPending(apiURL))
+	if err != nil {
+		t.Fatalf("CreateTraces() error = %v", err)
+	}
+	if got := readProgress(t, apiURL, runID); got.RecordCount != "1" || got.NextIngestSequence != "2" {
+		t.Errorf("progress after recovery = %+v, want one record and next sequence 2 — "+
+			"re-presenting the record must replay, not add a second copy", got)
+	}
+
+	// And the run continues from the server's cursor.
+	if err := second.ConsumeTraces(context.Background(),
+		evaluationTraces("support-agent", "knowledge.localhost")); err != nil {
+		t.Fatalf("ConsumeTraces() error = %v", err)
+	}
+	progress = readProgress(t, apiURL, runID)
+	if progress.RecordCount != "2" {
+		t.Errorf("record_count = %q, want 2", progress.RecordCount)
+	}
+	if progress.NextIngestSequence != "3" {
+		t.Errorf("next_ingest_sequence = %q, want 3", progress.NextIngestSequence)
+	}
+	if progress.DistinctBehaviorCount != 2 {
+		t.Errorf("distinct_behavior_count = %d, want 2", progress.DistinctBehaviorCount)
 	}
 }

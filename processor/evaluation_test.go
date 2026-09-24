@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -202,20 +203,47 @@ func hijackAndClose(w http.ResponseWriter) {
 // decimal text, never a JSON number.
 func itoa(v uint64) string { return strconv.FormatUint(v, 10) }
 
+// nextSequence is the run's own cursor, which is what a restart test has to
+// assert on: it is the number a second processor reads back, not a number
+// any Collector kept.
+func (cp *ingestAPIServer) nextSequence() uint64 {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	return cp.next
+}
+
 func (cp *ingestAPIServer) recorded() []trustvian.DecisionRecord {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
 	return append([]trustvian.DecisionRecord(nil), cp.records...)
 }
 
-func (cp *ingestAPIServer) config() *trustvianprocessor.Config {
+// config points a processor at this server, with its own pending state file.
+//
+// Takes t because the pending state path is per-test: it is durable by
+// design, and two tests sharing one would each inherit the other's unsettled
+// records.
+func (cp *ingestAPIServer) config(t *testing.T) *trustvianprocessor.Config {
+	t.Helper()
+	return cp.configAt(t, filepath.Join(t.TempDir(), "pending.json"), nil)
+}
+
+// configAt is config with an explicit pending state path and optional
+// storage — what a restart test needs, since those two files are the only
+// things a second processor inherits from the first.
+func (cp *ingestAPIServer) configAt(
+	t *testing.T, pendingPath string, storage map[string]any,
+) *trustvianprocessor.Config {
+	t.Helper()
 	required := true
 	return &trustvianprocessor.Config{
+		Storage: storage,
 		Evaluation: &trustvianprocessor.EvaluationConfig{
 			APIURL:            cp.URL,
 			RunID:             "run-1",
 			BehavioralProfile: "support-reference",
 			Required:          &required,
+			PendingStatePath:  pendingPath,
 		},
 	}
 }
@@ -280,7 +308,7 @@ func TestEvaluationPostsTheRealDecisionRecord(t *testing.T) {
 	cp := newIngestAPIServer(t)
 	next := &capturingConsumer{}
 
-	proc, err := newTestProcessorWithConfig(t, next, cp.config())
+	proc, err := newTestProcessorWithConfig(t, next, cp.config(t))
 	if err != nil {
 		t.Fatalf("CreateTraces() error = %v", err)
 	}
@@ -363,7 +391,7 @@ func TestEvaluationFailureIsPermanent(t *testing.T) {
 	cp.failNext.Store(true)
 	next := &capturingConsumer{}
 
-	proc, err := newTestProcessorWithConfig(t, next, cp.config())
+	proc, err := newTestProcessorWithConfig(t, next, cp.config(t))
 	if err != nil {
 		t.Fatalf("CreateTraces() error = %v", err)
 	}
@@ -386,7 +414,7 @@ func TestEvaluationFailureIsPermanent(t *testing.T) {
 // sit behind it.
 func TestStartInitializesEvaluationWithoutHealthBlock(t *testing.T) {
 	cp := newIngestAPIServer(t)
-	cfg := cp.config()
+	cfg := cp.config(t)
 	if cfg.Health != nil {
 		t.Fatal("this test requires no health block")
 	}
@@ -419,6 +447,7 @@ func TestStartFailsWhenTheAPIIsUnreachable(t *testing.T) {
 	required := true
 	cfg := &trustvianprocessor.Config{Evaluation: &trustvianprocessor.EvaluationConfig{
 		APIURL: url, RunID: "run-1", BehavioralProfile: "p", Required: &required,
+		PendingStatePath: filepath.Join(t.TempDir(), "pending.json"),
 	}}
 
 	factory := trustvianprocessor.NewFactory()
@@ -436,7 +465,7 @@ func TestStartFailsWhenTheAPIIsUnreachable(t *testing.T) {
 // would leave a gap the run never recovers from.
 func TestInvalidSpanConsumesNoSequence(t *testing.T) {
 	cp := newIngestAPIServer(t)
-	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cp.config())
+	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cp.config(t))
 	if err != nil {
 		t.Fatalf("CreateTraces() error = %v", err)
 	}
@@ -479,7 +508,7 @@ func TestEvaluationBatchFailurePartwayLeavesPrefixDurable(t *testing.T) {
 	cp.rejectOnAttempt.Store(2) // the second span's record is declined; the first must already have landed
 	next := &capturingConsumer{}
 
-	proc, err := newTestProcessorWithConfig(t, next, cp.config())
+	proc, err := newTestProcessorWithConfig(t, next, cp.config(t))
 	if err != nil {
 		t.Fatalf("CreateTraces() error = %v", err)
 	}
@@ -515,7 +544,7 @@ func TestEvaluationBatchFailurePartwayLeavesPrefixDurable(t *testing.T) {
 // either would surface as a ConsumeTraces error and a short count below.
 func TestConsumeTracesConcurrentEvaluationIsGapFree(t *testing.T) {
 	cp := newIngestAPIServer(t)
-	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cp.config())
+	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cp.config(t))
 	if err != nil {
 		t.Fatalf("CreateTraces() error = %v", err)
 	}

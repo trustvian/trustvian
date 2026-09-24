@@ -2,6 +2,13 @@ package trustvianprocessor_test
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/collector/component"
@@ -73,6 +80,67 @@ func BenchmarkConsumeTracesWithMetricsSDK(b *testing.B) {
 		b.Fatalf("Start() error = %v", err)
 	}
 	b.Cleanup(func() { _ = proc.Shutdown(context.Background()) })
+
+	td := buildTraces("svc-payment", 0.95)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := proc.ConsumeTraces(context.Background(), td); err != nil {
+			b.Fatalf("ConsumeTraces() error = %v", err)
+		}
+	}
+}
+
+// BenchmarkConsumeTracesWithEvaluation is the price of an
+// evaluation-configured span, measured rather than asserted.
+//
+// Against a loopback stub the request itself is cheap, so what this number
+// actually shows is the cost of the restart guarantee: two durable writes of
+// the pending entry per span — before the request, and after the control
+// plane confirms it (ADR 0038 §10) — plus the JSON round trip of the Result
+// that entry carries. Each write is fsynced, so this measurement is mostly a
+// measurement of the filesystem: on macOS, where Sync means F_FULLFSYNC, it
+// is milliseconds; on a Linux SSD it is a fraction of one.
+//
+// The fsync is the point rather than an oversight. An entry that reached
+// only the page cache survives a process dying, which is the common case,
+// but not the host dying — and a lost entry is exactly the ambiguity this
+// design removes.
+//
+// Compare it against BenchmarkConsumeTraces, which is the same span path
+// with no evaluation block: that one takes no lock, writes no file, and is
+// what every deployment that never configures `evaluation:` still pays.
+func BenchmarkConsumeTracesWithEvaluation(b *testing.B) {
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/progress"):
+			_, _ = io.WriteString(w, `{"version":"1","run_id":"run-1","status":"running"}`)
+		case strings.HasSuffix(r.URL.Path, "/ingest-state"):
+			_, _ = io.WriteString(w, `{"version":"1","run_id":"run-1","next_sequence":"1"}`)
+		default:
+			var envelope struct {
+				Sequence string `json:"sequence"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&envelope)
+			next, _ := strconv.ParseUint(envelope.Sequence, 10, 64)
+			_, _ = io.WriteString(w, `{"version":"1","disposition":"applied","next_sequence":"`+
+				strconv.FormatUint(next+1, 10)+`","record_count":"1","behavior_complete":true}`)
+		}
+	}))
+	defer stub.Close()
+
+	required := true
+	cfg := &trustvianprocessor.Config{Evaluation: &trustvianprocessor.EvaluationConfig{
+		APIURL:            stub.URL,
+		RunID:             "run-1",
+		BehavioralProfile: "support-reference",
+		Required:          &required,
+		PendingStatePath:  filepath.Join(b.TempDir(), "pending.json"),
+	}}
+	proc, err := newTestProcessorWithConfig(b, noopConsumer{}, cfg)
+	if err != nil {
+		b.Fatalf("CreateTraces() error = %v", err)
+	}
 
 	td := buildTraces("svc-payment", 0.95)
 

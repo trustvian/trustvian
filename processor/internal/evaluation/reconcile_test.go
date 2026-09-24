@@ -246,7 +246,7 @@ func TestAmbiguousResponseLossReconcilesTheSameRecord(t *testing.T) {
 
 	// Record A: committed at sequence 1, response lost, reconciled inside
 	// this same call. The caller sees success, because the record is there.
-	disposition, err := sink.Record(context.Background(), recordA)
+	disposition, err := sink.Record(context.Background(), recordA, learningFor("A"))
 	if err != nil {
 		t.Fatalf("Record(A) error = %v; a lost response must be reconciled, not surfaced", err)
 	}
@@ -262,7 +262,7 @@ func TestAmbiguousResponseLossReconcilesTheSameRecord(t *testing.T) {
 	}
 
 	// Record B takes sequence 2, not the sequence A is holding.
-	disposition, err = sink.Record(context.Background(), recordB)
+	disposition, err = sink.Record(context.Background(), recordB, learningFor("B"))
 	if err != nil {
 		t.Fatalf("Record(B) error = %v; sequence 2 must be free and uncontested", err)
 	}
@@ -307,7 +307,7 @@ func TestUnresolvedRecordHoldsItsSequenceAcrossCalls(t *testing.T) {
 	recordA := trustvian.DecisionRecord{EventID: "A", Decision: "allow"}
 	recordB := trustvian.DecisionRecord{EventID: "B", Decision: "block"}
 
-	_, err := sink.Record(context.Background(), recordA)
+	_, err := sink.Record(context.Background(), recordA, learningFor("A"))
 	if err == nil {
 		t.Fatal("Record(A) error = nil, want an unresolved outcome when nothing can be confirmed")
 	}
@@ -327,7 +327,7 @@ func TestUnresolvedRecordHoldsItsSequenceAcrossCalls(t *testing.T) {
 	server.dropAlways = false
 	server.mu.Unlock()
 
-	if _, err := sink.Record(context.Background(), recordB); err != nil {
+	if _, err := sink.Record(context.Background(), recordB, learningFor("B")); err != nil {
 		t.Fatalf("Record(B) error = %v", err)
 	}
 	if got := sink.pendingSequence(); got != 0 {
@@ -356,7 +356,7 @@ func TestDefinitiveRefusalFreesTheSequence(t *testing.T) {
 	recordA := trustvian.DecisionRecord{EventID: "A", Decision: "allow"}
 	recordB := trustvian.DecisionRecord{EventID: "B", Decision: "block"}
 
-	_, err := sink.Record(context.Background(), recordA)
+	_, err := sink.Record(context.Background(), recordA, learningFor("A"))
 	if err == nil {
 		t.Fatal("Record(A) error = nil, want the refusal surfaced")
 	}
@@ -374,7 +374,7 @@ func TestDefinitiveRefusalFreesTheSequence(t *testing.T) {
 		t.Errorf("server saw %d POSTs, want 1 — a definitive refusal must not be retried", got)
 	}
 
-	if _, err := sink.Record(context.Background(), recordB); err != nil {
+	if _, err := sink.Record(context.Background(), recordB, learningFor("B")); err != nil {
 		t.Fatalf("Record(B) error = %v; sequence 1 must be free", err)
 	}
 	durable := server.durable()
@@ -406,7 +406,8 @@ func TestReconciliationIsGapFreeUnderConcurrency(t *testing.T) {
 			defer wg.Done()
 			for i := range each {
 				record := trustvian.DecisionRecord{EventID: fmt.Sprintf("e-%d-%d", g, i)}
-				if _, err := sink.Record(context.Background(), record); err != nil {
+				if _, err := sink.Record(context.Background(), record,
+					learningFor(record.EventID)); err != nil {
 					errs <- err
 				}
 			}
@@ -455,7 +456,7 @@ func TestCanceledContextLeavesTheRecordPendingAndUnreused(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := sink.Record(ctx, recordA)
+	_, err := sink.Record(ctx, recordA, learningFor("A"))
 	if err == nil {
 		t.Fatal("Record(A) error = nil, want the cancellation surfaced")
 	}
@@ -473,7 +474,7 @@ func TestCanceledContextLeavesTheRecordPendingAndUnreused(t *testing.T) {
 	}
 
 	// The next call reconciles A on its own context and only then sends B.
-	if _, err := sink.Record(context.Background(), recordB); err != nil {
+	if _, err := sink.Record(context.Background(), recordB, learningFor("B")); err != nil {
 		t.Fatalf("Record(B) error = %v", err)
 	}
 	durable := server.durable()

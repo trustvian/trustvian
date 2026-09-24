@@ -2,6 +2,7 @@ package trustvianprocessor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -173,15 +174,7 @@ func newTrustvianProcessor(set component.TelemetrySettings, next consumer.Traces
 	// earlier and fail Collector startup sooner. newTrustvianProcessor is
 	// unexported and reached only through the factory, so cfg has already
 	// been validated by the time it reaches here.
-	var sink *evaluation.Sink
 	if cfg.Evaluation != nil {
-		s, sinkErr := evaluation.New(
-			cfg.Evaluation.APIURL, cfg.Evaluation.RunID, cfg.Evaluation.BehavioralProfile)
-		if sinkErr != nil {
-			return nil, fmt.Errorf("trustvianprocessor: evaluation: %w", sinkErr)
-		}
-		sink = s
-
 		// The behavioral profile is the platform's name for a learning scope
 		// (ADR 0024), so configuring one selects it here too. Without this, a
 		// Collector with a durable store would train one baseline across
@@ -192,12 +185,6 @@ func newTrustvianProcessor(set component.TelemetrySettings, next consumer.Traces
 		// this changes which learned history the analysis is compared
 		// against and changes no field the platform validates.
 		opts = append(opts, trustvian.WithLearningScope(cfg.Evaluation.BehavioralProfile))
-
-		// The run and the profile, never the URL's userinfo — and there is
-		// none, because validate rejected it.
-		set.Logger.Info("trustvianprocessor: evaluation ingest configured",
-			zap.String("run_id", cfg.Evaluation.RunID),
-			zap.String("behavioral_profile", cfg.Evaluation.BehavioralProfile))
 	}
 
 	// The Collector always supplies a MeterProvider; a no-op one yields
@@ -223,8 +210,29 @@ func newTrustvianProcessor(set component.TelemetrySettings, next consumer.Traces
 		logger:     set.Logger,
 		closeStore: closeStore,
 		metrics:    m,
-		evaluation: sink,
 		decisions:  make(map[string]uint64),
+	}
+
+	// Constructed after p, because the sink is handed p.learn: the sink owns
+	// the order in which a record is delivered, confirmed, learned from and
+	// released, and that order is what keeps a durable baseline from holding
+	// a record the run does not (see ADR 0038 §9 and §10). The engine stays
+	// out of the sink — all it receives is an opaque payload to hand back.
+	if cfg.Evaluation != nil {
+		sink, sinkErr := evaluation.New(
+			cfg.Evaluation.APIURL, cfg.Evaluation.RunID, cfg.Evaluation.BehavioralProfile,
+			cfg.Evaluation.PendingStatePath, p.learn)
+		if sinkErr != nil {
+			return nil, fmt.Errorf("trustvianprocessor: evaluation: %w", sinkErr)
+		}
+		p.evaluation = sink
+
+		// The run, the profile and where the pending state lives — never the
+		// URL's userinfo, and there is none, because validate rejected it.
+		set.Logger.Info("trustvianprocessor: evaluation ingest configured",
+			zap.String("run_id", cfg.Evaluation.RunID),
+			zap.String("behavioral_profile", cfg.Evaluation.BehavioralProfile),
+			zap.String("pending_state_path", cfg.Evaluation.PendingStatePath))
 	}
 
 	if cfg.Health != nil {
@@ -300,8 +308,40 @@ func (p *trustvianProcessor) Start(ctx context.Context, _ component.Host) error 
 	// and the absence looks identical to a healthy runtime nobody is
 	// evaluating.
 	if p.evaluation != nil {
-		if err := p.evaluation.Initialize(ctx); err != nil {
+		recovery, err := p.evaluation.Initialize(ctx)
+		if err != nil {
 			return fmt.Errorf("trustvianprocessor: evaluation: %w", err)
+		}
+		switch recovery.Outcome {
+		case evaluation.RecoveryCompleted:
+			// A previous process died with this record's fate unknown. The
+			// control plane holds it, so its learning was applied here —
+			// exactly once, because the pending state proved that process
+			// never got that far — before any new span is analyzed.
+			p.logger.Info("trustvianprocessor: finished a record left pending by a previous process",
+				zap.String("run_id", p.evaluation.RunID()),
+				zap.Uint64("sequence", recovery.Sequence),
+				zap.String("disposition", recovery.Disposition))
+		case evaluation.RecoveryDiscarded:
+			// It never reached the run, so nothing was learned from it and
+			// nothing is posted for it now. The span it came from was
+			// dropped with its batch; this is that batch's loss being
+			// visible rather than a new one.
+			p.logger.Warn("trustvianprocessor: a record left pending by a previous process never "+
+				"reached the run and was discarded; nothing was learned from it",
+				zap.String("run_id", p.evaluation.RunID()),
+				zap.Uint64("sequence", recovery.Sequence))
+		case evaluation.RecoveryIndeterminate:
+			// The one case a restart cannot settle: the record is in the run,
+			// and whether the previous process applied its learning before
+			// dying is unknowable. It is not applied again — an observation
+			// applied twice would make a fingerprint look more familiar than
+			// the evidence supports — and this line is what keeps that from
+			// being silent.
+			p.logger.Error("trustvianprocessor: a record the run holds may not have been learned from; "+
+				"its learning was not applied again, because applying it twice cannot be ruled out",
+				zap.String("run_id", p.evaluation.RunID()),
+				zap.Uint64("sequence", recovery.Sequence))
 		}
 		p.logger.Info("trustvianprocessor: evaluation ingest ready",
 			zap.String("run_id", p.evaluation.RunID()))
@@ -465,19 +505,28 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 	// are a five-value subset of what a record carries, and reconstructing
 	// from them would make an evaluation's evidence a function of the
 	// enrichment format.
-	//
-	// ingestErr is held rather than returned here. Observe is what keeps
-	// this processor's own learning aligned with the run's evidence, and
-	// whether it may run depends on which kind of failure this was — see the
-	// two branches below.
-	var ingestErr error
 	if p.evaluation != nil {
+		// The learning travels with the record rather than being applied
+		// here. The sink writes both to its pending state before the request
+		// leaves, and applies the learning only once the control plane has
+		// confirmed the record — which is what keeps a durable baseline from
+		// holding a record the run does not, across a crash as well as
+		// within this call. See ADR 0038 §9.
+		learning, err := json.Marshal(result)
+		if err != nil {
+			// Fail closed. A record whose learning cannot be made durable is
+			// one a restart could not finish, and delivering it anyway is
+			// precisely the divergence this design exists to prevent.
+			p.logger.Error("trustvianprocessor: encoding the record's learning failed",
+				zap.String("span", span.Name()), zap.Error(err))
+			return consumererror.NewPermanent(
+				fmt.Errorf("trustvianprocessor: evaluation ingest: encoding learning: %w", err))
+		}
+
 		ingestStart := time.Now()
-		disposition, err := p.evaluation.Record(ctx, result.DecisionRecord())
+		disposition, err := p.evaluation.Record(ctx, result.DecisionRecord(), learning)
 		ingestDuration := time.Since(ingestStart)
-		if err == nil {
-			p.metrics.RecordEvaluationIngest(ctx, disposition, ingestDuration)
-		} else {
+		if err != nil {
 			p.metrics.RecordEvaluationIngest(ctx, metrics.OutcomeError, ingestDuration)
 			p.logger.Error("trustvianprocessor: evaluation ingest failed",
 				zap.String("span", span.Name()),
@@ -485,33 +534,52 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 				zap.Bool("unresolved", errors.Is(err, evaluation.ErrUnresolved)),
 				zap.Error(err))
 			// Permanent, so the pipeline does not retry. See ConsumeTraces.
-			ingestErr = consumererror.NewPermanent(
+			return consumererror.NewPermanent(
 				fmt.Errorf("trustvianprocessor: evaluation ingest: %w", err))
-
-			if !errors.Is(err, evaluation.ErrUnresolved) {
-				// The control plane declined the record, so the run does not
-				// hold it. Learning from it would put this Result into the
-				// baseline that scores later spans while the evidence a
-				// scorecard reads has no trace of it — divergence in the
-				// direction nothing downstream could detect. Return before
-				// Observe.
-				return ingestErr
-			}
-			// The record may be durable: the sink holds its sequence and
-			// will re-present it. Observe therefore runs, so that if the
-			// record is there — or lands on the next reconciliation — the
-			// learning that belongs with it is already recorded. The batch
-			// still fails, loudly; it just does not fail asymmetrically.
 		}
+		p.metrics.RecordEvaluationIngest(ctx, disposition, ingestDuration)
+		// Observe already ran, inside Record, exactly once, and only because
+		// the control plane confirmed the record.
+		return nil
 	}
 
-	// Observe is always safe to call unconditionally — it is a no-op
-	// for any Decision that isn't learning-eligible (see the core
-	// repository's docs/SECURITY.md § baseline poisoning).
-	//
-	// Exactly once per span on every path above: a Result is never observed
-	// twice, and one whose record is merely unconfirmed is not observed a
-	// second time when that record is later reconciled.
+	p.observe(ctx, span.Name(), result)
+	return nil
+}
+
+// learn applies one record's learning, decoded from the payload the sink
+// holds beside it.
+//
+// The live span and a recovery in a later process go through this same
+// function, on the same bytes. Encoding and decoding the Result on the live
+// path costs a JSON round trip per span and buys the property that matters:
+// what a restart would apply is exactly what this process applies, so a
+// payload that could not carry the learning fails on the first span rather
+// than after a crash.
+func (p *trustvianProcessor) learn(ctx context.Context, learning []byte) error {
+	var result trustvian.Result
+	if err := json.Unmarshal(learning, &result); err != nil {
+		// Fail closed: this is the payload a restart depends on, and one
+		// that cannot be read is one whose record can never be learned from.
+		return fmt.Errorf("decoding the pending learning: %w", err)
+	}
+	p.observe(ctx, "evaluation ingest", result)
+	return nil
+}
+
+// observe folds one Result into the baseline and records the outcome.
+//
+// Observe is always safe to call unconditionally — it is a no-op for any
+// Decision that isn't learning-eligible (see the core repository's
+// docs/SECURITY.md § baseline poisoning).
+//
+// A failure is reported and never fatal, which is deliberate and unchanged:
+// the alternative is a store blip stopping a Collector from forwarding
+// traces. With `evaluation:` configured it means the run can hold a record
+// this baseline did not learn from — reported, in the direction that fails
+// safe, since a fingerprint short one observation looks less familiar rather
+// than more.
+func (p *trustvianProcessor) observe(ctx context.Context, source string, result trustvian.Result) {
 	observeStart := time.Now()
 	learned, err := p.engine.Observe(ctx, result)
 	observeDuration := time.Since(observeStart)
@@ -520,7 +588,9 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 	case err != nil:
 		p.metrics.RecordObservation(ctx, metrics.OutcomeError, observeDuration)
 		p.logger.Warn("trustvianprocessor: Observe failed",
-			zap.String("span", span.Name()), zap.Error(err))
+			zap.String("span", source),
+			zap.String("fingerprint", result.Fingerprint.ID),
+			zap.Error(err))
 	case learned:
 		p.metrics.RecordObservation(ctx, metrics.OutcomeLearned, observeDuration)
 	default:
@@ -529,7 +599,6 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 		// per blocked action.
 		p.metrics.RecordObservation(ctx, metrics.OutcomeNotEligible, observeDuration)
 	}
-	return ingestErr
 }
 
 func (p *trustvianProcessor) recordDecision(decision string) {

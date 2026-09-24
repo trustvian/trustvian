@@ -1,6 +1,7 @@
 package trustvianprocessor_test
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -30,6 +31,7 @@ func TestEvaluationConfigValidation(t *testing.T) {
 			RunID:             "run-reference",
 			BehavioralProfile: "support-reference",
 			Required:          boolPtr(true),
+			PendingStatePath:  filepath.Join(t.TempDir(), "pending.json"),
 		}
 	}
 
@@ -74,6 +76,22 @@ func TestEvaluationConfigValidation(t *testing.T) {
 			mutate:  func(e *trustvianprocessor.EvaluationConfig) { e.Required = boolPtr(false) },
 			wantErr: "required",
 		},
+		{
+			// Without somewhere durable to note a record that is in flight,
+			// a restart cannot tell one the control plane holds from one it
+			// never received — so the block states where that note lives,
+			// the same way it states the delivery guarantee.
+			name:    "missing pending_state_path",
+			mutate:  func(e *trustvianprocessor.EvaluationConfig) { e.PendingStatePath = "" },
+			wantErr: "pending_state_path",
+		},
+		{
+			name: "pending_state_path in a directory that does not exist",
+			mutate: func(e *trustvianprocessor.EvaluationConfig) {
+				e.PendingStatePath = filepath.Join(e.PendingStatePath, "nope", "pending.json")
+			},
+			wantErr: "pending_state_path",
+		},
 	}
 
 	for _, tt := range tests {
@@ -85,12 +103,16 @@ func TestEvaluationConfigValidation(t *testing.T) {
 			_, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cfg)
 			if tt.wantErr == "" {
 				// newTestProcessorWithConfig drives CreateTraces and Start,
-				// and Start now reads the sink's ingest cursor from the stub
+				// and Start reads the sink's ingest cursor from the stub
 				// control plane valid(t) started above (see that comment).
-				// A nil error here already proves construction, validation,
-				// and that live cursor read all succeeded — task 073's own
-				// tests (evaluation_test.go) cover what happens once spans
-				// flow through, so this subtest need not duplicate that.
+				// A nil error here proves construction, validation, the
+				// pending state path, and that live cursor read all
+				// succeeded — task 073's own tests (evaluation_test.go)
+				// cover what happens once spans flow through, so this
+				// subtest need not duplicate that.
+				if err != nil {
+					t.Fatalf("CreateTraces() error = %v, want a valid block accepted", err)
+				}
 				return
 			}
 			if err == nil {
@@ -112,6 +134,7 @@ func TestEvaluationConfigRejectionNeverEchoesCredentials(t *testing.T) {
 		RunID:             "run-reference",
 		BehavioralProfile: "support-reference",
 		Required:          boolPtr(true),
+		PendingStatePath:  filepath.Join(t.TempDir(), "pending.json"),
 	}}
 	_, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cfg)
 	if err == nil {

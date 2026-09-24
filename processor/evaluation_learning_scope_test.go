@@ -69,6 +69,7 @@ func TestEvaluationSelectsLearningScope(t *testing.T) {
 				RunID:             "run-scope",
 				BehavioralProfile: profile,
 				Required:          &required,
+				PendingStatePath:  filepath.Join(t.TempDir(), "pending.json"),
 			},
 		})
 		if err != nil {

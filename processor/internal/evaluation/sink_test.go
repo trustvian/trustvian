@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -101,23 +102,63 @@ func (s *ingestServer) acceptedSequences() []uint64 {
 	return append([]uint64(nil), s.accepted...)
 }
 
+// learnRecorder captures what a sink asked to be learned, in order, so a
+// test can assert the one property the payload exists for: it is applied
+// exactly once, and only for a record the control plane confirmed.
+type learnRecorder struct {
+	mu      sync.Mutex
+	applied []string
+	err     error
+}
+
+func (l *learnRecorder) learn(_ context.Context, learning []byte) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.err != nil {
+		return l.err
+	}
+	l.applied = append(l.applied, string(learning))
+	return nil
+}
+
+func (l *learnRecorder) calls() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.applied...)
+}
+
+// newTestSink builds an initialized sink with its own pending state file.
 func newTestSink(t *testing.T, apiURL string) *Sink {
 	t.Helper()
-	sink, err := New(apiURL, "run-1", "support-reference")
+	sink, _ := newTestSinkWith(t, apiURL, filepath.Join(t.TempDir(), "pending.json"))
+	return sink
+}
+
+// newTestSinkWith builds an initialized sink at an explicit pending state
+// path — what a restart test needs, since the path is the only thing the
+// second sink inherits from the first.
+func newTestSinkWith(t *testing.T, apiURL, pendingPath string) (*Sink, *learnRecorder) {
+	t.Helper()
+	learner := &learnRecorder{}
+	sink, err := New(apiURL, "run-1", "support-reference", pendingPath, learner.learn)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if err := sink.Initialize(context.Background()); err != nil {
+	if _, err := sink.Initialize(context.Background()); err != nil {
 		t.Fatalf("Initialize() error = %v", err)
 	}
-	return sink
+	return sink, learner
 }
+
+// learningFor renders a stand-in payload. The sink never interprets it, so a
+// test only needs it to be distinguishable and non-empty.
+func learningFor(name string) []byte { return []byte(`{"learning":"` + name + `"}`) }
 
 func TestInitializeSeedsCursorFromServer(t *testing.T) {
 	server := newIngestServer(t, 5)
 	sink := newTestSink(t, server.URL)
 
-	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{EventID: "e"}); err != nil {
+	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{EventID: "e"}, learningFor("e")); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
 	got := server.acceptedSequences()
@@ -132,11 +173,12 @@ func TestInitializeSeedsCursorFromServer(t *testing.T) {
 // and fail on the first span.
 func TestInitializeFailsWhenRunIsNotRunning(t *testing.T) {
 	server := newIngestServerWithStatus(t, 1, "pending")
-	sink, err := New(server.URL, "run-1", "support-reference")
+	sink, err := New(server.URL, "run-1", "support-reference",
+		filepath.Join(t.TempDir(), "pending.json"), func(context.Context, []byte) error { return nil })
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	err = sink.Initialize(context.Background())
+	_, err = sink.Initialize(context.Background())
 	if err == nil {
 		t.Fatal("Initialize() error = nil, want a refusal for a run that is not running")
 	}
@@ -147,11 +189,12 @@ func TestInitializeFailsWhenRunIsNotRunning(t *testing.T) {
 
 func TestRecordBeforeInitializeFails(t *testing.T) {
 	server := newIngestServer(t, 1)
-	sink, err := New(server.URL, "run-1", "support-reference")
+	sink, err := New(server.URL, "run-1", "support-reference",
+		filepath.Join(t.TempDir(), "pending.json"), func(context.Context, []byte) error { return nil })
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}); err == nil {
+	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, learningFor("e")); err == nil {
 		t.Fatal("Record() error = nil, want a refusal before Initialize")
 	}
 }
@@ -161,7 +204,7 @@ func TestRecordAdvancesGapFree(t *testing.T) {
 	sink := newTestSink(t, server.URL)
 
 	for range 5 {
-		if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{EventID: "e"}); err != nil {
+		if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{EventID: "e"}, learningFor("e")); err != nil {
 			t.Fatalf("Record() error = %v", err)
 		}
 	}
@@ -189,7 +232,7 @@ func TestRecordConcurrentIsGapFree(t *testing.T) {
 			defer wg.Done()
 			for range each {
 				if _, err := sink.Record(context.Background(),
-					trustvian.DecisionRecord{EventID: "e"}); err != nil {
+					trustvian.DecisionRecord{EventID: "e"}, learningFor("e")); err != nil {
 					errs <- err
 				}
 			}
@@ -231,7 +274,7 @@ func TestRecordReportsReplayed(t *testing.T) {
 	defer server.Close()
 
 	sink := newTestSink(t, server.URL)
-	got, err := sink.Record(context.Background(), trustvian.DecisionRecord{})
+	got, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, learningFor("e"))
 	if err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
@@ -265,7 +308,7 @@ func TestRecordRejectsUnknownDisposition(t *testing.T) {
 	defer server.Close()
 
 	sink := newTestSink(t, server.URL)
-	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{})
+	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, learningFor("e"))
 	if err == nil {
 		t.Fatal("Record() error = nil, want an unrecognized disposition to fail closed")
 	}
@@ -300,7 +343,7 @@ func TestRecordRejectsNonAdvancingSequence(t *testing.T) {
 	defer server.Close()
 
 	sink := newTestSink(t, server.URL)
-	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{})
+	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, learningFor("e"))
 	if err == nil {
 		t.Fatal("Record() error = nil, want a non-advancing cursor to fail closed")
 	}
@@ -356,12 +399,12 @@ func TestRecordDoesNotAdvanceOnFailure(t *testing.T) {
 	defer server.Close()
 
 	sink := newTestSink(t, server.URL)
-	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}); err != nil {
+	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, learningFor("e")); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
 
 	refuse.Store(true)
-	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{})
+	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, learningFor("e"))
 	if err == nil {
 		t.Fatal("Record() error = nil, want the server refusal surfaced")
 	}
@@ -380,7 +423,7 @@ func TestRecordDoesNotAdvanceOnFailure(t *testing.T) {
 
 	// And the next successful record must therefore be sequence 2.
 	refuse.Store(false)
-	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}); err != nil {
+	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, learningFor("e")); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
 	if got := sink.nextSequence(); got != 3 {

@@ -97,6 +97,7 @@ func TestConfigUnmarshalDecodesEvaluationBlock(t *testing.T) {
 			"run_id":             "run-reference",
 			"behavioral_profile": "support-reference",
 			"required":           true,
+			"pending_state_path": "/var/lib/trustvian/evaluation-pending.json",
 		},
 	})
 
@@ -118,6 +119,9 @@ func TestConfigUnmarshalDecodesEvaluationBlock(t *testing.T) {
 	}
 	if cfg.Evaluation.Required == nil || !*cfg.Evaluation.Required {
 		t.Errorf("Required = %v, want true", cfg.Evaluation.Required)
+	}
+	if cfg.Evaluation.PendingStatePath != "/var/lib/trustvian/evaluation-pending.json" {
+		t.Errorf("PendingStatePath = %q", cfg.Evaluation.PendingStatePath)
 	}
 }
 
