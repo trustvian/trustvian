@@ -109,6 +109,7 @@ processors:
       run_id: run-reference
       behavioral_profile: support-reference
       required: true
+      pending_state_path: /var/lib/trustvian/evaluation-pending.json
 ```
 
 A pointer field, so absence is distinguishable from a zero value — the same
@@ -132,6 +133,8 @@ api_url             absolute http/https, host, no path/query/fragment,
 run_id              non-empty
 behavioral_profile  non-empty
 required            must be true
+pending_state_path  non-empty, in a directory that exists — where the one
+                    record in flight is made durable before it is sent
 ```
 
 `api_url` validation reuses the rules `--api-url` already enforces, including
@@ -263,9 +266,10 @@ caller's own context. Until it resolves, no other record may use that
 sequence and no other record is accepted.
 
 ```text
-idle  ──POST fails, outcome unknown──▶  pending(sequence, record)
-pending ──same record, same sequence, server answers──▶  reconciled ──▶ idle
+idle  ──intent written, POST fails, outcome unknown──▶  pending(sequence, record, learning)
+pending ──same record, same sequence, server answers──▶  settled (learned, released) ──▶ idle
 pending ──still unknown──▶  pending   (ErrUnresolved; the sink accepts nothing else)
+pending ──process exits──▶  recovered at startup against the run's cursor
 ```
 
 An ingest failure the sink could not resolve returns
@@ -283,17 +287,59 @@ Loudly losing a batch is recoverable by starting a new run. Quietly inflating
 evidence is not recoverable at all, because nothing downstream can tell which
 records were doubled. The failure is surfaced, never absorbed.
 
-### Evidence and learning move together
+### Learning follows confirmation, never precedes it
 
-`Engine.Observe` runs when the record may be durable, and does not run when
-the control plane declined it.
+`Engine.Observe` runs when the control plane has accepted the record, and not
+before:
 
-Skipping `Observe` on every ingest error — the obvious reading — leaves the
-run holding a record whose behavior this Engine never learned, which is the
-same response-loss failure one layer up. Observing unconditionally trades it
-for the mirror image: learning from records the run refused. `Observe` runs
-at most once per span either way; a reconciled record is one record and one
-observation.
+| Ingest outcome | Learning |
+|---|---|
+| applied or replayed | applied, exactly once |
+| declined (4xx) | never — the run does not hold the record |
+| unknown | not yet — it waits for an answer, in this process or the next |
+
+Skipping `Observe` on every ingest error leaves the run holding a record this
+Engine never learned from. Observing whenever the record *may* be durable
+leaves the opposite, and with a durable store it survives the restart that
+proves the record never arrived. Neither is acceptable, so learning is tied
+to the control plane's answer rather than to a guess about it, and the sink
+owns that ordering rather than the caller.
+
+### An unsettled record is durable state
+
+Evidence lives in the control plane, learning lives in the Engine's store,
+and no transaction spans both. A process that dies in between leaves a
+question its successor cannot answer from the cursor alone, so the record in
+flight is written to disk before its request is sent — `pending_state_path`,
+one entry, holding the sequence, the record, its learning (a serialized
+`Result`), and how far the delivery had got.
+
+```text
+posting    written before the POST; proves nothing has been learned yet
+confirmed  written after the control plane accepts it, before learning
+(absent)   both halves are done
+```
+
+Startup reads that entry and the run's cursor together:
+
+| Entry | Cursor | Meaning | Action |
+|---|---|---|---|
+| `posting` at *N* | *N* | the request never arrived | discard; nothing learned, nothing posted, *N* goes to the next record |
+| `posting` at *N* | *N+1* | something occupies *N* | re-present it there — identical replays, anything else conflicts — then apply the learning exactly once |
+| `confirmed` at *N* | past *N* | the run holds it; the learning may or may not have been applied | do not apply it again; report it at ERROR |
+| `confirmed` at *N* | *N* or earlier | a contradiction: accepted, yet the run does not hold it | refuse to start |
+| anything else | — | another writer has been in this run | refuse to start |
+
+The `confirmed` window is the only state a restart cannot settle, and it
+fails safe: a missing observation makes a fingerprint look less familiar, a
+doubled one makes it look more familiar than the evidence supports.
+
+Both writes are fsynced, which is the cost of the guarantee rather than an
+oversight: an entry that reached only the page cache survives the process
+dying but not the host dying. `BenchmarkConsumeTracesWithEvaluation`
+measures it against a loopback control plane, beside `BenchmarkConsumeTraces`
+for the same span path with no `evaluation:` block — which writes nothing,
+takes no lock, and is unchanged.
 
 What this deliberately does **not** add:
 
@@ -303,6 +349,9 @@ What this deliberately does **not** add:
   same-sequence, same-record reconciliation is safe, and it is safe because
   the server specifies it.
 - No partial success. A span whose record cannot be confirmed fails the batch.
+- No spool. The pending state is exactly one entry — the record in flight —
+  never a queue of undelivered records, and it is released as soon as that
+  record's fate is settled.
 - No fallback to "enrich but don't record". That is `required: false` by
   another name.
 
@@ -313,6 +362,8 @@ today. They are not evaluation failures; there is no decision to record.
 ## HTTP Bounds
 
 ```text
+pending state      one entry, written before each request and released when
+                   its record is settled (pending_state_path)
 request timeout    30s per request
 request body       ≤ 256 KiB   (matches the server's own limit)
 response body      ≤ 64 KiB
@@ -363,7 +414,26 @@ advancing to the server's number; an unresolved failure surfacing as
 permanent; concurrent `ConsumeTraces` allocating a gap-free strictly
 increasing sequence under `-race`.
 
-Ambiguous delivery has its own set, because it is the one failure whose
+Restart has its own set, because it is where a wrong answer becomes
+permanent. Against a **durable** `file:` baseline, with the processor
+discarded and a second one built over the same baseline and pending state:
+a record the control plane never received leaves no learning, is not posted
+after the fact, and the next record takes its sequence — asserted on the
+reloaded baseline's own file and on the next record's `AnomalyConfidence`,
+which is zero exactly when nothing about that fingerprint was learned; a
+record the control plane committed before the response was lost is replayed
+at its own sequence, learned exactly once, and leaves the run holding one
+copy. A `confirmed` entry is not learned from again. The PostgreSQL
+equivalent is env-gated (`TRUSTVIAN_TEST_POSTGRES_DSN`) like every other
+database test here; the FileStore pair is the deterministic proof that runs
+on every push, and nothing in the mechanism knows which store is configured.
+
+The payload the restart depends on is guarded directly: a `Result` encoded
+and decoded again must keep every field `Engine.Observe` reads — decision,
+baseline key, fingerprint, volatile features, timestamp — and must still
+learn when observed.
+
+Ambiguous delivery has its own set too, because it is the one failure whose
 wrong handling is silent: a record committed by the server with its response
 destroyed is reconciled at the same sequence and reported `replayed`, with
 the next record taking the following sequence and the run holding exactly
@@ -447,9 +517,14 @@ records the adapter contract and why the module edge stays absent.
    bound to that exact record, is reconciled at the same sequence before any
    other record is accepted, and advances the cursor only to the server's
    `next_sequence`.
-6b. `Engine.Observe` runs exactly once per analyzed span, and runs when the
-   record may be durable — so a run's evidence and this Engine's learning
-   never diverge in either direction.
+6b. `Engine.Observe` runs at most once per record, and only once the control
+   plane has accepted it — never for a declined record, and never for one
+   whose outcome is unknown.
+6c. A record in flight is durable before its request is sent, so a restart
+   settles it against the run's own cursor: never delivered means discarded
+   and unlearned, already delivered means replayed and learned exactly once.
+   After any restart the durable baseline and the run's evidence do not
+   silently disagree.
 7. Requests are bounded, time out, refuse redirects, and never carry or log
    credentials.
 8. `behavioral_profile` selects the Engine's learning scope.

@@ -198,31 +198,101 @@ cannot reconcile refuses to accept another record rather than reusing the
 sequence, which is the fail-closed reading of "the producer owns the
 sequence".
 
-### 9. Evidence and learning move together
+### 9. Learning follows confirmation, never precedes it
 
-`Engine.Observe` runs when the record may be durable, and does not run when
-the control plane declined it.
+`Engine.Observe` runs when the control plane has accepted the record, and
+not before.
 
 The original order — `Analyze` → `Record` → `Observe`, with `Observe` skipped
-on any ingest error — produced a divergence in the response-loss case: the
-run held the record, and the Engine had never folded that behavior into a
-baseline. The evaluation's evidence then described behavior the Collector
-would not recognize next time, and nothing said so.
+on an ingest error — produced a divergence in the response-loss case: the run
+held the record, and the Engine had never folded that behavior into a
+baseline. The first fix inverted it for unknown outcomes, observing whenever
+the record *may* be durable. That is not restart-safe, and the reason is
+§10: "may" is a statement about this process's knowledge, while a durable
+baseline is a statement about disk. A record that never reached the control
+plane, observed on the theory that it might have, survives the restart that
+proves it did not.
 
-§8 resolves the ordinary case before it arises: the reconciliation finishes
-inside `Record`, so the call returns success and `Observe` runs as usual.
-What remains is a record still pending when the call returns. It may be
-durable, so it is observed — and if the reconciliation later succeeds, the
-two agree. The batch still fails; it just does not fail asymmetrically.
+So the rule is the strict one:
 
-The opposite direction is handled by the same rule read backwards: a record
-the control plane **declined** is not in the run, so learning from it would
-teach this Engine from behavior no scorecard can account for. That path
-returns before `Observe`.
+| Ingest outcome | Learning |
+|---|---|
+| applied or replayed | applied, exactly once |
+| declined (4xx) | never — the run does not hold the record |
+| unknown | not yet — it waits for an answer, in this process or the next |
 
-`Observe` runs at most once per span on every path. A reconciled record is
+`Observe` runs at most once per record on every path. A reconciled record is
 one record and one observation; the retry is a second attempt at delivering
 the same record, never a second record.
+
+The sink owns that ordering rather than the caller, because the caller
+getting it right on every path is exactly what the first fix got wrong. The
+processor hands `Record` the serialized `Result` beside the record and a
+`LearnFunc`; the sink calls it once, after confirmation, before releasing the
+sequence. The engine's types stay out of the sink — what it holds is opaque
+bytes — and the sink's HTTP contract stays out of the engine.
+
+### 10. An unsettled record is durable state, not process memory
+
+A record's two halves live in two places that cannot share a transaction:
+its evidence is in the control plane, its learning is in the Engine's store.
+Nothing can make both happen atomically, so a process that dies between them
+leaves a question — *did the record land, and was it learned from?* — that
+its successor cannot answer from the server cursor alone. The cursor says
+what the run expects next. It does not say whether the record at the previous
+sequence was this Collector's, nor whether anything was learned from it.
+
+So the pending record is written to disk before its request is sent:
+`pending_state_path`, one entry, holding the sequence, the record, its
+learning, and how far the delivery had progressed.
+
+```text
+posting    written before the POST; proves nothing has been learned yet
+confirmed  written after the control plane accepts it, before learning
+(absent)   both halves are done
+```
+
+Startup reads it and the run's cursor together:
+
+| Entry | Cursor | What it means | What happens |
+|---|---|---|---|
+| `posting` at *N* | *N* | the request never arrived | discard it; nothing was learned, nothing is posted, *N* goes to the next record |
+| `posting` at *N* | *N+1* | something occupies *N* | re-present the record there: an identical one replays, anything else conflicts. On a replay, apply the learning — exactly once, because `posting` proves the dead process had not |
+| `confirmed` at *N* | past *N* | the run holds the record; the learning may or may not have been applied | do not apply it again; report it at ERROR |
+| `confirmed` at *N* | *N* or earlier | a contradiction: the record was accepted, yet the run does not hold it | refuse to start |
+| anything else | — | another writer has been in this run | refuse to start |
+
+Three consequences worth stating plainly.
+
+**The discarded case posts nothing.** A record whose request never arrived
+belonged to a batch that was already abandoned; delivering it alone after a
+restart would add evidence for a span the pipeline dropped. Both halves agree
+at nothing, which is the invariant, and the run is one record short — the
+documented, recoverable outcome (§5), not the silent one.
+
+**The `confirmed` window is the one thing a restart cannot settle**, and it
+is chosen to fail safe rather than to fail silently. An observation that is
+missing makes a fingerprint look *less* familiar; one applied twice makes it
+look *more* familiar than the run's evidence supports, which is a silent
+weakening of the signal every later decision is made from. So it is not
+applied again, and startup logs it at ERROR naming the sequence. The window
+is between two local writes, not around the network call.
+
+**The learning is a serialized `Result`**, because it is the only thing that
+can complete the local half later and it cannot be recomputed: analyzing
+again would produce a different `Result` (the baseline has moved), and
+rebuilding one from the record is the reconstruction §2 rejects. The live
+path encodes and decodes it too, rather than observing the in-memory value —
+so what a restart would apply is exactly what this process applies, and a
+payload that could not carry the learning fails on the first span instead of
+after a crash.
+
+`pending_state_path` is required whenever `evaluation:` is configured, and
+not conditional on which store is configured. Branching on the backend would
+put a store-specific path into the one mechanism that must behave identically
+for all of them, and an operator who starts on `memory` and later configures
+`postgres` would silently lose the guarantee at the moment it starts to
+matter.
 
 ## Alternatives considered
 
@@ -252,8 +322,28 @@ server is specified to recognize.
 **Observing before posting** (`Analyze` → `Observe` → `Record`), to make
 "evidence without learning" structurally impossible. Rejected: it only
 trades the divergence for its mirror image, teaching the Engine from records
-the control plane declined. §9 keeps learning tied to what the run may
-actually hold, in both directions.
+the control plane declined or never received. §9 keeps learning tied to what
+the run actually holds, in both directions.
+
+**Observing whenever the record *may* be durable.** This is what the first
+version of §9 did, and §10 is why it was wrong: with a durable store the
+learning outlives the process, while "may" does not. A record that never
+reached the control plane leaves the baseline holding behavior the run's
+evidence has no trace of, permanently and silently.
+`TestRestartAfterUnreachedRecordLeavesNoLearning` is that case, and it fails
+against that implementation.
+
+**Extending `/v1` ingest-state with the last accepted record's digest**, so
+startup could recognize its own record without re-presenting it. Not needed:
+re-presenting *is* the recognition, because the replay rule already compares
+digests server-side and answers `replayed` or conflicts. An additive field
+would have moved that comparison to the client without removing a single
+failure mode — and the client would still need the durable entry to have
+something to compare. No `/v1` field was added.
+
+**Keeping the pending record in memory only.** It is what the sink did
+before, and it is sufficient for everything except the case this ADR section
+exists for: the process not being there any more.
 
 **Reconstruct the record from span attributes.** Rejected by point 2.
 
@@ -267,10 +357,19 @@ one additional round trip, once, on the span that lost it.
 A control plane that is unreachable for both attempts leaves the sink
 holding one record and refusing further ones until it is reconciled. That is
 a hard stop, deliberately: the alternative is reusing a sequence the server
-may already have committed. The state it holds is one record, never a queue,
-and it survives nothing — a restarted Collector re-reads the cursor from the
-server, and any record whose fate was unknown is simply the sequence that
-server reports next.
+may already have committed. The state it holds is one record, never a queue.
+
+An evaluation-configured Collector now needs a writable path as well as a
+reachable control plane, and pays two small local writes and a delete per
+analyzed span beside the round trip. On a `file:` store, whose `Observe`
+already rewrites its snapshot per span, that is proportionate; on `postgres:`
+it is local I/O beside a database round trip. A Collector with no
+`evaluation:` block writes nothing and is unchanged.
+
+The pending file belongs on the same durable medium as the baseline — a
+volume, not a container's writable layer — and to one run. It names its run,
+and a sink configured for a different one refuses to start rather than
+discarding an unsettled record.
 
 A Collector serves exactly one evaluation run for its lifetime. Switching
 runs means a new process, the same way switching policy does — the

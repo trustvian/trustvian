@@ -145,9 +145,22 @@ actually depend on.
   re-presents the same record at the same sequence, which the control plane's
   digest rule answers `replayed`. One synchronous attempt, no queue, no
   background worker, and no record ever sent under a sequence another record
-  already claimed. `Engine.Observe` follows the same line — it runs when the
-  record may be durable and not when the control plane declined it — so a
-  run's evidence and the Collector's own baselines cannot silently diverge.
+  already claimed.
+
+  **Learning follows confirmation, and survives a restart.**
+  `Engine.Observe` runs once the control plane has accepted a record —
+  never for one it declined, and never for one whose outcome is unknown.
+  "Unknown" is not "committed", and with a durable `storage:` backend the
+  difference outlives the process: learning applied on the chance a record
+  landed is written to disk, and survives the restart that proves it never
+  did. So the record in flight is itself durable (`pending_state_path`, one
+  entry, written before the request leaves), and startup settles it against
+  the run's own cursor: a record the run never received is discarded
+  unlearned, and one it already holds is replayed at its own sequence and
+  learned exactly once. The only state a restart cannot settle — the process
+  dying between confirming a record and releasing it — is reported at ERROR
+  and not learned from twice, because a fingerprint that looks more familiar
+  than the evidence supports is a silent weakening.
 
 ### Security
 

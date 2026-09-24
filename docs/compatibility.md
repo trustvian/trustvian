@@ -58,6 +58,7 @@ reconstructed later. Everything else in this table is already released.
 | CLI human-readable output | OBSERVATIONAL | Not a machine interface — no wording, spacing, or ordering promise | Any change | None |
 | Environment variables read by shipped binaries | OPERATIONALLY STABLE | See [environment variables](#environment-variables) | New variables | Major to remove or rename |
 | Collector processor type name and config fields | OPERATIONALLY STABLE | `policy`, `storage`, `health`, `evaluation` keys and their meaning | New optional keys | Major |
+| Collector pending ingest state file (`evaluation.pending_state_path`) | INTERNAL | Nothing — it is this Collector's own crash-recovery note, not an interface | Format and contents, in any release; a build refuses a version it does not recognize | None |
 | Policy rule semantics | STABLE | First-match-wins ordering; fail-closed to `BLOCK` on invalid policy | New condition fields; new decisions | Major |
 | PostgreSQL schema | OPERATIONALLY STABLE | Forward-only, version-gated; see [persisted state](#persisted-state) | Additive columns or tables with a schema-version bump | Major for a destructive change |
 | File-store snapshot format | OPERATIONALLY STABLE | Version-tagged; a `v1.x` binary reads what `v1.x` wrote | Additive fields that do not change what a record identifies | Major |

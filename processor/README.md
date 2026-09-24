@@ -140,7 +140,14 @@ processors:
       run_id: run-reference
       behavioral_profile: support-reference
       required: true
+      pending_state_path: /var/lib/trustvian/evaluation-pending.json
 ```
+
+`pending_state_path` is required, like `required: true`, and for the same
+kind of reason: it states where the guarantee lives instead of leaving it to
+a default nobody read. It is not conditional on which store is configured —
+an operator who starts on `memory` and later configures `postgres` would
+otherwise lose the guarantee at the moment it starts to matter.
 
 The run must already exist and be **running** — nothing here creates one,
 because run lifecycle belongs to the control plane. This is checked, not just
@@ -200,12 +207,52 @@ stops exporting traces entirely, not only evaluation records. A batch retry
 would re-analyze spans whose records already committed and resend them under
 new sequence numbers, and duplicate records count twice by design.
 
-**Learning follows the evidence.** `Engine.Observe` runs when the record may
-be durable — including a record still awaiting reconciliation — and does not
-run when the control plane declined it. That is what keeps the run's evidence
-and this Collector's baselines describing the same history; it runs at most
-once per span either way, so a reconciled record is one record and one
-observation.
+**Learning follows confirmation.** `Engine.Observe` runs when the control
+plane has accepted the record, and not before:
+
+| Ingest outcome | Learning |
+|---|---|
+| `applied` or `replayed` | applied, exactly once |
+| declined (a 4xx) | never — the run does not hold the record |
+| unknown | not yet — it waits for an answer, in this process or the next |
+
+Observing a record the control plane merely *might* hold looks safe and is
+not: with a durable `storage:` backend that learning is written to disk, so
+it survives the restart that proves the record never arrived, and every later
+span is then scored against history the run's evidence has no trace of.
+
+**The record in flight is durable, which is what `pending_state_path` is
+for.** Evidence lives in the control plane and learning lives in the Engine's
+store; no transaction spans both, so the one record in flight is written
+there first — its sequence, the record, its learning, and how far delivery
+got. It is one entry, never a queue, released as soon as that record is
+settled.
+
+Startup reads it together with the run's cursor:
+
+| Left behind | Run expects | What it means | What happens |
+|---|---|---|---|
+| sequence *N*, not yet confirmed | *N* | the request never arrived | discarded: nothing was learned, nothing is posted now, and *N* goes to the next record |
+| sequence *N*, not yet confirmed | *N+1* | something occupies *N* | the same record is re-presented there — an identical one replays, anything else conflicts — and only then is its learning applied, exactly once |
+| sequence *N*, confirmed | past *N* | the run holds it; whether its learning was applied is unknowable | it is not applied again, and startup logs an ERROR naming the sequence |
+| anything else | — | another writer has been in this run | the Collector refuses to start |
+
+Put the file on the same durable medium as the baseline store — a volume,
+not the container's writable layer — and give each run its own. The file
+names its run, and a Collector configured for a different one refuses to
+start rather than discarding an unsettled record.
+
+The cost is two fsynced writes and a delete per analyzed span, beside the
+serialized round trip this configuration already pays. Both writes are
+fsynced on purpose: an entry that reached only the page cache survives the
+process dying but not the host dying, and a lost entry is precisely the
+ambiguity it exists to remove. On a Linux SSD that is a fraction of a
+millisecond per span; `BenchmarkConsumeTracesWithEvaluation` measures it
+against a loopback control plane, beside `BenchmarkConsumeTraces` for the
+same span path with no `evaluation:` block, which writes nothing and takes
+no lock. An evaluation-configured Collector is a Collector dedicated to one
+run, and this is the price of its evidence and its baseline not being able
+to disagree.
 
 **What this leaves behind:** if a batch fails partway through, the spans
 analyzed before the failure already posted durable records and advanced the

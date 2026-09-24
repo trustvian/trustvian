@@ -221,7 +221,7 @@ only in a Collector configured with `evaluation:`.
 |---|---|
 | `applied` | The record was folded into the evaluation run's evidence. |
 | `replayed` | This exact record was already applied — a restarted Collector resent it, or the sink reconciled a POST whose response was lost, and the control plane recognized it as the same record. Nothing changed, and no second record exists. |
-| `error` | The post failed, and the sink could not confirm the record either way. |
+| `error` | The post failed: the control plane declined the record, or the sink could not confirm it either way. Nothing was learned from it. |
 
 **A climbing `replayed` count is not an error, but it is a signal.** A
 Collector that is not restarting should replay rarely: a steady rate means
@@ -241,11 +241,30 @@ list for an evaluation-configured Collector, the same way a sustained
 
 ### `trustvian.evaluation.duration`
 
-Duration of posting one decision record to the control plane. Recorded for
-**every** outcome, including errors — the same reasoning as
-`trustvian.observe.duration`: a failed post has still paid the network round
-trip, and that latency is exactly what an operator investigating a slow or
-wedged control plane wants to see.
+Duration of delivering one decision record: the request, and — once the
+control plane confirms it — the durable pending-state writes and the
+`Engine.Observe` they gate. Recorded for **every** outcome, including errors
+— the same reasoning as `trustvian.observe.duration`: a failed post has still
+paid the network round trip, and that latency is exactly what an operator
+investigating a slow or wedged control plane wants to see. The observation's
+own share is isolated in `trustvian.observe.duration`.
+
+### Two startup lines worth alerting on
+
+With `evaluation:` configured, a Collector that restarts while a record was
+in flight reports what became of it:
+
+- `a record left pending by a previous process never reached the run and was
+  discarded` (WARN) — the run is one record short, which is the documented
+  outcome of a batch that failed. Frequent ones mean the control plane is
+  unreachable often enough to be losing evidence.
+- `a record the run holds may not have been learned from` (ERROR) — the one
+  case a restart cannot settle. The run holds the record; whether this
+  Collector's baseline learned from it is unknowable, so it was not learned
+  again. At most one observation is missing, in the direction that fails
+  safe. Repeated occurrences mean the process is dying inside the window
+  between confirming a record and releasing it, which is worth investigating
+  on its own.
 
 ## Cardinality is a hard bound
 
