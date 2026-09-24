@@ -20,12 +20,20 @@ Tasks for the `v1.0` milestone.
 | [062 — Integrated Local Developer Workflow](062-integrated-local-developer-workflow.md) | Specified and implemented |
 | [063 — Minimal Web Control Plane](063-minimal-web-control-plane.md) | Specified and implemented |
 | [064 — PostgreSQL Platform Backend](064-postgresql-platform-backend.md) | Specified and implemented |
-| 065–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
+| [065 — Environment Model](065-environment-model.md) | **Specified, not implemented** |
+| 066–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
 | [073 — OTel Collector Evaluation Ingest](073-otel-collector-evaluation-ingest.md) | Specified and implemented |
 
-The numbers 065–072 are the approved plan, not placeholders — the sequence,
+The numbers 066–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
 is the specification for any of them.
+
+Task 065 now has one. **Specified, not implemented** means exactly that: the
+design is written down and reviewable, and no `Environment` type, table,
+route or command exists yet. Nothing outside
+[065's own specification](065-environment-model.md) describes the model as
+present — the runtime documentation changes when the implementation lands,
+not before.
 
 Task 073 sits **after** that reserved block rather than inside it. It was not
 in the approved sequence: it closes a gap the sequence did not anticipate — the
@@ -34,10 +42,13 @@ and nothing joined them, so a workload observable only through OpenTelemetry
 could not be evaluated at all. Taking 065 for it would have renamed a milestone
 whose scope is already decided.
 
-Task 063's open question — collection semantics — is recorded in its
+Task 063's open question — collection semantics — was recorded in its
 specification rather than resolved: the WebUI navigates by caller-known ID, and
-a list route is deferred to the milestone that first has concrete filtering
-requirements.
+a list route was deferred to the milestone that first has concrete filtering
+requirements. [Task 065](065-environment-model.md) is that milestone, and it
+resolves the question narrowly: one collection, for one entity, scoped to a
+project, ordered by promotion rank, and bounded by capping the entity rather
+than paginating the response. No other list route is added.
 
 Task 064 is implemented. SQLite remains the zero-configuration local default;
 PostgreSQL is opt-in and must be selected explicitly. One logical

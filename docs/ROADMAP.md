@@ -336,7 +336,10 @@ Also implemented: the PostgreSQL platform backend (064). SQLite stays the
 zero-configuration local default and PostgreSQL is opt-in, so the same control
 plane runs on either without any layer above persistence knowing which.
 
-Still planned: everything from the environment model (065) onward. The platform
+Still planned: everything from the environment model (065) onward — 065 now
+has a written specification
+([task 065](tasks/v1.0/065-environment-model.md)) and no implementation, so
+nothing below describes an `Environment` entity that exists. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
 behavioral snapshots, produce fixed-shape comparative scorecards, apply
 deterministic evidence-backed hard gates to them, persist local control and
@@ -597,8 +600,9 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**Partly implemented:** tasks 049–064 are done; 065–072 remain PLANNED. 073,
-outside that sequence, is also done — see the table below.
+**Partly implemented:** tasks 049–064 are done; 065 is specified and not yet
+implemented; 066–072 remain PLANNED. 073, outside that sequence, is also
+done — see the table below.
 
 **Architecture and core boundary** — the only tasks that touch the engine:
 
@@ -640,7 +644,7 @@ lost.
 | Task | Milestone |
 |---|---|
 | 064 | PostgreSQL platform backend |
-| 065 | Environment model |
+| 065 | Environment model — [specified](tasks/v1.0/065-environment-model.md), not implemented |
 | 066 | Promotion workflow |
 
 **Closing an unplanned gap:**
