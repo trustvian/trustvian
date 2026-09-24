@@ -1,6 +1,6 @@
 # 073 — OTel Collector Evaluation Ingest
 
-Status: specified
+Status: implemented
 Depends on: [050](050-public-serializable-decision-record.md),
 [051](051-behavioral-profile-learning-scope-isolation.md),
 [058](058-local-control-plane-api-and-ingest.md),

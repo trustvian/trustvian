@@ -603,6 +603,26 @@ closed. The schema moved to version 2 for that cursor, with a real migration
 from version 1. See
 [ADR 0031](adr/0031-control-plane-owns-ingest-and-http-is-an-adapter.md).
 
+[Task 073](tasks/v1.0/073-otel-collector-evaluation-ingest.md) added the
+second producer for that contract. Until then the only way to reach ingest was
+to embed the engine and post records yourself, so a workload observable only
+through OpenTelemetry could be scored on every span and evaluated on none. The
+Collector processor now projects the `Result` it already computed and posts it
+over `/v1`:
+
+```text
+OTLP ─▶ processor ─▶ Engine.Analyze ─▶ Result ─┬─▶ trustvian.* attributes ─▶ exporter
+                                               └─▶ DecisionRecord ──HTTP /v1──▶ ControlPlane
+```
+
+The edge is HTTP, exactly as it is for the CLI, and for the same reason:
+`trustvian-processor` importing `trustvian-platform` would put the platform's
+driver, schema and domain into every Collector distribution built from the
+component. A test in that module fails on the import, on a platform identifier
+in its source, and on the module appearing in its `go.mod` or `go.sum` —
+tests included, since `go.mod` does not distinguish a test-only dependency.
+See [ADR 0038](adr/0038-collector-evaluation-ingest-is-an-http-adapter.md).
+
 Task 059 added realtime as a third adapter over the same service:
 
 ```text

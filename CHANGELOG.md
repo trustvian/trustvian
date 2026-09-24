@@ -127,6 +127,16 @@ actually depend on.
   error is never reported as a gate failure. See
   [docs/compatibility.md § CLI](docs/compatibility.md#cli).
 
+- **OTel Collector evaluation ingest** (task 073). An optional `evaluation:`
+  block makes the Collector processor post `Result.DecisionRecord()` to an
+  existing evaluation run over `/v1`, so a workload instrumented with
+  OpenTelemetry and nothing else can be evaluated rather than only enriched.
+  The record is projected from the same `Result` that produces the
+  `trustvian.*` attributes — `Analyze` still runs once per span — and the
+  configured behavioral profile also selects the Engine's learning scope, so
+  two candidates never train one baseline. Omitting the block changes nothing.
+  See [ADR 0038](docs/adr/0038-collector-evaluation-ingest-is-an-http-adapter.md).
+
 ### Security
 
 - **Per-actor fingerprint state is now bounded.** `Baseline.Fingerprints`

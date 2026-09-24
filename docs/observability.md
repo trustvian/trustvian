@@ -96,7 +96,7 @@ trustvian_observe_duration_count 60
 
 ## Metric reference
 
-Five instruments. Names follow OpenTelemetry conventions: namespaced,
+Seven instruments. Names follow OpenTelemetry conventions: namespaced,
 lowercase, no `total`/`count` suffix on counters (exporters add those per
 their own conventions), UCUM units, durations in seconds.
 
@@ -109,10 +109,15 @@ Scope name: `trustvian-processor`.
 | `trustvian.analysis.duration` | Histogram | `s` | *(none)* | 1 |
 | `trustvian.observations` | Counter | `{observation}` | `trustvian.outcome` | 3 |
 | `trustvian.observe.duration` | Histogram | `s` | *(none)* | 1 |
+| `trustvian.evaluation.records` | Counter | `{record}` | `trustvian.outcome` | 3 |
+| `trustvian.evaluation.duration` | Histogram | `s` | *(none)* | 1 |
 
-**Total: 15 time series**, fixed — regardless of how many actors,
-events, environments, or tenants the deployment sees. That property is
-the point, and it is [enforced by construction](#cardinality-is-a-hard-bound).
+**Total: 19 time series**, fixed — regardless of how many actors,
+events, environments, or tenants the deployment sees. Fifteen come from
+analysis, decisions and observations and exist on every Collector; the
+remaining four are evaluation ingest and exist only when `evaluation:` is
+configured. That property is the point, and it is [enforced by
+construction](#cardinality-is-a-hard-bound).
 
 ### `trustvian.analyses`
 
@@ -326,7 +331,7 @@ contains **one** goroutine, **zero** channels, **zero** tickers, and
 | Channels, queues, tickers, timers | None exist | — |
 | PostgreSQL pool | `MaxConns`; connection lifetime 1h, idle 30m | `Shutdown` → `Close`, exactly once |
 | In-memory store | O(distinct actors), each actor's baseline capped | Process lifetime |
-| Meter and instruments | Fixed, 15 series | **The Collector** — never Trustvian |
+| Meter and instruments | Fixed, 19 series (15 always, 4 evaluation-only) | **The Collector** — never Trustvian |
 | Engine | One, fully synchronous per call | Process lifetime |
 
 No Trustvian-owned queue exists, bounded or otherwise, and the pipeline

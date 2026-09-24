@@ -597,7 +597,8 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**Partly implemented:** tasks 049–064 are done; 065 onward remain PLANNED.
+**Partly implemented:** tasks 049–064 are done; 065–072 remain PLANNED. 073,
+outside that sequence, is also done — see the table below.
 
 **Architecture and core boundary** — the only tasks that touch the engine:
 
@@ -641,6 +642,12 @@ lost.
 | 064 | PostgreSQL platform backend |
 | 065 | Environment model |
 | 066 | Promotion workflow |
+
+**Closing an unplanned gap:**
+
+| Task | Milestone |
+|---|---|
+| 073 | OTel Collector evaluation ingest — the Collector produces a `Result`, the control plane accepts a `DecisionRecord`, and nothing joined them |
 
 **Production history and scale:**
 

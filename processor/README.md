@@ -111,6 +111,48 @@ When PostgreSQL is configured and unusable, readiness is 503 — never a
 silent fall back to non-durable storage. Both bodies carry a status string
 and nothing else. Omitting the block binds no listener.
 
+`evaluation` (added by core task 073) posts every decision to a Trustvian
+control plane, so a workload observable only through OpenTelemetry can be
+evaluated:
+
+```yaml
+processors:
+  trustvian:
+    evaluation:
+      api_url: http://127.0.0.1:54321
+      run_id: run-reference
+      behavioral_profile: support-reference
+      required: true
+```
+
+The run must already exist and be **running** — nothing here creates one,
+because run lifecycle belongs to the control plane. `behavioral_profile` must
+match the run's, and it also selects the Engine's learning scope, so two
+candidates evaluated against the same store never train each other's baseline.
+
+The record posted is `Result.DecisionRecord()` projected from the same
+`Result` that produced the `trustvian.*` attributes. `Analyze` runs once, and
+nothing is reconstructed from those attributes — they are five values, and a
+record carries contributors, policy reason, confidence and context risk that
+none of them contains.
+
+`required: true` is the only accepted value. `required: false` fails startup,
+because a run that silently lost evidence would still report as complete and
+its gate would still evaluate.
+
+Bounds: 30s per request, a 256 KiB request body matching the server's own cap,
+a 64 KiB response bound, refused redirects, and no retries. A URL carrying
+credentials is rejected without repeating it into Collector logs.
+
+An ingest failure is a **permanent** consumer error, so the pipeline does not
+retry the batch. That is deliberate: a retry would re-analyze spans whose
+records already committed and resend them under new sequence numbers, and
+duplicate records count twice by design.
+
+**Omitting `evaluation:` entirely** preserves this processor's behavior
+exactly — no sink, no learning scope, no lock on the span path, and no
+evaluation metrics.
+
 `WithAnomalyConfig`, `WithTrustConfig`, and `WithContextRisk` remain
 unconfigurable from here for the same reason they always were: those
 `Option`s take types from the core module's `internal/` packages that this
@@ -243,7 +285,7 @@ version" (this task's own words) has no use for.
 
 ## Observability
 
-The processor emits five OpenTelemetry metrics through the
+The processor emits seven OpenTelemetry metrics through the
 `MeterProvider` the Collector injects — no configuration, no vendor
 client, and nothing to turn on:
 
@@ -254,9 +296,12 @@ client, and nothing to turn on:
 | `trustvian.analysis.duration` | Histogram | `s` | *(none)* |
 | `trustvian.observations` | Counter | `{observation}` | `trustvian.outcome`: `learned`, `not_eligible`, `error` |
 | `trustvian.observe.duration` | Histogram | `s` | *(none)* |
+| `trustvian.evaluation.records` | Counter | `{record}` | `trustvian.outcome`: `applied`, `replayed`, `error` |
+| `trustvian.evaluation.duration` | Histogram | `s` | *(none)* |
 
-Fifteen time series in total, fixed no matter how many actors or
-environments the deployment sees. Every attribute has a closed
+Nineteen time series in total, fixed no matter how many actors or
+environments the deployment sees — and the last four exist only in a
+Collector configured to feed an evaluation run. Every attribute has a closed
 vocabulary whose measurement options are pre-built at construction, so
 an actor ID, trace ID, or raw error string cannot become a label even by
 mistake. Instrumentation is allocation-free on the span path.
@@ -303,8 +348,10 @@ whole span path driven concurrently under `-race`.
 
 No distributed/multi-instance Trustvian server. No Kubernetes/Helm
 packaging. No new policy language, matchable condition, or dynamic
-policy reload (the configured Policy compiles once, at processor
-creation, and is fixed for the processor's lifetime). No dashboards,
+policy reload — and no dynamic evaluation reconfiguration either. Both
+the configured Policy and the configured evaluation run compile once, at
+processor creation, and are fixed for the processor's lifetime, so
+feeding a different run means a new process. No dashboards,
 Grafana packaging, or vendor metrics client — the Collector's exporters
 already reach every backend. No Alert configuration (`alerts:`/`sinks:`/`webhook:` in Collector
 config) — a separate, future task. These match the scope boundaries in

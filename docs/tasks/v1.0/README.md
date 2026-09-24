@@ -21,7 +21,7 @@ Tasks for the `v1.0` milestone.
 | [063 — Minimal Web Control Plane](063-minimal-web-control-plane.md) | Specified and implemented |
 | [064 — PostgreSQL Platform Backend](064-postgresql-platform-backend.md) | Specified and implemented |
 | 065–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
-| [073 — OTel Collector Evaluation Ingest](073-otel-collector-evaluation-ingest.md) | Specified |
+| [073 — OTel Collector Evaluation Ingest](073-otel-collector-evaluation-ingest.md) | Specified and implemented |
 
 The numbers 065–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
