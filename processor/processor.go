@@ -393,6 +393,13 @@ func (p *trustvianProcessor) Shutdown(ctx context.Context) error {
 // Validate-passing Event, or whose Analyze call errors, is left
 // un-enriched and counted, but never stops the batch: one malformed
 // span must not drop every other span in the same trace.
+//
+// The one exception is an evaluation ingest failure: td is abandoned rather
+// than forwarded, and the method returns that (already permanent) error
+// instead. A retried batch would re-analyze spans whose records already
+// committed and resend them under new sequence numbers, silently doubling
+// the evidence — so losing the rest of this batch is preferable to risking
+// that.
 func (p *trustvianProcessor) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
 	for _, rs := range td.ResourceSpans().All() {
 		resourceAttrs := rs.Resource().Attributes()

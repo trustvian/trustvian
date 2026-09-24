@@ -84,11 +84,13 @@ func TestEvaluationConfigValidation(t *testing.T) {
 
 			_, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cfg)
 			if tt.wantErr == "" {
-				// Nothing wires an evaluation sink into the Engine yet, so
-				// a valid block has no further behavior of its own to
-				// assert here — this subtest only proves the thing this
-				// task owns: a valid EvaluationConfig constructs (and
-				// starts) without error.
+				// newTestProcessorWithConfig drives CreateTraces and Start,
+				// and Start now reads the sink's ingest cursor from the stub
+				// control plane valid(t) started above (see that comment).
+				// A nil error here already proves construction, validation,
+				// and that live cursor read all succeeded — task 073's own
+				// tests (evaluation_test.go) cover what happens once spans
+				// flow through, so this subtest need not duplicate that.
 				return
 			}
 			if err == nil {

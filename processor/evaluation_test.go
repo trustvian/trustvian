@@ -212,8 +212,9 @@ func TestEvaluationOmittedLeavesSpanPathUnchanged(t *testing.T) {
 func TestEvaluationFailureIsPermanent(t *testing.T) {
 	cp := newIngestAPIServer(t)
 	cp.failNext.Store(true)
+	next := &capturingConsumer{}
 
-	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cp.config())
+	proc, err := newTestProcessorWithConfig(t, next, cp.config())
 	if err != nil {
 		t.Fatalf("CreateTraces() error = %v", err)
 	}
@@ -224,6 +225,9 @@ func TestEvaluationFailureIsPermanent(t *testing.T) {
 	}
 	if !consumererror.IsPermanent(err) {
 		t.Errorf("error is not permanent; a retried batch would double-count committed records")
+	}
+	if next.len() != 0 {
+		t.Errorf("next consumer received %d batches, want 0; an ingest failure must abandon the batch, not forward it", next.len())
 	}
 }
 
