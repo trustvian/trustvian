@@ -114,6 +114,20 @@ When PostgreSQL is configured and unusable, readiness is 503 — never a
 silent fall back to non-durable storage. Both bodies carry a status string
 and nothing else. Omitting the block binds no listener.
 
+**Readiness reflects the configured `storage:` store only, never the
+evaluation control plane.** When `evaluation:` is also configured, a control
+plane that is down is not what `/readyz` answers: adding it would put
+third-party network I/O inside a health probe, and — the reason that matters
+more than convenience — a Collector serves exactly one evaluation run, so
+every replica feeding it points at the same control plane. A false readiness
+there would fail every replica at once and trigger a restart storm that
+cannot help, since the control plane is not in any of those processes. That
+is the identical reasoning liveness already gives for never probing the
+store, applied one layer further out. Watch
+`trustvian.evaluation.records{trustvian.outcome="error"}` and the ERROR-level
+`evaluation ingest failed` log line (which carries `run_id`) for this
+instead — see [Observability](../docs/observability.md).
+
 `evaluation` (added by core task 073) posts every decision to a Trustvian
 control plane, so a workload observable only through OpenTelemetry can be
 evaluated:
@@ -129,9 +143,15 @@ processors:
 ```
 
 The run must already exist and be **running** — nothing here creates one,
-because run lifecycle belongs to the control plane. `behavioral_profile` must
-match the run's, and it also selects the Engine's learning scope, so two
-candidates evaluated against the same store never train each other's baseline.
+because run lifecycle belongs to the control plane. This is checked, not just
+documented: `Start` reads the run's own status before seeding the ingest
+cursor, and refuses to come up — naming the actual status — against a run
+that is still pending or has already finished, rather than coming up clean
+and then failing every span from the first one onward once the control plane
+itself refuses records for a run that is not running. `behavioral_profile`
+must match the run's, and it also selects the Engine's learning scope, so two
+candidates evaluated against the same store never train each other's
+baseline.
 
 The record posted is `Result.DecisionRecord()` projected from the same
 `Result` that produced the `trustvian.*` attributes. `Analyze` runs once, and
@@ -147,10 +167,24 @@ Bounds: 30s per request, a 256 KiB request body matching the server's own cap,
 a 64 KiB response bound, refused redirects, and no retries. A URL carrying
 credentials is rejected without repeating it into Collector logs.
 
-An ingest failure is a **permanent** consumer error, so the pipeline does not
-retry the batch. That is deliberate: a retry would re-analyze spans whose
-records already committed and resend them under new sequence numbers, and
-duplicate records count twice by design.
+An ingest failure is a **permanent** consumer error: the pipeline does not
+retry the batch, and — worth stating plainly, since it is the first thing an
+operator will notice — the **whole batch is abandoned, not forwarded**,
+including every span already enriched ahead of the failure. An
+evaluation-configured Collector whose control plane goes down therefore stops
+exporting traces entirely, not only evaluation records. Retrying would
+re-analyze spans whose records already committed and resend them under new
+sequence numbers, and duplicate records count twice by design.
+
+**What this leaves behind:** if a batch fails partway through, the spans
+analyzed before the failure already posted durable records and advanced the
+run's cursor past them, but nothing in the run describes that the batch was
+cut short — its counts stay internally consistent, just short of what would
+otherwise have arrived. Recovering means starting a **new run**, not
+rerunning the same batch into this one: a rerun would re-post the
+already-committed prefix under new sequence numbers, which the control plane
+accepts as new records and silently doubles them — the exact corruption the
+permanent-error wrapper exists to prevent.
 
 **Omitting `evaluation:` entirely** preserves this processor's behavior
 exactly — no sink, no learning scope, no lock on the span path, and no

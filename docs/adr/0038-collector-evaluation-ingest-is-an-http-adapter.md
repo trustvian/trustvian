@@ -102,8 +102,16 @@ are new records.
 duplicate count twice on purpose, so the corruption is silent and nothing
 downstream can tell which records were doubled.
 
-Loudly losing a batch is recoverable by rerunning it. Quietly inflating
-evidence is not recoverable at all.
+Losing a batch is loud, but it is not recoverable by rerunning it into the
+same run: a batch that fails partway leaves its earlier spans' records
+already committed and the run's cursor already advanced past them, and
+nothing in the run describes where the batch was cut short. Rerunning the
+same batch would re-post that committed prefix under *new* sequence numbers,
+which the server accepts as new records — producing exactly the double count
+this wrapper exists to prevent, the same failure a retry would have caused.
+What recovers the evaluation is a **new run**, not a repeat of this one.
+Quietly inflating evidence is not recoverable at all, and unlike a lost
+batch, there would be nothing to even show it happened.
 
 ### 6. Sequence allocation is serialized, not atomic
 
@@ -167,5 +175,5 @@ An operator who wants evaluation and durable baselines must configure
 `storage:` as well; the two are independent, and the learning scope makes
 them safe to combine.
 
-A third consumer of `/v1` now exists. The ingest contract's stability is no
+A second consumer of `/v1` now exists. The ingest contract's stability is no
 longer a claim about one client.

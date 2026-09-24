@@ -486,13 +486,18 @@ bound, and the inventory is short enough to state in full:
 | In-memory store | O(distinct actors), each capped | Process lifetime |
 | Meter and instruments | Fixed, 19 time series (15 always, 4 evaluation-only) | **The Collector** |
 | Engine | One, synchronous per call | Process lifetime |
+| Evaluation sink HTTP client | No goroutine, timer, or dedicated transport — rides the shared `http.DefaultTransport`, whose idle connections are already bounded and reaped | Nothing to shut down |
 
-Two entries carry the architectural weight. The `MeterProvider` is the
+Three entries carry the architectural weight. The `MeterProvider` is the
 Collector's, so Trustvian records through it and never shuts it down —
 doing so would double-shut-down the framework's own telemetry, the same
-second-owner mistake the signal-handling row above avoids. And no global
+second-owner mistake the signal-handling row above avoids. No global
 concurrency limiter exists: the Collector owns pipeline concurrency, and a
-second limiter would put two control layers on one throughput number.
+second limiter would put two control layers on one throughput number. And
+the evaluation sink's client never constructs its own `http.Transport`, so
+there is no per-client connection pool for `Shutdown` to close — the
+absence from `Shutdown`'s three steps below is correct, not an omission this
+inventory previously failed to notice.
 
 `Shutdown` orders its three steps for a reason: mark draining, then stop
 the health server, then release the store. Stopping the store first would
