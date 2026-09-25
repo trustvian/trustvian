@@ -40,9 +40,14 @@ Task 066 is **specified and not implemented**. It is the first layer allowed
 to decide that a candidate may advance between environments, and the last one
 that could be mistaken for deploying something — so the specification settles
 that first: a promotion is a durable record of a *decision*, it models no
-deployment and no candidate residence, both verdicts of the gate are recorded
-while a malformed request is not, and the evidence it keeps is exactly what
-cannot be recomputed from the immutable runs it names.
+deployment and no candidate residence, and both verdicts of the gate are
+recorded while a malformed request is not. It keeps the gate result the
+decision actually consumed, rather than promising that today's code would
+re-derive it, because a corrected gate may legitimately answer differently
+from the same evidence and history has to survive its own bug fixes. And it
+commits that decision only against the environment configuration it was
+decided on — the two environment rows are revalidated inside the transaction
+that writes the promotion.
 
 Task 073 sits **after** that reserved block rather than inside it. It was not
 in the approved sequence: it closes a gap the sequence did not anticipate — the

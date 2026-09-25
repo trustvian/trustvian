@@ -20,16 +20,17 @@ this evidence, under these limits, at this moment.**
 
 ```text
 completed reference run ─┐
-                         ├─▶ CompareEvaluations ─▶ diff · scorecard · gate
-completed candidate run ─┘                                    │
-                                                              ▼
-source Environment  (inferred from the two runs)      gate verdict
-target Environment  (named by the caller)                     │
-         │                                                    │
-         └────────▶ CanPromote(source, target) ───────────────┤
-                                                              ▼
-                                                        Promotion
-                                                   immutable · append-only
+                         ├─▶ CompareEvaluations ─▶ diff · scorecard · gate result
+completed candidate run ─┘                                         │
+                                                                   ▼
+source Environment  (inferred from the two runs)          verdict ⇒ outcome
+target Environment  (named by the caller)                          │
+         │                                                         │
+         └────────▶ CanPromote(source, target) ────────────────────┤
+                                                                   ▼
+                                                             Promotion
+                                                    immutable · append-only
+                                          carries the gate result it decided on
 ```
 
 Task 066 is the first layer allowed to answer:
@@ -75,11 +76,13 @@ deliberately shipped the WebUI with promotion reserved for this milestone,
 
 A complete vertical slice, on both persistence backends:
 
-- a `Promotion` domain value — immutable, fixed-shape, caller-owned identity;
+- a `Promotion` domain value — immutable, fixed-shape, caller-owned identity,
+  carrying the decision-time gate result it was decided on;
 - one authoritative control-plane operation that owns the ordered
   preconditions and the write;
 - `ControlStore` extended with create, read and one bounded project-scoped
-  collection;
+  collection, where create is a transaction that revalidates the environment
+  state the decision used before it inserts;
 - `SchemaVersion` 3 → 4 on SQLite and PostgreSQL, with one new table and a
   migration that fabricates no history;
 - three `/v1` routes;
@@ -131,7 +134,12 @@ made**. Present tense, precisely:
 
 > At `decided_at`, the platform was asked whether candidate *C* should advance
 > from environment *S* to environment *T* on the evidence of runs *R* and *K*
-> under limits *L*. Its answer was *outcome*.
+> under limits *L*. It computed gate result *G*, and its answer was *outcome*.
+
+Every one of those symbols is on the record, *G* included. A promotion that
+could only name its inputs would be explaining itself with a recomputation, and
+a recomputation answers what today's code thinks rather than what the platform
+did.
 
 Four things that answer deliberately is not:
 
@@ -191,22 +199,37 @@ type Promotion struct {
     source EnvironmentPosition
     target EnvironmentPosition
 
-    limits EvaluationGateLimits
+    // limits and gateResult are the decision-time evidence, snapshotted.
+    // gateResult is what the workflow actually consumed; limits are its three
+    // maximums, kept as a named value because that is how a caller supplied
+    // them.
+    limits     EvaluationGateLimits
+    gateResult EvaluationGateResult
 
     outcome   PromotionOutcome
     decidedAt time.Time
 }
 
-func (p Promotion) ID() PromotionID                 { /* … */ }
-func (p Promotion) ProjectID() ProjectID            { /* … */ }
-func (p Promotion) CandidateID() CandidateID        { /* … */ }
-func (p Promotion) ReferenceRunID() EvaluationRunID { /* … */ }
-func (p Promotion) CandidateRunID() EvaluationRunID { /* … */ }
-func (p Promotion) Source() EnvironmentPosition     { /* … */ }
-func (p Promotion) Target() EnvironmentPosition     { /* … */ }
-func (p Promotion) GateLimits() EvaluationGateLimits{ /* … */ }
-func (p Promotion) Outcome() PromotionOutcome       { /* … */ }
-func (p Promotion) DecidedAt() time.Time            { /* … */ }
+func (p Promotion) ID() PromotionID                  { /* … */ }
+func (p Promotion) ProjectID() ProjectID             { /* … */ }
+func (p Promotion) CandidateID() CandidateID         { /* … */ }
+func (p Promotion) ReferenceRunID() EvaluationRunID  { /* … */ }
+func (p Promotion) CandidateRunID() EvaluationRunID  { /* … */ }
+func (p Promotion) Source() EnvironmentPosition      { /* … */ }
+func (p Promotion) Target() EnvironmentPosition      { /* … */ }
+func (p Promotion) GateLimits() EvaluationGateLimits { /* … */ }
+
+// GateResult is the gate result this decision consumed, exactly as it was
+// when the decision was made.
+//
+// Historical evidence, not a live view. Re-deriving a gate result from the
+// same runs and limits under a later build may legitimately differ — see
+// Historical evidence versus current recomputation — and when it does, this
+// value is still what the platform relied on.
+func (p Promotion) GateResult() EvaluationGateResult { /* … */ }
+
+func (p Promotion) Outcome() PromotionOutcome        { /* … */ }
+func (p Promotion) DecidedAt() time.Time             { /* … */ }
 ```
 
 Unexported fields with accessors, matching every other platform domain value
@@ -295,12 +318,14 @@ belong to the promotion's project, which the record already carries once).
 
 ```go
 // PromotionDecision is the complete input to NewPromotion.
+//
+// Five fields, because almost everything a promotion records is derivable
+// from two of them. The gate result is self-describing about which comparison
+// it gated — task 056 built it that way — so both run identifiers, both
+// candidate identifiers, the environment and the three limits all come out of
+// it rather than being supplied alongside it and risking disagreement.
 type PromotionDecision struct {
     ID PromotionID
-
-    CandidateID    CandidateID
-    ReferenceRunID EvaluationRunID
-    CandidateRunID EvaluationRunID
 
     // Source and Target are the loaded environments, not snapshots. The
     // constructor takes the values so it can ask CanPromote itself and derive
@@ -308,8 +333,10 @@ type PromotionDecision struct {
     Source Environment
     Target Environment
 
-    Limits    EvaluationGateLimits
-    Outcome   PromotionOutcome
+    // GateResult is the authoritative result the evaluation path produced.
+    // It decides the outcome; no outcome is accepted alongside it.
+    GateResult EvaluationGateResult
+
     DecidedAt time.Time
 }
 
@@ -318,42 +345,125 @@ func NewPromotion(d PromotionDecision) (Promotion, error)
 
 The constructor:
 
-1. validates every identifier by `validateID`;
+1. validates `ID` by `validateID`;
 2. requires `DecidedAt` to be non-zero (`ErrInvalidTimestamp`);
-3. requires `Outcome` to be one of the two constants (`ErrInvalidID`-class
-   validation on a closed vocabulary — see below);
-4. requires `ReferenceRunID != CandidateRunID`;
-5. **calls `CanPromote(d.Source, d.Target)`** and refuses the construction if
+3. requires `GateResult` to be **bound** — produced by
+   `EvaluateEvaluationGate` rather than a zero value. The existing unexported
+   `bound` marker exists for exactly this fail-closed check and
+   `NewPromotion` is in the same package. An unbound result is
+   `ErrInvalidGateEvidence`;
+4. **calls `CanPromote(d.Source, d.Target)`** and refuses the construction if
    it is false (`ErrPromotionOrder`);
-6. derives `projectID` from `d.Source.ProjectID()` — guaranteed equal to the
-   target's, because `CanPromote` already required it;
-7. snapshots `Source`/`Target` into `EnvironmentPosition` values, taking rank
-   from `Rank()` (ranked is guaranteed, again by `CanPromote`).
+5. requires the gate result's identity to agree with the promotion's:
+   `GateResult.Environment() == d.Source.Ref()`, and
+   `GateResult.ReferenceRunID() != GateResult.CandidateRunID()`. A mismatch is
+   `ErrInvalidGateEvidence` — it means the result gates a different comparison
+   than the one being recorded;
+6. **derives** every remaining field:
 
-Point 5 is the important one. The domain enforces its own ordering invariant,
-and it does so by calling **the one ordering primitive**, not by comparing two
-integers. `CanPromote` remains the only rank comparison in the repository, as
-task 065's absence test requires.
+   | Field | Derived from |
+   |---|---|
+   | `projectID` | `d.Source.ProjectID()`, guaranteed equal to the target's by `CanPromote` |
+   | `referenceRunID`, `candidateRunID` | `GateResult.ReferenceRunID()`, `GateResult.CandidateRunID()` |
+   | `candidateID` | `GateResult.CandidateCandidateID()` — the candidate run's candidate is the candidate being promoted |
+   | `limits` | the three `Maximum` fields of the gate result's three maximum checks |
+   | `source`, `target` | `EnvironmentPosition` snapshots of `d.Source` and `d.Target`, rank guaranteed present by `CanPromote` |
+   | `outcome` | `GateResult.Verdict()` — see below |
 
-Point 6 removes a forgeable input: the project is derived, never supplied.
+7. derives the outcome, and accepts no other source for it:
 
-`NewPromotion` takes no gate *result*. It takes the outcome the workflow
-reached. See [Gate evidence](#gate-evidence-what-is-stored-and-what-is-recomputed).
+   ```text
+   GateVerdictPass → PromotionAccepted
+   GateVerdictFail → PromotionRejected
+   ```
+
+Three properties this shape buys, each of which is a thing that cannot go
+wrong later:
+
+**The outcome cannot disagree with the evidence.** There is no `Outcome`
+input. An `accepted` promotion whose stored gate result says FAIL is
+unconstructible, not merely discouraged, and the same is true in reverse.
+
+**The identity cannot be forged or mismatched.** The project, both candidates
+and both runs all come out of values the service loaded. A caller — and an
+adapter — has nothing to supply but an identifier, two environments the
+service resolved, a gate result the service computed, and a clock the
+composition root owns.
+
+**Ordering has one implementation.** Point 4 calls the one primitive. The
+constructor compares no ranks itself, so `CanPromote` remains the only rank
+comparison in the repository, as task 065's absence test requires.
 
 ### Restoring a stored promotion
 
 ```go
 func restorePromotion(/* stored scalars */) (Promotion, error)
+func restoreEvaluationGateResult(/* stored scalars */) (EvaluationGateResult, error)
 ```
 
-Shared by both backends so neither can accept a row the other would refuse,
-exactly as `restoreEnvironment` is. It applies every check a live value faced,
-including the ordering one: it rebuilds two `Environment` values from the
-stored positions through `restoreEnvironment` — active, ranked, in the row's
-project, named after their own refs the way migration names a backfilled
-environment — and asks `CanPromote`. A row whose ranks were inverted by damage
-therefore fails closed with `ErrStoreCorrupt`, and the repository still
-contains exactly one rank comparison.
+Both shared by the two backends so neither can accept a row the other would
+refuse, exactly as `restoreEnvironment` is.
+
+`restoreEvaluationGateResult` lives in `gate.go` beside the type it rebuilds.
+It **evaluates nothing**: it sets `bound`, copies the stored identity, rebuilds
+the five checks from their stored operands through the existing `minimumGate`
+and `maximumGate` helpers, and takes the **stored verdict verbatim**. That last
+point is the whole of the historical-evidence rule applied to the restore path
+— recomputing the verdict from the stored checks would mean a later change to
+how five checks combine silently rewrote history on read.
+
+`restorePromotion` applies every check a live value faced:
+
+- every identifier by `validateID`;
+- `decided_at` parseable and non-zero;
+- `outcome` one of the two constants; anything else is `ErrStoreCorrupt`;
+- **`outcome` agrees with the restored verdict.** `accepted` with a stored FAIL
+  verdict is corruption — this is task 066's own invariant, fixed by this
+  task's constructor, so a row that violates it was not written by this code;
+- the ordering invariant, by rebuilding two `Environment` values from the
+  stored positions through `restoreEnvironment` — active, ranked, in the row's
+  project, named after their own refs the way migration names a backfilled
+  environment — and asking `CanPromote`. A row whose ranks were inverted by
+  damage fails closed, and the repository still contains exactly one rank
+  comparison.
+
+What restore deliberately does **not** check: whether the five restored checks
+would combine to the stored verdict under today's rule, and whether today's
+gate would reach the same verdict from the same evidence. Neither is
+corruption. See below.
+
+### Historical evidence versus current recomputation
+
+Two different questions, kept apart because conflating them is how an audit
+history quietly becomes a lie.
+
+| Question | Answer |
+|---|---|
+| *What did the platform rely on when it made this decision?* | `promotion.GateResult()` — the stored snapshot. Always available, never recomputed, never rewritten |
+| *What would the current implementation decide from the same evidence?* | `CompareEvaluations(stored run IDs, stored limits)` — a fresh derivation by today's code |
+
+They will normally agree, and the platform makes **no guarantee that they
+always will.** A bug fix or a semantic correction in the scorecard or the gate
+can legitimately produce a different result from the same immutable evidence
+and the same limits:
+
+```text
+decision time   runs + limits → PASS → accepted, recorded
+later build     runs + limits → FAIL   (a gate defect was corrected)
+```
+
+The recorded promotion is still correct about what happened: the platform, as
+it then was, accepted that candidate on that result. That is the fact an audit
+needs. A divergence is **not corruption of the promotion**, nothing detects it
+as one, and nothing overwrites the stored result. If an operator needs to know
+that a past decision would go differently today, that is a deliberate
+re-evaluation they ask for, and it produces a new answer beside the old record
+rather than replacing it.
+
+This is also why the gate result is snapshotted rather than referenced. A
+reference is only as good as the guarantee that dereferencing it returns the
+same thing, and across software versions that guarantee does not hold for a
+derived value.
 
 ### What is deliberately not on a `Promotion`
 
@@ -362,8 +472,7 @@ contains exactly one rank comparison.
 | `AgentID` | Derivable, through immutable edges only: candidate run → `Candidate.AgentID`. A stored copy could only ever agree, and a field that can only agree is a field that can drift |
 | `Status`, `State`, `Phase` | A promotion has no lifecycle. It is decided or it does not exist |
 | `ApprovedBy`, `Actor`, `RequestedBy` | Nobody is authenticated. A name here would be an unverified string presented as provenance |
-| `EvaluationScorecard`, `BehaviorDiff` | Derived from immutable evidence plus the stored limits, and recomputable bit-for-bit. ADR 0030 keeps one source of truth |
-| `EvaluationGateResult` | Same — see [Gate evidence](#gate-evidence-what-is-stored-and-what-is-recomputed) |
+| `EvaluationScorecard`, `BehaviorDiff` | Secondary derived views. A promotion did not consume them directly — it consumed the gate result computed from them — and both are recomputable from the immutable runs. ADR 0030 keeps one source of truth for a view nothing decided on |
 | `Reason`, `Notes`, `Message` | Free text is not evidence, and a closed outcome vocabulary is what makes a history machine-readable |
 | `Metadata map[string]…` | Unbounded row shape. Every platform value in this repository is fixed-shape |
 | environment `Name` | A human label that changes without changing the decision |
@@ -394,12 +503,16 @@ precondition holds:
 11. the comparison is computable from the stored evidence
 ```
 
-Given all eleven, the **outcome** is:
+Given all eleven, the workflow holds an authoritative `EvaluationGateResult`,
+and the **outcome** is derived from it and from nothing else:
 
 ```text
-gate verdict PASS  →  accepted
-gate verdict FAIL  →  rejected
+GateResult.Verdict() == PASS  →  accepted
+GateResult.Verdict() == FAIL  →  rejected
 ```
+
+That result is stored on the promotion alongside the outcome it produced, so
+the record carries both the answer and the measurement it came from.
 
 Fail closed, throughout. No condition compensates for another; there is no
 score, no weighting, no override, no "mostly passed". A missing condition is
@@ -431,9 +544,11 @@ history containing only the advances that happened is not a history of
 decisions. More concretely, a rejection is the one outcome that is *not*
 otherwise recoverable: the runs are immutable and the comparison is
 recomputable, but the **limits** that produced the FAIL are caller-owned and
-stored nowhere else. Discard the rejected attempt and "we tried to ship this
-under these limits and it did not pass" becomes unanswerable — which is
-precisely the question an operator asks when a candidate did not advance.
+stored nowhere else, and the **gate result** they produced is a derivation no
+later build is obliged to reproduce. Discard the rejected attempt and "we tried
+to ship this under these limits and this is what it measured" becomes
+unanswerable — which is precisely the question an operator asks when a
+candidate did not advance.
 
 **Why structural failures are not recorded.** A request naming two agents'
 runs, or an archived target, or a run that never completed, is not a decision
@@ -567,41 +682,51 @@ deriving order from them is the mistake ADR 0039 §3 rejected.
 
 The governing rule, and the one that decides every field:
 
-> **Snapshot what is mutable or otherwise unrecoverable. Reference what is
-> immutable. Recompute what is derived.**
+> **Snapshot what is mutable, what is unrecoverable, and what the decision
+> actually consumed. Reference immutable primary evidence. Recompute secondary
+> derived views, when someone asks for a current one.**
 
-### Recoverable, therefore referenced
+The third clause is doing real work. "Derived, therefore recomputable" is not
+sufficient on its own, because recomputation answers *what would today's code
+decide* and a historical record has to answer *what did the platform rely on*.
+Those coincide until the first time the gate or the scorecard is corrected, and
+a record that cannot survive its own bug fixes is not an audit record.
+
+### Referenced: immutable primary evidence
 
 | Evidence | Why a reference is enough |
 |---|---|
 | reference run, candidate run | `EvaluationRun` is immutable once completed, and the store has no delete |
-| the run's aggregate and behavior snapshot | Written during ingest, and ingest is refused on a run that is not running — so a completed run's evidence never changes again |
+| the runs' aggregates and behavior snapshots | Written during ingest, and ingest is refused on a run that is not running — so a completed run's evidence never changes again |
 | candidate, agent, project | Caller-owned identity, immutable, never deleted |
 
-### Unrecoverable or mutable, therefore snapshotted
+A reference is sound here because dereferencing it returns the same bytes
+forever, whatever version of the platform is running.
+
+### Snapshotted: mutable, unrecoverable, or consumed by the decision
 
 | Evidence | Why a reference is not enough |
 |---|---|
-| the three gate limits | Caller-owned and stored nowhere. Lose them and the verdict is unexplainable and unreproducible |
+| the three gate limits | Caller-owned and stored nowhere else. Lose them and the verdict is unexplainable |
+| **the `EvaluationGateResult`** | **The result the decision consumed.** Re-deriving it later answers a different question, and a corrected gate may answer it differently. Fixed-shape and bounded, so snapshotting it costs a known number of scalar columns |
 | source and target `rank` | Configuration an operator changes. ADR 0039 §6 already says promotion-time ordering belongs on the promotion record; this is that |
-| source and target `revision` | Makes "the configuration has moved since this decision" detectable today, by comparing against the environment's current revision |
-| `outcome` | The decision itself — the one fact the platform is being asked to remember |
-| `decided_at` | When. Not identity; see above |
+| source and target `revision` | The configuration the decision was bound to. It is also the token the store revalidates at commit — see [Concurrency](#concurrency-and-retry-semantics) |
+| `outcome` | The durable workflow decision. Derived from the stored verdict at construction, stored so a reader needs no derivation at all |
+| `decided_at` | When. Not identity |
 
-### Derived, therefore recomputed
+### Recomputed: secondary derived views
 
-The `BehaviorDiff`, the `EvaluationScorecard` and the `EvaluationGateResult`
-are **not stored**.
+The `BehaviorDiff` and the `EvaluationScorecard` are **not stored**.
 
-All three are deterministic functions of immutable stored evidence and the
-stored limits. Task 056 built the gate on integer counts precisely so the
-result is bit-identical under record reordering, and `EvaluationComparison`
-already documents itself as "not persisted … ADR 0030 keeps one source of
-truth by recomputing rather than storing a second copy that can disagree."
-Storing a gate result on the promotion would be exactly that second copy.
+Neither is what the decision consumed. The workflow consumed a gate result; the
+scorecard and diff are the inputs that produced it, and both are recomputable
+from the immutable runs. Storing them would duplicate large derived structures
+— the scorecard alone carries dozens of rate and metric comparisons — to answer
+a question the stored gate result already answers better, because the gate
+result is the part the decision turned on.
 
-**How a promotion is explained, then.** The record carries both run IDs and
-all three limits, which is the complete input to the existing route:
+A consumer that wants the full comparison as **today's code sees it** posts the
+promotion's own stored run identifiers and stored limits to the existing route:
 
 ```text
 POST /v1/evaluations/compare
@@ -610,19 +735,28 @@ POST /v1/evaluations/compare
     "gate_limits":      <promotion.gate_limits> }
 ```
 
-That returns the diff, the scorecard and the full five-check gate result, and
-it is guaranteed to reproduce the verdict the promotion recorded, because
-every input is either immutable or stored on the record. One implementation of
-the explanation, reachable from the decision, with nothing duplicated.
+That is a **current re-evaluation**, and the specification says so wherever it
+appears. It is not the historical decision evidence, and it is not required to
+reproduce the recorded verdict. The recorded verdict lives on the record.
 
-**The alternative considered and rejected.** Snapshotting a fixed-shape
-`EvaluationGateResult` onto the row (five checks plus verdict, ~16 more
-columns) would make `GET /v1/promotions/{id}` self-contained. It was rejected
-because every one of those columns is recomputable from data the row already
-names, and a duplicated derivation is a derivation that can disagree with its
-source after a bug fix in the gate — at which point the platform holds two
-answers and no rule for which is right. The cost of the decision is one extra
-documented request when a consumer wants the full breakdown.
+### Why the gate result and not the scorecard
+
+Both are derived; only one is snapshotted. The line is *what the decision
+consumed*:
+
+```text
+aggregates + snapshots ──▶ BehaviorDiff ──▶ Scorecard ──▶ GateResult ──▶ outcome
+└─── referenced ────────┘  └────── recomputed ───────┘   └─ snapshotted ──┘
+```
+
+The promotion's outcome is a function of the gate result and nothing else. The
+scorecard is one step further back: it is how the gate result was reached, not
+what the decision read. Snapshotting the last derived value before the decision
+is the smallest snapshot that makes the decision self-explaining, and
+`EvaluationGateResult` is fixed-shape by construction — five checks, two
+integers each, one closed-vocabulary verdict — so it fits the resource model
+exactly. A scorecard snapshot would not be small, and would still not be the
+thing the decision consumed.
 
 ## Control-Plane Service
 
@@ -666,10 +800,10 @@ lifecycle operation — the clock is the composition root's, and
 
 ### Orchestration order
 
-Ordered so that **every structural precondition is checked before any
-evidence is read**, and so that an impossible promotion costs a handful of
-primary-key lookups rather than the evidence reads and three derivations a
-comparison costs.
+Ordered so that **every structural precondition is checked before any evidence
+is read**, and so that an impossible promotion costs a handful of primary-key
+lookups rather than the evidence reads and three derivations a comparison
+costs.
 
 ```text
  1  validate request shape                       no reads
@@ -691,31 +825,51 @@ comparison costs.
 11  require CanPromote(source, target)           no reads   ErrPromotionOrder
 
 12  CompareEvaluations(reference, candidate, limits)
-        → diff, scorecard, gate                  evidence reads + derivations
+        → diff, scorecard, gate result           evidence reads + derivations
 
-13  outcome = accepted if gate.Verdict() == GateVerdictPass else rejected
-14  NewPromotion(…)                              no reads
-15  control.CreatePromotion(promotion)           1 write
-16  return the promotion
+13  NewPromotion{ID, source, target, gate, at}   no reads
+        derives outcome from gate.Verdict()
+        derives project, candidates, run IDs and limits
+        from the source environment and the gate result
+
+14  control.CreatePromotion(promotion)           1 transaction:
+        atomically revalidates both environment    2 locked reads
+        revisions and the ordering, then inserts   + 1 insert
+
+15  return the stored decision
 ```
 
-Notes on three steps that look like choices and are:
+Four steps that look like choices and are:
+
+**Step 11 and step 14 both check ordering, and they are different checks.**
+Step 11 answers *is this request structurally possible*, on values just read,
+and its failure is `ErrPromotionOrder` — the request itself is wrong. Step 14
+answers *is the configuration the decision was built on still the authoritative
+one*, atomically with the insert, and its failure is `ErrStoreConflict` — the
+request was fine and the world moved. Keeping them separate is what makes the
+race observable without pretending the caller sent something invalid.
 
 **Step 12 reuses `CompareEvaluations` whole**, including its own repeat of
 `completedRun` and `requireSameProject`. That redundancy — two extra run reads
 and the four identity reads behind `requireSameProject` — is accepted
-deliberately. The alternative is an
-internal comparison variant that skips the checks, which creates a code path
-where the checks *can* be skipped; a future edit routing another caller through
-it would lose them silently. One implementation of the comparison chain, with
-its preconditions attached, is worth six primary-key reads.
+deliberately. The alternative is an internal comparison variant that skips the
+checks, which creates a code path where the checks *can* be skipped; a future
+edit routing another caller through it would lose them silently. One
+implementation of the comparison chain, with its preconditions attached, is
+worth six primary-key reads.
 
-**Step 15 is the only write**, and it happens after every check and after the
-verdict. A structural failure writes nothing. A rejected verdict writes a
-record, because a verdict was reached.
+**Step 13 does not decide anything.** It receives the authoritative gate result
+and derives the outcome from its verdict. No adapter — and not the service
+either — chooses `accepted` or `rejected`. The constructor does, from evidence.
 
-**Step 1 validates the promotion ID before anything is loaded**, so a
-malformed identifier is a `400` that touched no storage.
+**Step 14 is the only write, and the store revalidates rather than
+re-deciding.** It does not recompute the gate, re-read evaluation evidence or
+construct a promotion; it checks that the two environment rows the decision was
+built on are unchanged, and inserts. The division is exact: the service owns
+the decision, the store owns the concurrency invariant.
+
+A structural failure writes nothing. A rejected verdict writes a record,
+because a verdict was reached.
 
 ### Errors
 
@@ -752,10 +906,29 @@ Everything else reuses an existing sentinel with its existing meaning:
 | a run is pending, running, failed or cancelled | `ErrEvaluationState` |
 | the two runs belong to different projects | `ErrComparisonScope` |
 | behavioral evidence saturated | `ErrIncompleteSnapshot` |
+| an unbound or mismatched gate result reaches `NewPromotion` | `ErrInvalidGateEvidence` |
+| **an environment changed between the decision and the commit** | **`ErrStoreConflict`** |
 | a stored row cannot be restored | `ErrStoreCorrupt` |
 | gate verdict FAIL | **no error** — outcome `rejected` |
 
-No new error *code* string reaches `/v1`. See
+`ErrStoreConflict` is the existing compare-and-swap vocabulary, used here for
+exactly what it already means everywhere else in this repository: the value you
+read is no longer the stored value. A caller that receives it may retry the
+whole promotion, which re-reads the environments and decides again.
+
+The distinction between it and `ErrPromotionOrder` is deliberate and
+observable:
+
+| The caller sees | Meaning | Retry helps? |
+|---|---|---|
+| `ErrPromotionOrder` | The request was structurally impossible when it arrived — an archived target, a backward rank, an unranked side | No, not until someone changes the configuration |
+| `ErrStoreConflict` | The request was fine and the configuration moved under it before the write landed | Yes |
+
+Reporting the race as `ErrPromotionOrder` would tell an operator their request
+was wrong when it was not, and would hide a concurrency event behind a
+validation message.
+
+No new error *code* string reaches `/v1` — both map onto `conflict`. See
 [Status and error mapping](#status-and-error-mapping).
 
 ## Persistence
@@ -765,12 +938,21 @@ No new error *code* string reaches `/v1`. See
 Three methods, and no more than task 066 needs:
 
 ```go
-// CreatePromotion stores one decision. A promotion is immutable, so this is
-// the only write: there is no update and no delete at any layer.
+// CreatePromotion stores one decision, in one transaction that first
+// revalidates the environment state the decision was built on.
+//
+// A promotion is immutable, so this is the only write: there is no update and
+// no delete at any layer.
 //
 // A promotion whose ID already exists is ErrStoreAlreadyExists, whatever the
 // rest of the request says — the identifier names a decision that was already
 // recorded.
+//
+// The revalidation is not a courtesy. A promotion carries the revision of each
+// environment it was decided against, and those revisions must still be the
+// authoritative ones at the serialization point of this insert, or the row
+// would record a decision about a configuration that had already been
+// replaced. A changed revision is ErrStoreConflict. See Concurrency.
 CreatePromotion(ctx context.Context, promotion Promotion) error
 
 // Promotion loads one by identifier. Identity is global, like a project,
@@ -812,35 +994,95 @@ index. Nothing existing changes shape.
 
 ```sql
 CREATE TABLE platform_promotions (
-    id                             TEXT PRIMARY KEY,
-    project_id                     TEXT NOT NULL REFERENCES platform_projects(id),
-    candidate_id                   TEXT NOT NULL REFERENCES platform_candidates(id),
+    id                              TEXT PRIMARY KEY,
+    project_id                      TEXT NOT NULL REFERENCES platform_projects(id),
+    candidate_id                    TEXT NOT NULL REFERENCES platform_candidates(id),
+    reference_candidate_id          TEXT NOT NULL REFERENCES platform_candidates(id),
 
-    reference_run_id               TEXT NOT NULL,
-    candidate_run_id               TEXT NOT NULL,
+    reference_run_id                TEXT NOT NULL,
+    candidate_run_id                TEXT NOT NULL,
 
-    source_environment_ref         TEXT NOT NULL,
-    source_environment_rank        INTEGER NOT NULL,
-    source_environment_revision    TEXT NOT NULL,
+    source_environment_ref          TEXT NOT NULL,
+    source_environment_rank         INTEGER NOT NULL,
+    source_environment_revision     TEXT NOT NULL,
 
-    target_environment_ref         TEXT NOT NULL,
-    target_environment_rank        INTEGER NOT NULL,
-    target_environment_revision    TEXT NOT NULL,
+    target_environment_ref          TEXT NOT NULL,
+    target_environment_rank         INTEGER NOT NULL,
+    target_environment_revision     TEXT NOT NULL,
 
-    max_added_behaviors            TEXT NOT NULL,
-    max_block_decisions            TEXT NOT NULL,
-    max_critical_risk_observations TEXT NOT NULL,
+    -- The three caller-owned limits. They are also the three maximum checks'
+    -- Maximum operands, stored once and read as both.
+    max_added_behaviors             TEXT NOT NULL,
+    max_block_decisions             TEXT NOT NULL,
+    max_critical_risk_observations  TEXT NOT NULL,
 
-    outcome                        TEXT NOT NULL,
-    decided_at                     TEXT NOT NULL
+    -- The decision-time gate result: what each check measured, what the two
+    -- minimum checks required, and the verdict reached.
+    gate_reference_evidence_actual  TEXT NOT NULL,
+    gate_reference_evidence_minimum TEXT NOT NULL,
+    gate_candidate_evidence_actual  TEXT NOT NULL,
+    gate_candidate_evidence_minimum TEXT NOT NULL,
+    gate_added_behaviors_actual     TEXT NOT NULL,
+    gate_block_decisions_actual     TEXT NOT NULL,
+    gate_critical_risk_actual       TEXT NOT NULL,
+    gate_verdict                    TEXT NOT NULL,
+
+    outcome                         TEXT NOT NULL,
+    decided_at                      TEXT NOT NULL
 );
 
 CREATE INDEX platform_promotions_by_project
     ON platform_promotions (project_id, id);
 ```
 
-Sixteen columns, every one a bounded scalar. No JSON column, no blob, no
-array, no nullable field.
+Twenty-five columns, every one a bounded scalar. No JSON column, no blob, no
+array, no nullable field — the repository stores fixed-shape values as explicit
+columns, and a serialized `EvaluationGateResult` in a text column would be a
+schema the database could not check and a migration could not see.
+
+#### Restoring the gate result from these columns
+
+`EvaluationGateResult` has thirteen fields. Four need no column because the row
+already carries them; one identity column exists only because the row
+otherwise would not; the rest are stored or recomputed as follows.
+
+| Gate-result field | Where it comes from |
+|---|---|
+| `referenceRunID`, `candidateRunID` | the promotion's own two run columns |
+| `candidateCandidate` | `candidate_id` — the candidate run's candidate is the candidate being promoted |
+| `referenceCandidate` | `reference_candidate_id`, the one identity column the promotion would not otherwise need |
+| `environment` | `source_environment_ref` — both runs share it, which is how the source was inferred |
+| `referenceEvidence` Actual, Minimum | `gate_reference_evidence_actual`, `…_minimum` |
+| `candidateEvidence` Actual, Minimum | `gate_candidate_evidence_actual`, `…_minimum` |
+| `addedBehaviors` Actual / Maximum | `gate_added_behaviors_actual` / `max_added_behaviors` |
+| `blockDecisions` Actual / Maximum | `gate_block_decisions_actual` / `max_block_decisions` |
+| `criticalRiskObservations` Actual / Maximum | `gate_critical_risk_actual` / `max_critical_risk_observations` |
+| each check's `Passed` | recomputed by `minimumGate` / `maximumGate` from the two stored operands |
+| `verdict` | `gate_verdict`, **stored, never recomputed** |
+| `bound` | set by `restoreEvaluationGateResult` |
+
+Two choices in that table are the ones worth defending.
+
+**The two minimums are stored even though today they are always 1.** Today
+`EvaluateEvaluationGate` hardcodes a minimum of one record on each side. A
+build that changed it would change what a decision required, and a record that
+read the constant from the running binary would silently restate history under
+the new rule. The column costs a few bytes and removes the whole class.
+
+**`Passed` is recomputed; `verdict` is not.** A check's `Passed` is arithmetic
+over two operands the row stores — `actual >= minimum`, `actual <= maximum` —
+and recomputing it through the very helpers that produced it introduces no
+policy. The verdict *is* policy: it is the rule for combining five checks, and
+a build that added a sixth or changed the combination would derive a different
+verdict from identical stored checks. So the verdict is read from the column,
+verbatim, and restore does **not** cross-check it against the recomputed flags
+— a row whose checks would combine differently under today's rule is a record
+from an older rule, not a corrupt row.
+
+What restore *does* cross-check is `outcome` against `gate_verdict`, because
+that correspondence is task 066's own invariant, fixed by this task's
+constructor. A disagreement there means something wrote the row that this code
+did not, and it is `ErrStoreCorrupt`.
 
 **PostgreSQL** adds `COLLATE "C"` to `id`, `project_id`, `candidate_id`,
 `reference_run_id`, `candidate_run_id` and both environment refs, for the same
@@ -848,16 +1090,18 @@ reason task 065 did: the collection paginates on `id` in byte order, and a
 locale-aware collation would order two backends' pages differently and could
 place a row on a page a cursor had already passed.
 
-**`uint64` as `TEXT`** for the three limits and the two revisions, matching
+**`uint64` as `TEXT`** for the three limits, the two revisions and the seven
+gate counts, matching
 every other `uint64` in this schema — the full unsigned range survives exactly,
 where a native integer type would not. **`uint16` rank as `INTEGER`**, matching
 `platform_environments`. **Timestamps as `TEXT`** in `RFC3339Nano`, through the
 existing `timeText`/`parseTimeText` pair, so a zone offset and nanosecond
 precision survive.
 
-**Foreign keys, and deliberately only two.** `project_id` and `candidate_id`
-point at `ControlStore` entities in the same capability, and neither is ever
-deleted, so the constraint costs nothing and documents the scope.
+**Foreign keys, and deliberately only three.** `project_id`, `candidate_id`
+and `reference_candidate_id` point at `ControlStore` entities in the same
+capability, and none is ever deleted, so the constraints cost nothing and
+document the scope.
 
 `reference_run_id` and `candidate_run_id` carry **no foreign key**. Two
 reasons, both precedent:
@@ -882,8 +1126,9 @@ index on `candidate_id`, `decided_at` or `outcome`: no route queries them.
 
 **Not added, and asserted absent:** no promotion table column, and no table at
 all, for a deployment target, endpoint, credential, secret, token, approver,
-scorecard, gate result, diff, decision record or raw event. `schemaTables`
-gains exactly one name.
+scorecard, behavioral diff, decision record or raw event. The gate columns are
+the exception this task argues for, and they are eight bounded scalars rather
+than a blob. `schemaTables` gains exactly one name.
 
 ### Migration v3 → v4, on both backends
 
@@ -919,29 +1164,196 @@ differential suite:
 
 ## Concurrency and Retry Semantics
 
-Promotion creation takes **no lock**, and the contrast with task 065 is worth
-stating because it looks inconsistent and is not.
+### The invariant
 
-The environment cap is a *cross-row* invariant — "this project has fewer than
-64 environments" is a statement about rows other than the one being written —
-so no predicate on the inserted row can express it, and creation had to
-serialize on the owning project row. Promotion has no cross-row invariant. Every
-rule it enforces is either a property of the request, a property of rows it
-only reads, or a property of the single row it writes. A primary key is
-sufficient, and a lock would serialize writes for nothing.
+> **A promotion may commit only if the source and target environment states
+> the decision used are still the authoritative states at the point the insert
+> serializes.**
+
+The two `EnvironmentPosition` snapshots on a stored promotion must therefore
+correspond to **one coherent authoritative state** under which
+`CanPromote(source, target)` was true — not to two independent reads that may
+never have been simultaneously current.
+
+This is a persistence invariant, not an in-memory service check, and it is why
+`CreatePromotion` is a transaction rather than an insert.
+
+### Why reading each environment once is not enough
+
+Source and target are separate mutable rows, read at different instants, and
+the decision is written later still. Nothing about that sequence forces the two
+reads to describe one state, and the window is wide — a whole comparison sits
+inside it.
+
+The failure is not hypothetical and not cosmetic:
+
+```text
+T1  promotion workflow  reads source    → active, rank 30, revision 7
+T2  an operator         archives source → revision 8, committed
+T3  promotion workflow  reads target    → active, rank 40, revision 3
+T4  CanPromote(source@7, target@3)      → true, on a source that no longer reads that way
+T5  gate PASS
+T6  INSERT accepted promotion out of an archived environment
+```
+
+At T6 the platform records that a candidate was accepted to advance *out of an
+environment that was archived before the record was written* — and task 065's
+whole point is that an archived environment is closed to new work and is
+neither a promotion source nor a target. A weaker variant does the same damage
+with a re-rank: a target demoted below the source between T3 and T6 yields a
+stored "forward" decision that was backward by the time it landed.
+
+Both are durable, both look correct in the history, and neither is detectable
+afterwards.
+
+### The correction
+
+`CreatePromotion` runs one transaction, on both backends:
+
+```text
+begin a write transaction
+
+for each of source and target, in (project_id, ref) byte order:
+    take the row lock and re-read the environment row
+    restore it through restoreEnvironment          → a current Environment
+
+require current source revision == promotion.Source().Revision
+require current target revision == promotion.Target().Revision
+        otherwise → ErrStoreConflict
+
+require CanPromote(current source, current target)
+        otherwise → ErrStoreConflict
+
+insert the promotion row
+        duplicate identifier → ErrStoreAlreadyExists
+
+commit
+```
+
+Three notes on that sequence.
+
+**The revision check is the primary guard; the `CanPromote` call is the
+independent one.** Task 065 guarantees every environment mutation advances the
+revision by exactly one, so an unchanged revision already implies unchanged
+rank and status — which makes the ordering call redundant *if that discipline
+holds everywhere, forever*. It is kept anyway, because it costs one function
+call and does not depend on the discipline: an out-of-band `UPDATE`, a
+migration defect, or a future mutation path that forgets to bump would all slip
+past a revision check alone and would not slip past this one.
+
+**The ordering call is a call.** `CanPromote` is invoked on two restored
+`Environment` values. The store compares no ranks itself, so this adds no
+second implementation of promotion precedence and task 065's absence test keeps
+passing unchanged.
+
+**The store revalidates; it does not re-decide.** It does not recompute the
+gate, re-read evaluation evidence, reconstruct a scorecard or choose an
+outcome. Its entire job is the environment-staleness invariant.
+
+### Any revision change invalidates the attempt
+
+Including a rename, which under task 065 advances the revision without changing
+anything `CanPromote` reads.
+
+That is deliberate. The promotion snapshots the revision precisely to bind the
+decision to one configuration, and a store that tried to decide *which* changes
+matter would have to compare configuration field by field — which means
+comparing ranks outside `CanPromote`, and means the answer changes silently
+every time a field is added to `Environment`. "The configuration I decided
+against is still the current one" is a single, stable, checkable question, and
+a rename-induced retry costs one round trip.
+
+### PostgreSQL
+
+Two `SELECT … FOR UPDATE` statements, issued **in `(project_id, ref)` byte
+order**, inside the existing `withTx` READ COMMITTED transaction:
+
+```sql
+SELECT ref, name, rank, status, revision
+  FROM platform_environments
+ WHERE project_id = $1 AND ref = $2
+   FOR UPDATE
+```
+
+Explicitly two statements in a determined order rather than one
+`ref = ANY(…) ORDER BY ref FOR UPDATE`: the lock-acquisition order of a
+multi-row `FOR UPDATE` follows the query plan, and a specification that depends
+on a planner choice is not a specification. Two statements make the order a
+property of the code.
+
+**Deterministic ordering is what prevents deadlock.** Two concurrent promotions
+with overlapping environment pairs — `staging → production` and
+`production → eu-prod`, say — would deadlock if each locked its own source
+first. Locking in ref byte order means both reach `production` at the same
+point in their sequence, so one waits and neither dies.
+
+**The lock is on two rows, not the project.** Unlike task 065's creation cap,
+which is a cross-row invariant over *all* of a project's environments and
+therefore locks the project row, this invariant names exactly two rows. A
+promotion in one project cannot block a promotion in another, and two
+promotions in one project over disjoint environment pairs do not block each
+other either.
+
+### SQLite
+
+The same sequence inside one explicit write transaction, taken with write
+intent **before** anything is read — the `BEGIN IMMEDIATE` equivalent task 065
+established, never a reliance on `SetMaxOpenConns(1)`.
+
+Write intent is taken by touching each environment row in the same
+`(project_id, ref)` byte order:
+
+```sql
+UPDATE platform_environments SET name = name
+ WHERE project_id = ? AND ref = ?
+```
+
+A no-op write that escalates the transaction to a writer and whose
+`RowsAffected` doubles as the existence check, exactly as `lockProjectForWrite`
+does for the creation cap — narrowed here from the project row to the two
+environment rows. It changes no column, so it advances no revision.
+
+SQLite serializes writers database-wide regardless, so the property that
+matters here is not lock granularity but atomicity: the revision validation and
+the insert are one write decision, with no reader-then-writer gap between them.
+
+### This is a cross-row invariant
+
+Stated plainly, because an earlier reading of this design said otherwise and
+was wrong. A promotion's validity spans three rows — the source environment,
+the target environment, and the promotion being written — and no predicate on
+the inserted row can express it. That is the same *class* of problem as task
+065's creation cap, with a different shape and therefore a different remedy:
+
+| | Task 065 creation cap | Task 066 promotion commit |
+|---|---|---|
+| The invariant | "this project holds fewer than 64 environments" | "these two environment rows are unchanged and still ordered" |
+| Rows involved | every environment of one project — unbounded, not nameable in advance | exactly two, both named by the promotion |
+| Remedy | lock the owning **project** row | lock the **two environment** rows, in ref order |
+| Cost | serializes creation within one project | serializes only promotions sharing an environment |
+
+Neither serializes unrelated projects, and neither uses a process-local mutex,
+a counter table or a table lock.
+
+### Races, and what each does
 
 | Race | Outcome |
 |---|---|
 | two requests, same `PromotionID` | The primary key decides. Exactly one commits; the other is `ErrStoreAlreadyExists` → `409 already_exists`. No partial write exists, because the row is written once and never updated |
-| two requests, different IDs, same `(candidate, source, target)` | **Both succeed.** Two decisions were made and two are recorded |
-| a concurrent re-rank or archive of either environment | The workflow read each environment once and snapshotted rank and revision. The decision describes a configuration that existed; a later reader detects the move by comparing the stored revision against the environment's current one. No lock, no retry, no invalidation |
+| two requests, different IDs, same `(candidate, source, target)`, environments unchanged | **Both succeed.** Two decisions were made and two are recorded. They serialize on the two environment locks and neither is refused |
+| source archived between the service read and the commit | The revision moved. `ErrStoreConflict` → `409 conflict`, **no row**. The stale accepted promotion of the example above cannot be written |
+| target re-ranked below the source before the commit | Same: revision moved, `ErrStoreConflict`, no row |
+| either environment renamed before the commit | Same. Any revision change invalidates the attempt, by the rule above |
+| promotions in two different projects | Disjoint locks. Neither blocks the other |
+| promotions in one project over disjoint environment pairs | Disjoint locks. Neither blocks the other |
+| overlapping environment pairs approached from opposite directions | Both lock in ref byte order, so one waits. No deadlock |
 | a concurrent `CreateEvaluationRun` or ingest | Cannot affect the decision: both referenced runs are already completed, and ingest is refused on a run that is not running |
 
 **No uniqueness constraint on `(candidate_id, source_ref, target_ref)`.** That
 tuple is legitimately repeatable — see
 [Why an identifier exists](#why-an-identifier-exists-and-why-candidate-source-target-is-not-one)
-— and adding the constraint would make the database enforce a business rule
-the domain has not specified and the product has not asked for.
+— and adding the constraint would make the database enforce a business rule the
+domain has not specified and the product has not asked for.
 
 ### Duplicates and retries
 
@@ -1017,7 +1429,8 @@ one.
 
 ### Response
 
-Identical shape from `POST` and `GET`: the stored record, nothing derived.
+Identical shape from `POST` and `GET`: the stored record, including the
+decision-time gate result.
 
 ```jsonc
 {
@@ -1025,6 +1438,7 @@ Identical shape from `POST` and `GET`: the stored record, nothing derived.
   "id": "promo-2026-03-01-a",
   "project_id": "proj-1",
   "candidate_id": "cand-9",
+  "reference_candidate_id": "cand-7",
   "reference_run_id": "run-baseline-7",
   "candidate_run_id": "run-candidate-9",
   "source_environment": { "ref": "staging",    "rank": 30, "revision": "7" },
@@ -1034,18 +1448,46 @@ Identical shape from `POST` and `GET`: the stored record, nothing derived.
     "max_block_decisions":            "0",
     "max_critical_risk_observations": "0"
   },
+  "gate_result": {
+    "reference_evidence":         { "actual": "412", "minimum": "1", "passed": true  },
+    "candidate_evidence":         { "actual": "388", "minimum": "1", "passed": true  },
+    "added_behaviors":            { "actual": "5",   "maximum": "3", "passed": false },
+    "block_decisions":            { "actual": "0",   "maximum": "0", "passed": true  },
+    "critical_risk_observations": { "actual": "0",   "maximum": "0", "passed": true  },
+    "verdict": "fail"
+  },
   "outcome": "rejected",
   "decided_at": "2026-03-01T09:14:22.481Z"
 }
 ```
 
-`rank` is a number (a `uint16`, like the environment response). `revision` and
-the limits are strings (`uint64`). `outcome` is one of exactly two values.
+`gate_result` reuses the existing `gateResultDTO`, `minimumGateDTO` and
+`maximumGateDTO` shapes byte for byte — the same field names
+`POST /v1/evaluations/compare` already publishes under its `gate` key. One gate
+shape on the wire, not two, so a client that can render a comparison's gate can
+render a promotion's without new code.
 
-A consumer wanting the five-check breakdown posts the record's own
-`reference_run_id`, `candidate_run_id` and `gate_limits` to
-`/v1/evaluations/compare`, which is guaranteed to reproduce the verdict — see
-[Gate evidence](#gate-evidence-what-is-stored-and-what-is-recomputed).
+`rank` is a number (a `uint16`, like the environment response). `revision`, the
+limits and every gate count are strings (`uint64`). `outcome` and `verdict` are
+each one of exactly two values, and they always correspond.
+
+**A reader needs no second request to know why the decision went the way it
+did.** That is what snapshotting the result buys: `added_behaviors` above says
+this promotion was rejected because the candidate exhibited five new behaviors
+against a limit of three, and it will still say that after any future change to
+how the gate is computed.
+
+What a second request buys is a different thing — a **current re-evaluation**:
+
+```text
+POST /v1/evaluations/compare   with the record's run IDs and gate_limits
+  → what today's implementation derives from the same immutable evidence
+```
+
+Useful when an operator wants to know whether a past decision would go
+differently now. It is explicitly **not** the historical decision evidence, and
+the platform does not promise the two agree. See
+[Historical evidence versus current recomputation](#historical-evidence-versus-current-recomputation).
 
 ### Collection
 
@@ -1117,6 +1559,7 @@ blocked in the meantime: it is enumerable, exactly, in full.
 | promotion identifier already used | 409 | `already_exists` |
 | a run is not completed (`ErrEvaluationState`) | 409 | `conflict` |
 | target not forward of source (`ErrPromotionOrder`) | 409 | `conflict` |
+| an environment changed before the commit (`ErrStoreConflict`) | 409 | `conflict` |
 | behavioral evidence saturated (`ErrIncompleteSnapshot`) | 409 | `incomplete_evidence` |
 | body over 256 KiB | 413 | `payload_too_large` |
 | storage damage | 500 | `internal` |
@@ -1136,8 +1579,11 @@ something that will deterministically produce the same answer.
 ### Bounds
 
 The existing 256 KiB `MaxBytesReader`, `Content-Type` check and envelope
-version check apply unchanged. A promotion request has six scalar fields and a
-response has sixteen, all bounded; no route accumulates anything in memory
+version check apply unchanged. A promotion request has six scalar fields; a
+response has twenty-five, of which sixteen are the gate result's five fixed
+checks and its verdict. All bounded, all scalars, none repeated — the gate
+result is fixed-shape by construction, which is what makes snapshotting it
+compatible with the resource model. No route accumulates anything in memory
 beyond one bounded page.
 
 ## CLI
@@ -1285,7 +1731,9 @@ already do.
 | A caller cannot submit its own gate verdict | `outcome` and `gate_verdict` are not request fields. The verdict comes from `EvaluateEvaluationGate` over evidence the server loaded |
 | A caller cannot submit authoritative ranks | `source_rank` and `target_rank` are not request fields. Ranks are read from the registry at decision time |
 | A caller cannot name its own source environment | Inferred from the two runs; a `source_environment` field is a `400` |
-| A gate FAIL cannot become `accepted` through an adapter bug | The outcome is computed in the control plane and written there. No adapter constructs a `Promotion`, and `NewPromotion` is the only constructor |
+| A gate FAIL cannot become `accepted` through an adapter bug | The outcome has no input at all. `NewPromotion` derives it from the gate result's verdict, so an `accepted` promotion carrying a FAIL result is unconstructible rather than merely discouraged, and `restorePromotion` refuses such a row as corrupt |
+| A past decision cannot be silently restated under new gate semantics | The decision-time `EvaluationGateResult` is snapshotted and its verdict is read back verbatim. A later recomputation is a separate, explicitly requested answer that never overwrites the record |
+| A decision cannot be committed against stale environment configuration | `CreatePromotion` revalidates both environment revisions and re-asks `CanPromote` atomically with the insert, under row locks taken in a deterministic order |
 | Ordering is decided server-side | `CanPromote`, called in the control plane and again in the domain constructor. No adapter compares ranks; a test asserts it |
 | Cross-agent evidence cannot promote another agent's candidate | The same-agent invariant, checked before any evidence is read |
 | A historical record cannot be silently rewritten | No update method at any layer, no `UPDATE` statement, no `PUT`/`PATCH` route, no CLI verb. A corrupted row fails closed rather than being adopted |
@@ -1320,14 +1768,27 @@ new ones automatically.
 
 ### Domain
 
-- `NewPromotion` succeeds and every accessor returns what was supplied.
-- Each identifier rejected independently: empty, 257 bytes, control character,
-  invalid UTF-8, leading and trailing whitespace.
-- `ReferenceRunID == CandidateRunID` is refused.
+- `NewPromotion` succeeds and every accessor returns what was supplied or
+  derived.
+- `ID` rejected independently: empty, 257 bytes, control character, invalid
+  UTF-8, leading and trailing whitespace.
 - Zero `DecidedAt` is refused.
-- An outcome outside the two constants is refused; the vocabulary is closed.
-- `projectID` is **derived**, not supplied: constructing with two environments
-  of one project yields that project, and no input can override it.
+- An **unbound** `EvaluationGateResult` — the zero value — is refused with
+  `ErrInvalidGateEvidence`. This is the fail-closed check the `bound` marker
+  exists for.
+- A gate result whose `Environment()` differs from the source environment's ref
+  is refused.
+- A gate result whose reference and candidate run identifiers are equal is
+  refused.
+- **The outcome is derived, and cannot be contradicted.** There is no `Outcome`
+  input: a PASS result yields `PromotionAccepted` and a FAIL result yields
+  `PromotionRejected`, asserted both ways. A test asserts `PromotionDecision`
+  has no outcome field, so the ability to supply one cannot be reintroduced
+  without failing here.
+- Every derived field is derived: `projectID` from the source environment, both
+  run identifiers and both candidate identifiers from the gate result, the
+  three limits from the gate result's three maximums. No input can override any
+  of them.
 - Ordering: `NewPromotion` refuses every pair `CanPromote` refuses — unranked
   source, unranked target, archived source, archived target, equal ranks,
   backward, same environment, different projects — and accepts a forward jump
@@ -1336,17 +1797,36 @@ new ones automatically.
   asserted structurally, alongside the absence of any `Update`/`With`/`Set`.
 - `EnvironmentPosition` carries exactly `Ref`, `Rank`, `Revision` — a field
   count assertion, so a later `Name` or `Endpoint` fails here first.
-- `restorePromotion` round-trips a stored row; and fails closed with
-  `ErrStoreCorrupt` on an unknown outcome, an unparseable timestamp, a rank
-  above 9999, an unparseable `uint64`, and **inverted ranks**.
+- `Promotion.GateResult()` returns a value equal in every field to the one
+  passed to the constructor, including all five checks and the verdict.
+
+Restore:
+
+- `restoreEvaluationGateResult` round-trips a result **exactly**: all five
+  checks, both minimums, all three maximums, the five `Passed` flags and the
+  verdict.
+- The restored result is `bound`, so it is usable wherever a live one is.
+- **The verdict is taken verbatim, not recomputed.** A row whose stored verdict
+  is PASS while its stored checks would combine to FAIL under today's rule
+  restores **successfully**, carrying the stored verdict — the explicit test
+  for the historical-evidence contract, and the one that fails if somebody
+  "helpfully" re-derives the verdict on read.
+- `restorePromotion` round-trips a stored row, and fails closed with
+  `ErrStoreCorrupt` on: an unknown outcome, an unknown verdict, an unparseable
+  timestamp, a rank above 9999, an unparseable `uint64`, **inverted ranks**, and
+  an **outcome that disagrees with the stored verdict**.
 
 ### Service
 
 Valid path:
 
-- A forward promotion with a PASS gate records `accepted` and returns it.
-- A forward promotion with a FAIL gate records `rejected`, returns it, and
-  returns **no error**.
+- A forward promotion with a PASS gate records `accepted`, stores a gate result
+  whose verdict is PASS, and returns it.
+- A forward promotion with a FAIL gate records `rejected`, stores a gate result
+  whose verdict is FAIL, returns it, and returns **no error**.
+- The stored gate result equals the one `CompareEvaluations` produced during
+  the decision, field for field — the service snapshots rather than
+  re-deriving.
 - A forward jump over an intermediate rank is accepted (the skipping policy).
 - Two promotions of the same `(candidate, source, target)` under different
   identifiers both succeed and both persist.
@@ -1372,34 +1852,47 @@ Ordering and cost:
   cross-agent, archived-target and backward-target cases.
 - **No row is written when any precondition fails**, proved by a store that
   fails the test if `CreatePromotion` is called.
+- The gate is evaluated **once**: a control plane over an instrumented store
+  counts one evidence read per run, proving the service does not compare twice
+  to obtain a result it already holds.
 
 History:
 
 - Re-ranking, renaming, archiving and re-activating either environment after a
-  promotion leaves the stored promotion byte-identical, including its
-  snapshotted ranks and revisions.
+  promotion leaves the stored promotion byte-identical — snapshotted ranks,
+  revisions, gate result and outcome all unchanged.
 - The stored revision differs from the environment's current revision after a
   configuration change — the detectability the field exists for.
-- A promotion's verdict is reproducible: feeding the stored run IDs and stored
-  limits back through `CompareEvaluations` yields the same `GateVerdict` as
-  the recorded outcome.
-- `CompareEvaluations` is unchanged: a same-project, different-agent
-  comparison still succeeds, asserted so this task cannot tighten it by
-  accident.
+- **A later recomputation is not required to match.** A control plane whose
+  gate evaluation is substituted with one returning the opposite verdict from
+  the same evidence — standing in for a future semantic correction — leaves the
+  stored promotion completely unchanged: its gate result, verdict and outcome
+  still read as recorded, nothing is rewritten, and nothing reports corruption.
+  This is the executable form of the historical-evidence contract, and it is
+  the test that fails if anyone reintroduces recompute-on-read.
+- `CompareEvaluations` is unchanged: a same-project, different-agent comparison
+  still succeeds, asserted so this task cannot tighten it by accident.
 
 ### Store conformance, SQLite and PostgreSQL
 
 Run through the existing shared conformance suite so both backends answer
 identically, plus the differential suite:
 
-- create then read, with nanosecond `decided_at`, `MaxUint64` limits, rank 0
-  and rank 9999;
+- create then read, with nanosecond `decided_at`, `MaxUint64` limits and gate
+  counts, rank 0 and rank 9999;
+- **every gate-result field round-trips**: both actuals and both minimums of
+  the two minimum checks, all three maximum checks' actuals and maximums, all
+  five `Passed` flags, and the verdict — a field-by-field comparison rather
+  than a spot check, so a column omitted from either backend's `INSERT` or
+  `SELECT` fails here;
+- an `accepted` row stores verdict `pass` and a `rejected` row stores `fail`;
 - duplicate identifier → `ErrStoreAlreadyExists`;
-- missing project, missing candidate → `ErrStoreNotFound`;
+- missing project or candidate → `ErrStoreNotFound`;
 - restart persistence: reopen the store and read every field back;
 - immutability: the interface exposes no update, asserted structurally, and no
-  `UPDATE` statement against the promotions table exists in either backend;
-- corrupt rows fail closed, one column at a time;
+  `UPDATE` statement against `platform_promotions` exists in either backend;
+- corrupt rows fail closed, one column at a time, including an outcome that
+  disagrees with the stored verdict;
 - collection: ordering by `id` byte-ascending with a fixture whose identifiers
   order differently under a locale-aware collation, proving `COLLATE "C"`;
 - collection: `limit` 64 accepted, 65 refused, 0 and −1 refused, page never
@@ -1410,14 +1903,65 @@ identically, plus the differential suite:
   and only if its id sorts after the cursor;
 - cross-project isolation: one project's promotions never appear in another's.
 
-Concurrency:
+### Environment staleness at commit
+
+The concurrency invariant, on **both** backends, in the shared conformance
+suite so neither can hold it differently. Each case constructs a valid
+promotion, changes an environment, and only then calls `CreatePromotion`:
+
+- **Source archived before the commit** → `ErrStoreConflict`, and **no row
+  exists**. Without the transactional revalidation this is the stale accepted
+  promotion out of an archived environment, so this case is the regression test
+  for the whole section.
+- **Target re-ranked below the source before the commit** → `ErrStoreConflict`,
+  no row, and in particular no stored promotion whose target rank is below its
+  source rank.
+- **Target archived before the commit** → `ErrStoreConflict`, no row.
+- **Either environment renamed before the commit** → `ErrStoreConflict`, no
+  row. A rename changes nothing `CanPromote` reads and still invalidates the
+  attempt, which is the documented rule; a test pins it so the rule cannot be
+  relaxed by accident.
+- **Nothing changed** → the promotion commits, and its stored positions equal
+  the environments' current rank and revision.
+- **Retry after a conflict succeeds.** Re-running the whole workflow against
+  the changed configuration produces a promotion carrying the *new* revisions,
+  proving the conflict is a retryable race rather than a dead end.
+
+Concurrency, on both backends:
 
 - N concurrent creates of one identifier: exactly one succeeds, the rest are
   `ErrStoreAlreadyExists`, and the stored row equals the winner's.
-- Concurrent creates of different identifiers in one project all succeed.
-- Concurrent creates in **different** projects do not block each other, on
-  PostgreSQL, proved by the occupancy-hook pattern task 065 used rather than
-  by timing.
+- Concurrent creates of different identifiers over the **same unchanged**
+  environment pair: **all succeed**. They serialize on the two locks and none
+  is refused — the test that fails if somebody adds tuple uniqueness.
+- Concurrent creates in **different projects** do not block each other, proved
+  by the occupancy-hook pattern task 065 used rather than by timing: a hook
+  inside one promotion's transaction records whether another is inside its own
+  at the same moment.
+- Concurrent creates in **one project over disjoint environment pairs** do not
+  block each other, by the same hook.
+- Concurrent creates over **overlapping environment pairs** *do* exclude each
+  other, by the same hook — the positive proof that the lock is real rather
+  than merely uncontended.
+
+PostgreSQL specifically:
+
+- **Deterministic lock order prevents deadlock.** Two promotions whose
+  environment pairs overlap in opposite directions — `a → b` and `b → c`, with
+  refs chosen so a naive source-first order would acquire them in opposite
+  sequences — run concurrently many times and never produce a deadlock
+  (SQLSTATE 40P01). The ref-ordered acquisition is additionally asserted by
+  inspecting the statements the transaction issues, so the property is proved
+  structurally rather than only by the absence of a failure.
+- The locks are `FOR UPDATE` on two rows of `platform_environments`, never on
+  `platform_projects` and never table-wide — asserted by the same statement
+  inspection, so a later change to a project-wide lock fails here.
+
+SQLite specifically:
+
+- The transaction takes write intent **before** reading, proved the way task
+  065 proves it: with `SetMaxOpenConns` raised above 1, so a read-then-write
+  transaction could interleave, the staleness cases above still hold.
 
 ### Migration
 
@@ -1438,7 +1982,17 @@ On both backends:
 
 - Each route: success shape, status code, envelope version.
 - `201` for `accepted` **and** for `rejected`; the response body carries the
-  outcome.
+  outcome **and the decision-time `gate_result`**, with all five checks and the
+  verdict.
+- `GET /v1/promotions/{id}` returns the same `gate_result` as the `POST` that
+  created it, byte for byte — the historical evidence is served from the
+  record, not re-derived per request.
+- The `gate_result` field names match the `gate` object
+  `POST /v1/evaluations/compare` already publishes, asserted by decoding both
+  into the same DTO.
+- An environment changed between the decision and the commit → `409 conflict`
+  with no promotion created, and a subsequent `GET` of the identifier is a
+  `404`.
 - Every server-derived field is refused in a request body — `project_id`,
   `agent_id`, `candidate_id`, `source_environment`, `source_rank`,
   `target_rank`, `gate_verdict`, `outcome`, `decided_at` — each a `400`.
@@ -1478,6 +2032,9 @@ On both backends:
   and aggregates every row exactly once.
 - No rank comparison anywhere in the family, asserted by the existing
   `TestCLIDecidesNoPromotionPrecedence` scan extended to the new file.
+- The CLI renders the recorded `gate_result` for `get` and `create`, and
+  derives no verdict and no outcome of its own — a scan asserts the family
+  contains no comparison of a count against a limit.
 
 ### WebUI
 
@@ -1486,7 +2043,11 @@ On both backends:
 - The environment picker lists what the API returned; no JavaScript compares
   two ranks, asserted by scanning the bundled assets.
 - No JavaScript implements or approximates a gate.
-- A `rejected` promotion renders as a recorded outcome, not an error banner.
+- A `rejected` promotion renders as a recorded outcome, not an error banner,
+  and shows the recorded gate result's failing check rather than recomputing
+  one.
+- A `409` from a concurrent environment change renders as a retryable conflict
+  with the server's message, not as a rejected promotion.
 - `4xx` and `5xx` render the server's message without inventing a verdict.
 - No credential, endpoint, deployment target or secret is rendered or stored;
   CSP and the allowlisted field set are unchanged.
@@ -1508,8 +2069,14 @@ Each fails loudly if a later change crosses the line:
 - the TUI has no promotion command;
 - `CanPromote` is still the only rank comparison in the platform module, and
   no adapter has one;
-- `EvaluateEvaluationGate` is still the only gate implementation;
-- the promotion store capability exposes no update and no delete;
+- `EvaluateEvaluationGate` is still the only function that *computes* a verdict
+  from a scorecard; `restoreEvaluationGateResult` rehydrates a stored one and
+  evaluates nothing, asserted by a scan for the comparison operators a gate
+  would need;
+- no adapter constructs an `EvaluationGateResult`, and no adapter derives a
+  `PromotionOutcome`;
+- the promotion store capability exposes no update and no delete, and no
+  `UPDATE` statement targets `platform_promotions` in either backend;
 - `schemaTables` gained exactly one name.
 
 ## Documentation
@@ -1549,16 +2116,31 @@ with the alternatives that were rejected:
    caller-owned limits argument defeated it.
 5. **Same-agent evidence is required** for promotion while
    `CompareEvaluations` stays same-project.
-6. **Gate limits and promotion-time environment ordering are snapshotted**;
-   the diff, scorecard and gate result are **recomputed**, with the rule that
-   decides which is which.
-7. **`CanPromote` remains the only ordering primitive**, called from the
-   domain constructor and the service, re-derived nowhere.
-8. **Stage skipping is permitted**, and the five questions an adjacency rule
-   would have to answer with no consumer to answer them for.
-9. **No human approval or authorization** in this task, and why a fake actor
-   label is worse than none.
-10. **No platform concept enters the engine**, unchanged.
+6. **The decision-time gate result is snapshotted, not recomputed**, alongside
+   the gate limits and the promotion-time environment ordering. The rule that
+   decides what is snapshotted, referenced and recomputed, and the reason
+   "derived, therefore recomputable" was not sufficient: a recomputation
+   answers what today's build decides, and a bug fix in the gate or scorecard
+   may legitimately answer it differently from the same immutable evidence. A
+   divergence is not corruption, and nothing rewrites the record.
+7. **The outcome is derived from the stored verdict**, never supplied. An
+   `accepted` promotion carrying a FAIL result is unconstructible, and such a
+   row is corruption on read.
+8. **`CanPromote` remains the only ordering primitive**, called from the domain
+   constructor, the service, and the store's commit-time revalidation —
+   re-derived nowhere.
+9. **A promotion commits only against the environment state it was decided
+   against.** The invariant spans three rows, so `CreatePromotion` is a
+   transaction that locks the two environment rows in `(project_id, ref)` byte
+   order, revalidates both revisions, re-asks `CanPromote`, and inserts —
+   `ErrStoreConflict` if anything moved. Why two-row locking rather than task
+   065's project lock, why deterministic ordering, and why any revision change
+   invalidates the attempt including a rename.
+10. **Stage skipping is permitted**, and the five questions an adjacency rule
+    would have to answer with no consumer to answer them for.
+11. **No human approval or authorization** in this task, and why a fake actor
+    label is worse than none.
+12. **No platform concept enters the engine**, unchanged.
 
 ## Acceptance Criteria
 
@@ -1581,10 +2163,15 @@ Every question this task owns, answered:
 | Is gate PASS necessary? | Yes, for `accepted` |
 | Is it sufficient? | No — ten structural conditions precede it |
 | Are gate limits persisted? | Yes, all three |
-| Is the gate result persisted? | **No.** Recomputed from the runs and the stored limits |
-| Is the scorecard persisted? | **No.** Same reason |
-| What mutable facts are snapshotted? | Source and target `rank` and `revision`, the three limits, the outcome and the timestamp |
+| Is the gate result persisted? | **Yes** — the decision-time result, in eight bounded columns, verdict included |
+| Is a later recomputation guaranteed to match it? | **No**, and it is not required to. A divergence is a corrected implementation, not a corrupt record |
+| Is the scorecard persisted? | **No.** A secondary derived view the decision did not consume; recomputable from the immutable runs |
+| What is snapshotted? | The gate result, the three limits, source and target `rank` and `revision`, the outcome and the timestamp |
+| Where does the outcome come from? | Derived by `NewPromotion` from the gate result's verdict. There is no outcome input at any layer |
 | What if environments are re-ranked later? | Nothing. The record is unchanged, and the stored revision makes the change detectable |
+| What if an environment changes *before the commit*? | `CreatePromotion` revalidates both revisions and re-asks `CanPromote` inside the transaction that inserts. Anything moved → `ErrStoreConflict` → `409`, no row, retryable |
+| Does any revision change invalidate the attempt? | **Yes**, a rename included. The revision is the binding, and deciding which fields "matter" would put a configuration comparison outside `CanPromote` |
+| Does promotion take a lock? | Yes — the two environment rows, in `(project_id, ref)` byte order. Never the project, never a table, never a process mutex |
 | Can a Promotion be edited or deleted? | **No**, at any layer. There is no mechanism |
 | How are retries handled? | Duplicate id → `409 already_exists`; the client reads it back with `GET` |
 | Which store capability owns it? | `ControlStore`, three methods, no update, no delete |
@@ -1611,19 +2198,25 @@ decision this document left open.
 2. `platform/promotion.go`: `Promotion`, `PromotionOutcome`,
    `EnvironmentPosition`, `PromotionDecision`, `NewPromotion`,
    `restorePromotion`, `MaxPromotionPage`, the two sentinels.
-3. `platform/promotion_store.go`: the shared row/page logic both backends use.
-4. `ControlStore` + three methods, with compile-time assertions on both
+3. `platform/gate.go`: `restoreEvaluationGateResult`, beside the type it
+   rebuilds. Evaluates nothing; takes the stored verdict verbatim.
+4. `platform/promotion_store.go`: the shared row, page and commit-time
+   revalidation logic both backends use, including the `CanPromote` re-ask.
+5. `ControlStore` + three methods, with compile-time assertions on both
    backends.
-5. SQLite: table, index, `SchemaVersion` 4, `migrateV3ToV4`, the three methods.
-6. PostgreSQL: the same, with `COLLATE "C"` and `migratePostgresV3ToV4`.
-7. `ControlPlane.Promote`, `Promotion`, `ProjectPromotions`, in the
+6. SQLite: table, index, `SchemaVersion` 4, `migrateV3ToV4`, the three methods,
+   and the write-intent transaction that revalidates before inserting.
+7. PostgreSQL: the same, with `COLLATE "C"`, `migratePostgresV3ToV4`, and the
+   two ordered `SELECT … FOR UPDATE` statements.
+8. `ControlPlane.Promote`, `Promotion`, `ProjectPromotions`, in the
    orchestration order above.
-8. `httpapi`: three routes, DTOs, `classify` cases.
-9. `cmd/trustvian/promotion.go` and its dispatch entry.
-10. WebUI: environment list, promotion panel, promotion history.
-11. The full test matrix above, on both backends.
-12. Documentation and ADR 0040.
+9. `httpapi`: three routes, DTOs reusing `gateResultDTO`, `classify` cases.
+10. `cmd/trustvian/promotion.go` and its dispatch entry.
+11. WebUI: environment list, promotion panel, promotion history.
+12. The full test matrix above, on both backends.
+13. Documentation and ADR 0040.
 
-Steps 1–4 are one reviewable slice, 5–6 another, 7–8 another, and 9–10 each
-their own. Nothing after step 4 is worth writing before the store conformance
-suite is green on both backends.
+Steps 1–5 are one reviewable slice, 6–7 another, 8–9 another, and 10–11 each
+their own. Nothing after step 5 is worth writing before the store conformance
+suite — including the environment-staleness cases — is green on both
+backends.
