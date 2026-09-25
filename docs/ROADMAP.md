@@ -380,10 +380,15 @@ environments, a run may only name one its project owns and has not archived,
 and `CanPromote` gives a promotion workflow one deterministic ordering
 question to ask — while authorizing nothing.
 
-The promotion workflow (066) is **specified and not implemented** — see
-[the task](tasks/v1.0/066-promotion-workflow.md). It settles what a promotion
-is before anything is built: a durable record of a platform *decision*, never a
-deployment and never a claim about where a candidate now runs.
+The promotion workflow (066) is **implemented** — see
+[the task](tasks/v1.0/066-promotion-workflow.md) and
+[ADR 0040](adr/0040-promotions-are-immutable-evidence-backed-platform-decisions.md).
+It settled what a promotion is before anything was built: a durable,
+append-only record of a platform *decision*, never a deployment and never a
+claim about where a candidate now runs. Both gate verdicts are recorded, the
+gate result the decision consumed is snapshotted field for field rather than
+re-derived on read, and the write commits only against the environment state it
+was decided against. Schema version is now **4** on both backends.
 
 **Five gap-closing milestones are specified and not implemented: 074–078.**
 Each was found by running the product end to end — an instrumented agent, a
@@ -394,8 +399,8 @@ which is why they sit outside the reserved 049–072 block alongside 073.
   Opening the browser today shows a form asking for an identifier the developer
   does not have. The milestone makes the WebUI discover active work by itself,
   render it as a bounded run-scoped behavior graph, and browse the hierarchy
-  with nothing typed. It shares the schema chain with 066 — 066 owns 3 → 4 and
-  074 owns 4 → 5 — so its implementation follows 066's.
+  with nothing typed. It shares the schema chain with 066 — 066 owns 3 → 4,
+  now landed, and 074 owns 4 → 5 — so its implementation follows 066's.
 - **[075 — AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md).**
   Generic instrumentation flattens an agent's behavior into its transport, so a
   tool call learns as an HTTP POST. Where a producer emits agent-oriented
@@ -420,7 +425,7 @@ which is why they sit outside the reserved 049–072 block alongside 073.
   not suppress the engine's learned sequence signals: a reorder that produces
   gated evidence fails, and the verdict stays the control plane's.
 
-Still planned: everything from 066 onward. The platform
+Still planned: everything from 067 onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
 behavioral snapshots, produce fixed-shape comparative scorecards, apply
 deterministic evidence-backed hard gates to them, persist local control and
@@ -681,9 +686,9 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**Partly implemented:** tasks 049–065 are done and 066 is specified; 067–072
-remain PLANNED. Outside that reserved sequence, 073 is done and 074–078 are
-specified — see the gap-closing table below.
+**Partly implemented:** tasks 049–066 are done; 067–072 remain PLANNED.
+Outside that reserved sequence, 073 is done and 074–078 are specified — see the
+gap-closing table below.
 
 **Numbering is identity, not order.** A task's number records when it was
 added to the plan, never when it is built. Tasks 073–078 were discovered by
@@ -735,7 +740,7 @@ lost.
 |---|---|
 | 064 | PostgreSQL platform backend |
 | 065 | Environment model |
-| 066 | Promotion workflow — [specified](tasks/v1.0/066-promotion-workflow.md), not implemented |
+| 066 | Promotion workflow |
 
 **Closing unplanned gaps.** None of these was in the reserved 049–072
 sequence. Each closes a concrete gap found by running the product end to end —

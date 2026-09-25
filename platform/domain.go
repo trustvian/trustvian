@@ -89,6 +89,7 @@ type (
 	AgentID         string
 	CandidateID     string
 	EvaluationRunID string
+	PromotionID     string
 )
 
 // EnvironmentRef names the environment a run targeted — nothing more.

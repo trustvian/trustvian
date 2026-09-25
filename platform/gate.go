@@ -288,3 +288,57 @@ func validateBehaviorSummaryArithmetic(s BehaviorSummary) error {
 	}
 	return nil
 }
+
+// restoreEvaluationGateResult rebuilds a stored gate result verbatim.
+//
+// It is not an evaluator, and that is the point. Every observable component —
+// the five identity values, each check's operands, **each check's Passed
+// flag**, and the verdict — is taken from storage exactly as written. It must
+// never call minimumGate, maximumGate or EvaluateEvaluationGate, and must
+// never re-derive a flag or a verdict from anything.
+//
+// Why that matters: a promotion records what the platform relied on, not what
+// today's build would compute. Suppose an older build had a defect and wrote
+//
+//	actual = 1, minimum = 1, passed = false
+//
+// and recorded the promotion as rejected, because that is what it decided. A
+// later build with a corrected helper that recomputed the flag would hand back
+// passed = true beside the stored fail verdict — a value that existed at no
+// point in time. A hybrid is worse evidence than either half alone.
+//
+// Validation here is structural only: the caller has already parsed the
+// scalars, and the two invariants that are task 066's own — a known verdict,
+// and outcome agreeing with it — are checked in restorePromotion.
+func restoreEvaluationGateResult(
+	referenceRunID EvaluationRunID, referenceCandidate CandidateID,
+	candidateRunID EvaluationRunID, candidateCandidate CandidateID,
+	environment EnvironmentRef,
+	referenceEvidence, candidateEvidence MinimumCountGate,
+	addedBehaviors, blockDecisions, criticalRisk MaximumCountGate,
+	verdict GateVerdict,
+) (EvaluationGateResult, error) {
+	if verdict != GateVerdictPass && verdict != GateVerdictFail {
+		return EvaluationGateResult{}, fmt.Errorf(
+			"%w: stored gate verdict %q is not a known verdict",
+			ErrInvalidGateEvidence, preview(string(verdict)))
+	}
+	return EvaluationGateResult{
+		bound: true,
+
+		referenceRunID:     referenceRunID,
+		referenceCandidate: referenceCandidate,
+		candidateRunID:     candidateRunID,
+		candidateCandidate: candidateCandidate,
+		environment:        environment,
+
+		referenceEvidence: referenceEvidence,
+		candidateEvidence: candidateEvidence,
+
+		addedBehaviors:           addedBehaviors,
+		blockDecisions:           blockDecisions,
+		criticalRiskObservations: criticalRisk,
+
+		verdict: verdict,
+	}, nil
+}

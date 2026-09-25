@@ -98,6 +98,21 @@ trustvian eval ingest       --id <id> --sequence <n>
 trustvian eval compare      --reference-run <id> --candidate-run <id>
                             --max-added-behaviors <n> --max-block-decisions <n>
                             --max-critical-risk-observations <n>
+
+trustvian env create   --project-id <id> --ref <ref> --name <name> [--rank <n>]
+trustvian env get      --project-id <id> --ref <ref>
+trustvian env list     --project-id <id>
+trustvian env set      --project-id <id> --ref <ref> --revision <n>
+                       [--name <name>] [--rank <n> | --clear-rank]
+trustvian env archive  --project-id <id> --ref <ref> --revision <n>
+trustvian env activate --project-id <id> --ref <ref> --revision <n>
+
+trustvian promotion create --id <id> --reference-run <id> --candidate-run <id>
+                           --target-environment <ref>
+                           --max-added-behaviors <n> --max-block-decisions <n>
+                           --max-critical-risk-observations <n>
+trustvian promotion get    --id <id>
+trustvian promotion list   --project-id <id>
 ```
 
 Every command additionally accepts `[--api-url <url>]` and `[--json]`.
@@ -108,9 +123,41 @@ Candidate metadata is descriptive only. The CLI runs no `git` command and
 computes no digests: a value it derived would claim a provenance it cannot
 actually vouch for.
 
-There is no `list`, `search`, `update` or `delete`, because the API has no such
-routes. A client-side list would have to invent ordering, paging and scoping
-that nothing has decided yet.
+Two collections exist — `env list` and `promotion list` — because two entities
+have a consumer that needs one, and both traverse a project by an immutable key
+in byte order with the server bounding every page. There is no `search`, and no
+`update` or `delete` for a promotion, because the API has no such routes: a
+client-side list would have to invent ordering, paging and scoping nothing has
+decided, and a recorded decision is history rather than a row to edit.
+
+### Recording a promotion
+
+`trustvian promotion create` records a **decision**. It does not deploy
+anything, and Trustvian has no observer that could tell whether a deployment
+followed — so the command prints the boundary rather than implying otherwise:
+
+```text
+Trustvian recorded this decision. Nothing was deployed.
+```
+
+Three things are deliberately absent from the request. There is no
+`--source-environment`: the source is inferred from the environment the two
+runs share, and a caller-supplied one could disagree with the evidence. There
+is no `--outcome`: the outcome is derived from the gate verdict alone, and the
+server rejects a request that tries to set one. And there is no actor or
+approval flag: the platform records what it decided on evidence, not who asked.
+
+A **rejected** promotion is a successful call and exits `0`. The gate said
+FAIL, the platform recorded that decision durably, and nothing went wrong —
+exit `1` keeps its single existing meaning, a gate FAIL from `eval compare`.
+Both verdicts are recorded on purpose: the limits are yours, so a history that
+showed only acceptances would hide an attempt retried with looser ones.
+
+`promotion_id` is the only identity. Re-sending a request with an identifier
+that already exists is `409 already_exists` — never a silent overwrite, and
+never an idempotent replay decided by comparing request bodies. On a retry
+after an ambiguous failure, `promotion get --id <id>` tells you whether the
+first attempt landed.
 
 ## A worked example
 
@@ -242,3 +289,5 @@ is a decision for your script, which knows what it was doing.
 - [ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md) — why the CLI is
   an HTTP adapter
 - [Task 060](tasks/v1.0/060-developer-cli.md) — the specification
+- [ADR 0040](adr/0040-promotions-are-immutable-evidence-backed-platform-decisions.md)
+  — why a promotion records a decision and never a deployment

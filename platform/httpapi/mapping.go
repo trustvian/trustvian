@@ -268,3 +268,61 @@ func newRealtimeEventPayload(e platform.RealtimeEvent) realtimeEventPayload {
 	}
 	return payload
 }
+
+// newEnvironmentPositionDTO renders one decision-time environment snapshot.
+func newEnvironmentPositionDTO(p platform.EnvironmentPosition) environmentPositionDTO {
+	return environmentPositionDTO{
+		Ref:      string(p.Ref),
+		Rank:     p.Rank,
+		Revision: u64(p.Revision),
+	}
+}
+
+// newPromotionResponse renders one stored decision.
+//
+// Every field comes from the record. Nothing here recomputes a gate, a
+// verdict or an outcome — the point of snapshotting the gate result is that a
+// reader sees what the platform relied on, not what this build would derive.
+func newPromotionResponse(p platform.Promotion) promotionResponse {
+	limits := p.GateLimits()
+	return promotionResponse{
+		Version: WireVersion,
+
+		ID:        string(p.ID()),
+		ProjectID: string(p.ProjectID()),
+
+		CandidateID:          string(p.CandidateID()),
+		ReferenceCandidateID: string(p.GateResult().ReferenceCandidateID()),
+
+		ReferenceRunID: string(p.ReferenceRunID()),
+		CandidateRunID: string(p.CandidateRunID()),
+
+		SourceEnvironment: newEnvironmentPositionDTO(p.Source()),
+		TargetEnvironment: newEnvironmentPositionDTO(p.Target()),
+
+		GateLimits: gateLimitsResponseDTO{
+			MaxAddedBehaviors:           u64(limits.MaxAddedBehaviors),
+			MaxBlockDecisions:           u64(limits.MaxBlockDecisions),
+			MaxCriticalRiskObservations: u64(limits.MaxCriticalRiskObservations),
+		},
+		GateResult: newGateResultDTO(p.GateResult()),
+
+		Outcome:   string(p.Outcome()),
+		DecidedAt: p.DecidedAt().Format(time.RFC3339Nano),
+	}
+}
+
+func newPromotionListResponse(
+	projectID string, promotions []platform.Promotion, nextAfter string,
+) promotionListResponse {
+	rows := make([]promotionResponse, 0, len(promotions))
+	for _, promotion := range promotions {
+		rows = append(rows, newPromotionResponse(promotion))
+	}
+	return promotionListResponse{
+		Version:    WireVersion,
+		ProjectID:  projectID,
+		Promotions: rows,
+		NextAfter:  nextAfter,
+	}
+}

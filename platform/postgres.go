@@ -416,6 +416,12 @@ func (q pgxTxQuerier) exec(ctx context.Context, query string, args ...any) (int6
 // invariant spans rows, so no predicate on the row being written can hold it.
 // Locking the project rather than the table means creates in different
 // projects never wait on each other.
+// writeError maps PostgreSQL's SQLSTATE onto the shared sentinels, through
+// the same helper every other write on this backend uses.
+func (q pgxTxQuerier) writeError(kind, id string, err error) error {
+	return mapPostgresError(kind, id, err)
+}
+
 func (q pgxTxQuerier) lockProject(ctx context.Context, projectID string) error {
 	var locked string
 	err := q.tx.QueryRow(ctx,
@@ -517,6 +523,108 @@ func (s *PostgresStore) ProjectEnvironments(
 		return nil, mapPostgresError("project", string(projectID), err)
 	}
 	return queryEnvironmentPage(ctx, s.querier(), projectID, after, limit)
+}
+
+// ---------------------------------------------------------------------
+// Promotions
+// ---------------------------------------------------------------------
+
+// lockEnvironment takes a row lock on one environment for the rest of the
+// transaction.
+//
+// SELECT … FOR UPDATE on the environment row, issued once per environment so
+// the acquisition order is a property of the code rather than of the query
+// plan. A multi-row `ref = ANY(…) ORDER BY ref FOR UPDATE` would leave the
+// locking order to the planner, and a specification that depends on a planner
+// choice is not a specification.
+//
+// Two rows, not the project. Unlike task 065's creation cap — a cross-row
+// invariant over all of a project's environments — this invariant names
+// exactly two rows, so promotions in different projects, and over disjoint
+// environment pairs, never wait on each other.
+func (q pgxTxQuerier) lockEnvironment(ctx context.Context, projectID, ref string) error {
+	var locked string
+	err := q.tx.QueryRow(ctx,
+		`SELECT ref FROM `+tableEnvironments+`
+		 WHERE project_id = $1 AND ref = $2 FOR UPDATE`, projectID, ref).Scan(&locked)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return fmt.Errorf("%w: environment %s in project %s",
+			ErrStoreNotFound, preview(ref), preview(projectID))
+	case err != nil:
+		return mapPostgresError("environment", ref, err)
+	}
+	return nil
+}
+
+// CreatePromotion stores one decision, revalidating the environment state it
+// was built against.
+//
+// Both environment rows are locked in (project_id, ref) byte order before
+// anything is read, so two promotions over an overlapping pair reach the
+// shared row at the same point in their sequence and one waits rather than
+// both proceeding against a state the other is changing. See
+// promotionEnvironmentOrder for why the order comes from the rows rather than
+// from which environment is the source.
+func (s *PostgresStore) CreatePromotion(ctx context.Context, promotion Promotion) error {
+	if promotion.ID() == "" || promotion.ProjectID() == "" {
+		return fmt.Errorf("%w: promotion has no identity", ErrInvalidID)
+	}
+
+	return s.withTx(ctx, func(tx pgx.Tx) error {
+		writer := pgxTxQuerier{tx}
+		for i, ref := range promotionEnvironmentOrder(promotion) {
+			if err := writer.lockEnvironment(
+				ctx, string(promotion.ProjectID()), string(ref)); err != nil {
+				return err
+			}
+			if hook := testHookAfterPromotionLock.Load(); hook != nil {
+				(*hook)(i)
+			}
+		}
+		return insertPromotionLocked(ctx, writer, promotion)
+	})
+}
+
+// testHookAfterPromotionLock runs after each environment lock is taken, and is
+// passed that lock's index in the acquisition order. Nil in production.
+//
+// The same seam, and the same reasoning, as testHookInEnvironmentCreate: a
+// local transaction commits in microseconds, so racers released together still
+// run essentially in series and a result-only test would pass with no locking
+// at all. It carries the index because the two points prove different things —
+// after index 0 exactly one of the pair is held, which is where a test can
+// widen the acquisition window and observe what a second promotion over an
+// overlapping pair does; after index 1 the whole revalidate-then-insert window
+// is held, which is where occupancy above one would mean two promotions
+// decided against the same environment state.
+var testHookAfterPromotionLock atomic.Pointer[func(int)]
+
+// Promotion loads one recorded decision by identifier.
+func (s *PostgresStore) Promotion(ctx context.Context, id PromotionID) (Promotion, error) {
+	if id == "" {
+		return Promotion{}, fmt.Errorf("%w: promotion id is empty", ErrInvalidID)
+	}
+	return loadPromotion(ctx, s.querier(), id)
+}
+
+// ProjectPromotions returns one bounded page in identifier byte order.
+func (s *PostgresStore) ProjectPromotions(
+	ctx context.Context, projectID ProjectID, after PromotionID, limit int,
+) ([]Promotion, error) {
+	if err := validatePromotionPage(after, limit); err != nil {
+		return nil, err
+	}
+	var exists string
+	err := s.pool.QueryRow(ctx,
+		`SELECT id FROM `+tableProjects+` WHERE id = $1`, string(projectID)).Scan(&exists)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil, fmt.Errorf("%w: project %s", ErrStoreNotFound, preview(string(projectID)))
+	case err != nil:
+		return nil, mapPostgresError("project", string(projectID), err)
+	}
+	return queryPromotionPage(ctx, s.querier(), projectID, after, limit)
 }
 
 // ---------------------------------------------------------------------

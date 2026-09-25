@@ -194,6 +194,13 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/ingest-state", h.ingestState)
 	h.mux.HandleFunc("POST /v1/evaluation-runs/{run_id}/records", h.ingestRecord)
 
+	// Three promotion routes, added by task 066. POST is flat because the
+	// scope is derived from the runs rather than routed; GET by identifier is
+	// flat because promotion identity is global, matching /v1/agents/{id}.
+	h.mux.HandleFunc("POST /v1/promotions", h.createPromotion)
+	h.mux.HandleFunc("GET /v1/promotions/{promotion_id}", h.getPromotion)
+	h.mux.HandleFunc("GET /v1/projects/{project_id}/promotions", h.listPromotions)
+
 	h.mux.HandleFunc("POST /v1/evaluations/compare", h.compare)
 
 	h.mux.HandleFunc("GET /v1/realtime", h.realtime)
@@ -319,6 +326,12 @@ func classify(err error) (int, string, string) {
 		errors.Is(err, platform.ErrEnvironmentLimit):
 		return http.StatusConflict, codeConflict, err.Error()
 
+	case errors.Is(err, platform.ErrPromotionOrder):
+		// The configuration may legitimately change, so this is a conflict
+		// rather than a permanently invalid request — the same distinction
+		// ErrEnvironmentUnavailable already draws.
+		return http.StatusConflict, codeConflict, err.Error()
+
 	case errors.Is(err, platform.ErrStoreCorrupt),
 		errors.Is(err, platform.ErrStoreSchemaVersion):
 		// Storage damage is a server failure. The message is generic on
@@ -335,6 +348,11 @@ func classify(err error) (int, string, string) {
 		// A comparison spanning two projects can never succeed, whatever the
 		// state changes to, so it is the caller's request that is wrong.
 		errors.Is(err, platform.ErrComparisonScope),
+		// Two runs that are not a promotion-eligible pair — different agents,
+		// or different environments. The pairing can never succeed whatever
+		// the state becomes, so it is the request that is wrong.
+		errors.Is(err, platform.ErrPromotionScope),
+		errors.Is(err, platform.ErrInvalidGateEvidence),
 		errors.Is(err, platform.ErrFingerprintConflict):
 		return http.StatusBadRequest, codeInvalidRequest, err.Error()
 
@@ -874,4 +892,131 @@ func (l gateLimitsDTO) decode() (platform.EvaluationGateLimits, error) {
 		MaxBlockDecisions:           block,
 		MaxCriticalRiskObservations: critical,
 	}, nil
+}
+
+// ---------------------------------------------------------------------
+// Promotions
+// ---------------------------------------------------------------------
+
+// createPromotion records one decision.
+//
+// The handler translates and nothing else: it decodes, hands the control
+// plane a fixed-shape request and a clock, and renders what came back. It
+// loads no runs, compares no evaluations, evaluates no gate, loads no
+// environments, compares no ranks and chooses no outcome.
+//
+// A gate FAIL is `201`, not `409` and not `500`. The platform was asked to
+// decide and it decided; reporting an evidence-backed rejection as a server
+// failure would tell an operator their platform is broken when it is working
+// exactly as configured.
+func (h *Handler) createPromotion(w http.ResponseWriter, r *http.Request) {
+	var request createPromotionRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		h.writeError(w, err)
+		return
+	}
+	limits, err := request.GateLimits.decode()
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	promotion, err := h.controlPlane.Promote(r.Context(), platform.PromotionRequest{
+		ID:                platform.PromotionID(request.ID),
+		ReferenceRunID:    platform.EvaluationRunID(request.ReferenceRunID),
+		CandidateRunID:    platform.EvaluationRunID(request.CandidateRunID),
+		TargetEnvironment: platform.EnvironmentRef(request.TargetEnvironment),
+		GateLimits:        limits,
+	}, h.now())
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, newPromotionResponse(promotion))
+}
+
+// getPromotion reads one recorded decision.
+func (h *Handler) getPromotion(w http.ResponseWriter, r *http.Request) {
+	promotion, err := h.controlPlane.Promotion(
+		r.Context(), platform.PromotionID(r.PathValue("promotion_id")))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newPromotionResponse(promotion))
+}
+
+// listPromotions returns one bounded page of a project's history.
+//
+// Keyset pagination on the caller-owned identifier, which is immutable.
+// Deliberately not on `decided_at`: timestamps are stored as RFC3339Nano
+// text, which is not lexically ordered, so a cursor over that column would
+// silently skip and repeat rows.
+func (h *Handler) listPromotions(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("project_id")
+
+	limit, err := promotionLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	after := r.URL.Query().Get("after")
+
+	page, err := h.controlPlane.ProjectPromotions(r.Context(),
+		platform.ProjectID(projectID), platform.PromotionID(after), limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	nextAfter, err := h.promotionContinuation(r.Context(), projectID, page, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newPromotionListResponse(projectID, page, nextAfter))
+}
+
+// promotionContinuation reports the cursor to publish after this page, or ""
+// when the traversal is complete.
+//
+// A short page is the end. A full page is ambiguous, and the ambiguity is
+// resolved by asking for one row past the last identifier — never by fetching
+// limit+1, which would require the store to accept a limit above its own
+// published bound. The same rule the environment collection follows.
+func (h *Handler) promotionContinuation(
+	ctx context.Context, projectID string, page []platform.Promotion, limit int,
+) (string, error) {
+	if len(page) < limit {
+		return "", nil
+	}
+	last := page[len(page)-1].ID()
+	probe, err := h.controlPlane.ProjectPromotions(
+		ctx, platform.ProjectID(projectID), last, 1)
+	if err != nil {
+		return "", err
+	}
+	if len(probe) == 0 {
+		return "", nil
+	}
+	return string(last), nil
+}
+
+// promotionLimitParam reads and bounds ?limit=.
+//
+// Absent means the maximum. A value above it is refused rather than clamped:
+// a client that asked for 500 and silently received 64 would conclude it had
+// seen everything.
+func promotionLimitParam(r *http.Request) (int, error) {
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return platform.MaxPromotionPage, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > platform.MaxPromotionPage {
+		return 0, apiError{status: http.StatusBadRequest, code: codeInvalidRequest,
+			message: fmt.Sprintf("limit must be an integer between 1 and %d",
+				platform.MaxPromotionPage)}
+	}
+	return limit, nil
 }

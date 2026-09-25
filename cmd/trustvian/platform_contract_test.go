@@ -996,6 +996,10 @@ func TestUnknownSubcommandsAreUsageErrors(t *testing.T) {
 		// first, and task 065 implements neither: promotion is task 066's,
 		// and an environment is archived rather than deleted.
 		"env": {"promote", "delete", "rank", ""},
+		// "approve" and "delete" are the two an operator would reach for
+		// first, and task 066 implements neither: a promotion records no
+		// approval, and a recorded decision is append-only.
+		"promotion": {"approve", "delete", "update", "rollback", ""},
 	}
 
 	for family, subcommands := range families {
@@ -1035,6 +1039,12 @@ func TestMissingRuntimeIsOperationalNotUsage(t *testing.T) {
 		{"env", "set", "--project-id", "proj-1", "--ref", "staging", "--revision", "1", "--name", "S"},
 		{"env", "archive", "--project-id", "proj-1", "--ref", "staging", "--revision", "1"},
 		{"env", "activate", "--project-id", "proj-1", "--ref", "staging", "--revision", "1"},
+		{"promotion", "get", "--id", "promo-1"},
+		{"promotion", "list", "--project-id", "proj-1"},
+		{"promotion", "create", "--id", "promo-1", "--reference-run", "run-ref",
+			"--candidate-run", "run-can", "--target-environment", "production",
+			"--max-added-behaviors", "0", "--max-block-decisions", "0",
+			"--max-critical-risk-observations", "0"},
 	}
 
 	for _, args := range commands {
@@ -1483,6 +1493,7 @@ func TestFamilyLevelUsageIsUnchanged(t *testing.T) {
 		{"candidate"}, {"candidate", "promote"},
 		{"eval"}, {"eval", "watch"}, {"eval", "serve"},
 		{"env"}, {"env", "promote"},
+		{"promotion"}, {"promotion", "approve"},
 	}
 	for _, args := range cases {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {

@@ -147,6 +147,7 @@ readonly CLI_WIRE_ADAPTER_FILES='
 ./cmd/trustvian/candidate.go
 ./cmd/trustvian/environment.go
 ./cmd/trustvian/eval.go
+./cmd/trustvian/promotion.go
 ./cmd/trustvian/tui_realtime.go
 '
 

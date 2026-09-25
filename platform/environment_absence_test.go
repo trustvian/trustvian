@@ -235,15 +235,39 @@ func isRankSelector(expr ast.Expr) bool {
 	return false
 }
 
-// Task 066 owns promotion. This task exports the question, not the workflow:
-// no type, and no operation that moves anything.
-func TestNoPromotionTypeIsExported(t *testing.T) {
+// Task 066 now models promotion, and this asserts the shape it was allowed to
+// take rather than its absence.
+//
+// The evolved form of task 065's "no Promotion* type" check. That rule existed
+// so 065 could not quietly acquire a workflow it had not designed; 066
+// designed one, so the question becomes which promotion types exist. The
+// forbidden alternatives are still forbidden, and they are the ones that would
+// turn a recorded decision into a deployment.
+func TestPromotionTypesAreTheOnesTask066Specified(t *testing.T) {
+	// Exactly the promotion vocabulary task 066 specifies.
+	allowed := map[string]bool{
+		"PromotionID":       true,
+		"PromotionOutcome":  true,
+		"Promotion":         true,
+		"PromotionDecision": true,
+		"PromotionRequest":  true,
+	}
+
+	// Names that would mean Trustvian had started claiming it deploys, moves,
+	// releases or authorizes something — or had grown a second engine.
+	forbidden := []string{
+		"PromotionEngine", "PromotionPolicy", "PromotionWorkflow", "PromotionStatus",
+		"PromotionState", "PromotionApproval", "PromotionTrigger",
+		"Deployment", "DeploymentTarget", "Release", "ReleaseChannel", "Rollback",
+	}
+
 	fset := token.NewFileSet()
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read package directory: %v", err)
 	}
 
+	declared := map[string]bool{}
 	var scanned int
 	for _, entry := range entries {
 		name := entry.Name()
@@ -261,16 +285,119 @@ func TestNoPromotionTypeIsExported(t *testing.T) {
 			if !ok {
 				return true
 			}
-			if strings.HasPrefix(spec.Name.Name, "Promotion") {
-				t.Errorf("%s declares type %s at %s; task 065 answers an ordering "+
-					"question and models no promotion",
-					name, spec.Name.Name, fset.Position(spec.Pos()))
+			declared[spec.Name.Name] = true
+			for _, bad := range forbidden {
+				if spec.Name.Name == bad {
+					t.Errorf("%s declares type %s at %s; a promotion is a recorded "+
+						"decision, not a deployment, a workflow or a lifecycle",
+						name, spec.Name.Name, fset.Position(spec.Pos()))
+				}
+			}
+			if strings.HasPrefix(spec.Name.Name, "Promotion") && !allowed[spec.Name.Name] {
+				t.Errorf("%s declares unexpected promotion type %s at %s; task 066's "+
+					"vocabulary is closed", name, spec.Name.Name, fset.Position(spec.Pos()))
 			}
 			return true
 		})
 	}
 	if scanned == 0 {
 		t.Fatal("scanned no source files; the check would pass vacuously")
+	}
+
+	// And the ones it does specify are actually there, so this cannot pass by
+	// the whole feature having been deleted.
+	for name := range allowed {
+		if !declared[name] {
+			t.Errorf("task 066 specifies type %s and it is not declared", name)
+		}
+	}
+}
+
+// A promotion models no deployment, no residence and no approval.
+//
+// The field-level counterpart to the type check above. These are the names
+// that would appear first if somebody started making Trustvian claim it knows
+// where a candidate is running.
+func TestPromotionDeclaresNoDeploymentOrApprovalField(t *testing.T) {
+	forbidden := []string{
+		"CurrentEnvironment", "DeployedCandidate", "DeployedAt", "Deployment",
+		"URL", "Endpoint", "Host", "Address", "Command", "Webhook",
+		"Credentials", "Credential", "Secret", "Token", "APIKey", "Password",
+		"ApprovedBy", "Approver", "ApproverRole", "RequestedBy", "Actor",
+		"Status", "State", "Phase", "Reason", "Notes", "Message", "Metadata",
+		"RolledBack", "RollbackOf",
+	}
+
+	fset := token.NewFileSet()
+	for _, name := range []string{"promotion.go", "promotion_store.go"} {
+		if _, err := os.Stat(name); err != nil {
+			t.Fatalf("%s is gone; this check would pass vacuously: %v", name, err)
+		}
+		file, err := parser.ParseFile(fset, filepath.Join(".", name), nil, parser.ParseComments)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			structType, ok := n.(*ast.StructType)
+			if !ok || structType.Fields == nil {
+				return true
+			}
+			for _, field := range structType.Fields.List {
+				for _, ident := range field.Names {
+					for _, bad := range forbidden {
+						if strings.EqualFold(ident.Name, bad) {
+							t.Errorf("a struct at %s declares %q; a promotion records a "+
+								"decision and models no deployment, residence or approval",
+								fset.Position(ident.Pos()), ident.Name)
+						}
+					}
+				}
+			}
+			return true
+		})
+	}
+}
+
+// The restore path is not an evaluator.
+//
+// Task 066's historical-evidence rule, asserted structurally: a build that
+// recomputed a Passed flag or a verdict on read would hand back a value that
+// existed at no point in time. The behavioural proof lives in the store tests;
+// this is the one that fails the moment somebody reaches for the helpers.
+func TestGateRestoreEvaluatesNothing(t *testing.T) {
+	forbidden := []string{"minimumGate", "maximumGate", "EvaluateEvaluationGate"}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, filepath.Join(".", "gate.go"), nil, 0)
+	if err != nil {
+		t.Fatalf("parse gate.go: %v", err)
+	}
+
+	var found bool
+	ast.Inspect(file, func(n ast.Node) bool {
+		decl, ok := n.(*ast.FuncDecl)
+		if !ok || decl.Name.Name != "restoreEvaluationGateResult" {
+			return true
+		}
+		found = true
+		ast.Inspect(decl, func(inner ast.Node) bool {
+			ident, ok := inner.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			for _, bad := range forbidden {
+				if ident.Name == bad {
+					t.Errorf("restoreEvaluationGateResult calls %s at %s; the restore "+
+						"path returns what was stored and derives nothing",
+						bad, fset.Position(ident.Pos()))
+				}
+			}
+			return true
+		})
+		return false
+	})
+	if !found {
+		t.Fatal("restoreEvaluationGateResult not found; this check would pass vacuously")
 	}
 }
 

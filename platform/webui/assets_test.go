@@ -816,32 +816,131 @@ func TestOperationalFailureIsNotAGateResult(t *testing.T) {
 // The spec's deliberate omission: adding a list route would freeze scope, sort
 // order, cursor and limit under a STABLE contract. A client calling one would
 // mean the route exists.
-func TestNoCollectionRouteIsCalled(t *testing.T) {
-	api := stripJSNoise(readAsset(t, "api.js"))
+func TestOnlyDesignedCollectionRoutesAreCalled(t *testing.T) {
 	raw := readAsset(t, "api.js")
 
-	// The route strings live in template literals, which stripJSNoise blanks —
-	// so check the raw source for collection-shaped requests.
+	// Task 063 shipped with no collection route at all, because pagination,
+	// ordering, cursor semantics and scoping were undesigned. Task 065
+	// designed them for environments and task 066 reused them unchanged for
+	// promotions, so the rule is no longer "no collections" — it is "only the
+	// two that have a designed contract, both project-scoped and bounded".
+	allowed := []string{
+		"/v1/projects/${segment(projectID)}/promotions",
+		"/v1/projects/${segment(projectID)}/environments",
+	}
+	for _, route := range allowed {
+		if !strings.Contains(raw, route) {
+			t.Errorf("api.js no longer calls %s; this check would pass vacuously", route)
+		}
+	}
+
+	// The unscoped, undesigned shapes stay forbidden. Each would freeze
+	// semantics nobody has specified.
 	forbidden := []regexp.Regexp{
 		*regexp.MustCompile(`"GET",\s*"/v1/projects"`),
 		*regexp.MustCompile(`"GET",\s*"/v1/agents"`),
 		*regexp.MustCompile(`"GET",\s*"/v1/candidates"`),
 		*regexp.MustCompile(`"GET",\s*"/v1/evaluation-runs"`),
-		*regexp.MustCompile(`[?&](limit|cursor|offset|page|sort|order_by)=`),
+		*regexp.MustCompile(`"GET",\s*"/v1/promotions"`),
+		*regexp.MustCompile(`[?&](cursor|offset|page|sort|order_by)=`),
 	}
 	for _, pattern := range forbidden {
 		if match := pattern.FindString(raw); match != "" {
-			t.Errorf("api.js calls a collection route or pagination parameter (%q); "+
-				"Task 063 navigates by caller-known ID", match)
+			t.Errorf("api.js calls an undesigned collection route or parameter (%q); "+
+				"only the project-scoped environment and promotion pages are specified",
+				match)
 		}
 	}
-	_ = api
 
 	// Ingest is producer surface and deliberately unused by the browser.
 	for _, route := range []string{"/records", "ingest-state"} {
 		if strings.Contains(raw, route) {
 			t.Errorf("api.js references %q; ingest is producer behaviour, not a "+
 				"control-plane management workflow", route)
+		}
+	}
+}
+
+// The browser renders a promotion; it decides nothing about one.
+//
+// Three different things it must not do, each of which would move a decision
+// out of the control plane: compare two environment ranks, compute a gate, or
+// derive an outcome from anything but the server's own field.
+func TestPromotionUIDecidesNothing(t *testing.T) {
+	render := stripJSNoise(readAsset(t, "render.js"))
+	app := stripJSNoise(readAsset(t, "app.js"))
+
+	// It reads the server's outcome rather than deriving one.
+	if !strings.Contains(render, "promotion.outcome") {
+		t.Fatal("render.js never reads promotion.outcome; the displayed decision must " +
+			"be the server's")
+	}
+
+	// No rank comparison anywhere. CanPromote is the only implementation of
+	// promotion precedence and it lives in the platform.
+	rankComparison := []*regexp.Regexp{
+		regexp.MustCompile(`\.rank\s*[<>]`),
+		regexp.MustCompile(`[<>]=?\s*\w*\.?rank\b`),
+		regexp.MustCompile(`rank\s*[<>]=?\s*\w*\.?rank`),
+	}
+	for name, source := range map[string]string{"render.js": render, "app.js": app} {
+		for _, pattern := range rankComparison {
+			if match := pattern.FindString(source); match != "" {
+				t.Errorf("%s compares environment ranks (%q); CanPromote is the only "+
+					"implementation of promotion precedence, and it is server-side",
+					name, match)
+			}
+		}
+	}
+
+	// And it never derives an outcome from a verdict itself.
+	derivation := []*regexp.Regexp{
+		regexp.MustCompile(`verdict\s*===?\s*"pass"\s*\?\s*"accepted"`),
+		regexp.MustCompile(`accepted\s*=\s*.*verdict`),
+	}
+	for name, source := range map[string]string{"render.js": render, "app.js": app} {
+		for _, pattern := range derivation {
+			if match := pattern.FindString(source); match != "" {
+				t.Errorf("%s derives an outcome from a verdict (%q); the server does that",
+					name, match)
+			}
+		}
+	}
+}
+
+// The wording stays factual: a recorded decision, never a deployment.
+func TestPromotionUIClaimsNoDeployment(t *testing.T) {
+	shell := readAsset(t, "index.html")
+	render := readAsset(t, "render.js")
+
+	// The one sentence that keeps the product honest, in both surfaces.
+	if !strings.Contains(shell, "deploys nothing") {
+		t.Error("index.html does not say that Trustvian deploys nothing")
+	}
+	if !strings.Contains(render, "Nothing was deployed") {
+		t.Error("render.js does not say that nothing was deployed")
+	}
+
+	// Phrases that would claim something the platform cannot know.
+	//
+	// Deployment claims only, and deliberately not safety words.
+	//
+	// "safe", "unsafe" and "ready" all appear legitimately in the disclaimers
+	// that say a gate result is *not* a judgement about any of them — banning
+	// those words would ban the sentences doing the work. Gate wording is
+	// already pinned by TestGateVerdictComesFromTheServer; what this checks is
+	// the claim Trustvian has no way to make at all.
+	forbidden := []string{
+		"deployed to", "now running in", "is live in", "released to",
+		"has been deployed", "was deployed to", "rolled out",
+	}
+	for name, source := range map[string]string{"index.html": shell, "render.js": render} {
+		lower := strings.ToLower(source)
+		for _, phrase := range forbidden {
+			if strings.Contains(lower, phrase) {
+				t.Errorf("%s contains %q; a promotion is a recorded decision, and "+
+					"Trustvian observes no deployment", name, phrase)
+			}
 		}
 	}
 }

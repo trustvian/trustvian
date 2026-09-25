@@ -536,6 +536,29 @@ comparison that already existed, on the platform side, and no core package
 knows this entity exists. See
 [ADR 0039](adr/0039-environments-are-project-owned-ranked-references.md).
 
+Task 066 added `Promotion`, the first layer allowed to conclude that a
+candidate may advance between environments — and the last one that could be
+mistaken for deploying something, which is why the boundary is stated as a
+rule: **Trustvian records a promotion decision; Trustvian does not deploy
+anything.** A promotion is an immutable, append-only record holding the two
+evaluation runs, both environments with the rank and revision they had at the
+time, the caller-owned limits, the gate result the decision actually consumed,
+and an outcome derived from that verdict and never supplied by a caller.
+
+The architectural consequences are the usual ones, kept: the engine gained
+nothing and does not know promotion exists; `ControlStore` gained three
+methods (`CreatePromotion`, `Promotion`, `ProjectPromotions`) rather than a
+`PromotionStore` or a generic repository; the store owns no gate logic and the
+domain owns no SQL; and the HTTP, CLI and WebUI layers are adapters with no
+promotion logic of their own — no rank comparison, gate calculation or source
+inference happens in JavaScript. `CanPromote` remains the single ordering
+primitive, called from the domain constructor, the service and the store's
+commit-time revalidation, and re-derived nowhere. The one genuinely new
+structural obligation is that the write spans three rows, so `CreatePromotion`
+revalidates both environment revisions inside the transaction that inserts.
+Schema version is now 4 on both backends. See
+[ADR 0040](adr/0040-promotions-are-immutable-evidence-backed-platform-decisions.md).
+
 Task 057 added the first persistence adapter: a local SQLite store behind two
 narrow capabilities — `ControlStore` for projects, agents and candidates, and
 `EvaluationStore` for runs and their evidence. There is no generic `Database`

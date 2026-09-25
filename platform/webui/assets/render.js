@@ -551,3 +551,128 @@ export function renderComparison(target, response) {
     renderScorecard(target, response.scorecard);
   }
 }
+
+// ---------------------------------------------------------------------
+// Promotions (task 066)
+// ---------------------------------------------------------------------
+
+// environmentPosition renders one decision-time environment snapshot.
+//
+// The rank is displayed because the server recorded it, not because this page
+// does anything with it. Nothing here compares two ranks: which environment
+// may promote toward which is `CanPromote`, it lives in the platform, and the
+// browser only ever reads the answer.
+function environmentPosition(position) {
+  if (position === undefined || position === null || typeof position !== "object") {
+    return "—";
+  }
+  return `${display(position.ref)} (rank ${display(position.rank)}, revision ${display(position.revision)})`;
+}
+
+// renderPromotion renders one recorded decision.
+//
+// The wording is factual and deliberately narrow. `accepted` and `rejected`
+// are the platform's two outcomes; neither means deployed, released, safe or
+// unsafe, and this page says so in as many words rather than leaving a reader
+// to assume. The gate verdict is shown beside the outcome because they are
+// different statements about different things.
+export function renderPromotion(target, promotion) {
+  clear(target);
+
+  const outcome = typeof promotion.outcome === "string" ? promotion.outcome : "";
+  const banner = element("p", "gate");
+  // Not colour alone: the mark and the word both carry the state.
+  banner.append(element("span", "gate-mark", outcome === "accepted" ? "✓" : "✗"));
+  banner.append(element(
+    "span", "gate-word",
+    `Decision: ${outcome === "" ? "—" : outcome}`,
+  ));
+  banner.classList.add(outcome === "accepted" ? "gate-pass" : "gate-fail");
+  target.append(banner);
+
+  target.append(element(
+    "p", "note-inline",
+    "Trustvian recorded this decision. Nothing was deployed, and this says nothing about where the candidate is running.",
+  ));
+
+  target.append(definitionList([
+    ["Promotion", display(promotion.id)],
+    ["Project", display(promotion.project_id)],
+    ["Candidate", display(promotion.candidate_id)],
+    ["Reference run", display(promotion.reference_run_id)],
+    ["Candidate run", display(promotion.candidate_run_id)],
+    ["From", environmentPosition(promotion.source_environment)],
+    ["To", environmentPosition(promotion.target_environment)],
+    ["Decided at", display(promotion.decided_at)],
+  ]));
+
+  if (promotion.gate_result !== undefined && promotion.gate_result !== null) {
+    target.append(element("h4", null, "Gate result recorded with this decision"));
+    target.append(element(
+      "p", "note-inline",
+      "The result the decision consumed, as it was recorded. It is not recomputed on read.",
+    ));
+    renderGate(target, promotion.gate_result);
+  }
+}
+
+// renderPromotionList renders one bounded page of history.
+//
+// Server order is preserved exactly. Re-sorting an audit history in the
+// browser would present a sequence the platform did not record.
+export function renderPromotionList(target, response) {
+  clear(target);
+
+  const rows = Array.isArray(response.promotions) ? response.promotions : [];
+  if (rows.length === 0) {
+    target.append(emptyState("No promotion decisions recorded for this project."));
+    return;
+  }
+
+  target.append(table(
+    ["Promotion", "Outcome", "From", "To", "Gate", "Decided at"],
+    rows.map((row) => [
+      display(row.id),
+      display(row.outcome),
+      display(row.source_environment ? row.source_environment.ref : undefined),
+      display(row.target_environment ? row.target_environment.ref : undefined),
+      display(row.gate_result ? row.gate_result.verdict : undefined),
+      display(row.decided_at),
+    ]),
+    "Recorded promotion decisions",
+  ));
+
+  if (typeof response.next_after === "string" && response.next_after !== "") {
+    target.append(element(
+      "p", "note-inline",
+      `More decisions exist. Continue after ${response.next_after}.`,
+    ));
+  }
+}
+
+// renderEnvironmentOptions fills a select with a project's environments.
+//
+// Every environment the API returned is offered. Which ones are valid targets
+// is the server's decision, and a promotion toward an invalid one is refused
+// with its own message — filtering here would mean comparing ranks in the
+// browser, which is exactly what must not happen.
+export function renderEnvironmentOptions(select, response) {
+  clear(select);
+  const rows = Array.isArray(response.environments) ? response.environments : [];
+
+  const placeholder = element("option", null, rows.length === 0
+    ? "No environments in this project"
+    : "Choose a target environment");
+  placeholder.value = "";
+  select.append(placeholder);
+
+  for (const row of rows) {
+    if (typeof row.ref !== "string" || row.ref === "") {
+      continue;
+    }
+    const rank = row.rank === undefined || row.rank === null ? "unranked" : `rank ${row.rank}`;
+    const option = element("option", null, `${row.ref} — ${display(row.name)} (${rank}, ${display(row.status)})`);
+    option.value = row.ref;
+    select.append(option);
+  }
+}

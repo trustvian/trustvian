@@ -286,7 +286,8 @@ function segment(value) {
 }
 
 // ---------------------------------------------------------------------
-// Routes. Every one of these exists already; this task adds no API surface.
+// Routes. Every one of these is a /v1 route the server publishes; this module
+// adds no capability of its own.
 // ---------------------------------------------------------------------
 
 export const createProject = (id, name) =>
@@ -349,6 +350,49 @@ export const compare = (referenceRunID, candidateRunID, limits) =>
       max_critical_risk_observations: limits.maxCriticalRiskObservations,
     },
   });
+
+// createPromotion records one decision.
+//
+// The body carries only what the caller owns: an identifier, two completed
+// runs, a target environment and the three limits. The source environment, the
+// project, the candidate, the gate verdict and the outcome are all derived by
+// the server, and sending any of them is a 400 because /v1 decodes strictly.
+// That is the point — a browser cannot express an outcome it did not earn.
+export const createPromotion = (id, referenceRunID, candidateRunID, target, limits) =>
+  request("POST", "/v1/promotions", {
+    id,
+    reference_run_id: referenceRunID,
+    candidate_run_id: candidateRunID,
+    target_environment: target,
+    gate_limits: {
+      max_added_behaviors: limits.maxAddedBehaviors,
+      max_block_decisions: limits.maxBlockDecisions,
+      max_critical_risk_observations: limits.maxCriticalRiskObservations,
+    },
+  });
+
+// getPromotion reads one recorded decision.
+export const getPromotion = (id) =>
+  request("GET", `/v1/promotions/${segment(id)}`);
+
+// listPromotions reads one bounded page of a project's history.
+//
+// One page, and the caller decides whether to ask for another. `after` is the
+// exclusive cursor the previous page published as `next_after`.
+export const listPromotions = (projectID, after) => {
+  const query = after ? `?after=${encodeURIComponent(after)}` : "";
+  return request("GET", `/v1/projects/${segment(projectID)}/promotions${query}`);
+};
+
+// listEnvironments reads one bounded page of a project's environments.
+//
+// The promotion form uses it to offer targets rather than asking a person to
+// type a ref. Which of them are promotable is the server's answer, not this
+// page's: nothing here compares a rank.
+export const listEnvironments = (projectID, after) => {
+  const query = after ? `?after=${encodeURIComponent(after)}` : "";
+  return request("GET", `/v1/projects/${segment(projectID)}/environments${query}`);
+};
 
 // realtimePath builds the SSE URL for one run.
 export const realtimePath = (runID) =>

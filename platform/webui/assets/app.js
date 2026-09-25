@@ -429,6 +429,111 @@ byID("form-compare").addEventListener("submit", async (event) => {
 });
 
 // ---------------------------------------------------------------------
+// Promotion
+// ---------------------------------------------------------------------
+
+const promotionResult = byID("promotion-result");
+const promotionHistory = byID("promotion-history");
+const promotionTarget = byID("promotion-target");
+
+const PROMOTION_LIMIT_INPUTS = Object.freeze([
+  Object.freeze({ id: "promotion-max-added", key: "maxAddedBehaviors", label: "Max added behaviors" }),
+  Object.freeze({ id: "promotion-max-block", key: "maxBlockDecisions", label: "Max block decisions" }),
+  Object.freeze({ id: "promotion-max-critical", key: "maxCriticalRiskObservations", label: "Max critical risk observations" }),
+]);
+
+// Loading the target list is a convenience, not a filter.
+//
+// Every environment the project has is offered. Deciding which of them a
+// candidate may advance toward means comparing ranks, that comparison has one
+// implementation and it is in the platform, and a browser that pre-filtered
+// the list would be a second one.
+byID("promotion-load-environments").addEventListener("click", async (event) => {
+  await busy(event.currentTarget, async () => {
+    const projectID = value("promotion-project");
+    if (projectID === "") {
+      showProblem("Enter a project ID to load its environments.");
+      byID("promotion-project").focus();
+      return;
+    }
+    try {
+      const response = await api.listEnvironments(projectID);
+      render.renderEnvironmentOptions(promotionTarget, response);
+      clearProblem();
+    } catch (error) {
+      report(promotionResult, error);
+    }
+  });
+});
+
+byID("form-promotion-create").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await busy(event.submitter, async () => {
+    const limits = {};
+    for (const input of PROMOTION_LIMIT_INPUTS) {
+      const text = value(input.id);
+      // Canonical decimal text, never parsed. 0 is valid and the uint64
+      // maximum must reach the server intact — Number() would round it.
+      if (!api.isCanonicalUint64(text)) {
+        showProblem(`${input.label} must be a whole number from 0 to 18446744073709551615.`);
+        byID(input.id).focus();
+        return;
+      }
+      limits[input.key] = text;
+    }
+
+    const target = value("promotion-target");
+    if (target === "") {
+      showProblem("Choose a target environment.");
+      promotionTarget.focus();
+      return;
+    }
+
+    try {
+      const response = await api.createPromotion(
+        value("promotion-id"), value("promotion-reference"),
+        value("promotion-candidate"), target, limits,
+      );
+      // A rejected decision is a successfully recorded decision. It is
+      // rendered as the outcome it is, not as an error.
+      render.renderPromotion(promotionResult, response);
+      clearProblem();
+    } catch (error) {
+      // A refused request is rendered as the refusal it is. A structural
+      // refusal is not a rejected promotion, and presenting it as one would
+      // invent a decision the platform never made.
+      report(promotionResult, error);
+    }
+  });
+});
+
+byID("form-promotion-get").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await busy(event.submitter, async () => {
+    try {
+      const response = await api.getPromotion(value("promotion-open-id"));
+      render.renderPromotion(promotionResult, response);
+      clearProblem();
+    } catch (error) {
+      report(promotionResult, error);
+    }
+  });
+});
+
+byID("form-promotion-list").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await busy(event.submitter, async () => {
+    try {
+      const response = await api.listPromotions(value("promotion-list-project"));
+      render.renderPromotionList(promotionHistory, response);
+      clearProblem();
+    } catch (error) {
+      report(promotionHistory, error);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------
 

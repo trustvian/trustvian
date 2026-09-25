@@ -170,7 +170,79 @@ func postgresSchemaStatements() []string {
 		)`,
 
 		postgresEnvironmentsStatement(),
+
+		postgresPromotionsStatement(),
+		postgresPromotionsIndexStatement(),
 	}
+}
+
+// postgresPromotionsStatement is v4's only table, kept separate so the
+// v3 → v4 migration applies exactly this and nothing else.
+//
+// COLLATE "C" on id and project_id is load-bearing rather than decorative:
+// the collection traverses by id in byte order and pages on it, so a
+// locale-aware collation would order two backends' pages differently and
+// could place a row on a page a cursor had already passed. The other
+// identifier columns carry it for the same reason every other key column
+// does.
+//
+// The gate result is explicit columns, not JSON: a serialized value is a
+// schema the database cannot check and a migration cannot see, and this one is
+// historical audit evidence. The five …_passed columns are INTEGER rather than
+// BOOLEAN, matching platform_behavior_snapshots.complete — written through
+// boolInt and read through parseStoredBool, which refuses anything but 0 or 1
+// rather than coercing damage into the safer-looking answer.
+func postgresPromotionsStatement() string {
+	return `CREATE TABLE ` + tablePromotions + ` (
+		id                              TEXT COLLATE "C" PRIMARY KEY,
+		project_id                      TEXT COLLATE "C" NOT NULL REFERENCES ` + tableProjects + `(id),
+		candidate_id                    TEXT COLLATE "C" NOT NULL REFERENCES ` + tableCandidates + `(id),
+		reference_candidate_id          TEXT COLLATE "C" NOT NULL REFERENCES ` + tableCandidates + `(id),
+
+		reference_run_id                TEXT COLLATE "C" NOT NULL,
+		candidate_run_id                TEXT COLLATE "C" NOT NULL,
+
+		source_environment_ref          TEXT COLLATE "C" NOT NULL,
+		source_environment_rank         INTEGER NOT NULL,
+		source_environment_revision     TEXT COLLATE "C" NOT NULL,
+
+		target_environment_ref          TEXT COLLATE "C" NOT NULL,
+		target_environment_rank         INTEGER NOT NULL,
+		target_environment_revision     TEXT COLLATE "C" NOT NULL,
+
+		max_added_behaviors             TEXT COLLATE "C" NOT NULL,
+		max_block_decisions             TEXT COLLATE "C" NOT NULL,
+		max_critical_risk_observations  TEXT COLLATE "C" NOT NULL,
+
+		gate_reference_evidence_actual  TEXT COLLATE "C" NOT NULL,
+		gate_reference_evidence_minimum TEXT COLLATE "C" NOT NULL,
+		gate_reference_evidence_passed  INTEGER NOT NULL,
+		gate_candidate_evidence_actual  TEXT COLLATE "C" NOT NULL,
+		gate_candidate_evidence_minimum TEXT COLLATE "C" NOT NULL,
+		gate_candidate_evidence_passed  INTEGER NOT NULL,
+		gate_added_behaviors_actual     TEXT COLLATE "C" NOT NULL,
+		gate_added_behaviors_passed     INTEGER NOT NULL,
+		gate_block_decisions_actual     TEXT COLLATE "C" NOT NULL,
+		gate_block_decisions_passed     INTEGER NOT NULL,
+		gate_critical_risk_actual       TEXT COLLATE "C" NOT NULL,
+		gate_critical_risk_passed       INTEGER NOT NULL,
+		gate_verdict                    TEXT NOT NULL,
+
+		outcome                         TEXT NOT NULL,
+		decided_at                      TEXT NOT NULL
+	)`
+}
+
+// postgresPromotionsIndexStatement supports the project-scoped page.
+//
+// PostgreSQL does not index a foreign key automatically, and the promotions
+// primary key is id alone because promotion identity is global — so unlike
+// platform_environments the `WHERE project_id = $1 AND id > $2 ORDER BY id`
+// range scan is not free from the primary key. This is the one index task 066
+// adds, and the one query that needs it.
+func postgresPromotionsIndexStatement() string {
+	return `CREATE INDEX ` + indexPromotionsByProject +
+		` ON ` + tablePromotions + ` (project_id, id)`
 }
 
 // postgresEnvironmentsStatement is v3's only addition, kept separate so the
@@ -248,10 +320,19 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV1ToV2(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV2ToV3(ctx, tx)
+			if err := migratePostgresV2ToV3(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV3ToV4(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV2()):
-			return migratePostgresV2ToV3(ctx, tx)
+			if err := migratePostgresV2ToV3(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV3ToV4(ctx, tx)
+
+		case slices.Equal(present, sortedSchemaTablesV3()):
+			return migratePostgresV3ToV4(ctx, tx)
 
 		default:
 			// A recognized subset that is neither version. Nothing here knows
@@ -315,6 +396,31 @@ func migratePostgresV2ToV3(ctx context.Context, tx pgx.Tx) error {
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
+		schemaVersionV3); err != nil {
+		return mapPostgresError("schema version", "", err)
+	}
+	return nil
+}
+
+// migratePostgresV3ToV4 adds the promotion history, exactly as SQLite's
+// migration does and nothing else.
+//
+// No backfill. A schema-3 database recorded no promotion decisions because
+// none could be made, and synthesizing one from historical evaluation runs
+// would fabricate an audit record — a decision nobody made, limits nobody
+// chose, a moment nothing happened at. An existing database migrates to an
+// empty promotion history, which is the accurate answer.
+func migratePostgresV3ToV4(ctx context.Context, tx pgx.Tx) error {
+	for _, statement := range []string{
+		postgresPromotionsStatement(),
+		postgresPromotionsIndexStatement(),
+	} {
+		if _, err := tx.Exec(ctx, statement); err != nil {
+			return mapPostgresError("schema migration", "", err)
+		}
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
 		SchemaVersion); err != nil {
 		return mapPostgresError("schema version", "", err)
 	}
@@ -325,8 +431,9 @@ func migratePostgresV2ToV3(ctx context.Context, tx pgx.Tx) error {
 // v1 → v2 migration applies exactly this.
 func postgresIngestStateStatement() string {
 	statements := postgresSchemaStatements()
-	// Second from the end: v3 appended the environments table after it.
-	return statements[len(statements)-2]
+	// Fourth from the end: v3 appended the environments table after it, and
+	// v4 appended the promotions table and its index after that.
+	return statements[len(statements)-4]
 }
 
 // verifyPostgresVersion refuses a schema this binary does not understand.
@@ -400,6 +507,13 @@ func sortedSchemaTablesV1() []string {
 // sortedSchemaTablesV2 is what a complete task 058 database holds, sorted.
 func sortedSchemaTablesV2() []string {
 	sorted := slices.Clone(schemaTablesV2)
+	slices.Sort(sorted)
+	return sorted
+}
+
+// sortedSchemaTablesV3 is what a complete task 065 database holds, sorted.
+func sortedSchemaTablesV3() []string {
+	sorted := slices.Clone(schemaTablesV3)
 	slices.Sort(sorted)
 	return sorted
 }

@@ -146,6 +146,47 @@ type ControlStore interface {
 	ProjectEnvironments(
 		ctx context.Context, projectID ProjectID, after EnvironmentRef, limit int,
 	) ([]Environment, error)
+
+	// CreatePromotion stores one decision, in one transaction that first
+	// revalidates the environment state the decision was built on.
+	//
+	// A promotion is immutable, so this is the only write: there is no update
+	// and no delete at any layer. A promotion whose ID already exists is
+	// ErrStoreAlreadyExists, whatever the rest of the promotion says — the
+	// identifier names a decision that was already recorded.
+	//
+	// The revalidation is not a courtesy. A promotion carries the revision of
+	// each environment it was decided against, and those revisions must still
+	// be the authoritative ones at the serialization point of this insert, or
+	// the row would record a decision about a configuration that had already
+	// been replaced. A changed revision is ErrStoreConflict.
+	//
+	// The atomicity is the contract; how each backend obtains it is not.
+	// PostgreSQL takes FOR UPDATE row locks on the two environments in
+	// (project_id, ref) byte order, which buys independent progress for
+	// unrelated promotions. SQLite enters an explicit write transaction and
+	// serializes writers database-wide, which is accepted for the local
+	// backend. Neither is required to run unrelated promotions in parallel.
+	CreatePromotion(ctx context.Context, promotion Promotion) error
+
+	// Promotion loads one recorded decision by identifier. Identity is
+	// global, like a project, agent, candidate or run identifier and unlike
+	// an environment ref.
+	Promotion(ctx context.Context, id PromotionID) (Promotion, error)
+
+	// ProjectPromotions returns at most limit of one project's promotions, in
+	// identifier byte order, whose ID sorts after `after`. An empty `after`
+	// starts at the beginning.
+	//
+	// limit is 1 to MaxPromotionPage inclusive; anything outside that is
+	// ErrInvalidID. Traversal is by identifier rather than by decision time
+	// because timestamps are stored as RFC3339Nano text, which is not
+	// lexically ordered — a cursor over that column would silently skip and
+	// repeat rows. A project with no promotions returns an empty slice; one
+	// that does not exist returns ErrStoreNotFound.
+	ProjectPromotions(
+		ctx context.Context, projectID ProjectID, after PromotionID, limit int,
+	) ([]Promotion, error)
 }
 
 // EvaluationStore persists evaluation runs and their evidence.

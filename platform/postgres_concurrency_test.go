@@ -864,3 +864,493 @@ func countPostgresEnvironments(t *testing.T, store *PostgresStore, projectID Pro
 		after = page[len(page)-1].Ref()
 	}
 }
+
+// ---------------------------------------------------------------------
+// Promotion commit (task 066)
+// ---------------------------------------------------------------------
+
+// A promotion's invariant spans three rows: the two environment rows it was
+// decided against, and the promotion row it writes. Holding it means no other
+// promotion over an overlapping pair may sit between the revalidation and the
+// insert, and that both environments are re-read inside the writing
+// transaction rather than trusted from the caller's earlier read.
+//
+// These tests drive that directly. They are PostgreSQL-only on purpose: the
+// shared conformance suite already proves both backends refuse a stale
+// decision, and what cannot be shared is *how* — row locks under a connection
+// pool here, one writer at a time there. SQLite is not claimed to run two
+// promotion writers concurrently and is not tested as if it did.
+
+// installPromotionLockHook sets the per-lock hook for one test.
+func installPromotionLockHook(t *testing.T, hook func(int)) {
+	t.Helper()
+	testHookAfterPromotionLock.Store(&hook)
+	t.Cleanup(func() { testHookAfterPromotionLock.Store(nil) })
+}
+
+// rankedEnv names one environment in a promotion world.
+type rankedEnv struct {
+	ref  string
+	rank uint16
+}
+
+// seedPostgresPromotionWorld creates everything a promotion needs: the project,
+// an agent, the reference and candidate candidates, and the ranked
+// environments.
+func seedPostgresPromotionWorld(
+	t *testing.T, store *PostgresStore, projectID string, envs []rankedEnv,
+) {
+	t.Helper()
+	ctx := context.Background()
+
+	project, err := NewProject(ProjectID(projectID), "P")
+	if err != nil {
+		t.Fatalf("NewProject() error = %v", err)
+	}
+	if err := store.CreateProject(ctx, project); err != nil {
+		t.Fatalf("CreateProject() error = %v", err)
+	}
+	agent, err := NewAgent(AgentID("agent-"+projectID), ProjectID(projectID), "Agent")
+	if err != nil {
+		t.Fatalf("NewAgent() error = %v", err)
+	}
+	if err := store.CreateAgent(ctx, agent); err != nil {
+		t.Fatalf("CreateAgent() error = %v", err)
+	}
+	for _, id := range []string{"cand-ref-" + projectID, "cand-can-" + projectID} {
+		candidate, err := NewCandidate(CandidateID(id), agent.ID(), CandidateMetadata{Label: "v1"})
+		if err != nil {
+			t.Fatalf("NewCandidate() error = %v", err)
+		}
+		if err := store.CreateCandidate(ctx, candidate); err != nil {
+			t.Fatalf("CreateCandidate(%s) error = %v", id, err)
+		}
+	}
+	for _, env := range envs {
+		value, err := NewRankedEnvironment(
+			EnvironmentRef(env.ref), ProjectID(projectID), env.ref, env.rank)
+		if err != nil {
+			t.Fatalf("NewRankedEnvironment(%s) error = %v", env.ref, err)
+		}
+		if err := store.CreateEnvironment(ctx, value); err != nil {
+			t.Fatalf("CreateEnvironment(%s) error = %v", env.ref, err)
+		}
+	}
+}
+
+// postgresPromotionBetween builds one storable decision over a named pair.
+func postgresPromotionBetween(
+	t *testing.T, store *PostgresStore, projectID, id, sourceRef, targetRef string,
+) Promotion {
+	t.Helper()
+	ctx := context.Background()
+
+	source, err := store.Environment(ctx, ProjectID(projectID), EnvironmentRef(sourceRef))
+	if err != nil {
+		t.Fatalf("Environment(%s) error = %v", sourceRef, err)
+	}
+	target, err := store.Environment(ctx, ProjectID(projectID), EnvironmentRef(targetRef))
+	if err != nil {
+		t.Fatalf("Environment(%s) error = %v", targetRef, err)
+	}
+
+	gate, err := restoreEvaluationGateResult(
+		EvaluationRunID("run-ref-"+projectID), CandidateID("cand-ref-"+projectID),
+		EvaluationRunID("run-can-"+projectID), CandidateID("cand-can-"+projectID),
+		EnvironmentRef(sourceRef),
+		MinimumCountGate{Actual: 412, Minimum: 1, Passed: true},
+		MinimumCountGate{Actual: 388, Minimum: 1, Passed: true},
+		MaximumCountGate{Actual: 0, Maximum: 0, Passed: true},
+		MaximumCountGate{Actual: 0, Maximum: 0, Passed: true},
+		MaximumCountGate{Actual: 0, Maximum: 0, Passed: true},
+		GateVerdictPass,
+	)
+	if err != nil {
+		t.Fatalf("restoreEvaluationGateResult() error = %v", err)
+	}
+
+	promotion, err := NewPromotion(PromotionDecision{
+		ID: PromotionID(id), Source: source, Target: target,
+		GateResult: gate,
+		DecidedAt:  time.Date(2026, 3, 1, 9, 14, 22, 481_000_321, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("NewPromotion(%s) error = %v", id, err)
+	}
+	return promotion
+}
+
+// TestPostgresPromotionCommitWindowIsMutuallyExclusive proves the two row locks
+// do their job, directly.
+//
+// Every racer here promotes over the same pair with a distinct identifier, so a
+// completely unlocked implementation also writes every row successfully — the
+// unique index is on the promotion id and none of them collide. What it would
+// not do is keep two transactions out of the revalidate-then-insert window at
+// once, and that is the only thing this measures.
+func TestPostgresPromotionCommitWindowIsMutuallyExclusive(t *testing.T) {
+	store := newConcurrentPostgresStore(t)
+	seedPostgresPromotionWorld(t, store, "proj-lock",
+		[]rankedEnv{{"staging", 30}, {"production", 40}})
+
+	var occupancy occupancyTracker
+	installPromotionLockHook(t, func(index int) {
+		// Both locks held: the whole window the insert depends on.
+		if index == 1 {
+			occupancy.enter()
+		}
+	})
+
+	promotions := make([]Promotion, concurrentWorkers)
+	for i := range promotions {
+		promotions[i] = postgresPromotionBetween(t, store, "proj-lock",
+			fmt.Sprintf("promo-%02d", i), "staging", "production")
+	}
+
+	for worker, err := range raceStart(concurrentWorkers, func(worker int) error {
+		return store.CreatePromotion(context.Background(), promotions[worker])
+	}) {
+		if err != nil {
+			t.Errorf("worker %d: CreatePromotion() error = %v", worker, err)
+		}
+	}
+
+	if got := occupancy.peak(); got != 1 {
+		t.Errorf("peak occupancy inside the commit window = %d, want 1; two "+
+			"promotions decided against the same environment state at once", got)
+	}
+}
+
+// TestPostgresPromotionsOverDisjointPairsDoNotBlock keeps the lock scoped.
+//
+// The environment row is the unit, not the project and not the table. Two
+// promotions that share no environment have no invariant in common, and a
+// project-wide lock — the tempting shortcut, and the one that would make the
+// test above pass just as well — would serialize them for nothing.
+func TestPostgresPromotionsOverDisjointPairsDoNotBlock(t *testing.T) {
+	const pairs = 4
+	store := newConcurrentPostgresStore(t)
+
+	envs := make([]rankedEnv, 0, pairs*2)
+	for pair := range pairs {
+		envs = append(envs,
+			rankedEnv{fmt.Sprintf("pair%d-from", pair), uint16(10 + pair*2)},
+			rankedEnv{fmt.Sprintf("pair%d-to", pair), uint16(11 + pair*2)})
+	}
+	seedPostgresPromotionWorld(t, store, "proj-disjoint", envs)
+
+	promotions := make([]Promotion, pairs)
+	for pair := range pairs {
+		promotions[pair] = postgresPromotionBetween(t, store, "proj-disjoint",
+			fmt.Sprintf("promo-%02d", pair),
+			fmt.Sprintf("pair%d-from", pair), fmt.Sprintf("pair%d-to", pair))
+	}
+
+	// A barrier inside the window: every worker waits for all of them to
+	// arrive. If the writers serialized, this would deadlock rather than
+	// report a wrong number, so the test bounds its own wait.
+	var arrived sync.WaitGroup
+	arrived.Add(pairs)
+	released := make(chan struct{})
+	var timedOut atomic.Bool
+	installPromotionLockHook(t, func(index int) {
+		if index != 1 {
+			return
+		}
+		arrived.Done()
+		select {
+		case <-released:
+		case <-time.After(5 * time.Second):
+			timedOut.Store(true)
+		}
+	})
+	go func() {
+		arrived.Wait()
+		close(released)
+	}()
+
+	for worker, err := range raceStart(pairs, func(worker int) error {
+		return store.CreatePromotion(context.Background(), promotions[worker])
+	}) {
+		if err != nil {
+			t.Errorf("worker %d: CreatePromotion() error = %v", worker, err)
+		}
+	}
+	if timedOut.Load() {
+		t.Error("promotions over disjoint environment pairs blocked on each " +
+			"other; the lock must be the two environment rows, not the project " +
+			"or the table")
+	}
+}
+
+// TestPostgresPromotionsInDifferentProjectsDoNotBlock is the same property
+// across the identity boundary.
+//
+// An environment's identity is (project, ref), so the same ref in two projects
+// is two rows and two independent decisions. A lock keyed on the ref alone
+// would pass every other test here and still serialize unrelated tenants.
+func TestPostgresPromotionsInDifferentProjectsDoNotBlock(t *testing.T) {
+	const projects = 4
+	store := newConcurrentPostgresStore(t)
+
+	promotions := make([]Promotion, projects)
+	for i := range projects {
+		project := fmt.Sprintf("proj-%02d", i)
+		seedPostgresPromotionWorld(t, store, project,
+			[]rankedEnv{{"staging", 30}, {"production", 40}})
+		promotions[i] = postgresPromotionBetween(t, store, project,
+			fmt.Sprintf("promo-%02d", i), "staging", "production")
+	}
+
+	var arrived sync.WaitGroup
+	arrived.Add(projects)
+	released := make(chan struct{})
+	var timedOut atomic.Bool
+	installPromotionLockHook(t, func(index int) {
+		if index != 1 {
+			return
+		}
+		arrived.Done()
+		select {
+		case <-released:
+		case <-time.After(5 * time.Second):
+			timedOut.Store(true)
+		}
+	})
+	go func() {
+		arrived.Wait()
+		close(released)
+	}()
+
+	for worker, err := range raceStart(projects, func(worker int) error {
+		return store.CreatePromotion(context.Background(), promotions[worker])
+	}) {
+		if err != nil {
+			t.Errorf("worker %d: CreatePromotion() error = %v", worker, err)
+		}
+	}
+	if timedOut.Load() {
+		t.Error("promotions in different projects blocked on each other; the " +
+			"lock must be keyed on (project, ref), not the ref alone")
+	}
+}
+
+// TestPostgresPromotionLocksEnvironmentsInByteOrder pins the acquisition order
+// to the rows rather than to the roles.
+//
+// The honest framing matters here, because the tempting one is wrong. Locking
+// source then target would also be deadlock-free today, and provably so rather
+// than by luck: CanPromote requires the target to rank strictly above the
+// source, so every transaction takes its two rows in increasing rank order and
+// two of them can never take the same pair in opposite orders. No cycle is
+// reachable, and a test claiming to construct one would be constructing
+// nothing.
+//
+// What byte order buys is that the proof no longer depends on CanPromote. The
+// three environments below are named so byte order and rank order disagree —
+// refs sort a, b, c against ranks c(10) < a(20) < b(30) — and the assertion is
+// that the acquisition order follows the refs in every case, including the one
+// where the source sorts last. That is the property that would survive
+// relaxing the promotion rule, and it is the one that fails if the ordering is
+// ever dropped in favour of the roles.
+//
+// The concurrent half is a live check on the same three overlapping pairs: the
+// hook widens the window while exactly one lock is held, and every writer must
+// still commit rather than abort with 40P01.
+func TestPostgresPromotionLocksEnvironmentsInByteOrder(t *testing.T) {
+	const rounds = 4
+	store := newConcurrentPostgresStore(t)
+	seedPostgresPromotionWorld(t, store, "proj-order",
+		[]rankedEnv{{"c", 10}, {"a", 20}, {"b", 30}})
+
+	pairs := []struct{ source, target, first, second string }{
+		{"c", "a", "a", "c"}, // ranks 10 → 20; the source sorts last
+		{"a", "b", "a", "b"}, // ranks 20 → 30; roles and bytes agree
+		{"c", "b", "b", "c"}, // ranks 10 → 30; the source sorts last
+	}
+	for _, pair := range pairs {
+		promotion := postgresPromotionBetween(
+			t, store, "proj-order", "probe-"+pair.source+pair.target,
+			pair.source, pair.target)
+		want := [2]EnvironmentRef{EnvironmentRef(pair.first), EnvironmentRef(pair.second)}
+		if got := promotionEnvironmentOrder(promotion); got != want {
+			t.Errorf("promotionEnvironmentOrder(%s→%s) = %v, want %v",
+				pair.source, pair.target, got, want)
+		}
+	}
+
+	// Hold every writer while exactly one of its two rows is locked, which is
+	// the widest the acquisition window gets.
+	installPromotionLockHook(t, func(index int) {
+		if index == 0 {
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
+
+	for round := range rounds {
+		for worker, err := range raceStart(len(pairs), func(worker int) error {
+			pair := pairs[worker]
+			return store.CreatePromotion(context.Background(),
+				postgresPromotionBetween(t, store, "proj-order",
+					fmt.Sprintf("promo-%d-%d", round, worker), pair.source, pair.target))
+		}) {
+			if err == nil {
+				continue
+			}
+			t.Errorf("round %d worker %d (%s→%s): CreatePromotion() error = %v",
+				round, worker, pairs[worker].source, pairs[worker].target, err)
+		}
+	}
+}
+
+// TestPostgresPromotionWaitsForTheLockAndSeesTheNewState is the stale case
+// under real contention.
+//
+// The conformance suite proves a promotion built against an old revision is
+// refused. This proves the mechanism that makes that true when the revision
+// changes *while* the promotion is committing: the writer must block on the
+// environment row rather than read around it, and when the holder commits, the
+// writer must see what was committed rather than the snapshot it started with.
+// A CreatePromotion that took no lock — or took one and then trusted the
+// caller's copy — would succeed here and write a decision made against an
+// environment configuration that no longer exists.
+func TestPostgresPromotionWaitsForTheLockAndSeesTheNewState(t *testing.T) {
+	store := newConcurrentPostgresStore(t)
+	ctx := context.Background()
+	seedPostgresPromotionWorld(t, store, "proj-stale",
+		[]rankedEnv{{"staging", 30}, {"production", 40}})
+
+	// Built now, against revision 1 of both environments.
+	promotion := postgresPromotionBetween(t, store, "proj-stale", "promo-1",
+		"staging", "production")
+
+	// Hold the source row inside a transaction the store cannot see past.
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin() error = %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var held string
+	if err := tx.QueryRow(ctx,
+		`SELECT ref FROM `+tableEnvironments+`
+		 WHERE project_id = $1 AND ref = $2 FOR UPDATE`,
+		"proj-stale", "staging").Scan(&held); err != nil {
+		t.Fatalf("lock staging: %v", err)
+	}
+
+	committed := make(chan error, 1)
+	go func() { committed <- store.CreatePromotion(ctx, promotion) }()
+
+	// The writer must still be waiting: nothing may commit against an
+	// environment whose row another transaction holds.
+	select {
+	case err := <-committed:
+		t.Fatalf("CreatePromotion() returned %v while staging was locked; it "+
+			"read around the lock", err)
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	// Change the environment under it and release.
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+tableEnvironments+`
+		 SET rank = 35, revision = revision + 1
+		 WHERE project_id = $1 AND ref = $2`, "proj-stale", "staging"); err != nil {
+		t.Fatalf("bump staging: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("Commit() error = %v", err)
+	}
+
+	select {
+	case err := <-committed:
+		if !errors.Is(err, ErrStoreConflict) {
+			t.Fatalf("CreatePromotion() error = %v, want ErrStoreConflict", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("CreatePromotion() never returned after the lock was released")
+	}
+
+	// And it wrote nothing: a refused decision leaves no row behind.
+	history, err := store.ProjectPromotions(ctx, "proj-stale", "", MaxPromotionPage)
+	if err != nil {
+		t.Fatalf("ProjectPromotions() error = %v", err)
+	}
+	if len(history) != 0 {
+		t.Errorf("a refused promotion left %d row(s) behind", len(history))
+	}
+}
+
+// TestPostgresPromotionLocksTwoEnvironmentRowsAndNothingElse pins the scope of
+// the lock structurally.
+//
+// The behavioural tests above show that disjoint pairs and different projects
+// make progress, but they show it for today's implementation. A later change
+// to a project-wide lock — the shortcut task 065's creation cap legitimately
+// takes, and the one that would be easy to copy here — would keep every
+// promotion correct while quietly serializing unrelated tenants, and only the
+// timing-sensitive halves would notice. This reads the statements instead.
+func TestPostgresPromotionLocksTwoEnvironmentRowsAndNothingElse(t *testing.T) {
+	source := goSourceWithoutCommentsForTest(t, "postgres.go")
+
+	// The lock is one row of platform_environments, identified by the pair.
+	// Read from lockEnvironment's own body with whitespace collapsed, so
+	// reindenting the SQL is not a failure while changing what it locks is.
+	lock := strings.Join(strings.Fields(
+		postgresFuncBodyForTest(t, source, "lockEnvironment")), " ")
+	// The table is named by its constant in the source, so the assertion is on
+	// the identifier rather than on the value it expands to.
+	for _, want := range []string{
+		`SELECT ref FROM `,
+		`tableEnvironments`,
+		`WHERE project_id = $1 AND ref = $2 FOR UPDATE`,
+	} {
+		if !strings.Contains(lock, want) {
+			t.Errorf("lockEnvironment no longer contains %q; the lock must be the "+
+				"one environment row identified by (project_id, ref)", want)
+		}
+	}
+
+	// Issued once per environment, so the acquisition order is the code's
+	// rather than the query planner's.
+	for _, planner := range []string{"ref = ANY(", "ORDER BY ref FOR UPDATE"} {
+		if strings.Contains(source, planner) {
+			t.Errorf("postgres.go contains %q; a multi-row FOR UPDATE leaves the "+
+				"lock order to the planner", planner)
+		}
+	}
+
+	// And CreatePromotion takes exactly those, in the shared byte order, with
+	// no project lock and no table lock alongside them.
+	body := postgresFuncBodyForTest(t, source, "CreatePromotion")
+	if !strings.Contains(body, "promotionEnvironmentOrder(promotion)") {
+		t.Error("CreatePromotion no longer derives its lock order from " +
+			"promotionEnvironmentOrder; the order would follow source and target")
+	}
+	if got := strings.Count(body, "lockEnvironment("); got != 1 {
+		t.Errorf("CreatePromotion calls lockEnvironment %d times, want 1 (inside "+
+			"the loop over both refs)", got)
+	}
+	for _, wider := range []string{"lockProjectForWrite", tableProjects, "LOCK TABLE"} {
+		if strings.Contains(body, wider) {
+			t.Errorf("CreatePromotion takes %q; the invariant names exactly two "+
+				"environment rows, and a wider lock would serialize unrelated "+
+				"promotions", wider)
+		}
+	}
+}
+
+// postgresFuncBodyForTest returns one top-level function's source text.
+func postgresFuncBodyForTest(t *testing.T, source, name string) string {
+	t.Helper()
+	marker := ") " + name + "("
+	start := strings.Index(source, marker)
+	if start < 0 {
+		t.Fatalf("no method named %s in postgres.go", name)
+	}
+	// Top-level declarations close on a column-zero brace.
+	end := strings.Index(source[start:], "\n}\n")
+	if end < 0 {
+		t.Fatalf("could not find the end of %s", name)
+	}
+	return source[start : start+end]
+}
