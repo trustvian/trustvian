@@ -82,7 +82,8 @@ A complete vertical slice, on both persistence backends:
   preconditions and the write;
 - `ControlStore` extended with create, read and one bounded project-scoped
   collection, where create is a transaction that revalidates the environment
-  state the decision used before it inserts;
+  state the decision used before it inserts — atomically on both backends,
+  with row-level writer concurrency on PostgreSQL only;
 - `SchemaVersion` 3 → 4 on SQLite and PostgreSQL, with one new table and a
   migration that fabricates no history;
 - three `/v1` routes;
@@ -404,13 +405,26 @@ func restoreEvaluationGateResult(/* stored scalars */) (EvaluationGateResult, er
 Both shared by the two backends so neither can accept a row the other would
 refuse, exactly as `restoreEnvironment` is.
 
-`restoreEvaluationGateResult` lives in `gate.go` beside the type it rebuilds.
-It **evaluates nothing**: it sets `bound`, copies the stored identity, rebuilds
-the five checks from their stored operands through the existing `minimumGate`
-and `maximumGate` helpers, and takes the **stored verdict verbatim**. That last
-point is the whole of the historical-evidence rule applied to the restore path
-— recomputing the verdict from the stored checks would mean a later change to
-how five checks combine silently rewrote history on read.
+`restoreEvaluationGateResult` lives in `gate.go` beside the type it rebuilds,
+and **it is not an evaluator**. Every observable component comes back exactly
+as it was stored:
+
+- the five identity values, from the promotion's own columns;
+- each check's `Actual`, its `Minimum` or `Maximum`, **and its `Passed` flag**,
+  each read from its own column;
+- the `verdict`, read from its own column;
+- `bound`, set because the value is now usable.
+
+It must not call `minimumGate`, `maximumGate` or `EvaluateEvaluationGate`, and
+must not re-derive a `Passed` flag or a verdict from anything. Validation is
+structural only: identifiers well formed, counts canonical, flags 0 or 1,
+verdict one of the two constants.
+
+That is the historical-evidence rule applied to the restore path, and it has to
+reach every field. A build that recomputed `Passed` from the stored operands
+while keeping the stored verdict would hand back a value that never existed —
+an old verdict wearing today's flags — and a hybrid is worse evidence than
+either half alone.
 
 `restorePromotion` applies every check a live value faced:
 
@@ -427,10 +441,20 @@ how five checks combine silently rewrote history on read.
   damage fails closed, and the repository still contains exactly one rank
   comparison.
 
-What restore deliberately does **not** check: whether the five restored checks
-would combine to the stored verdict under today's rule, and whether today's
-gate would reach the same verdict from the same evidence. Neither is
-corruption. See below.
+What restore deliberately does **not** check:
+
+- whether a stored `Passed` agrees with the arithmetic on its own stored
+  operands. `actual = 1, minimum = 1, passed = false` restores exactly as
+  written. That combination is impossible under today's helpers, which is
+  precisely why it must survive: it is what an older build recorded, and a
+  defect in that build is part of the history rather than a reason to rewrite
+  it;
+- whether the five restored flags would combine to the stored verdict under
+  today's rule;
+- whether today's gate would reach the same verdict from the same evidence.
+
+None of those is corruption. The record is what the platform produced, not
+what it should have produced.
 
 ### Historical evidence versus current recomputation
 
@@ -708,7 +732,7 @@ forever, whatever version of the platform is running.
 | Evidence | Why a reference is not enough |
 |---|---|
 | the three gate limits | Caller-owned and stored nowhere else. Lose them and the verdict is unexplainable |
-| **the `EvaluationGateResult`** | **The result the decision consumed.** Re-deriving it later answers a different question, and a corrected gate may answer it differently. Fixed-shape and bounded, so snapshotting it costs a known number of scalar columns |
+| **the `EvaluationGateResult`**, field for field | **The result the decision consumed.** Re-deriving any part of it later answers a different question, and a corrected gate or helper may answer it differently. Fixed-shape and bounded, so snapshotting all of it — every operand, every `Passed` flag, the verdict — costs a known number of scalar columns |
 | source and target `rank` | Configuration an operator changes. ADR 0039 §6 already says promotion-time ordering belongs on the promotion record; this is that |
 | source and target `revision` | The configuration the decision was bound to. It is also the token the store revalidates at commit — see [Concurrency](#concurrency-and-retry-semantics) |
 | `outcome` | The durable workflow decision. Derived from the stored verdict at construction, stored so a reader needs no derivation at all |
@@ -723,7 +747,9 @@ scorecard and diff are the inputs that produced it, and both are recomputable
 from the immutable runs. Storing them would duplicate large derived structures
 — the scorecard alone carries dozens of rate and metric comparisons — to answer
 a question the stored gate result already answers better, because the gate
-result is the part the decision turned on.
+result is the part the decision turned on. And it is snapshotted *whole*: a
+half-stored result, with flags re-derived from stored operands, would be a
+value that existed at no point in time.
 
 A consumer that wants the full comparison as **today's code sees it** posts the
 promotion's own stored run identifiers and stored limits to the existing route:
@@ -864,8 +890,8 @@ either — chooses `accepted` or `rejected`. The constructor does, from evidence
 
 **Step 14 is the only write, and the store revalidates rather than
 re-deciding.** It does not recompute the gate, re-read evaluation evidence or
-construct a promotion; it checks that the two environment rows the decision was
-built on are unchanged, and inserts. The division is exact: the service owns
+construct a promotion; it checks that the two environment states the decision
+was built on are unchanged, and inserts. The division is exact: the service owns
 the decision, the store owns the concurrency invariant.
 
 A structural failure writes nothing. A rejected verdict writes a record,
@@ -952,7 +978,10 @@ Three methods, and no more than task 066 needs:
 // environment it was decided against, and those revisions must still be the
 // authoritative ones at the serialization point of this insert, or the row
 // would record a decision about a configuration that had already been
-// replaced. A changed revision is ErrStoreConflict. See Concurrency.
+// replaced. A changed revision is ErrStoreConflict.
+//
+// The atomicity is the contract; how each backend obtains it is not. See
+// Concurrency.
 CreatePromotion(ctx context.Context, promotion Promotion) error
 
 // Promotion loads one by identifier. Identity is global, like a project,
@@ -1016,15 +1045,21 @@ CREATE TABLE platform_promotions (
     max_block_decisions             TEXT NOT NULL,
     max_critical_risk_observations  TEXT NOT NULL,
 
-    -- The decision-time gate result: what each check measured, what the two
-    -- minimum checks required, and the verdict reached.
+    -- The decision-time gate result, verbatim: what each check measured, what
+    -- the two minimum checks required, whether each check passed, and the
+    -- verdict reached. Nothing here is re-derived on read.
     gate_reference_evidence_actual  TEXT NOT NULL,
     gate_reference_evidence_minimum TEXT NOT NULL,
+    gate_reference_evidence_passed  INTEGER NOT NULL,
     gate_candidate_evidence_actual  TEXT NOT NULL,
     gate_candidate_evidence_minimum TEXT NOT NULL,
+    gate_candidate_evidence_passed  INTEGER NOT NULL,
     gate_added_behaviors_actual     TEXT NOT NULL,
+    gate_added_behaviors_passed     INTEGER NOT NULL,
     gate_block_decisions_actual     TEXT NOT NULL,
+    gate_block_decisions_passed     INTEGER NOT NULL,
     gate_critical_risk_actual       TEXT NOT NULL,
+    gate_critical_risk_passed       INTEGER NOT NULL,
     gate_verdict                    TEXT NOT NULL,
 
     outcome                         TEXT NOT NULL,
@@ -1035,54 +1070,65 @@ CREATE INDEX platform_promotions_by_project
     ON platform_promotions (project_id, id);
 ```
 
-Twenty-five columns, every one a bounded scalar. No JSON column, no blob, no
-array, no nullable field — the repository stores fixed-shape values as explicit
+Thirty columns, every one a bounded scalar. No JSON column, no blob, no array,
+no nullable field — the repository stores fixed-shape values as explicit
 columns, and a serialized `EvaluationGateResult` in a text column would be a
 schema the database could not check and a migration could not see.
 
+The five `…_passed` columns are `INTEGER`, not `BOOLEAN`, matching
+`platform_behavior_snapshots.complete` on both backends: written through the
+existing `boolInt` and read through the existing `parseStoredBool`, which
+refuses anything but 0 or 1 rather than coercing a damaged 2 or −1 into the
+safer-looking answer.
+
 #### Restoring the gate result from these columns
 
-`EvaluationGateResult` has thirteen fields. Four need no column because the row
-already carries them; one identity column exists only because the row
-otherwise would not; the rest are stored or recomputed as follows.
+`EvaluationGateResult`'s observable components are five identity values, five
+checks of three fields each, and a verdict. Four identity values need no column
+because the promotion row already carries them; one exists only because it
+otherwise would not; every remaining component has a column of its own.
 
-| Gate-result field | Where it comes from |
+| Gate-result component | Where it comes from |
 |---|---|
-| `referenceRunID`, `candidateRunID` | the promotion's own two run columns |
-| `candidateCandidate` | `candidate_id` — the candidate run's candidate is the candidate being promoted |
-| `referenceCandidate` | `reference_candidate_id`, the one identity column the promotion would not otherwise need |
-| `environment` | `source_environment_ref` — both runs share it, which is how the source was inferred |
-| `referenceEvidence` Actual, Minimum | `gate_reference_evidence_actual`, `…_minimum` |
-| `candidateEvidence` Actual, Minimum | `gate_candidate_evidence_actual`, `…_minimum` |
-| `addedBehaviors` Actual / Maximum | `gate_added_behaviors_actual` / `max_added_behaviors` |
-| `blockDecisions` Actual / Maximum | `gate_block_decisions_actual` / `max_block_decisions` |
-| `criticalRiskObservations` Actual / Maximum | `gate_critical_risk_actual` / `max_critical_risk_observations` |
-| each check's `Passed` | recomputed by `minimumGate` / `maximumGate` from the two stored operands |
-| `verdict` | `gate_verdict`, **stored, never recomputed** |
-| `bound` | set by `restoreEvaluationGateResult` |
+| `ReferenceRunID`, `CandidateRunID` | the promotion's own two run columns |
+| `CandidateCandidateID` | `candidate_id` — the candidate run's candidate is the candidate being promoted |
+| `ReferenceCandidateID` | `reference_candidate_id`, the one identity column the promotion would not otherwise need |
+| `Environment` | `source_environment_ref` — both runs share it, which is how the source was inferred |
+| `ReferenceEvidence` Actual / Minimum / **Passed** | `gate_reference_evidence_actual` / `…_minimum` / `…_passed` |
+| `CandidateEvidence` Actual / Minimum / **Passed** | `gate_candidate_evidence_actual` / `…_minimum` / `…_passed` |
+| `AddedBehaviors` Actual / Maximum / **Passed** | `gate_added_behaviors_actual` / `max_added_behaviors` / `gate_added_behaviors_passed` |
+| `BlockDecisions` Actual / Maximum / **Passed** | `gate_block_decisions_actual` / `max_block_decisions` / `gate_block_decisions_passed` |
+| `CriticalRiskObservations` Actual / Maximum / **Passed** | `gate_critical_risk_actual` / `max_critical_risk_observations` / `gate_critical_risk_passed` |
+| `Verdict` | `gate_verdict` |
+| the internal bound marker | set by `restoreEvaluationGateResult` |
 
-Two choices in that table are the ones worth defending.
+**Nothing in that table is derived.** Every value is read from a column, and
+the three `Maximum` operands reuse the limit columns only because they are the
+same stored numbers — not because they are recomputed from them.
 
-**The two minimums are stored even though today they are always 1.** Today
-`EvaluateEvaluationGate` hardcodes a minimum of one record on each side. A
-build that changed it would change what a decision required, and a record that
-read the constant from the running binary would silently restate history under
-the new rule. The column costs a few bytes and removes the whole class.
+Two choices are worth defending.
 
-**`Passed` is recomputed; `verdict` is not.** A check's `Passed` is arithmetic
-over two operands the row stores — `actual >= minimum`, `actual <= maximum` —
-and recomputing it through the very helpers that produced it introduces no
-policy. The verdict *is* policy: it is the rule for combining five checks, and
-a build that added a sixth or changed the combination would derive a different
-verdict from identical stored checks. So the verdict is read from the column,
-verbatim, and restore does **not** cross-check it against the recomputed flags
-— a row whose checks would combine differently under today's rule is a record
-from an older rule, not a corrupt row.
+**The two minimums are stored even though today they are always 1.**
+`EvaluateEvaluationGate` currently hardcodes a minimum of one record on each
+side. A build that changed it would change what a decision required, and a
+record that read the constant from the running binary would silently restate
+history under the new rule.
+
+**The five `Passed` flags are stored rather than derived.** An earlier draft
+recomputed them from their own operands, on the grounds that
+`actual >= minimum` is arithmetic and not policy. That reasoning is wrong for
+a historical record. If an older build had a defect and wrote
+`actual = 1, minimum = 1, passed = false`, the promotion was recorded as
+`rejected` because that is what the platform decided — and a later build whose
+helper is correct would hand back `passed = true` beside the stored `fail`
+verdict, producing an object that is neither the historical result nor a
+current one. Five `INTEGER` columns remove the whole class.
 
 What restore *does* cross-check is `outcome` against `gate_verdict`, because
 that correspondence is task 066's own invariant, fixed by this task's
-constructor. A disagreement there means something wrote the row that this code
-did not, and it is `ErrStoreCorrupt`.
+constructor: `accepted` with a stored `fail`, or `rejected` with a stored
+`pass`, means something wrote the row that this code did not, and it is
+`ErrStoreCorrupt`. Every other kind of internal disagreement is history.
 
 **PostgreSQL** adds `COLLATE "C"` to `id`, `project_id`, `candidate_id`,
 `reference_run_id`, `candidate_run_id` and both environment refs, for the same
@@ -1161,6 +1207,7 @@ differential suite:
 | collection ordering | `id` byte-ascending |
 | collection scope | one project; another project's promotions never appear |
 | restart | every promotion still loads, byte-identical |
+| a stale environment revision at commit | `ErrStoreConflict` and no row, on both backends |
 
 ## Concurrency and Retry Semantics
 
@@ -1208,13 +1255,16 @@ afterwards.
 
 ### The correction
 
-`CreatePromotion` runs one transaction, on both backends:
+`CreatePromotion` runs one transaction. The **logical** sequence is the same on
+both backends; how each one obtains the serialization is not, and the
+specification keeps those apart deliberately — see
+[PostgreSQL](#postgresql) and [SQLite](#sqlite) below.
 
 ```text
 begin a write transaction
 
 for each of source and target, in (project_id, ref) byte order:
-    take the row lock and re-read the environment row
+    authoritatively re-read the environment row inside the transaction
     restore it through restoreEnvironment          → a current Environment
 
 require current source revision == promotion.Source().Revision
@@ -1229,6 +1279,20 @@ insert the promotion row
 
 commit
 ```
+
+**What both backends must guarantee** is exactly this and nothing about
+parallelism:
+
+1. the two environment states are read authoritatively inside the transaction
+   that inserts;
+2. both stored revisions must still match, or the write fails;
+3. `CanPromote` is re-asked on the current values;
+4. the insert and those checks are one atomic decision;
+5. no stale promotion can commit.
+
+**What neither backend is required to guarantee** is that unrelated promotions
+proceed in parallel. Writer concurrency is a per-backend property, stated in
+each backend's own section, and it is not part of the shared contract.
 
 Three notes on that sequence.
 
@@ -1289,18 +1353,41 @@ point in their sequence, so one waits and neither dies.
 
 **The lock is on two rows, not the project.** Unlike task 065's creation cap,
 which is a cross-row invariant over *all* of a project's environments and
-therefore locks the project row, this invariant names exactly two rows. A
-promotion in one project cannot block a promotion in another, and two
-promotions in one project over disjoint environment pairs do not block each
-other either.
+therefore locks the project row, this invariant names exactly two rows.
+
+On PostgreSQL — and **only** on PostgreSQL — that buys real writer
+concurrency, which its tests assert:
+
+- promotions in different projects proceed independently;
+- promotions in one project over disjoint environment pairs proceed
+  independently;
+- promotions sharing an environment serialize on that row and no other;
+- deterministic ordering means overlapping pairs never deadlock;
+- no project-wide lock, no table lock, no process-local mutex.
+
+These are PostgreSQL's guarantees, not task 066's. The shared contract above
+requires none of them.
 
 ### SQLite
 
-The same sequence inside one explicit write transaction, taken with write
-intent **before** anything is read — the `BEGIN IMMEDIATE` equivalent task 065
-established, never a reliance on `SetMaxOpenConns(1)`.
+The same logical sequence inside one explicit write transaction, entered with
+write intent **before** anything is read — the `BEGIN IMMEDIATE` equivalent
+task 065 established, never a reliance on `SetMaxOpenConns(1)`.
 
-Write intent is taken by touching each environment row in the same
+**SQLite has no row-level write locks, and this specification does not pretend
+otherwise.** A SQLite write transaction serializes against every other writer
+in the database, whatever rows they touch. Two promotions in unrelated projects
+may therefore wait for one another. That coarser contention is accepted for the
+local backend: SQLite is the zero-configuration default for a developer on a
+laptop and a team sharing a sandbox, and recording a promotion is a deliberate,
+infrequent act rather than a hot path.
+
+The task 066 contract for SQLite is therefore **atomic correctness, not writer
+parallelism**. The five shared guarantees hold exactly as they do on
+PostgreSQL; nothing about non-blocking behaviour is promised, and no test
+requires it.
+
+Write intent is entered by touching each environment row in the same
 `(project_id, ref)` byte order:
 
 ```sql
@@ -1308,14 +1395,19 @@ UPDATE platform_environments SET name = name
  WHERE project_id = ? AND ref = ?
 ```
 
-A no-op write that escalates the transaction to a writer and whose
-`RowsAffected` doubles as the existence check, exactly as `lockProjectForWrite`
-does for the creation cap — narrowed here from the project row to the two
-environment rows. It changes no column, so it advances no revision.
+That statement is **not** a row lock. It is how the transaction becomes a
+writer before it reads anything, and its `RowsAffected` doubles as the
+existence check — the same idiom `lockProjectForWrite` uses for the creation
+cap, narrowed from the project row to the two environments the decision names.
+It changes no column, so it advances no revision. The consistent ordering
+matters for readability and for matching PostgreSQL's sequence, not for
+deadlock avoidance, which SQLite's database-wide serialization already
+provides.
 
-SQLite serializes writers database-wide regardless, so the property that
-matters here is not lock granularity but atomicity: the revision validation and
-the insert are one write decision, with no reader-then-writer gap between them.
+What matters here is not granularity but the absence of a gap: the
+authoritative re-read, the revision comparison, the `CanPromote` re-ask and the
+insert are one write decision, with no window in which another writer could
+change an environment between the check and the insert.
 
 ### This is a cross-row invariant
 
@@ -1327,13 +1419,16 @@ the inserted row can express it. That is the same *class* of problem as task
 
 | | Task 065 creation cap | Task 066 promotion commit |
 |---|---|---|
-| The invariant | "this project holds fewer than 64 environments" | "these two environment rows are unchanged and still ordered" |
+| The invariant | "this project holds fewer than 64 environments" | "these two environment states are unchanged and still ordered" |
 | Rows involved | every environment of one project — unbounded, not nameable in advance | exactly two, both named by the promotion |
-| Remedy | lock the owning **project** row | lock the **two environment** rows, in ref order |
-| Cost | serializes creation within one project | serializes only promotions sharing an environment |
+| Remedy, both backends | one transaction that revalidates before it writes | one transaction that revalidates before it writes |
+| Mechanism, PostgreSQL | `SELECT … FOR UPDATE` on the owning **project** row | `SELECT … FOR UPDATE` on the **two environment** rows, in ref order |
+| Mechanism, SQLite | write intent on the project row, inside a write transaction | write intent on the two environment rows, inside a write transaction |
+| Writer concurrency, PostgreSQL | creation serializes within one project only | promotions serialize only when they share an environment |
+| Writer concurrency, SQLite | database-wide, as every SQLite write transaction is | database-wide, as every SQLite write transaction is |
 
-Neither serializes unrelated projects, and neither uses a process-local mutex,
-a counter table or a table lock.
+Neither uses a process-local mutex, a counter table or a table lock, on either
+backend.
 
 ### Races, and what each does
 
@@ -1344,9 +1439,9 @@ a counter table or a table lock.
 | source archived between the service read and the commit | The revision moved. `ErrStoreConflict` → `409 conflict`, **no row**. The stale accepted promotion of the example above cannot be written |
 | target re-ranked below the source before the commit | Same: revision moved, `ErrStoreConflict`, no row |
 | either environment renamed before the commit | Same. Any revision change invalidates the attempt, by the rule above |
-| promotions in two different projects | Disjoint locks. Neither blocks the other |
-| promotions in one project over disjoint environment pairs | Disjoint locks. Neither blocks the other |
-| overlapping environment pairs approached from opposite directions | Both lock in ref byte order, so one waits. No deadlock |
+| promotions in two different projects | **PostgreSQL:** disjoint locks, neither blocks the other. **SQLite:** they may serialize database-wide, and both still commit correctly |
+| promotions in one project over disjoint environment pairs | Same: independent on PostgreSQL, possibly serialized on SQLite, correct on both |
+| overlapping environment pairs approached from opposite directions | **PostgreSQL:** both lock in ref byte order, so one waits and neither deadlocks. **SQLite:** writers serialize anyway |
 | a concurrent `CreateEvaluationRun` or ingest | Cannot affect the decision: both referenced runs are already completed, and ingest is refused on a run that is not running |
 
 **No uniqueness constraint on `(candidate_id, source_ref, target_ref)`.** That
@@ -1477,6 +1572,10 @@ this promotion was rejected because the candidate exhibited five new behaviors
 against a limit of three, and it will still say that after any future change to
 how the gate is computed.
 
+Every field in `gate_result` — each `passed` flag included — is served from the
+stored row, never re-derived per request. A `GET` therefore returns exactly what
+the `POST` that created the record returned, for the life of the record.
+
 What a second request buys is a different thing — a **current re-evaluation**:
 
 ```text
@@ -1580,11 +1679,11 @@ something that will deterministically produce the same answer.
 
 The existing 256 KiB `MaxBytesReader`, `Content-Type` check and envelope
 version check apply unchanged. A promotion request has six scalar fields; a
-response has twenty-five, of which sixteen are the gate result's five fixed
-checks and its verdict. All bounded, all scalars, none repeated — the gate
-result is fixed-shape by construction, which is what makes snapshotting it
-compatible with the resource model. No route accumulates anything in memory
-beyond one bounded page.
+response carries the record's identity, two environment positions, the three
+limits, and the gate result's five fixed checks and verdict. All bounded, all
+scalars, none repeated — the gate result is fixed-shape by construction, which
+is what makes snapshotting it compatible with the resource model. No route
+accumulates anything in memory beyond one bounded page.
 
 ## CLI
 
@@ -1733,7 +1832,7 @@ already do.
 | A caller cannot name its own source environment | Inferred from the two runs; a `source_environment` field is a `400` |
 | A gate FAIL cannot become `accepted` through an adapter bug | The outcome has no input at all. `NewPromotion` derives it from the gate result's verdict, so an `accepted` promotion carrying a FAIL result is unconstructible rather than merely discouraged, and `restorePromotion` refuses such a row as corrupt |
 | A past decision cannot be silently restated under new gate semantics | The decision-time `EvaluationGateResult` is snapshotted and its verdict is read back verbatim. A later recomputation is a separate, explicitly requested answer that never overwrites the record |
-| A decision cannot be committed against stale environment configuration | `CreatePromotion` revalidates both environment revisions and re-asks `CanPromote` atomically with the insert, under row locks taken in a deterministic order |
+| A decision cannot be committed against stale environment configuration | `CreatePromotion` revalidates both environment revisions and re-asks `CanPromote` atomically with the insert, inside the transaction that writes the row — with `FOR UPDATE` row locks on PostgreSQL and write-transaction serialization on SQLite |
 | Ordering is decided server-side | `CanPromote`, called in the control plane and again in the domain constructor. No adapter compares ranks; a test asserts it |
 | Cross-agent evidence cannot promote another agent's candidate | The same-agent invariant, checked before any evidence is read |
 | A historical record cannot be silently rewritten | No update method at any layer, no `UPDATE` statement, no `PUT`/`PATCH` route, no CLI verb. A corrupted row fails closed rather than being adopted |
@@ -1802,19 +1901,31 @@ new ones automatically.
 
 Restore:
 
-- `restoreEvaluationGateResult` round-trips a result **exactly**: all five
-  checks, both minimums, all three maximums, the five `Passed` flags and the
-  verdict.
-- The restored result is `bound`, so it is usable wherever a live one is.
-- **The verdict is taken verbatim, not recomputed.** A row whose stored verdict
-  is PASS while its stored checks would combine to FAIL under today's rule
-  restores **successfully**, carrying the stored verdict — the explicit test
-  for the historical-evidence contract, and the one that fails if somebody
-  "helpfully" re-derives the verdict on read.
+- `restoreEvaluationGateResult` round-trips a result **field for field**: all
+  five identity values, every `Actual`, both `Minimum`s, all three `Maximum`s,
+  **all five `Passed` flags**, and the verdict. A table-driven comparison of
+  every accessor, not a spot check.
+- The restored result is bound, so it is usable wherever a live one is.
+- **Nothing is re-derived.** A scan asserts `restoreEvaluationGateResult` calls
+  neither `minimumGate`, `maximumGate` nor `EvaluateEvaluationGate`, and
+  contains no comparison of two counts — the structural form of "the restore
+  path is not an evaluator".
+- **A historically inconsistent check reads back exactly as stored.**
+  `actual = 1, minimum = 1, passed = false` — impossible under today's helpers
+  — restores with `passed` still false. This is the test that fails the moment
+  somebody reintroduces recompute-on-read, and the reason the five columns
+  exist.
+- **A stored flag set that today's combination rule would read differently does
+  not change on read.** Five passing flags beside a stored `fail` verdict
+  restores as five passing flags and a `fail` verdict.
 - `restorePromotion` round-trips a stored row, and fails closed with
-  `ErrStoreCorrupt` on: an unknown outcome, an unknown verdict, an unparseable
-  timestamp, a rank above 9999, an unparseable `uint64`, **inverted ranks**, and
-  an **outcome that disagrees with the stored verdict**.
+  `ErrStoreCorrupt` on values it cannot interpret: an unknown outcome, an
+  unknown verdict, a `passed` column that is neither 0 nor 1, an unparseable
+  timestamp, a rank above 9999, an unparseable `uint64`, **inverted ranks**,
+  and an **outcome that disagrees with the stored verdict**.
+- And **does not** fail on values it can interpret but would not have written:
+  the two historical-inconsistency cases above are explicitly asserted to
+  succeed, so a later "tightening" that turns them into corruption fails here.
 
 ### Service
 
@@ -1880,11 +1991,15 @@ identically, plus the differential suite:
 
 - create then read, with nanosecond `decided_at`, `MaxUint64` limits and gate
   counts, rank 0 and rank 9999;
-- **every gate-result field round-trips**: both actuals and both minimums of
-  the two minimum checks, all three maximum checks' actuals and maximums, all
-  five `Passed` flags, and the verdict — a field-by-field comparison rather
-  than a spot check, so a column omitted from either backend's `INSERT` or
-  `SELECT` fails here;
+- **every gate-result component round-trips**, on both backends: the five
+  identity values, both minimum checks' actuals and minimums, all three maximum
+  checks' actuals and maximums, **all five `Passed` flags**, and the verdict —
+  a field-by-field comparison rather than a spot check, so a column omitted
+  from either backend's `INSERT` or `SELECT` fails here;
+- the differential suite compares the **whole** `EvaluationGateResult` between
+  SQLite and PostgreSQL for the same logical promotion, not a summary of it;
+- a `passed` column holding anything but 0 or 1 is `ErrStoreCorrupt` on both
+  backends, through the existing `parseStoredBool`;
 - an `accepted` row stores verdict `pass` and a `rejected` row stores `fail`;
 - duplicate identifier → `ErrStoreAlreadyExists`;
 - missing project or candidate → `ErrStoreNotFound`;
@@ -1927,13 +2042,29 @@ promotion, changes an environment, and only then calls `CreatePromotion`:
   the changed configuration produces a promotion carrying the *new* revisions,
   proving the conflict is a retryable race rather than a dead end.
 
-Concurrency, on both backends:
+Concurrency — the shared contract, on both backends:
+
+These assert **correctness under concurrency**, never parallelism. Nothing here
+requires a writer to proceed without waiting, because SQLite serializes writers
+database-wide and that is an accepted property of the local backend rather than
+a defect.
 
 - N concurrent creates of one identifier: exactly one succeeds, the rest are
   `ErrStoreAlreadyExists`, and the stored row equals the winner's.
 - Concurrent creates of different identifiers over the **same unchanged**
-  environment pair: **all succeed**. They serialize on the two locks and none
-  is refused — the test that fails if somebody adds tuple uniqueness.
+  environment pair: **all eventually succeed**. Whether they wait for each
+  other is a backend property; that none is refused is the contract, and it is
+  the test that fails if somebody adds tuple uniqueness.
+- Every staleness case above, run with a concurrent mutation rather than a
+  sequential one: the promotion either commits against the state it was decided
+  on or fails `ErrStoreConflict`, and never commits against a state it did not
+  read.
+- No deadlock and no corruption under sustained concurrent load on either
+  backend.
+
+PostgreSQL specifically — writer concurrency, which is PostgreSQL's guarantee
+and not task 066's:
+
 - Concurrent creates in **different projects** do not block each other, proved
   by the occupancy-hook pattern task 065 used rather than by timing: a hook
   inside one promotion's transaction records whether another is inside its own
@@ -1943,9 +2074,6 @@ Concurrency, on both backends:
 - Concurrent creates over **overlapping environment pairs** *do* exclude each
   other, by the same hook — the positive proof that the lock is real rather
   than merely uncontended.
-
-PostgreSQL specifically:
-
 - **Deterministic lock order prevents deadlock.** Two promotions whose
   environment pairs overlap in opposite directions — `a → b` and `b → c`, with
   refs chosen so a naive source-first order would acquire them in opposite
@@ -1957,11 +2085,27 @@ PostgreSQL specifically:
   `platform_projects` and never table-wide — asserted by the same statement
   inspection, so a later change to a project-wide lock fails here.
 
-SQLite specifically:
+SQLite specifically — correctness under a real connection pool, and **no
+non-blocking assertion anywhere**:
 
+- With `SetMaxOpenConns` raised above 1, so two writers genuinely contend:
+  every staleness case still holds, and no promotion commits against a state it
+  did not read.
 - The transaction takes write intent **before** reading, proved the way task
-  065 proves it: with `SetMaxOpenConns` raised above 1, so a read-then-write
-  transaction could interleave, the staleness cases above still hold.
+  065 proves it — under a multi-connection pool a read-then-write transaction
+  would interleave, and the invariant would break; it does not.
+- A second writer **may block**, and that is allowed. What the test asserts is
+  what happens once it proceeds: it observes the authoritative current
+  revisions, and either commits or reports `ErrStoreConflict` accordingly.
+- Two distinct valid requests over an unchanged environment pair both
+  eventually succeed.
+- No deadlock, no `SQLITE_BUSY` surfacing as corruption, and no partially
+  written promotion.
+
+Explicitly **not** asserted on SQLite: that promotions in different projects
+proceed in parallel, that disjoint environment pairs proceed in parallel, or
+any timing property at all. Those tests live in the PostgreSQL section because
+they are PostgreSQL's guarantees.
 
 ### Migration
 
@@ -1985,8 +2129,10 @@ On both backends:
   outcome **and the decision-time `gate_result`**, with all five checks and the
   verdict.
 - `GET /v1/promotions/{id}` returns the same `gate_result` as the `POST` that
-  created it, byte for byte — the historical evidence is served from the
-  record, not re-derived per request.
+  created it, byte for byte — every `passed` flag included, served from the
+  record and not re-derived per request.
+- A promotion whose stored result holds a historically inconsistent check is
+  served with that check exactly as stored, over both `POST` and `GET`.
 - The `gate_result` field names match the `gate` object
   `POST /v1/evaluations/compare` already publishes, asserted by decoding both
   into the same DTO.
@@ -2123,6 +2269,13 @@ with the alternatives that were rejected:
    answers what today's build decides, and a bug fix in the gate or scorecard
    may legitimately answer it differently from the same immutable evidence. A
    divergence is not corruption, and nothing rewrites the record.
+
+   The snapshot is **field for field, every `Passed` flag included**. Deriving
+   even the flags from their own stored operands was considered and rejected:
+   a corrected helper would then hand back new flags beside an old verdict,
+   producing a value that is neither the historical result nor a current one.
+   Only what a row cannot express — an unreadable value — is corruption; a row
+   that merely disagrees with today's arithmetic is history.
 7. **The outcome is derived from the stored verdict**, never supplied. An
    `accepted` promotion carrying a FAIL result is unconstructible, and such a
    row is corruption on read.
@@ -2131,16 +2284,25 @@ with the alternatives that were rejected:
    re-derived nowhere.
 9. **A promotion commits only against the environment state it was decided
    against.** The invariant spans three rows, so `CreatePromotion` is a
-   transaction that locks the two environment rows in `(project_id, ref)` byte
-   order, revalidates both revisions, re-asks `CanPromote`, and inserts —
-   `ErrStoreConflict` if anything moved. Why two-row locking rather than task
-   065's project lock, why deterministic ordering, and why any revision change
-   invalidates the attempt including a rename.
-10. **Stage skipping is permitted**, and the five questions an adjacency rule
+   transaction that authoritatively re-reads both environments, revalidates
+   both revisions, re-asks `CanPromote`, and inserts — `ErrStoreConflict` if
+   anything moved. Why any revision change invalidates the attempt, a rename
+   included.
+
+10. **Atomic correctness is the shared contract; writer concurrency is a
+    per-backend property.** PostgreSQL takes `FOR UPDATE` row locks on the two
+    environment rows in `(project_id, ref)` byte order, which buys independent
+    progress for disjoint pairs and different projects and avoids deadlock on
+    overlapping ones. SQLite enters an explicit write transaction and
+    serializes writers database-wide, which is accepted for the local backend.
+    The ADR must record this as a **difference in mechanics**, not claim
+    identical locking, and must say that no task 066 test asserts non-blocking
+    behaviour on SQLite.
+11. **Stage skipping is permitted**, and the five questions an adjacency rule
     would have to answer with no consumer to answer them for.
-11. **No human approval or authorization** in this task, and why a fake actor
+12. **No human approval or authorization** in this task, and why a fake actor
     label is worse than none.
-12. **No platform concept enters the engine**, unchanged.
+13. **No platform concept enters the engine**, unchanged.
 
 ## Acceptance Criteria
 
@@ -2163,15 +2325,19 @@ Every question this task owns, answered:
 | Is gate PASS necessary? | Yes, for `accepted` |
 | Is it sufficient? | No — ten structural conditions precede it |
 | Are gate limits persisted? | Yes, all three |
-| Is the gate result persisted? | **Yes** — the decision-time result, in eight bounded columns, verdict included |
+| Is the gate result persisted? | **Yes** — the decision-time result, field for field, in thirteen bounded columns: seven counts, five `passed` flags and the verdict, with the three maximums reusing the limit columns |
+| Is any gate field re-derived on read? | **No.** Every `Passed` flag and the verdict are read from their own column. `restoreEvaluationGateResult` is not an evaluator |
 | Is a later recomputation guaranteed to match it? | **No**, and it is not required to. A divergence is a corrected implementation, not a corrupt record |
+| Is a stored check that disagrees with today's arithmetic corruption? | **No.** `actual = 1, minimum = 1, passed = false` reads back exactly as stored — it is what an older build recorded |
+| What *is* corruption, then? | A value this code could not have written or cannot interpret: an unknown outcome or verdict, a `passed` column that is not 0 or 1, an unparseable count or timestamp, inverted ranks, or an outcome disagreeing with the stored verdict |
 | Is the scorecard persisted? | **No.** A secondary derived view the decision did not consume; recomputable from the immutable runs |
 | What is snapshotted? | The gate result, the three limits, source and target `rank` and `revision`, the outcome and the timestamp |
 | Where does the outcome come from? | Derived by `NewPromotion` from the gate result's verdict. There is no outcome input at any layer |
 | What if environments are re-ranked later? | Nothing. The record is unchanged, and the stored revision makes the change detectable |
 | What if an environment changes *before the commit*? | `CreatePromotion` revalidates both revisions and re-asks `CanPromote` inside the transaction that inserts. Anything moved → `ErrStoreConflict` → `409`, no row, retryable |
 | Does any revision change invalidate the attempt? | **Yes**, a rename included. The revision is the binding, and deciding which fields "matter" would put a configuration comparison outside `CanPromote` |
-| Does promotion take a lock? | Yes — the two environment rows, in `(project_id, ref)` byte order. Never the project, never a table, never a process mutex |
+| Does promotion take a lock? | It revalidates inside the writing transaction on both backends. **PostgreSQL:** `FOR UPDATE` on the two environment rows in `(project_id, ref)` byte order, so unrelated promotions proceed in parallel. **SQLite:** an explicit write transaction, which serializes writers database-wide — accepted for the local backend. Never a project lock, a table lock or a process mutex |
+| Do unrelated promotions run in parallel? | **On PostgreSQL, yes** — different projects and disjoint environment pairs do not block each other. **On SQLite, not necessarily**, and no test requires it. Writer concurrency is a backend property; atomic correctness is the shared contract |
 | Can a Promotion be edited or deleted? | **No**, at any layer. There is no mechanism |
 | How are retries handled? | Duplicate id → `409 already_exists`; the client reads it back with `GET` |
 | Which store capability owns it? | `ControlStore`, three methods, no update, no delete |
@@ -2199,15 +2365,19 @@ decision this document left open.
    `EnvironmentPosition`, `PromotionDecision`, `NewPromotion`,
    `restorePromotion`, `MaxPromotionPage`, the two sentinels.
 3. `platform/gate.go`: `restoreEvaluationGateResult`, beside the type it
-   rebuilds. Evaluates nothing; takes the stored verdict verbatim.
+   rebuilds. Evaluates nothing: every check's operands **and its `Passed`
+   flag**, and the verdict, are taken from storage verbatim.
 4. `platform/promotion_store.go`: the shared row, page and commit-time
    revalidation logic both backends use, including the `CanPromote` re-ask.
 5. `ControlStore` + three methods, with compile-time assertions on both
    backends.
 6. SQLite: table, index, `SchemaVersion` 4, `migrateV3ToV4`, the three methods,
-   and the write-intent transaction that revalidates before inserting.
-7. PostgreSQL: the same, with `COLLATE "C"`, `migratePostgresV3ToV4`, and the
-   two ordered `SELECT … FOR UPDATE` statements.
+   and the explicit write transaction that revalidates before inserting —
+   correctness, not writer parallelism.
+7. PostgreSQL: the same logical sequence, with `COLLATE "C"`,
+   `migratePostgresV3ToV4`, and the two ordered `SELECT … FOR UPDATE`
+   statements that additionally buy independent progress for unrelated
+   promotions.
 8. `ControlPlane.Promote`, `Promotion`, `ProjectPromotions`, in the
    orchestration order above.
 9. `httpapi`: three routes, DTOs reusing `gateResultDTO`, `classify` cases.
