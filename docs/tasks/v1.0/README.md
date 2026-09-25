@@ -21,19 +21,28 @@ Tasks for the `v1.0` milestone.
 | [063 — Minimal Web Control Plane](063-minimal-web-control-plane.md) | Specified and implemented |
 | [064 — PostgreSQL Platform Backend](064-postgresql-platform-backend.md) | Specified and implemented |
 | [065 — Environment Model](065-environment-model.md) | Specified and implemented |
-| 066–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
+| [066 — Promotion Workflow](066-promotion-workflow.md) | Specified. Not implemented |
+| 067–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
 | [073 — OTel Collector Evaluation Ingest](073-otel-collector-evaluation-ingest.md) | Specified and implemented |
 
-The numbers 066–072 are the approved plan, not placeholders — the sequence,
+The numbers 067–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
 is the specification for any of them.
 
 Task 065 is implemented. A project owns environments, identified by the
 `EnvironmentRef` a run already records; a run may only name one its own
 project owns and has not archived; `CanPromote` is the single ordering
-primitive task 066 will ask and it authorizes nothing; and schema 3 backfills
+primitive task 066 asks and it authorizes nothing; and schema 3 backfills
 every environment a schema-2 database's runs referenced, whatever the creation
 cap now allows.
+
+Task 066 is **specified and not implemented**. It is the first layer allowed
+to decide that a candidate may advance between environments, and the last one
+that could be mistaken for deploying something — so the specification settles
+that first: a promotion is a durable record of a *decision*, it models no
+deployment and no candidate residence, both verdicts of the gate are recorded
+while a malformed request is not, and the evidence it keeps is exactly what
+cannot be recomputed from the immutable runs it names.
 
 Task 073 sits **after** that reserved block rather than inside it. It was not
 in the approved sequence: it closes a gap the sequence did not anticipate — the

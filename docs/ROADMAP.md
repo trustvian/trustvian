@@ -341,7 +341,12 @@ environments, a run may only name one its project owns and has not archived,
 and `CanPromote` gives a promotion workflow one deterministic ordering
 question to ask — while authorizing nothing.
 
-Still planned: everything from the promotion workflow (066) onward. The platform
+The promotion workflow (066) is **specified and not implemented** — see
+[the task](tasks/v1.0/066-promotion-workflow.md). It settles what a promotion
+is before anything is built: a durable record of a platform *decision*, never a
+deployment and never a claim about where a candidate now runs.
+
+Still planned: everything from 066 onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
 behavioral snapshots, produce fixed-shape comparative scorecards, apply
 deterministic evidence-backed hard gates to them, persist local control and
@@ -602,8 +607,9 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**Partly implemented:** tasks 049–065 are done; 066–072 remain PLANNED. 073,
-outside that sequence, is also done — see the table below.
+**Partly implemented:** tasks 049–065 are done; 066 is specified and not
+implemented; 067–072 remain PLANNED. 073, outside that sequence, is also
+done — see the table below.
 
 **Architecture and core boundary** — the only tasks that touch the engine:
 
@@ -646,7 +652,7 @@ lost.
 |---|---|
 | 064 | PostgreSQL platform backend |
 | 065 | Environment model |
-| 066 | Promotion workflow |
+| 066 | Promotion workflow — [specified](tasks/v1.0/066-promotion-workflow.md), not implemented |
 
 **Closing an unplanned gap:**
 
