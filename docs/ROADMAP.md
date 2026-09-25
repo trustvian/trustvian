@@ -350,10 +350,12 @@ The zero-input live behavior WebUI (074) is **specified and not implemented**
 — see [the task](tasks/v1.0/074-zero-input-live-behavior-webui.md). Running an
 agent locally and opening the browser currently shows a form asking for an
 identifier the developer does not have; the milestone makes the WebUI discover
-active work by itself, render it as a bounded live behavior graph, and browse
-the control-plane hierarchy without anything being typed. Like 073 it sits
-outside the reserved 049–072 block, because it closes a gap found by using the
-product end to end rather than one the sequence anticipated.
+active work by itself, render it as a bounded run-scoped behavior graph, and
+browse the control-plane hierarchy without anything being typed. Like 073 it
+sits outside the reserved 049–072 block, because it closes a gap found by using
+the product end to end rather than one the sequence anticipated. It shares the
+schema chain with 066 — 066 owns 3 → 4 and 074 owns 4 → 5 — so 074's
+implementation follows 066's.
 
 Still planned: everything from 066 onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded

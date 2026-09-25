@@ -5,6 +5,8 @@ Milestone: `v1.0`
 Depends on: [059](059-realtime-infrastructure.md),
 [063](063-minimal-web-control-plane.md),
 [065](065-environment-model.md),
+[066](066-promotion-workflow.md) — implementation ordering only, for the
+schema-version chain,
 [073](073-otel-collector-evaluation-ingest.md)
 Blocks: [072](README.md) — the OSS `v1.0` release gate
 
@@ -115,13 +117,21 @@ add it. Adding a field to `StableFeatures` changes behavioral identity, which
 is a core change this task is forbidden to make and would be wrong to make for
 a visualization. The graph renders the six dimensions it actually has.
 
-**There is no Python/Ollama reference demo in the repository.** `make demo`
-runs `trustvian analyze` against a bundled JSON fixture; it starts no agent and
-produces no live telemetry. No `.py` file exists anywhere in the tree. The
-acceptance journey below is therefore written against what exists — `make
-local` plus the task 073 Collector processor — and the reference demo is
-listed as a **deliverable of this task's implementation**, not as an existing
-thing to point at. See [Acceptance criteria](#acceptance-criteria) item 13.
+**There is no Python/Ollama demo inside *this* repository, and the project's
+reference demo lives elsewhere.** `make demo` here runs `trustvian analyze`
+against a bundled JSON fixture; it starts no agent and produces no live
+telemetry, and no `.py` file exists anywhere in this tree.
+
+The project-level reference local-agent workflow is the companion repository
+**`trustvian/trustvian-python-agent-demo`**: a Python agent driven by Ollama
+`gemma3:4b`, instrumented with runtime OpenTelemetry, feeding the Trustvian
+Collector and the evaluation ingest path, exercising CRM, knowledge, mail and
+export targets across a reference run and a candidate run.
+
+That demo is this task's integration target, not a thing to duplicate. Its
+README currently instructs the user to open the WebUI and type `run-reference`
+and `run-candidate` into the Open-by-ID form — which is exactly the friction
+this milestone removes. See [The companion demo](#the-companion-demo).
 
 ## User journey
 
@@ -130,7 +140,7 @@ field:
 
 ```text
 Terminal A                          Terminal B
-$ make local                        $ <run the local agent>
+$ make local                        $ <run the companion demo agent>
   Web: http://127.0.0.1:<port>/       telemetry flows through the
                                       Collector into /v1
 
@@ -139,18 +149,21 @@ Browser  →  http://127.0.0.1:<port>/
   ● Trustvian connected
   ● Telemetry flowing
 
-  support-agent appears automatically
-        ↓  model call pulses          Agent ──POST──▶ ollama.localhost
-        ↓  CRM call pulses            Agent ──GET───▶ crm.localhost
-        ↓  knowledge call pulses      Agent ──GET───▶ knowledge.localhost
-        ↓  export appears as NEW      Agent ──POST──▶ export.localhost  NEW
-        ↓  mail call pulses           Agent ──POST──▶ mail.localhost
+  support-agent appears automatically, as a card
+        ↓  the card is selected, and its graph draws
+        ↓  each call pulses along its edge as the frame arrives
+        ↓  a fingerprint the reference never showed gains NEW
         ↓  run completes
         ↓  the behavioral summary stays reachable from authoritative state
 ```
 
-At no point does the developer type `support-demo`, `support-agent` or
-`run-candidate` into the page.
+The pulses arrive in whatever order the agent actually worked in. The demo is
+model-driven, so that order is the model's choice and differs between runs —
+the graph animates what arrived, and this task validates the observed behavior
+*set*, never a sequence. See [The companion demo](#the-companion-demo).
+
+At no point does the developer type `support-demo`, `support-agent`,
+`run-reference` or `run-candidate` into the page.
 
 ## Scope
 
@@ -319,7 +332,7 @@ a contract that drifts:
 | Scope | the parent named in the path; `projects` is global |
 | Ordering | `id`, **byte-ascending**, `COLLATE "C"` on PostgreSQL |
 | Cursor | `after`, exclusive, an identifier validated by the same `validateID` rules |
-| Limit | `1..64`, defaulting to 64; a larger value is `400 invalid_request`, never a silent clamp |
+| Limit | `1..64` at the store edge and at the route; the HTTP default is 64, and a larger value is `400 invalid_request`, never a silent clamp. The store accepts nothing above 64 — task 066 corrected exactly this, and a transport's lookahead must not widen a public contract |
 | Continuation | `next_after` present exactly when the page filled its limit and another row follows |
 | How that is decided | a short page is the end; a full page is resolved by a **second bounded call** with `limit=1` after the page's last id — never by fetching `limit+1` |
 | Concurrent creation | a row created during a traversal appears if and only if its id sorts after the caller's position. Nothing already returned moves, because `id` is immutable |
@@ -367,15 +380,87 @@ CREATE INDEX platform_runs_by_candidate     ON platform_evaluation_runs (candida
 scan along its primary key.
 
 Adding an index is an additive schema change that existing databases must
-receive, so **`SchemaVersion` advances by one step**, with a migration that
-creates the three indexes and stamps the new version. This specification
-deliberately does not pin the integer: task 066 also moves the counter, and
-whichever lands second takes the next number. What is pinned is the migration's
-*content* — three indexes, no table, no column, no backfill, no data change.
+receive, so a migration is required.
 
-`ControlStore` gains four list methods, each mirroring
-`ProjectEnvironments`'s signature and error contract, with compile-time
-assertions on both backends. No update, no delete, no generic query capability.
+**`SchemaVersion` moves 4 → 5**, and this is pinned rather than left to merge
+order. [Task 066](066-promotion-workflow.md) is a merged specification that
+pins 3 → 4 for the promotion table, the roadmap sequences 066 before 074, and
+two merged specifications must not both claim "the next number" and resolve it
+by whichever implementation lands first.
+
+The migration's content:
+
+```text
+CREATE INDEX platform_agents_by_project
+CREATE INDEX platform_candidates_by_agent
+CREATE INDEX platform_runs_by_candidate
+stamp schema version 5
+```
+
+No table, no column, no backfill, no data rewrite, and no synthetic entity.
+
+**Implementation ordering is therefore a real constraint**, and the only one
+this task places on 066: task 074's implementation must not land before task
+066's, because they share one migration chain. If there is ever a compelling
+reason to build 074 first, that is a coordinated amendment to task 066's
+merged specification — renumbering both — not a decision for whichever pull
+request is ready first.
+
+Nothing else about 074 depends on 066. The promotion model, its routes and its
+store methods are irrelevant here; only the counter is shared.
+
+### Capability placement: two stores, not one
+
+The four collections do **not** all belong to one capability, and this task
+must not collapse the split to make browsing convenient.
+
+```go
+// ControlStore — the durable control hierarchy it already owns.
+Projects(ctx context.Context, after ProjectID, limit int) ([]Project, error)
+
+ProjectAgents(
+    ctx context.Context, projectID ProjectID, after AgentID, limit int,
+) ([]Agent, error)
+
+AgentCandidates(
+    ctx context.Context, agentID AgentID, after CandidateID, limit int,
+) ([]Candidate, error)
+```
+
+```go
+// EvaluationStore — runs are evaluation state, not control state.
+CandidateEvaluationRuns(
+    ctx context.Context, candidateID CandidateID, after EvaluationRunID, limit int,
+) ([]EvaluationRun, error)
+```
+
+`ControlStore` already owns `Project`, `Agent`, `Candidate`, `Environment` and
+(from task 066) `Promotion`. `EvaluationStore` already owns `EvaluationRun`
+and its evidence. Task 057 split them because "the two have different
+lifetimes, write patterns and consumers … a later backend may reasonably
+implement one and not the other", and a list method does not change which
+capability an entity belongs to. Putting `CandidateEvaluationRuns` on
+`ControlStore` would mean a backend implementing only the control capability
+would have to serve evaluation runs it does not store.
+
+**No new interface.** No `HierarchyStore`, `DiscoveryStore`, `ListStore`,
+`Database` or generic query capability. The existing model is sufficient, and
+a fifth interface with one implementation pair and one consumer is the
+abstraction CLAUDE.md says not to build ahead of need.
+
+**No update and no delete** on any of the four. They are reads.
+
+Each mirrors `ProjectEnvironments`'s signature and error contract exactly:
+`limit` outside `1..MaxListPage` is `ErrInvalidID`, a missing parent is
+`ErrStoreNotFound`, an existing parent with no children is an empty slice.
+Compile-time assertions for both backends, as task 064 established.
+
+**The control plane composes both.** `ControlPlane` already holds a
+`ControlStore` and an `EvaluationStore`, so it exposes one coherent browsing
+surface — `Projects`, `ProjectAgents`, `AgentCandidates`,
+`CandidateEvaluationRuns` — and the HTTP adapter never learns that the last
+one came from a different capability. The adapter should not care; the service
+boundary must.
 
 ### Compatibility
 
@@ -420,9 +505,69 @@ live
 **The one variation this view needs**, stated explicitly so it cannot be
 mistaken for a weakening: the existing single-run view resyncs by reading *one*
 run's authoritative state. The Live view has no single run, so its snapshot is
-the **first bounded page** of the project hierarchy — and it is a snapshot of
-*what exists*, not of *what is active*. Activity is realtime's answer, and the
-page must say which is which.
+the **first bounded page of `GET /v1/projects` and nothing else** — a snapshot
+of *what exists at the root*, not of *what is active*. Activity is realtime's
+answer, and the page must say which is which.
+
+#### A bounded route is not a bounded workflow
+
+Each route caps a page at 64. That alone does not bound discovery, and a naïve
+hierarchy walk is how a bounded API becomes an unbounded client:
+
+```text
+64 projects × 64 agents × 64 candidates × 64 runs  =  16,777,216 rows
+```
+
+fetched across a quarter of a million requests, during which the resync buffer
+holds **64** frames. Under live traffic that buffer overflows, the client
+abandons and resynchronizes, and the crawl starts again — a resync loop that
+gets worse the larger the database is, which is precisely backwards.
+
+So the workflow is bounded explicitly, not incidentally.
+
+#### The startup budget
+
+```text
+automatic project pages at startup      1
+automatic child traversal               0
+automatic continuation following        0
+```
+
+One request. Not one per project, not one per level, and not one per
+continuation token. The same budget applies to **every** reconnect, so a
+flapping connection cannot amplify into a crawl.
+
+Realtime remains the answer to *what is active now*: a frame creates or
+updates a scope card from its own `RealtimeScope`, with no API read. A page
+can therefore be fully useful for the journey this task exists for — watch the
+agent that is running — having issued exactly one collection request.
+
+#### Lazy, user-triggered descent
+
+Children are fetched only when a person asks for them, one bounded page at a
+time:
+
+```text
+project selected or expanded   → one page of that project's agents
+agent selected or expanded     → one page of that agent's candidates
+candidate selected or expanded → one page of that candidate's runs
+```
+
+A continuation is never followed automatically. `next_after` renders as an
+explicit affordance — *More* — and costs one request when pressed. Selecting a
+scope may read that entity's existing by-ID route for authoritative detail;
+that is one bounded read, not a walk.
+
+**This is not polling.** There is no timer, no refresh loop and no interval.
+Every collection request is caused by a person or by the single startup
+snapshot.
+
+#### Saturation at every level
+
+If the root page carries `next_after`, the view says **more projects exist**.
+The same at every level. The page never implies that one page is the whole
+platform, and a bounded root snapshot is never described as a complete
+hierarchy.
 
 Nothing else changes: `PENDING_MAX` still bounds frames buffered during the
 fetch, overflow still abandons the stream and resynchronizes rather than
@@ -472,16 +617,80 @@ support-agent├───────────────▶ crm.localhost
              └───────────────▶ mail.localhost
 ```
 
-### Edge identity
+### The graph is scoped to one selected run
 
-An edge is identified by the observation's **`fingerprint_id`**, which the
-platform already computes and already publishes. The browser does not derive
-identity from the descriptor fields, because two behaviors that render
-identically may be distinct fingerprints and the server is the only thing
-entitled to say so.
+`fingerprint_id` is **not globally unique**, and a Live view over an unfiltered
+stream must not treat it as if it were.
 
-A repeat observation of a known fingerprint updates that edge. A first
-observation of a fingerprint creates one.
+A fingerprint identifies the behavioral shape derived from `StableFeatures`.
+It deliberately carries no `ProjectID`, `AgentID`, `CandidateID`,
+`EvaluationRunID` or `ActorID` — that is the whole point of behavioral
+identity, and task 051 was explicit that run and candidate metadata must never
+become fingerprint dimensions. So two unrelated agents doing the same thing
+produce the same fingerprint:
+
+```text
+project-a / agent-a / run-1    POST → ollama.localhost    fingerprint abc
+project-b / agent-b / run-2    POST → ollama.localhost    fingerprint abc
+```
+
+Those are one behavior and **two observations**, and they may legitimately
+disagree about `new_behavior`, `decision`, `risk_level`, `trust_score`,
+`anomaly_score` and `anomaly_confidence`, because every one of those is
+contextual to the run that produced it. Merging them into one edge would let
+run A's `new_behavior: true` overwrite run B's state and would report one
+agent's decision as another's.
+
+**The model, decided here rather than left to implementation: the graph renders
+exactly one selected run.**
+
+```text
+unfiltered stream
+        ↓
+bounded active scope cards          ← every active run, from RealtimeScope
+        ↓
+one selected card
+        ↓
+one run-scoped graph                ← only that run's observations
+```
+
+Within a run-scoped graph, `fingerprint_id` **is** a sufficient edge key,
+because the run is already fixed. An observation whose scope is not the
+selected run updates its card and is not drawn.
+
+Three reasons for this over a combined multi-run graph:
+
+- it is readable — one agent's topology, not several overlaid;
+- it bounds the topology naturally, by the run's own behavior count rather
+  than by an arbitrary visual ceiling;
+- it never conflates evidence from two evaluations, which is the same mistake
+  at the UI layer that task 065 closed at the comparison layer.
+
+A developer still sees every active agent and run simultaneously, as cards.
+Selecting one changes which graph is drawn; it changes nothing about which
+scopes are discovered.
+
+**If a future task wants a combined graph**, every entity in it must be keyed
+by a conceptual tuple — `(run_id, fingerprint_id)` for an edge,
+`(project_id, agent_id)` for a source node — held as structured keys and never
+as concatenated strings that could collide across a delimiter. That is stated
+so the constraint survives if the model is revisited; this task does not build
+it.
+
+### Scope cards
+
+Each card is created and updated from `RealtimeScope` alone, with no `/v1`
+read per event, and retains the full scope so two cards can never be confused:
+
+```text
+ProjectID · AgentID · CandidateID · RunID · EnvironmentRef · BehavioralProfileRef
+```
+
+Two runs of one candidate, two candidates of one agent, and the same
+environment ref under two projects are each distinct cards. A card shows last
+activity and a count of behaviors *seen live*, labelled as such — it is not a
+durable count, and an authoritative one comes from `/v1` when the scope is
+selected.
 
 ### Animation is evidence, not decoration
 
@@ -521,6 +730,7 @@ Only the first is new. The second and third exist and are reused unchanged.
 | graph edges | **128** | Two per target on average; the ceiling a hand-laid-out SVG stays legible at |
 | visible observation rows | **100** | The existing `DISPLAY_MAX`, reused rather than re-chosen |
 | frames buffered during resync | **64** | The existing `PENDING_MAX`, which matches the server's per-subscriber queue |
+| automatic collection requests at startup or reconnect | **1** | One page of `GET /v1/projects`. No child traversal and no continuation is automatic — see [The startup budget](#the-startup-budget) |
 
 The last two are already implemented and already documented as different kinds
 of limit; this task adopts them rather than introducing parallel numbers.
@@ -616,6 +826,66 @@ create candidate, drive a run's lifecycle, open by ID, compare — stays
 reachable, because they remain the right tools for debugging and for advanced
 use. They stop being the front door.
 
+## The companion demo
+
+The acceptance journey is proved by **`trustvian/trustvian-python-agent-demo`**,
+and this task deliberately creates no second Python agent inside this
+repository. Two demos of the same thing drift, and the existing one is already
+the reference workflow.
+
+The work therefore splits across two repositories, in order:
+
+```text
+trustvian/trustvian                      this task's implementation PR
+    Live view · behavior graph · collection routes · schema 4 → 5
+
+trustvian/trustvian-python-agent-demo    a separate follow-up PR, afterwards
+    README and workflow stop instructing the user to type run IDs
+```
+
+The implementation PR here stays scoped to this repository. The companion
+update can only land after the WebUI and the routes exist, because until then
+its README would document something that does not work.
+
+What changes there:
+
+```text
+before   open the WebUI → Open by ID → type run-reference / run-candidate
+after    open the WebUI → the reference and candidate runs appear by themselves
+                        → watch live behavior with nothing typed
+```
+
+### Behavior is validated, ordering is not
+
+The agent is model-driven, so **the model chooses what it does and in what
+order**. A verified run of the existing demo produced
+`CRM → knowledge → mail → export`, which is as legitimate as any other
+sequence. An acceptance criterion that pinned an order would be testing the
+model, not Trustvian, and would fail for a correct reason.
+
+What is validated is the **observed behavior set** and its semantic fidelity:
+
+```text
+reference run visibly includes
+    POST → ollama.localhost
+    GET  → crm.localhost
+    GET  → knowledge.localhost
+    POST → mail.localhost
+
+candidate run additionally includes
+    POST → export.localhost
+```
+
+and:
+
+```text
+export.localhost is marked NEW, because it is present in the candidate's
+behavior and absent from the reference evidence
+```
+
+The graph animates the **actual arrival order**, whatever it was. Nothing
+requires export before mail, mail after export, or any other model choice.
+
 ## Tests
 
 Written by the implementation PR.
@@ -633,12 +903,24 @@ Written by the implementation PR.
   routes; a test asserts no browser storage API is called anywhere in the
   bundle.
 
-### Graph correctness
+### Graph correctness and scope isolation
 
-- One observation updates **exactly one** edge, identified by `fingerprint_id`,
+- A repeated fingerprint **within the selected run** updates exactly one edge
   and leaves every other edge untouched.
+- **Two runs emitting the same `fingerprint_id` do not share an edge.** The
+  regression for the whole scope-identity section: feed identical fingerprints
+  from `run-1` and `run-2` and assert two distinct graph identities.
+- The same fingerprint from two **projects** does not cross-update.
+- The same fingerprint from two **candidates** of one agent does not
+  cross-update.
+- `new_behavior: true` from run A never changes run B's rendered state, and the
+  same for `decision`, `risk_level`, `trust_score`, `anomaly_score` and
+  `anomaly_confidence`.
+- With the run-scoped model: an observation whose scope is not the selected run
+  updates that run's **card** and is **not drawn** in the graph.
+- Switching the selected card renders only the newly selected run's graph, with
+  no residue from the previous one.
 - `new_behavior: true` renders a distinct, labelled state — not colour alone.
-- A repeated fingerprint updates rather than duplicating an edge.
 - The rendered operation and target strings are exactly the descriptor's; a
   test feeds `POST` / `export.localhost` and asserts no semantic name is
   invented.
@@ -654,6 +936,31 @@ Written by the implementation PR.
   viewport saturation.
 - Sustained observation traffic leaves DOM node count, edge count and row count
   at their ceilings rather than growing.
+
+### Bounded discovery
+
+- **Startup issues exactly one collection request** — one page of
+  `GET /v1/projects` — asserted by counting requests against a stub.
+- Startup performs **no** recursive descent: no agents, candidates or runs
+  request is issued automatically.
+- Startup follows **no** continuation, even when the root page carries
+  `next_after`.
+- A root page with `next_after` renders an explicit continuation affordance and
+  never implies the page is the whole hierarchy.
+- Expanding one project fetches exactly one page of that project's agents, and
+  nothing else.
+- A project with 130 agents is fully traversable through explicit pagination
+  and is **not** eagerly loaded; the request count grows only with user
+  actions.
+- A hierarchy that is larger than one page in every dimension causes no
+  automatic request explosion.
+- Realtime frames create and update active scope cards **while no child list
+  has been loaded at all**.
+- **Reconnect uses the same one-request bootstrap**, asserted by forcing
+  repeated disconnects and counting requests — the resync-loop regression.
+- Browser memory and DOM node count do not grow with the size of the durable
+  hierarchy, only with what a person opened.
+- No timer-driven refresh exists anywhere in the bundle.
 
 ### Realtime and resync
 
@@ -677,8 +984,53 @@ Written by the implementation PR.
 - Missing parent → `404`; empty collection → `200` with an empty array.
 - SQLite and PostgreSQL return identical logical results, through the shared
   conformance suite.
-- Migration adds three indexes, no table, no column and **no data change**;
-  an existing database's contents are byte-identical afterwards.
+- The store refuses `limit` 65 as well as 0 and −1 — the bound is `1..64` at
+  the store edge, not only at the route.
+
+### Capability boundary
+
+- `ControlStore`'s compile-time surface gains `Projects`, `ProjectAgents` and
+  `AgentCandidates` — and **no run listing**.
+- `EvaluationStore`'s surface gains `CandidateEvaluationRuns` — and **no
+  project, agent or candidate listing**.
+- No `HierarchyStore`, `DiscoveryStore`, `ListStore`, `Database` or generic
+  query interface exists; asserted by scanning the package's exported
+  interface declarations.
+- `ControlPlane` composes both capabilities and exposes one browsing surface; a
+  test drives all four through the service with a `ControlStore` and an
+  `EvaluationStore` that are distinct objects, proving neither is asked for the
+  other's entities.
+- Both backends satisfy both interfaces, by compile-time assertion.
+
+### Migration, v4 → v5, on both backends
+
+- A v4 database migrates to v5 and stamps **5**.
+- **Exactly three indexes** are added, named as specified.
+- **No table, no column, no data change**: every existing row is byte-identical
+  afterwards, asserted field by field across the control and evaluation
+  entities.
+- No synthetic project, agent, candidate, run or promotion is created.
+- A v5 database reopens and verifies rather than re-migrating.
+- A binary that understands only v4 refuses a v5 database, by the existing
+  fail-closed version rule.
+- The full chain v1 → v2 → v3 → v4 → v5 succeeds, and everything held at each
+  step survives.
+
+### Companion demo integration
+
+- The acceptance journey references `trustvian/trustvian-python-agent-demo`;
+  no duplicate Python agent exists in this repository, asserted by a scan for
+  `.py` files outside any vendored path.
+- Against that demo, the reference run's observed behavior set includes
+  `ollama.localhost`, `crm.localhost`, `knowledge.localhost` and
+  `mail.localhost`, and the candidate additionally includes
+  `export.localhost`.
+- `export.localhost` renders as **NEW** in the candidate, because it is absent
+  from the reference evidence.
+- **No test asserts an action ordering.** The assertions are over the observed
+  set; a test that pinned `export` before `mail` would be testing the model.
+- The graph's animation order matches the arrival order of the frames actually
+  received.
 
 ### Security and boundary
 
@@ -716,7 +1068,8 @@ Written by the implementation PR, not before:
 | `docs/webui.md` | Replace "Navigating by ID" with the Live view as the default; keep ID navigation documented as the Manage surface |
 | `docs/local-development.md` | The journey: `make local`, run an agent, open the browser, see behavior |
 | `docs/compatibility.md` | Four new route rows and one paging contract row — **only once they exist** |
-| `docs/ARCHITECTURE.md` | The collection capability and its place in `ControlStore` |
+| `docs/ARCHITECTURE.md` | The collection capability and **where each half lives**: `ControlStore` owns the Project, Agent and Candidate collections; `EvaluationStore` owns the EvaluationRun collection; `ControlPlane` composes them into one browsing surface |
+| `docs/compatibility.md` | also `SchemaVersion` 5 |
 | `docs/ROADMAP.md` | 074 implemented |
 | `docs/tasks/v1.0/074-…md` | Status → specified and implemented |
 | `docs/tasks/v1.0/README.md` | The 074 row |
@@ -729,19 +1082,39 @@ only a clearly-labelled forward reference.
 
 ### ADR
 
-An ADR is likely warranted for the collection capability — the repository has
-deferred it twice, and the reasoning for finally adding it, plus why `id` and
-not time, is exactly the "why did we do this?" a future developer will ask. The
-number is whatever is free when the implementation lands; this PR creates none,
-matching the convention tasks 065 and 066 followed.
+An ADR is warranted for the collection capability — the repository deferred it
+twice, and the reasoning for finally adding it is exactly the "why did we do
+this?" a future developer will ask. It should record:
+
+1. **Why a collection capability exists now**, after two deliberate deferrals:
+   a browser that reloads with no live traffic has no other honest way to find
+   what exists, and the alternatives — browser storage, direct database access,
+   pretended replay — are each refused for their own reason.
+2. **Why `id` byte order and not time**: timestamps are stored as
+   `RFC3339Nano` text, which is not lexically ordered, so a timestamp cursor
+   would skip and repeat rows. Time-ordered history is task 067's.
+3. **Why the capability split is preserved**: Project, Agent and Candidate
+   collections on `ControlStore`; the EvaluationRun collection on
+   `EvaluationStore`; composed by `ControlPlane`. A list method does not change
+   which capability owns an entity.
+4. **Why the graph is scoped to one run**: `fingerprint_id` is not globally
+   unique by design, and merging observations across runs would let one run's
+   decision and new-behavior state overwrite another's.
+5. **Why discovery is bounded as a workflow, not only per route**: a bounded
+   page with an automatic recursive crawl is an unbounded client, and under
+   live traffic it degenerates into a resync loop. One startup request, zero
+   automatic continuations, lazy user-triggered descent.
+
+The number is whatever is free when the implementation lands; this PR creates
+none, matching the convention tasks 065 and 066 followed.
 
 ## Acceptance criteria
 
 1. With Trustvian running and an evaluation producing OTel-derived records,
    opening `/` shows the active Agent and Run **without the user typing an
    identifier**.
-2. Each realtime observation appears in a bounded feed and updates a bounded
-   behavior-flow visualization.
+2. Each realtime observation appears in a bounded feed and updates a bounded,
+   **run-scoped** behavior-flow visualization.
 3. A newly observed fingerprint is visibly identified as new, by text or icon
    and not colour alone.
 4. The UI shows factual operation and target information **only at the
@@ -749,9 +1122,8 @@ matching the convention tasks 065 and 066 followed.
    names.
 5. The graph communicates activity without relying on colour alone and honours
    `prefers-reduced-motion`.
-6. Refreshing the browser rediscovers the durable Project → Agent → Candidate →
-   Run hierarchy through bounded authoritative routes; **browser storage is
-   unnecessary and unused**.
+6. Refreshing the browser rediscovers the durable hierarchy through bounded
+   authoritative routes; **browser storage is unnecessary and unused**.
 7. Realtime remains ephemeral; no event history is implied, retained or
    replayed.
 8. Existing manual management surfaces remain reachable and are not required
@@ -763,14 +1135,38 @@ matching the convention tasks 065 and 066 followed.
 11. `GET /v1/realtime` compatibility is preserved; every change is additive.
 12. No prompt, completion, tool argument or raw arbitrary payload is added to
     any WebUI-reachable contract.
-13. A **reference local-agent demo exists** and demonstrates
-    `model → CRM → knowledge → export (NEW) → mail` as live observed behavior
-    without `run-candidate` being typed into the browser. No such demo exists
-    on `main` today — `make demo` runs `analyze` against a fixture — so
-    creating one is part of this task's implementation, not a precondition it
-    can assume.
+13. The journey is demonstrated with
+    **`trustvian/trustvian-python-agent-demo`**, whose README stops
+    instructing the user to type `run-reference` and `run-candidate`. That
+    change is a follow-up PR in the companion repository, after this one.
 14. [Task 072](README.md) cannot declare the local developer platform ready
     until this journey is demonstrable.
+
+### Every question this task owns, answered
+
+| Question | Answer |
+|---|---|
+| What does zero-input mean? | **Discovery, not provisioning.** The browser creates nothing durable, ever |
+| Which store lists Projects, Agents and Candidates? | **`ControlStore`** — `Projects`, `ProjectAgents`, `AgentCandidates` |
+| Which store lists EvaluationRuns? | **`EvaluationStore`** — `CandidateEvaluationRuns`. A list method does not move an entity between capabilities |
+| Is a new store interface added? | **No.** No `HierarchyStore`, `DiscoveryStore`, `ListStore`, `Database` or generic query capability |
+| Who composes the two? | `ControlPlane`, which already holds both. The HTTP adapter never learns they differ |
+| Is `fingerprint_id` globally unique across runs? | **No.** It is behavioral identity and carries no project, agent, candidate, run or actor |
+| What is graph identity, then? | The graph is **scoped to one selected run**, so `fingerprint_id` keys an edge inside it. A future combined graph would need `(run_id, fingerprint_id)` as a structured tuple |
+| Can one run's state affect another's edge? | **No.** Observations outside the selected run update their card and are not drawn |
+| Does the initial Live load walk the hierarchy? | **No** |
+| How many collection requests does startup make? | **One** — a single page of `GET /v1/projects`. The same on every reconnect |
+| How many continuations does it follow automatically? | **Zero**, at every level |
+| How are descendants loaded? | **Lazily, one bounded page per user action.** Never on a timer |
+| What if a page has more? | An explicit affordance, and an explicit statement that more exist. A page is never implied to be the whole hierarchy |
+| Does task 074 create another Python/Ollama demo? | **No.** It integrates with the existing companion repository |
+| Which demo proves the journey? | **`trustvian/trustvian-python-agent-demo`**, updated in its own follow-up PR |
+| Is the model's action ordering fixed? | **No.** The observed behavior *set* is validated; the order is the model's and the graph animates whatever actually arrived |
+| What makes `export.localhost` NEW? | It is present in the candidate's behavior and absent from the reference evidence |
+| What schema migration does task 074 own? | **4 → 5**, after task 066's implementation, which owns 3 → 4 |
+| What is in that migration? | Three indexes, a version stamp, and nothing else — no table, column, backfill or data rewrite |
+| Does task 074 retain event history? | **No.** Task 067 keeps it |
+| Does the WebUI gain authority? | **No.** `webui.NewHandler()` still takes no arguments |
 
 ## Open questions left to implementation
 
@@ -783,10 +1179,15 @@ intent. Each has a stated default so nothing is blocked:
 2. **Scope-card ordering.** Most-recently-active first is assumed; the
    alternative is stable identifier order, which flickers less but buries the
    thing the developer is watching.
-3. **Whether the Live snapshot reads more than the first project page.**
-   Assumed no: one bounded page, with explicit "more exist" affordance.
-4. **The exact `SchemaVersion` integer**, which depends on whether task 066
-   lands first. The migration content is pinned; the number is not.
-5. **Whether `GET /v1/projects` should accept a name filter.** Assumed no —
+3. **Which scope is selected by default** when several are active. Most
+   recently active is assumed, and selection must never change under the
+   developer while they are reading — a newly active scope raises its card, not
+   the graph.
+4. **Whether `GET /v1/projects` should accept a name filter.** Assumed no —
    filtering is a capability with its own design, and nothing in this journey
    needs it.
+
+Three questions that *were* open here are now decided in the body and are no
+longer implementation choices: the graph's scope model (one selected run), the
+startup request budget (one page, zero continuations), and the schema version
+(4 → 5, after task 066).

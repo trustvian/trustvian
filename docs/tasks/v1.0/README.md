@@ -66,10 +66,13 @@ EvaluationRun identifier the developer does not have, so the one journey the
 `v1.0` gate opens with — run locally, observe behavior live — requires reading
 an identifier out of a producer's logs first. The milestone makes the browser
 discover active work from the realtime stream it can already subscribe to
-unfiltered, render it as a bounded live behavior graph, and rediscover the
-durable hierarchy after a reload through bounded authoritative routes. Taking a
-number inside 049–072 for either would have renamed a milestone whose scope is
-already decided.
+unfiltered, render it as a bounded run-scoped behavior graph, and rediscover
+the durable hierarchy after a reload through bounded authoritative routes —
+one request at startup, no automatic continuation, and descent only when a
+person asks. Its schema step is **4 → 5**, three indexes and nothing else,
+which places its implementation after task 066's in the migration chain.
+Taking a number inside 049–072 for either 073 or 074 would have renamed a
+milestone whose scope is already decided.
 
 Task 063's open question — collection semantics — was recorded in its
 specification rather than resolved: the WebUI navigates by caller-known ID, and
@@ -87,9 +90,11 @@ nothing is happening has to find the Projects, Agents, Candidates and
 EvaluationRuns that already exist, and the alternatives — browser storage,
 direct database access, pretending realtime replays — are each refused for
 their own reason. It reuses task 065's semantics unchanged rather than
-inventing a second pagination shape. None of this means task 063 should have
-built it: the deferral was correct, and what was missing then was precisely the
-consumer that now exists.
+inventing a second pagination shape, and it keeps the capability split: the
+Project, Agent and Candidate collections belong to `ControlStore`, the
+EvaluationRun collection to `EvaluationStore`, composed by the control plane.
+None of this means task 063 should have built it: the deferral was correct, and
+what was missing then was precisely the consumer that now exists.
 
 Task 064 is implemented. SQLite remains the zero-configuration local default;
 PostgreSQL is opt-in and must be selected explicitly. One logical
