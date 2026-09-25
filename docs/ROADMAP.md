@@ -400,7 +400,8 @@ which is why they sit outside the reserved 049–072 block alongside 073.
   Generic instrumentation flattens an agent's behavior into its transport, so a
   tool call learns as an HTTP POST. Where a producer emits agent-oriented
   OpenTelemetry, Trustvian should read it — through the same pipeline, with no
-  AI-specific engine, no framework dependency and no content.
+  AI-specific engine and no framework dependency, and with content kept out of
+  behavioral identity and every durable and published surface.
 - **[076 — behavioral evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md).**
   A verdict without its evidence is not explainable. Sessions, traces and
   behavioral sequence, from metadata alone, over whatever history 067 makes
@@ -408,10 +409,16 @@ which is why they sit outside the reserved 049–072 block alongside 073.
 - **[077 — unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md).**
   One command wraps an existing agent and composes the runtime around it, with
   no source modification and no Trustvian dependency in the application.
+  Instrumentation ownership is explicit and positive-evidence-only: absence of
+  detectable instrumentation never selects injection, because a child that
+  instruments itself a moment later would then be observed twice. Independent
+  of 075, and implementable in parallel with it.
 - **[078 — behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md).**
   Run the same scenario again, diff the behavior, gate the difference — reusing
   the diff, scorecard and gate the platform already owns, and evaluating no
-  answer quality.
+  answer quality. The runner scripts no action ordering of its own, and does
+  not suppress the engine's learned sequence signals: a reorder that produces
+  gated evidence fails, and the verdict stays the control plane's.
 
 Still planned: everything from 066 onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
@@ -762,16 +769,15 @@ Conceptually:
 ```text
 066  promotion workflow
        ↓
-074  zero-input live WebUI  ──┐
-075  AI semantic telemetry  ──┤
-                              ↓
-                        067  event history
-                              ↓
-                        076  behavioral evidence explorer
-
-077  unified local dev runtime
-       ↓
-078  behavioral scenario suites
+074  zero-input live WebUI ──┬──▶ 077  unified local dev runtime
+                             │             ↓
+                             │    078  behavioral scenario suites
+                             │
+075  AI semantic telemetry ──┤    (parallel to 077; enriches, never blocks)
+                             ↓
+                     067  event history
+                             ↓
+                     076  behavioral evidence explorer
 
 069  multi-node and load validation
 070  platform security hardening
@@ -782,12 +788,16 @@ Conceptually:
 068  ClickHouse — only if measured volume justifies it
 ```
 
-Three things this diagram says, and one it does not:
+Four things this diagram says, and one it does not:
 
 - **074 and 075 are independent of each other** and can proceed in parallel.
   076 needs both, plus whatever history 067 makes durable.
-- **077 and 078 are a second, largely independent thread.** 078 needs 077's
-  repeatable invocation; neither needs the explorer.
+- **075 does not block 077.** The local dev runtime transports whatever
+  telemetry the workload emits; 075 decides how richly it is read.
+  `trustvian dev` is useful at today's HTTP, DB and RPC fidelity and becomes
+  better when 075 lands. The two are parallel capabilities.
+- **077 and 078 are a second thread**, needing 074's discovery but not the
+  explorer. 078 needs 077's repeatable invocation.
 - **068 remains conditional**, exactly as its row says: an analytical backend
   arrives if measured volume justifies one, and not otherwise. It is not a
   release-gate prerequisite, and this restructuring does not make it one.

@@ -7,6 +7,11 @@ Depends on: [054](054-behavioral-diff.md),
 [056](056-deterministic-hard-gates.md),
 [062](062-integrated-local-developer-workflow.md),
 [077](077-unified-otlp-local-dev-runtime.md)
+
+The engine's sequence-aware signals — transition and n-gram deviation and
+rarity, from the `v0.6` sequence work — are consumed as existing authoritative
+evidence rather than depended on as a milestone. See
+[Ordering](#ordering-the-runner-asserts-none-the-engine-may-still-care).
 Blocks: [072](README.md) — the OSS `v1.0` release gate
 
 ## Objective
@@ -74,7 +79,9 @@ dataset API.
 provider comparison, no cost or token accounting.
 
 **No new evaluation logic.** The runner computes no diff, no scorecard, no
-gate and no policy outcome. It calls the control plane, which owns all four.
+gate, no policy outcome and no ordering comparison. It calls the control
+plane, which owns all of them — including whatever the engine recorded about
+sequence.
 
 **No new exit-code scheme.** See [CI](#ci).
 
@@ -133,12 +140,60 @@ crm_lookup · knowledge_search · export_customer · send_email
 The added behavior is the finding. Whether the agent's answers were good is
 not asked and not answered.
 
-**Ordering is not asserted.** A model-driven workload chooses its own order,
-and a scenario that failed because the agent did the same things in a
-different sequence would be testing the model. What a scenario compares is the
-behavioral surface — which behaviors occurred — and what the engine itself
-recorded about sequence drift, which is a learned signal rather than a
-scripted expectation.
+### Ordering: the runner asserts none, the engine may still care
+
+Two statements that are easy to collapse into one wrong statement.
+
+**The runner defines no ordering rule.** A scenario file contains no expected
+sequence, no step list to match and no order comparator. A model-driven
+workload chooses its own order, and a *scripted* sequence assertion would be
+testing the model rather than the agent's behavior.
+
+**The engine's sequence evidence remains authoritative.** Trustvian already
+learns sequence: `transition_deviation`, `transition_rarity`,
+`ngram_deviation` and `ngram_rarity` are real anomaly contributors from tasks
+026 and 027. A reordered candidate may therefore legitimately produce a higher
+anomaly score, a higher risk level or a `BLOCK` decision — and those feed
+`MaxBlockDecisions` and `MaxCriticalRiskObservations` in the existing hard
+gate.
+
+So this is the wrong rule, and it is not this task's:
+
+```text
+✗  a reordered scenario with the same behavior set still passes
+```
+
+and this is the right one:
+
+```text
+✓  reordering alone creates no runner-level pass or fail rule.
+   The verdict remains entirely the control plane's existing
+   diff, scorecard and gate result — including whatever the engine
+   recorded about sequence novelty.
+```
+
+If a reorder causes the engine to emit critical risk or a block decision and
+an existing hard gate fails on it, **the scenario result is FAIL**, and that
+is correct: the behavior genuinely changed in a way Trustvian is built to
+notice. If the engine produces no gated evidence from the reorder, it passes.
+The runner decides neither case, and must not be able to.
+
+### Diff is presence; evaluation is more than diff
+
+A related distinction worth stating because the two are routinely conflated:
+
+```text
+BehaviorDiff        added · removed · shared — behavioral presence (task 054)
+
+engine evidence     may additionally include learned sequence novelty,
+                    which reaches the scorecard through decision and risk
+
+scenario runner     owns neither, and overrides neither
+```
+
+Task 054's diff being set-oriented does **not** mean the evaluation ignores
+order. It means the *diff* answers a presence question while the *scorecard*
+carries evidence the engine produced, sequence signals included.
 
 ## Architecture
 
@@ -232,9 +287,20 @@ changes, and the diff, scorecard and gate contracts are consumed unchanged.
   under `max_added_behaviors: 0`.
 - The same candidate passes under a limit that permits it, proving the verdict
   is the limits' and not the runner's.
-- **No ordering assertion exists**: a scenario whose actions occur in a
-  different order but with the same behavioral surface still passes; a test
-  asserts the runner compares sets and recorded sequence signals, not a script.
+- **The runner implements no order comparator**, asserted structurally by a
+  scan of the runner's sources — no sequence, step-list or ordering
+  comparison exists in it.
+- **The runner forwards evidence through the real engine and accepts the
+  server's verdict unchanged**: a control plane returning FAIL yields FAIL and
+  one returning PASS yields PASS, with no runner-side adjustment in either
+  direction.
+- **A reorder that produces gated evidence FAILs.** A candidate whose
+  reordering drives the engine to a block decision or critical-risk
+  observation, under limits that refuse them, produces a scenario FAIL — the
+  test that fails if anyone reintroduces a "reordering always passes" rule.
+- **A reorder that produces no gated evidence passes**, under the same limits.
+  Both halves, because the pair is the contract: the outcome tracks the
+  engine, not the runner.
 - Every gate limit is required; an omitted one is a usage error naming it.
 - A crashing workload exits `3`, never `1`, and produces no gate verdict.
 - A missing reference is an explicit failure, never an implicit pass.
@@ -255,7 +321,9 @@ Written by the implementation PR: a scenario guide, `docs/platform-cli.md`,
 Warranted for the boundary decision: why a behavioral scenario compares
 behavior and never answer quality, and why that keeps Trustvian out of the
 generic-evaluation category. Also for the reference-association rule, which is
-the task's one piece of new semantics.
+the task's one piece of new semantics; and for the ordering distinction — the
+runner scripts no sequence, while the engine's learned sequence signals remain
+authoritative and may legitimately change a verdict.
 
 ## Acceptance criteria
 
@@ -272,7 +340,9 @@ the task's one piece of new semantics.
    concept exists anywhere in the feature.
 7. No dataset, prompt-registry or model-comparison entity is introduced.
 8. Results are machine-readable and usable in CI without parsing human output.
-9. Behavioral ordering is never asserted by a scenario.
+9. A scenario asserts no action ordering of its own, **and** does not suppress
+   the engine's sequence-aware evidence: a reorder that produces gated
+   evidence fails, and one that does not, passes. The runner decides neither.
 
 ## Open questions left to implementation
 

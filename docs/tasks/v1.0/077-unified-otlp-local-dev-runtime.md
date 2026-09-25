@@ -4,10 +4,16 @@ Status: specified; not implemented
 Milestone: `v1.0`
 Depends on: [062](062-integrated-local-developer-workflow.md),
 [073](073-otel-collector-evaluation-ingest.md),
-[074](074-zero-input-live-behavior-webui.md),
-[075](075-ai-semantic-telemetry-normalization.md)
+[074](074-zero-input-live-behavior-webui.md)
 Blocks: [072](README.md) — the OSS `v1.0` release gate;
 [078](078-behavioral-scenario-suites.md)
+
+[075](075-ai-semantic-telemetry-normalization.md) is **optional semantic
+enrichment running in parallel**, not a prerequisite. This runtime transports
+whatever telemetry the workload emits; 075 decides how richly that telemetry
+is read. `trustvian dev` is useful at today's HTTP, DB and RPC fidelity and
+becomes better when 075 lands. Neither blocks the other, and they may be
+implemented concurrently.
 
 ## Objective
 
@@ -69,6 +75,8 @@ One command that:
 - starts the local control plane, as `make local` does today;
 - receives OTLP, by composing the existing Collector or by other means the
   task must evaluate;
+- establishes **instrumentation ownership explicitly**, never by inferring
+  absence;
 - binds loopback ports chosen dynamically, and publishes discovery state;
 - establishes the Project, Agent, Candidate, Environment and EvaluationRun
   context deterministically;
@@ -155,16 +163,88 @@ A dirty worktree must be visible in the candidate identity. Evaluating
 uncommitted work is normal and useful; silently attributing it to a clean
 commit is not.
 
-## Existing telemetry
+## Instrumentation ownership
 
-**If the child already emits suitable OpenTelemetry, do not inject a second
-instrumentation stack.** Route it: set the OTLP endpoint and let the
-application's own instrumentation do its job. Two stacks produce duplicate
-spans, and duplicate spans are a behavioral lie — the same action observed
-twice looks like an actor doing something twice.
+The runtime wraps an arbitrary child process, and that bounds what it can know.
 
-The runtime must detect the case rather than assume it, and must state which
-path it took.
+### What cannot be promised
+
+A child may initialize OpenTelemetry **after** it starts — from application
+code, a framework's startup path, a Java agent, Python site customization, an
+environment-driven loader, or a mechanism that does not exist yet. There is no
+general, reliable way to inspect an arbitrary program beforehand and prove
+whether it will do so.
+
+So the runtime must never reason:
+
+```text
+I detected no instrumentation, therefore there is none, therefore I will
+inject my own.
+```
+
+That inference is wrong precisely when it is most expensive: a child that
+instruments itself a moment later then has two stacks, every action is
+observed twice, and **duplicate spans are a behavioral lie** — the same action
+looks like an actor doing something twice, which is exactly the kind of
+novelty Trustvian is built to notice.
+
+### Positive evidence only
+
+Instrumentation ownership is therefore an explicit mode with conservative
+defaults. Conceptually — the flag spelling is an implementation decision:
+
+| Mode | Meaning |
+|---|---|
+| `existing` | Trustvian only routes and configures OTLP. It injects nothing |
+| `python-zero-code` | Trustvian deliberately attaches its managed Python zero-code runtime, after compatibility checks |
+| `none` | Trustvian launches the child and manages no instrumentation. For telemetry that reaches the Collector by another route |
+| `auto` | Resolve conservatively, below |
+
+`auto` resolves like this, and only like this:
+
+```text
+if positive evidence proves a supported existing instrumentation path
+        → existing
+else if a safe, explicitly supported zero-code path can be proven for this
+        interpreter and environment
+        → that path
+else
+        → stop, with an actionable message naming the modes
+```
+
+**Absence of evidence never selects injection.** When ownership cannot be
+established safely, the runtime asks rather than guesses — one clear message
+beats a silently doubled dataset that looks like an agent behaving strangely.
+
+### What counts as positive evidence
+
+Illustrative, and explicitly **not** exhaustive:
+
+```text
+an explicit Trustvian mode flag
+a recognized OTEL_* configuration already present in the environment
+a recognized runtime wrapper in the command line
+a recognized Java agent argument
+a recognized `opentelemetry-instrument` invocation
+a future explicit runtime contract
+```
+
+No list covers every instrumentation setup, and the specification does not
+pretend one does. That is exactly why `auto` fails closed rather than falling
+through to injection.
+
+### The guarantee, stated precisely
+
+> The runtime never knowingly attaches a second instrumentation stack when an
+> existing one is explicitly selected or positively identified.
+
+and
+
+> When Trustvian cannot establish instrumentation ownership safely, it asks
+> for an explicit mode rather than guessing.
+
+Both are testable. "The runtime detects all existing instrumentation" is not,
+and is not claimed.
 
 ## Python zero-code, if offered
 
@@ -176,10 +256,11 @@ Optional, and only under conditions the specification makes binding:
   run;
 - interpreter compatibility and importability are **proven before use**, not
   assumed: a virtualenv, a different Python version, a conda environment and a
-  system interpreter are all normal and all break naive injection;
+  system interpreter are all normal and all break naive injection. This proof
+  is what lets `auto` select the path at all;
 - failure is **safe and loud**: if instrumentation cannot be attached
   reliably, the runtime says so plainly and either continues without it — with
-  the developer told the behavior will be transport-fidelity at best — or
+  the developer told the behavior will be transport fidelity at best — or
   stops. It never half-attaches and never silently produces partial telemetry.
 
 **The promise must be stated honestly.** Not *"zero dependencies anywhere"*,
@@ -218,7 +299,8 @@ work stands.
 | a port is unavailable | pick another; loopback, dynamic, never a fixed port a developer must free |
 | the control plane fails to start | fail before launching the child, with the reason; never start a workload that has nowhere to report |
 | identity cannot be established | stop and name the flag that fixes it |
-| instrumentation cannot attach | stated plainly; continue degraded or stop, never silently partial |
+| instrumentation ownership cannot be established | stop, naming the available modes. Never inject on absence of evidence |
+| instrumentation cannot attach in the selected mode | stated plainly; continue degraded or stop, never silently partial |
 | the child exits immediately | report its status; do not hang waiting for telemetry |
 | the child is killed by a signal | propagate faithfully |
 | the runtime is interrupted | forward to the child, wait, shut down, leave nothing orphaned |
@@ -261,10 +343,22 @@ script.
 - A missing `service.name` stops with an actionable message, or applies a
   documented fallback **and says so** — never a silent invention.
 - No ephemeral value reaches candidate or agent identity, asserted by a scan.
-- A child with its own OTel instrumentation is routed, not double-instrumented;
-  a test asserts no duplicate span reaches the pipeline.
-- Instrumentation failure degrades loudly; a test forces an incompatible
-  interpreter and asserts the runtime does not half-attach.
+- **Mode semantics**, one case each: `existing` injects nothing and only
+  configures OTLP; `python-zero-code` attaches only after its compatibility
+  check passes; `none` manages nothing.
+- **`auto` fails closed.** With no positive evidence of either path, the
+  runtime **stops with an actionable message naming the modes** — it does not
+  inject. This is the regression test for the whole section, and it replaces
+  any test that would have required detecting arbitrary in-process OTel
+  initialization, which is not generally possible and is not asserted
+  anywhere.
+- `auto` selects `existing` when positive evidence is present — one case per
+  recognized form of evidence.
+- With `existing` selected or positively identified, **no second stack is
+  attached**, asserted by counting instrumentation initializations rather than
+  by inspecting the child.
+- Instrumentation failure in the selected mode degrades loudly; a test forces
+  an incompatible interpreter and asserts the runtime does not half-attach.
 - **The application repository is never written to**, asserted by hashing a
   fixture project before and after a full run.
 - Ports are dynamic; two concurrent runtimes do not collide.
@@ -280,10 +374,13 @@ command and its child-exit-code exception), `docs/OPENTELEMETRY.md`,
 
 ## ADR
 
-Warranted for the OTLP ownership decision — compose the Collector or own the
-receiver — and for automatic local provisioning: why it is acceptable inside
-`trustvian dev` and refused everywhere else, and what makes local identity
-deterministic.
+Warranted for three decisions: the OTLP ownership question — compose the
+Collector or own the receiver; automatic local provisioning, why it is
+acceptable inside `trustvian dev` and refused everywhere else, and what makes
+local identity deterministic; and **instrumentation ownership as
+positive-evidence-only**, recording that absence of detectable instrumentation
+never implies absence of instrumentation, and why the cost of guessing wrong
+is a doubled dataset that reads as anomalous behavior.
 
 ## Acceptance criteria
 
@@ -296,8 +393,11 @@ deterministic.
 5. The child's stdio, signals and exit code behave as a plain wrapper's.
 6. Nothing the runtime did not start is stopped; nothing it started is left.
 7. The printed WebUI URL shows the running agent with no identifier typed.
-8. A child with existing instrumentation is not double-instrumented.
-9. Instrumentation failure is loud and safe.
+8. When an existing instrumentation path is explicitly selected or positively
+   identified, no second stack is attached. When ownership cannot be
+   established safely, the runtime asks for an explicit mode rather than
+   guessing — it never injects on absence of evidence.
+9. Instrumentation failure in the selected mode is loud and safe.
 10. `make local`, the Collector processor and every existing surface keep
     working.
 
@@ -307,7 +407,9 @@ deterministic.
    is assumed until the cost of supervising a second binary is measured
    against the cost of owning a protocol stack.
 2. **Whether Python zero-code ships in this task** or follows once the
-   compatibility matrix is understood. Following is assumed.
+   compatibility matrix is understood. Following is assumed — which makes
+   `auto`'s second branch unreachable until it lands, and `auto` therefore
+   resolves to `existing` or stops.
 3. **The command name** — `trustvian dev` is assumed; it must not collide with
    the existing families.
 4. **Whether a run is created per invocation or per session** when a child is

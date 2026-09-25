@@ -105,7 +105,10 @@ service.
 everything downstream are untouched. If this task believes it needs a core
 field, that is a separate proposal with a generic justification.
 
-**No content.** See [Privacy](#privacy-the-hard-line).
+**No content at the durable layer.** See
+[Privacy](#privacy-where-the-boundary-actually-is), which states precisely
+where that boundary binds and why it is not a claim about the transient
+`Event.Attributes` map.
 
 **No fabrication.** See [Fidelity](#fidelity-evidence-only).
 
@@ -182,44 +185,89 @@ plain HTTP instrumentation must keep producing exactly the behavior it
 produces today, with no regression and no empty fields. The mapping is
 strictly additive: it fills dimensions that would otherwise be coarser.
 
-## Privacy: the hard line
+## Privacy: where the boundary actually is
 
-**Behavioral observability does not require content observability.**
+**Behavioral observability does not require content observability.** That is
+the principle. Stating where it binds is the part a specification has to get
+right, because the naive version of it is false today.
 
-Default behaviour retains and fingerprints **none** of:
+### What is true on `main`
+
+`internal/otel`'s package comment says it plainly: *"Every span attribute —
+mapped or not — is preserved in `Event.Attributes`, so nothing is silently
+dropped."* The Collector processor does the same. So if a producer emits a
+prompt as a span attribute, that string **is** in the in-process
+`Event.Attributes` map today, before this task exists and regardless of it.
+
+A specification that promised prompts never reach `Event` would be
+contradicting the adapter it is written against.
+
+### The layered contract
+
+The guarantee Trustvian makes is a **durable and public evidence boundary**,
+not a claim that a transient in-process map is empty:
 
 ```text
-prompt text          completion text        reasoning content
-input.value          output.value           tool arguments
-tool results         retrieved documents    embedding vectors
-SQL text             HTTP bodies            arbitrary span attributes
-secrets
+OTel span
+    ↓
+adapter
+    Event.Attributes — transient adapter and core input
+        MAY carry producer attributes, as it does today
+        MUST NOT become behavioral identity merely by existing
+        MUST NOT become durable or public evidence by default
+    ↓
+Features / Fingerprint
+    only the approved behavioral dimensions, plus the explicitly consumed
+    volatile keys — today exactly `duration_ms` and `error`
+    ↓
+DecisionRecord
+    fixed-shape metadata. No attribute map, by construction
+    ↓
+Realtime · platform persistence · WebUI
+    no arbitrary attributes, prompts, completions, arguments, results or bodies
 ```
 
-What it may read:
-
-```text
-actor identity · agent name · operation kind · tool name · target
-model and provider identity · session correlation · trace correlation
-duration · status · sequence position · environment
-```
-
-The distinction is not a size limit. A tool *name* is a behavioral dimension —
-it says what the agent did. A tool *argument* is content — it says what the
-agent said, and it routinely carries customer data, credentials and personal
-information. Trustvian's whole design is that it can answer behavioral
-questions without the second category, and that property is worth more than
-any enrichment.
-
-This mirrors what the platform already enforces on the realtime path, where
+Every layer below the adapter is already enforced. `StableFeatures` carries
+six dimensions — actor type, operation category and name, target name and
+category, environment — and no attribute reaches it. `DecisionRecord`'s own
+doc comment states that *"`Event.Attributes`, tool arguments, prompts, and
+completions have no field here and cannot leak into its JSON."*
 `realtimeObservationDTO` carries the bounded projection and a test asserts a
-distinctive attribute value never appears. The same rule extends here.
+distinctive attribute value never appears.
 
-**Do not import an observability data model.** OpenInference is designed to
-carry prompts, completions and retrieved documents, because that is what a
-trace viewer needs. Trustvian reads the *identity* fields of that convention
-and deliberately ignores the content fields. Adopting the model wholesale
-would make Trustvian a content store by accident.
+### What this task may and may not do
+
+**May**: read specific semantic *identity* attributes out of that transient
+map — a tool name, a model name, an agent name, a conversation identifier —
+and use them to populate `Actor`, `Operation`, `Target` and `Context`. That is
+what normalization *is*, and those values are behavioral dimensions.
+
+**Must not**: cause any content-like attribute to become `StableFeatures`,
+fingerprint identity, a `DecisionRecord` field, a `RealtimeObservation` field,
+a persisted row or a WebUI payload. A tool *name* is what the agent did; a
+tool *argument* is what it said, and routinely carries customer data.
+
+The distinction is the whole design, and it is enforced at the boundary that
+can enforce it.
+
+### Adapter sanitization is a separate decision
+
+A future task may decide the adapter should strip or allowlist attributes
+before they reach `Event.Attributes` at all. That would be a **deliberate
+compatibility change** — today's behavior is documented as "nothing is
+silently dropped", and a consumer may rely on it — and it needs its own
+review, its own migration note and its own compatibility row.
+
+**It is not a hidden requirement of this task.** Task 075 changes what
+Trustvian *reads* from the map, not what the adapter *puts* in it.
+
+### Do not import an observability data model
+
+OpenInference is designed to carry prompts, completions and retrieved
+documents, because that is what a trace viewer needs. This task reads the
+*identity* fields of that convention and ignores the content fields. Adopting
+the model wholesale would make Trustvian a content store by accident — and it
+would do so at the durable layer, which is the one that matters.
 
 ## Architecture
 
@@ -282,7 +330,8 @@ data models. Being pleasant to sit beside is a property, not a coupling.
 
 Additive. `trustvian.*` output attributes keep their meaning; no existing
 mapping rule changes; a producer emitting no agent-oriented convention sees
-byte-identical behavior.
+byte-identical behavior — including the adapter's current
+preserve-every-attribute behavior, which this task does not alter.
 
 If a fidelity indicator reaches `/v1` or the span attributes, it is a new
 optional field under the existing additive-compatibility rule, and
@@ -300,11 +349,27 @@ optional field under the existing additive-compatibility rule, and
   erroring.
 - **No fabrication**: a transport-only span never yields a tool name, asserted
   with a fixture that would be tempting to upgrade.
-- **Privacy**: spans carrying prompts, completions, `input.value`,
-  `output.value`, tool arguments, tool results and retrieved documents are fed
-  through, and every one of those distinctive values is asserted absent from
-  the resulting `Event`, `DecisionRecord`, realtime payload and any persisted
-  row — the existing tripwire pattern, extended.
+- **Privacy, at the layer that enforces it.** Spans carrying prompts,
+  completions, `input.value`, `output.value`, tool arguments, tool results and
+  retrieved documents are fed through, and every one of those distinctive
+  values is asserted absent from:
+
+  ```text
+  StableFeatures · the fingerprint · DecisionRecord
+  RealtimeObservation and its DTO · persisted rows · every /v1 and WebUI payload
+  ```
+
+  The test deliberately does **not** assert absence from `Event.Attributes`:
+  the adapter preserves every span attribute today, that is documented
+  behavior, and asserting otherwise would encode a change this task is not
+  making.
+- **Identity influences, content does not.** A span carrying both
+  `tool.name=export_customer` and a prompt attribute yields behavior naming
+  `export_customer` — proving the semantic attribute reached `Operation` —
+  while the prompt value is absent from every layer listed above. One test,
+  both halves, because the pair is the contract.
+- Two spans differing **only** in a content attribute produce the **same**
+  fingerprint, proving arbitrary attributes are not identity.
 - Fingerprint stability: the same logical behavior at the same fidelity
   produces the same fingerprint across runs.
 - **Boundary**: the core's dependency graph contains no OTel package; no
@@ -327,8 +392,12 @@ task's status, the task index and `CHANGELOG.md`.
 
 An ADR is warranted, recording: why conventions are read and frameworks are
 not; why the mapping lives at the adapter boundary and the core stays unaware;
-why identity fields are read and content fields are deliberately ignored; and
-how version tolerance degrades rather than breaks.
+why identity fields are read and content fields are deliberately ignored; how
+version tolerance degrades rather than breaks; and — the one most likely to be
+misread later — that the privacy guarantee is a durable and public evidence
+boundary rather than a claim about the transient in-process attribute map, so
+a future adapter-sanitization proposal is recognized as the compatibility
+change it would be.
 
 ## Acceptance criteria
 
@@ -336,7 +405,10 @@ how version tolerance degrades rather than breaks.
    naming the tool, model or retriever rather than the transport.
 2. A producer emitting none sees **no change whatsoever**.
 3. No prompt, completion, reasoning, argument, result, retrieved document or
-   arbitrary attribute is read, retained, fingerprinted or published.
+   arbitrary attribute becomes behavioral identity, a `DecisionRecord` field,
+   a realtime field, a persisted row or a published payload. The transient
+   `Event.Attributes` map keeps its documented preserve-everything behavior,
+   which this task does not change and does not claim otherwise.
 4. No semantic name appears that the telemetry did not supply.
 5. The core imports no OpenTelemetry or convention package, proven by test.
 6. No framework is named anywhere in the implementation.
@@ -356,3 +428,6 @@ how version tolerance degrades rather than breaks.
 4. **Whether `Actor.Type` may be upgraded to `ai_agent` from telemetry alone**,
    or requires the producer to establish identity explicitly. The conservative
    reading — require it — is assumed.
+5. **Whether a later task should sanitize `Event.Attributes` at the adapter.**
+   Out of scope here, and noted so it is proposed deliberately rather than
+   arrived at by drift.

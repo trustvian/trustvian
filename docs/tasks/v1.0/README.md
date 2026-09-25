@@ -87,8 +87,12 @@ difference between a platform that works and one a developer can pick up:
   reduces an agent's tool call to an HTTP POST against a hostname, so the
   baseline learns transport shapes rather than behavior. Where a producer
   emits agent-oriented OpenTelemetry, Trustvian reads it — same pipeline, no
-  AI-specific engine, no framework dependency, and no prompt, completion or
-  argument ever retained.
+  AI-specific engine and no framework dependency. Its privacy guarantee is
+  stated where it actually binds: prompts, completions and arguments never
+  become behavioral identity, a `DecisionRecord` field, a realtime field, a
+  persisted row or a published payload. The adapters' documented
+  preserve-every-span-attribute behavior is unchanged, and the specification
+  does not pretend otherwise.
 - **076 — Behavioral Trace & Session Evidence Explorer.** A verdict without
   its evidence is not explainable, and `DecisionRecord` already carries trace,
   span and session correlation that the platform receives and does not retain.
@@ -98,11 +102,18 @@ difference between a platform that works and one a developer can pick up:
   control plane, a Collector, a processor config, a manually created
   hierarchy and the right OTLP environment. One command should wrap an
   existing agent and compose the rest, with no source modification and no
-  Trustvian dependency in the application.
+  Trustvian dependency in the application. Instrumentation ownership is an
+  explicit, positive-evidence-only mode: a child may initialize OpenTelemetry
+  after it starts, so absence of detectable instrumentation never selects
+  injection. **Independent of 075** — it transports whatever telemetry exists,
+  and 075 decides how richly that telemetry is read.
 - **078 — Behavioral Scenario Suites.** Diff, scorecard and gate all exist;
   what is missing is repeatability. A scenario runs the same workload again,
   compares the behavioral surface and applies deterministic limits — reusing
-  the control plane for every verdict, and evaluating no answer quality.
+  the control plane for every verdict, and evaluating no answer quality. The
+  runner scripts no ordering of its own and overrides none of the engine's
+  learned sequence evidence: a reorder that drives the engine to a block
+  decision or critical risk fails the gate, exactly as it should.
 
 Taking a number inside 049–072 for any of them would have renamed a milestone
 whose scope is already decided.
