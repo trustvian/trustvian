@@ -34,7 +34,10 @@ import (
 // must reject the limit the store enforces, and two copies of a bound is how
 // two layers come to disagree about it. This is the whole range — the store
 // accepts nothing above it.
-const MaxPromotionPage = 64
+//
+// Defined as MaxListPage since task 074. The name stays because it is
+// published compatibility surface; the value has one definition.
+const MaxPromotionPage = MaxListPage
 
 var (
 	// ErrPromotionScope reports two runs that are not a promotion-eligible

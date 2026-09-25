@@ -526,6 +526,77 @@ func (s *PostgresStore) ProjectEnvironments(
 }
 
 // ---------------------------------------------------------------------
+// Hierarchy collections (task 074)
+// ---------------------------------------------------------------------
+
+// requireRowExists verifies a parent before a child collection is scanned.
+//
+// The same distinction SQLite's requireExists draws, in this dialect: a parent
+// that does not exist is ErrStoreNotFound, and a parent with no children is an
+// empty page. An empty array cannot say which happened.
+func (s *PostgresStore) requireRowExists(ctx context.Context, table, kind, id string) error {
+	var exists string
+	err := s.pool.QueryRow(ctx,
+		`SELECT id FROM `+table+` WHERE id = $1`, id).Scan(&exists)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return fmt.Errorf("%w: %s %s", ErrStoreNotFound, kind, preview(id))
+	case err != nil:
+		return mapPostgresError(kind, id, err)
+	}
+	return nil
+}
+
+// Projects returns one bounded page of projects in id byte order.
+func (s *PostgresStore) Projects(
+	ctx context.Context, after ProjectID, limit int,
+) ([]Project, error) {
+	if err := validateListPage("project", string(after), limit); err != nil {
+		return nil, err
+	}
+	return queryProjectPage(ctx, s.querier(), after, limit)
+}
+
+// ProjectAgents returns one bounded page of a project's agents.
+func (s *PostgresStore) ProjectAgents(
+	ctx context.Context, projectID ProjectID, after AgentID, limit int,
+) ([]Agent, error) {
+	if err := validateListPage("agent", string(after), limit); err != nil {
+		return nil, err
+	}
+	if err := s.requireRowExists(ctx, tableProjects, "project", string(projectID)); err != nil {
+		return nil, err
+	}
+	return queryAgentPage(ctx, s.querier(), projectID, after, limit)
+}
+
+// AgentCandidates returns one bounded page of an agent's candidates.
+func (s *PostgresStore) AgentCandidates(
+	ctx context.Context, agentID AgentID, after CandidateID, limit int,
+) ([]Candidate, error) {
+	if err := validateListPage("candidate", string(after), limit); err != nil {
+		return nil, err
+	}
+	if err := s.requireRowExists(ctx, tableAgents, "agent", string(agentID)); err != nil {
+		return nil, err
+	}
+	return queryCandidatePage(ctx, s.querier(), agentID, after, limit)
+}
+
+// CandidateEvaluationRuns returns one bounded page of a candidate's runs.
+func (s *PostgresStore) CandidateEvaluationRuns(
+	ctx context.Context, candidateID CandidateID, after EvaluationRunID, limit int,
+) ([]EvaluationRun, error) {
+	if err := validateListPage("evaluation run", string(after), limit); err != nil {
+		return nil, err
+	}
+	if err := s.requireRowExists(ctx, tableCandidates, "candidate", string(candidateID)); err != nil {
+		return nil, err
+	}
+	return queryRunPage(ctx, s.querier(), candidateID, after, limit)
+}
+
+// ---------------------------------------------------------------------
 // Promotions
 // ---------------------------------------------------------------------
 

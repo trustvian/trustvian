@@ -16,14 +16,14 @@
 </header>
 
 <nav class="tabs" aria-label="Sections">
-  <button type="button" class="tab" id="tab-open" data-panel="panel-open" aria-selected="true">Open</button>
+  <button type="button" class="tab" id="tab-live" data-panel="panel-live" aria-selected="true">Live</button>
+  <button type="button" class="tab" id="tab-evaluation" data-panel="panel-evaluation" aria-selected="false">Evaluations</button>
+  <button type="button" class="tab" id="tab-compare" data-panel="panel-compare" aria-selected="false">Compare</button>
+  <button type="button" class="tab" id="tab-promotion" data-panel="panel-promotion" aria-selected="false">Promotion</button>
+  <button type="button" class="tab" id="tab-open" data-panel="panel-open" aria-selected="false">Manage</button>
   <button type="button" class="tab" id="tab-project" data-panel="panel-project" aria-selected="false">Project</button>
   <button type="button" class="tab" id="tab-agent" data-panel="panel-agent" aria-selected="false">Agent</button>
   <button type="button" class="tab" id="tab-candidate" data-panel="panel-candidate" aria-selected="false">Candidate</button>
-  <button type="button" class="tab" id="tab-evaluation" data-panel="panel-evaluation" aria-selected="false">Evaluation</button>
-  <button type="button" class="tab" id="tab-live" data-panel="panel-live" aria-selected="false">Live</button>
-  <button type="button" class="tab" id="tab-compare" data-panel="panel-compare" aria-selected="false">Compare</button>
-  <button type="button" class="tab" id="tab-promotion" data-panel="panel-promotion" aria-selected="false">Promotion</button>
 </nav>
 
 <main id="main">
@@ -31,14 +31,19 @@
 <p class="err" id="global-error" role="alert" aria-live="assertive" hidden></p>
 
 <!-- ============================ Open ============================ -->
-<section class="panel" id="panel-open" aria-labelledby="tab-open">
-  <h2>Open by ID</h2>
+<section class="panel" id="panel-open" aria-labelledby="tab-open" hidden>
+  <h2>Manage — open by ID</h2>
   <p class="note">
-    This control plane has no collection or search API. Sort order, cursors,
-    limits and scoping have not been designed, and a list route would freeze
-    all four. So you open things by the ID you already know — the same IDs the
-    CLI uses. Creating something below opens it for this page session only;
-    that is a convenience, not a catalog, and a reload forgets it.
+    Opening something by its identifier, for when you already know it. This is
+    not the front door: <strong>Live</strong> finds active work by itself, and
+    its hierarchy browser walks Projects &rarr; Agents &rarr; Candidates &rarr;
+    Runs a page at a time without anything typed. Use this when you have an
+    identifier from a log, a CI job or the CLI and want to go straight to it.
+  </p>
+  <p class="note">
+    There is still no search. Creating something below opens it for this page
+    session only; that is a convenience, not a catalog, and a reload forgets
+    it &mdash; the control plane is the only source of truth.
   </p>
 
   <form class="row" id="form-open-project">
@@ -215,8 +220,70 @@
 </section>
 
 <!-- ============================ Live ============================ -->
-<section class="panel" id="panel-live" aria-labelledby="tab-live" hidden>
+<section class="panel" id="panel-live" aria-labelledby="tab-live">
   <h2>Live</h2>
+  <p class="note">
+    This page subscribes to all local activity as soon as it loads. Nothing
+    needs to be typed: a run appears here by itself the moment telemetry for it
+    reaches the control plane. What you see is a <strong>current
+    viewport</strong> &mdash; the stream keeps no history and replays nothing,
+    so a reconnect starts again from what is happening then.
+  </p>
+
+  <p class="state" id="live-state" role="status" aria-live="polite">Connecting…</p>
+
+  <div id="live-notices" aria-live="polite"></div>
+
+  <h3>Active now</h3>
+  <p class="note">
+    Every scope seen on this connection, most recent first. Counts are frames
+    that arrived here, not the run's authoritative record count. Select one to
+    draw its behavior.
+  </p>
+  <div id="live-cards"></div>
+
+  <h3>Behavior flow</h3>
+  <p class="note" id="live-selected" aria-live="polite">No run selected.</p>
+  <p class="note">
+    One run at a time, on purpose. A fingerprint identifies a behavioral shape
+    and carries no run, so two unrelated runs can share one &mdash; drawing
+    them together would let one run's decision and new-behavior state
+    overwrite another's. Activity in a run you are not watching updates its
+    card and is not drawn here.
+  </p>
+  <div id="live-graph"></div>
+
+  <h3>Observations — this stream</h3>
+  <p class="note">
+    The most recent 100 observations of <em>this</em> connection, cleared
+    whenever the stream restarts. Two connections are never joined into one
+    apparent sequence.
+  </p>
+  <div class="result" id="live-rows">
+    <p class="empty">No observations on this stream.</p>
+  </div>
+
+  <h3>Browse what exists</h3>
+  <p class="note">
+    Durable state, read one bounded page at a time. Opening the page reads the
+    first page of projects and nothing else &mdash; no child level is fetched
+    and no continuation is followed until you ask. This is how a reload with no
+    live traffic still finds what is there; realtime answers what is active
+    <em>now</em>, and these two are not the same question.
+  </p>
+  <div class="hierarchy-columns">
+    <div class="result" id="hierarchy-projects"></div>
+    <div class="result" id="hierarchy-agents"></div>
+    <div class="result" id="hierarchy-candidates"></div>
+    <div class="result" id="hierarchy-runs"></div>
+  </div>
+
+  <h3>Watch one run</h3>
+  <p class="note">
+    The Live stream above already shows every run. This narrows the
+    subscription to a single run and reads its authoritative snapshot, which is
+    what you want when a run is finishing and you care about its final state.
+  </p>
   <form class="row" id="form-watch">
     <label for="watch-run-id">Evaluation run ID</label>
     <input type="text" id="watch-run-id" name="run_id" autocomplete="off" required>
@@ -225,7 +292,7 @@
     <button type="button" id="watch-stop" disabled>Stop</button>
   </form>
 
-  <p class="state" id="live-state" role="status" aria-live="polite">Not watching.</p>
+  <p class="state" id="watch-state" role="status" aria-live="polite">Not watching one run.</p>
 
   <h3>Authoritative snapshot</h3>
   <p class="note">
@@ -234,17 +301,6 @@
   </p>
   <div class="result" id="live-snapshot">
     <p class="empty">No snapshot.</p>
-  </div>
-
-  <h3>Live observations — current stream</h3>
-  <p class="note">
-    A viewport, not history: the most recent 100 observations of
-    <em>this</em> connection, cleared whenever the stream restarts. The bus
-    keeps no history and there is nothing to replay, so two connections are
-    never joined into one apparent sequence.
-  </p>
-  <div class="result" id="live-rows">
-    <p class="empty">No observations on this stream.</p>
   </div>
 </section>
 

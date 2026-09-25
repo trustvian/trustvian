@@ -10,6 +10,80 @@ actually depend on.
 
 ### Added
 
+- **Zero-input live behavior WebUI** (task 074). Opening the WebUI used to show
+  a form asking for four identifiers a developer did not have; *run locally,
+  observe behavior live* meant reading a run ID out of a producer's logs. The
+  page now lands on **Live**, subscribes to all local activity, and shows every
+  run producing telemetry as a card — **with nothing typed**. Select one and
+  its behavior flow draws itself: source agent, operation, target, and the
+  decision, risk, trust and anomaly the server computed.
+
+  **Discovery, never provisioning.** Nothing creates a durable entity because
+  telemetry arrived. OTLP traffic does not create a Project, `service.name`
+  does not become an Agent, and the browser creates no Candidate and starts no
+  run. A producer still establishes the evaluation hierarchy — the Collector's
+  `evaluation:` block names a run that must already exist and be running. What
+  changed is only whether a *human* retypes those identifiers into a browser.
+
+  Four bounded collection routes make the durable hierarchy discoverable after
+  a reload with no traffic — `GET /v1/projects`,
+  `GET /v1/projects/{project_id}/agents`,
+  `GET /v1/agents/{agent_id}/candidates` and
+  `GET /v1/candidates/{candidate_id}/evaluation-runs`. They reuse task 065's
+  paging design unchanged: `id` byte-ascending, an exclusive `after` cursor,
+  `limit` 1–64 defaulting to 64, `next_after` present exactly when another row
+  follows, `404` for a missing parent and `200` with an empty array for an
+  empty one. Each element is the entity's existing detail DTO, so a listing
+  publishes nothing a by-id read does not. Cursors are identifiers rather than
+  timestamps because this schema stores timestamps as `RFC3339Nano` text, which
+  is not lexically ordered — a timestamp cursor would silently skip and repeat
+  rows.
+
+  The capability split is preserved: `ControlStore` gained `Projects`,
+  `ProjectAgents` and `AgentCandidates`; `EvaluationStore` gained
+  `CandidateEvaluationRuns`; `ControlPlane` composes both into one browsing
+  surface. A list method does not move an entity between capabilities, and no
+  fifth store interface was added.
+
+  **Discovery is bounded as a workflow, not only per route.** Startup issues
+  exactly one collection request — the first page of `GET /v1/projects` — and
+  the same budget applies to every reconnect. No child level is fetched
+  automatically, no continuation is followed automatically, and there is no
+  timer, poll or prefetch anywhere in the page. A naïve hierarchy walk would be
+  sixteen million rows across a quarter of a million requests while the resync
+  buffer holds 64 frames, which under live traffic degenerates into a resync
+  loop that gets worse the larger the database is.
+
+  **The graph renders exactly one selected run**, because `fingerprint_id` is
+  behavioral identity and carries no project, agent, candidate or run — two
+  unrelated agents doing the same thing produce the same fingerprint, and
+  merging them would let one run's `new_behavior`, decision and risk overwrite
+  another's. An observation outside the selected run updates its card and is
+  not drawn.
+
+  Bounds are explicit and saturation is always stated, never silent: 16 active
+  scope cards, 8 source nodes, 64 target nodes, 128 edges, the existing 100-row
+  observation feed and 64-frame resync buffer. A saturated viewport,
+  `behavior_complete: false` and a realtime queue overflow are reported as the
+  three different facts they are. Animation is evidence — one pulse per
+  received frame, no manufactured traffic, and a quiet agent draws a still
+  graph. `prefers-reduced-motion` removes the movement and no information with
+  it.
+
+  `GET /v1/realtime` is unchanged: same route, same filters, same event kinds,
+  same payload. The Live view subscribes with no filter, which the server
+  already defined as unconstrained. The WebUI gained no authority —
+  `webui.NewHandler()` still takes no arguments — no browser storage, no
+  framework, no build step and no dependency. Every existing manual control
+  remains reachable under **Manage**.
+
+  `SchemaVersion` is 5 on both backends. The v4 → v5 migration adds three
+  indexes — `platform_agents_by_project`, `platform_candidates_by_agent`,
+  `platform_runs_by_candidate` — and **nothing else**: no table, no column, no
+  backfill, no row written and no row changed. See
+  [docs/tasks/v1.0/074-zero-input-live-behavior-webui.md](docs/tasks/v1.0/074-zero-input-live-behavior-webui.md)
+  and [ADR 0041](docs/adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md).
+
 - **Promotion workflow** (task 066). The platform can now record that a
   candidate's evidence was gated and that the verdict accepted — or refused —
   advancement from one environment toward another. One sentence bounds the

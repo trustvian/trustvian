@@ -19,6 +19,11 @@ State: .trustvian/platform.db
 Open the `Web:` URL. No browser is launched for you, and there is no `--open`
 flag — a security tool that opens windows by itself is a surprise.
 
+**Nothing needs to be typed.** The page opens on **Live**, subscribes to all
+local activity, and shows every run that is producing telemetry as it arrives.
+If your agent is running, it is already on the screen; if nothing is running,
+the hierarchy browser below the graph shows what exists.
+
 The API and the WebUI are the **same endpoint**. The UI is served from the same
 loopback listener that answers `/v1`, which is why `runtime.json` still carries
 one URL and needs no second field.
@@ -27,37 +32,143 @@ one URL and needs no second field.
 
 | Section | Actions |
 |---|---|
-| **Open** | Open a project, agent, candidate or evaluation run by ID |
-| **Project** | Create; view `id`, `name` |
-| **Agent** | Create; view `id`, `project_id`, `name` |
-| **Candidate** | Create with the fixed metadata fields; view them |
-| **Evaluation** | Create; view identity, status, timestamps, failure reason; start, complete, fail, cancel; read authoritative progress |
-| **Live** | Watch one run over SSE |
+| **Live** *(default)* | Discover active runs with nothing typed; draw one run's behavior flow; read a bounded observation feed; browse the durable hierarchy a page at a time; watch a single run and read its authoritative snapshot |
+| **Evaluations** | Create; view identity, status, timestamps, failure reason; start, complete, fail, cancel; read authoritative progress |
 | **Compare** | Compare two runs and read the gate, diff and scorecard |
 | **Promotion** | Record a promotion decision; open one by ID; page a project's history |
+| **Manage** | Open a project, agent, candidate or evaluation run by ID |
+| **Project / Agent / Candidate** | Create; view their fields |
 
 What it deliberately cannot do: ingest decision records (that is the job of the
 application under evaluation, through the CLI or the API), browse event history
 (task 067), or manage environments (task 065).
 
-## Navigating by ID
+## Live is the default view
 
-There is no search, and no way to browse the hierarchy. That is a deliberate
-omission, not an unfinished screen.
+```text
+open /
+  → Live, already connected
+  → active runs appear by themselves
+  → select one
+  → behavior graph + observation feed
+```
 
-The control plane has no collection route for the hierarchy —
-`GET /v1/projects` and its siblings do not exist — because pagination, sort
-order, cursor semantics and scoping have not been designed for them, and `/v1`
-route shapes are a stable contract once published. Adding a list endpoint so a
-browser could open with one would freeze four undesigned decisions at once.
+The page subscribes to `GET /v1/realtime` with no filter. An empty filter is
+unconstrained on every dimension — that is what the server already means by it
+— so one subscription receives all local activity, and every frame carries the
+project, agent, candidate, run, environment and behavioral profile it belongs
+to. A card appears for each, with no database read per event and no identifier
+typed by anyone.
 
-Two project-scoped collections do exist, because two entities had a consumer
-that needed one: a project's environments (task 065) and its promotion history
-(task 066). Both traverse by an immutable key in byte order with the server
-bounding every page, and neither opens the hierarchy — you still need the
-project ID to ask.
+**Live activity is a current viewport, not event history.** The stream keeps
+nothing and replays nothing, so a reconnect starts again from what is happening
+then. Task 067 owns retained history; this view owns what is happening now.
 
-So you open things by the ID you already know, which is the same ID the CLI
+**Hierarchy collections are durable discovery.** They answer *what exists*,
+which is a different question from *what is active*, and they are what a reload
+with no live traffic falls back on. The page never confuses the two: a card is
+activity, a hierarchy row is durable state.
+
+### One run at a time, on purpose
+
+The graph draws exactly one selected run. A fingerprint identifies a behavioral
+shape and carries no project, agent, candidate or run — so two unrelated agents
+doing the same thing produce the same fingerprint. Drawing them together would
+let one run's decision, risk and new-behavior state overwrite another's.
+
+Activity in a run you are not watching updates its card and is not drawn.
+Selecting a different card draws that run and discards the previous topology.
+Once you select something explicitly, a newly active run raises its own card
+but never takes the graph you are reading.
+
+### What the graph shows
+
+```text
+                 POST
+support-agent ───────────▶ ollama.localhost
+             ├─ GET  ────▶ crm.localhost
+             ├─ GET  ────▶ knowledge.localhost
+             ├─ POST ────▶ mail.localhost
+             └─ POST ────▶ export.localhost   NEW
+```
+
+The source is the agent from the event's scope; the edge is the operation
+category and name; the target is the target name and category. All six come
+from `StableFeatures` as the observation carried them.
+
+**No semantic names are invented.** If telemetry proves only
+`POST → export.localhost`, that is exactly what is drawn — never
+`export_customer`. Richer semantic fidelity is task 075's, and guessing one
+here would assert something no evidence supports.
+
+Each received observation produces one pulse along its edge. Nothing animates
+without a frame behind it, and a quiet agent draws a still graph — there is no
+decorative traffic and no replay after a reconnect.
+
+### Bounds, and what saturation means
+
+| Bound | Value |
+|---|---|
+| active scope cards | 16 |
+| graph source nodes | 8 |
+| graph target nodes | 64 |
+| graph edges | 128 |
+| observation feed rows | 100 |
+| frames buffered during resync | 64 |
+| automatic collection requests at startup or reconnect | 1 |
+
+Eviction is least-recently-observed, and saturation is always stated: the view
+names which bound it hit and how many items it is not drawing. It never
+describes a truncated graph as complete.
+
+Three different facts are kept apart, because confusing them would misreport
+the platform:
+
+- **a saturated viewport** — the browser chose not to draw everything;
+- **`behavior_complete: false`** — the *run's own evidence* saturated at 512
+  distinct behaviors, which is the platform's statement, not the browser's;
+- **a realtime queue overflow** — notification continuity was lost, so the
+  stream is abandoned and resynchronized rather than silently dropping a frame.
+
+### Browsing what exists
+
+Opening the page reads **one** page of `GET /v1/projects` and nothing else. No
+child level is fetched and no continuation is followed until you ask, and the
+same budget applies to every reconnect.
+
+That bound is deliberate. Each route caps a page at 64, but a route that is
+bounded does not make a *workflow* bounded: 64 projects × 64 agents × 64
+candidates × 64 runs is sixteen million rows across a quarter of a million
+requests, during which the resync buffer holds 64 frames — it would overflow,
+the client would resynchronize, and the crawl would start again.
+
+So descent is yours: selecting a project reads one page of its agents,
+selecting an agent reads one page of its candidates, selecting a candidate
+reads one page of its runs. Where more exists, **More** says so and costs one
+request. There is no timer, no polling and no background prefetch anywhere in
+the page.
+
+### Accessibility
+
+Motion is decoration, never information. Under `prefers-reduced-motion` no
+pulse is created at all, and every fact it carried — which edge fired, the
+decision, the risk level, the `NEW` badge, the connection state — remains as
+text or a badge. Nothing is conveyed by colour alone: each state carries a word
+or a marker, graph nodes and edges are focusable with accessible names, and
+connection state stays in a `role="status"` region.
+
+## Manage — navigating by ID
+
+The secondary surface, for when you already have an identifier from a log, a CI
+job or the CLI and want to go straight to it. It is no longer how you find
+things: **Live** discovers active work by itself, and its hierarchy browser
+walks Projects → Agents → Candidates → Runs with nothing typed.
+
+There is still no search. Every collection is parent-scoped, ordered by an
+immutable identifier in byte order, and bounded per page; filtering by name is
+a capability with its own design and nothing in this journey needs it.
+
+You open things by the ID you already know, which is the same ID the CLI
 uses:
 
 ```text
@@ -69,29 +180,38 @@ only — it is not a catalog, it is not history, and **a reload forgets it**.
 Nothing about which IDs you opened is stored in the browser; the control-plane
 database is the only source of truth.
 
-> **Planned, not shipped.**
-> [Task 074](tasks/v1.0/074-zero-input-live-behavior-webui.md) specifies a
-> default Live view that discovers active agents from the realtime stream and
-> browses the hierarchy through bounded collection routes, so opening the page
-> while an agent is running needs no identifier at all. It is specified and not
-> implemented; everything described on this page is what ships today.
+[Task 074](tasks/v1.0/074-zero-input-live-behavior-webui.md) is what made this
+secondary. See [ADR 0041](adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md)
+for why the collection capability was added after two deliberate deferrals, and
+why discovery is bounded as a whole workflow rather than only per route.
 
-## The live view
+## Watching one run
 
-Watching a run does this, in this order:
+Both subscriptions — the global Live one and the single-run watch — follow the
+same sequence, in this order:
 
 ```text
 subscribe to the stream
 → wait for a valid stream_ready
 → keep buffering events that arrive
-→ read the run and its progress from the database
-→ apply that authoritative snapshot
+→ read the authoritative snapshot
+→ apply it
 → replay the buffered events
 → live
 ```
 
 The order matters. Reading state first and subscribing afterwards would lose
 anything committed in between.
+
+The two differ only in what "the authoritative snapshot" is. Watching one run
+reads that run and its progress. The global Live view has no single run, so its
+snapshot is **one bounded page of `GET /v1/projects` and nothing else** — a
+snapshot of what exists at the root, not of what is active. Activity is
+realtime's answer, and the page says which is which.
+
+Narrowing to one run is still worth doing when a run is finishing and you care
+about its final authoritative state; the Live stream above already shows every
+run as it happens.
 
 ### Live rows are a viewport, not history
 
@@ -270,6 +390,10 @@ is the machine contract every client shares.
 - [Local development](local-development.md) — the runtime the UI is served from
 - [Platform CLI](platform-cli.md) — the same operations from a shell or CI
 - [Terminal dashboard](tui.md) — the same live view in a terminal
+- [ADR 0036](adr/0036-webui-is-a-same-origin-adapter-over-v1.md) — why the UI
+  is a static same-origin client with no control-plane authority
+- [ADR 0041](adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md)
+  — the collection capability, the id cursor, and why the graph is one run
 - [ADR 0036](adr/0036-webui-is-a-same-origin-adapter-over-v1.md) — why the UI is
   a static same-origin adapter rather than a server-rendered or framework app
 - [Task 063](tasks/v1.0/063-minimal-web-control-plane.md) — the specification

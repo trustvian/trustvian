@@ -44,13 +44,10 @@ const maxProjectEnvironments = 64
 // the same number this one enforces, and two copies of a limit is how two
 // layers come to disagree about it.
 //
-// This is the whole range: a store caller may ask for 1 to 64 rows and 65 is
-// refused like any other out-of-range limit. A transport that needs to know
-// whether another page exists asks a second bounded question rather than
-// borrowing a row from this one — an off-by-one fetch here would make the
-// public contract say 64 and mean 65, and every caller would then have to
-// know which. See the HTTP list handler.
-const MaxEnvironmentPage = 64
+// Defined as MaxListPage since task 074, which gave every collection in this
+// API one shared bound. The name stays because it is published compatibility
+// surface; the value has one definition.
+const MaxEnvironmentPage = MaxListPage
 
 var (
 	// ErrEnvironmentLimit reports a create that would take a project past

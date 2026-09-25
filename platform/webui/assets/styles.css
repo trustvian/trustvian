@@ -281,3 +281,81 @@ td { font-family: var(--mono); overflow-wrap: anywhere; }
   input[type="text"] { min-width: 0; width: 100%; }
   .stack { max-width: none; }
 }
+
+/* ---------------------------------------------------------------------
+   Live view (task 074)
+   --------------------------------------------------------------------- */
+
+/* Scope cards. Selection is carried by a border weight, a marker and
+   aria-pressed — never by colour alone. */
+.cards { display: flex; flex-wrap: wrap; gap: 0.5rem; list-style: none; margin: 0 0 0.8rem; padding: 0; }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font: inherit;
+  gap: 0.1rem;
+  min-width: 13rem;
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+}
+.card:hover { border-color: var(--accent); }
+.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.card-selected { border-color: var(--accent); border-left-width: 4px; }
+/* A text marker, so which card is drawn does not depend on seeing a border. */
+.card-selected::before { content: "▶ drawing"; color: var(--accent); font-size: 0.74rem; }
+.card-line { font-size: 0.8rem; }
+.card-key { color: var(--muted); }
+.card-value { font-family: var(--mono); }
+.card-seen { color: var(--muted); font-size: 0.74rem; margin-top: 0.2rem; }
+.card-state { font-size: 0.74rem; }
+
+/* The behavior graph. */
+.graph { display: block; max-width: 100%; height: auto; }
+.node-box { fill: var(--panel); stroke: var(--line); }
+.node-label { fill: var(--ink); font-family: var(--mono); font-size: 12px; }
+.node-new .node-box { stroke: var(--accent); stroke-width: 2; }
+.node-badge { fill: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: 0.06em; }
+.edge-line { stroke: var(--line); stroke-width: 1.5; }
+.edge-new .edge-line { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 3; }
+.edge-label { fill: var(--ink); font-size: 11px; }
+.edge-state { fill: var(--muted); font-size: 10px; }
+.edge-pulse { fill: var(--accent); }
+.edge:focus-visible { outline: 2px solid var(--accent); }
+
+/* Saturation and evidence notices. Marked with text as well as a tint. */
+.notice {
+  background: var(--warn-bg);
+  border-left: 3px solid var(--accent);
+  font-size: 0.86rem;
+  margin: 0 0 0.5rem;
+  padding: 0.4rem 0.6rem;
+}
+.notice-mark { font-weight: 700; }
+
+/* Hierarchy browser: four bounded levels side by side. */
+.hierarchy-columns {
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+}
+.hierarchy { list-style: none; margin: 0 0 0.4rem; padding: 0; }
+.hierarchy li { font-size: 0.84rem; padding: 0.1rem 0; }
+.hierarchy-detail { color: var(--muted); }
+
+/* prefers-reduced-motion: movement is removed, information is not.
+
+   The pulse element is not even created when the query matches (see app.js),
+   and this rule is the belt to that braces: a browser that changes the
+   preference mid-session, or a pulse already in flight, stops moving here.
+   Every fact the animation carried — which edge fired, the decision, the risk,
+   the NEW badge, the connection state — is text or a badge and is unaffected. */
+@media (prefers-reduced-motion: reduce) {
+  .edge-pulse { display: none; }
+  .graph * { animation: none !important; transition: none !important; }
+  * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}

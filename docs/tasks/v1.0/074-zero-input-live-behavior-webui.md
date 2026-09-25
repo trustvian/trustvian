@@ -1,6 +1,6 @@
 # 074 — Zero-Input Live Behavior WebUI
 
-Status: specified; not implemented
+Status: specified and implemented
 Milestone: `v1.0`
 Depends on: [059](059-realtime-infrastructure.md),
 [063](063-minimal-web-control-plane.md),

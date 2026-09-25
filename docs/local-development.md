@@ -38,13 +38,53 @@ DecisionRecord
 ┌──────────────────────────────────────┐
 │ local runtime                        │
 │   SQLite ← ControlPlane              │
-│              ├─ Realtime Bus ── SSE ─┼──▶ TUI
-│              └─ HTTP API ────────────┼──▶ CLI
+│              ├─ Realtime Bus ── SSE ─┼──▶ TUI · WebUI
+│              └─ HTTP API ────────────┼──▶ CLI · WebUI
 └──────────────────────────────────────┘
 ```
 
 The engine stays outside it. Your application analyzes events, serializes a
 `DecisionRecord`, and posts it — the server never runs a second engine.
+
+## Watching an agent behave
+
+The shortest useful loop, with nothing typed into the browser:
+
+```bash
+make local                  # terminal A — prints the URL
+<run your instrumented agent>   # terminal B
+```
+
+Then open the `Web:` URL. The page lands on **Live**, subscribes to all local
+activity, and shows each active run as a card as telemetry arrives. Select one
+and its behavior flow draws itself — source agent, operation, target, and the
+decision, risk, trust and anomaly the server computed for each observation. A
+behavior the reference never showed is marked `NEW`.
+
+```text
+                 POST
+support-agent ───────────▶ ollama.localhost
+             ├─ GET  ────▶ crm.localhost
+             ├─ GET  ────▶ knowledge.localhost
+             ├─ POST ────▶ mail.localhost
+             └─ POST ────▶ export.localhost   NEW
+```
+
+You do not need a Project, Agent, Candidate or EvaluationRun identifier to see
+this. **A producer still has to create them** — the Collector's `evaluation:`
+block names a run that must already exist and be running, and nothing here
+creates a durable entity because telemetry arrived. What changed is that a
+person no longer retypes those identifiers into a browser to see the result.
+
+If nothing is running, the same page browses what exists: one bounded page of
+projects at startup, then Projects → Agents → Candidates → Runs a page at a
+time, when you ask. See [the WebUI guide](webui.md).
+
+The reference end-to-end workflow is the companion repository
+`trustvian/trustvian-python-agent-demo`: a Python agent driven by Ollama,
+instrumented with runtime OpenTelemetry, feeding the Collector and the
+evaluation ingest path. This repository deliberately keeps no second Python
+demo — two demos of the same thing drift.
 
 ## State
 

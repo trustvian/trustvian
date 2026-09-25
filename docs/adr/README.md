@@ -64,6 +64,7 @@ as long as its own decision holds.
 | [0038](0038-collector-evaluation-ingest-is-an-http-adapter.md) | Collector evaluation ingest is an HTTP adapter | Accepted |
 | [0039](0039-environments-are-project-owned-ranked-references.md) | Environments are project-owned ranked references | Accepted |
 | [0040](0040-promotions-are-immutable-evidence-backed-platform-decisions.md) | Promotions are immutable evidence-backed platform decisions | Accepted |
+| [0041](0041-bounded-hierarchy-collections-and-run-scoped-live-view.md) | Bounded hierarchy collections and a run-scoped live view | Accepted |
 
 No ADR is currently Superseded or Deprecated. Several later ADRs build on
 earlier ones — 0006 and 0018 on 0004's narrow port, 0007/0008/0017 on 0002's
@@ -71,8 +72,9 @@ public-API test, 0013 on 0011's minimum-support floor, 0019 on the bounded-state
 mandate 0010/0011/0012/0016 established, 0024 on the mechanism 0022 deliberately
 left open, 0039 on the opaque reference 0025 and 0027 both leaned on, 0040 on
 the ordering primitive 0039 established and the caller-owned identity 0025
-requires — and each cites the earlier decision as still governing rather than
-replacing it.
+requires, 0041 on the collection semantics 0039 designed and the ephemeral
+realtime model 0032 pinned — and each cites the earlier decision as still
+governing rather than replacing it.
 
 ## Writing one
 

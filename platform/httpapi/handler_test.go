@@ -232,27 +232,47 @@ func TestControlEntityRoundTrip(t *testing.T) {
 	a.mustStatus(a.do("GET", "/v1/candidates/cand-1", nil), 200, "get candidate")
 }
 
-// No collection GET exists, so list semantics are not frozen by accident.
-// Task 065 added exactly one collection route, for one entity. The others
-// stay absent: their scope, order, cursor and limit are still undesigned, and
-// task 065 neither performs nor pre-empts that design.
-func TestListRoutesAreAbsentExceptEnvironments(t *testing.T) {
+// TestCollectionRoutesAreExactlyTheDesignedSet replaces the absence test task
+// 065 shipped, and keeps the part of it that is still true.
+//
+// The old rule was "no collection GET exists except environments", because
+// scope, order, cursor and limit were undesigned everywhere else. Task 074
+// designed them for the control hierarchy — the same four decisions, reused
+// rather than re-made — so the rule is no longer "no collections". It is
+// "exactly these, and no unscoped route that was never designed".
+//
+// The forbidden half matters more than the allowed half: `GET /v1/agents`,
+// `GET /v1/candidates` and `GET /v1/evaluation-runs` are still absent. Each
+// would be an unscoped listing of an entity whose natural scope is its parent,
+// and publishing one would freeze a decision nobody has made.
+func TestCollectionRoutesAreExactlyTheDesignedSet(t *testing.T) {
 	a := newAPI(t)
 	a.seedHierarchy()
 
+	// Designed, scoped and bounded. Each answers "what is under this parent",
+	// except the root, which is the hierarchy's only entry point.
 	for _, path := range []string{
-		"/v1/projects", "/v1/agents", "/v1/candidates", "/v1/evaluation-runs",
-		"/v1/environments",
+		"/v1/projects",
+		"/v1/projects/proj-1/agents",
+		"/v1/agents/agent-1/candidates",
+		"/v1/candidates/cand-1/evaluation-runs",
+		"/v1/projects/proj-1/environments",
+		"/v1/projects/proj-1/promotions",
+	} {
+		a.mustStatus(a.do("GET", path, nil), 200, "GET "+path)
+	}
+
+	// Never designed, and still refused.
+	for _, path := range []string{
+		"/v1/agents", "/v1/candidates", "/v1/evaluation-runs",
+		"/v1/environments", "/v1/promotions",
 	} {
 		r := a.do("GET", path, nil)
 		if r.Code == http.StatusOK {
-			t.Errorf("GET %s returned 200; listing semantics are not designed yet", path)
+			t.Errorf("GET %s returned 200; an unscoped listing of this entity has "+
+				"no designed scope, order, cursor or limit", path)
 		}
 	}
-
-	// The one that does exist is project-scoped, because a ref is unique
-	// inside a project and nowhere else.
-	a.mustStatus(a.do("GET", "/v1/projects/proj-1/environments", nil), 200, "list environments")
 }
 
 func TestMissingResourceIsNotFound(t *testing.T) {

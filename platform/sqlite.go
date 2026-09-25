@@ -35,7 +35,7 @@ import (
 // schema version. They change for different reasons, and coupling them would
 // force a migration on an unrelated release or hide a real one behind an
 // unchanged number.
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 // Table names. Compile-time constants: these are the only identifiers that
 // ever appear in assembled SQL. Every caller-supplied value is a bound
@@ -65,6 +65,22 @@ const (
 // lookup: the project-scoped promotion page. Named as a constant for the same
 // reason table names are — it is the only identifier assembled into SQL.
 const indexPromotionsByProject = "platform_promotions_by_project"
+
+// The v5 indexes, one per child collection task 074 added.
+//
+// Each backs a `WHERE parent = ? AND id > ? ORDER BY id LIMIT ?` scan. Without
+// them those three are full table scans filtered in the engine, which is fine
+// on a laptop and is not fine anywhere else. `platform_projects` needs none:
+// its collection ranges along the primary key.
+//
+// The column order is (parent, id) rather than (id, parent) because the parent
+// is an equality predicate and the id is the range — an index that led with id
+// would have to scan every child of every parent.
+const (
+	indexAgentsByProject   = "platform_agents_by_project"
+	indexCandidatesByAgent = "platform_candidates_by_agent"
+	indexRunsByCandidate   = "platform_runs_by_candidate"
+)
 
 // schemaTables is every table this schema owns, and the allowlist a test
 // asserts against so an event, scorecard, or gate-result table cannot appear
@@ -221,12 +237,15 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV1ToV2(ctx); err != nil {
 			return err
 		}
-		// Then forward, one step at a time: a v1 database reaches v4 through
-		// v2 and v3 rather than through separately-maintained jumps.
+		// Then forward, one step at a time: a v1 database reaches v5 through
+		// v2, v3 and v4 rather than through separately-maintained jumps.
 		if err := s.migrateV2ToV3(ctx); err != nil {
 			return err
 		}
-		return s.migrateV3ToV4(ctx)
+		if err := s.migrateV3ToV4(ctx); err != nil {
+			return err
+		}
+		return s.migrateV4ToV5(ctx)
 
 	case schemaVersionV2:
 		if err := s.requireTables(ctx, schemaVersionV2, schemaTablesV2); err != nil {
@@ -235,13 +254,29 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV2ToV3(ctx); err != nil {
 			return err
 		}
-		return s.migrateV3ToV4(ctx)
+		if err := s.migrateV3ToV4(ctx); err != nil {
+			return err
+		}
+		return s.migrateV4ToV5(ctx)
 
 	case schemaVersionV3:
 		if err := s.requireTables(ctx, schemaVersionV3, schemaTablesV3); err != nil {
 			return err
 		}
-		return s.migrateV3ToV4(ctx)
+		if err := s.migrateV3ToV4(ctx); err != nil {
+			return err
+		}
+		return s.migrateV4ToV5(ctx)
+
+	case schemaVersionV4:
+		// v4 and v5 hold the same tables, so the table check cannot tell them
+		// apart and the stamped version is the only distinction. That is
+		// correct rather than a gap: an index-only migration has nothing else
+		// to detect.
+		if err := s.requireTables(ctx, schemaVersionV4, schemaTablesV4); err != nil {
+			return err
+		}
+		return s.migrateV4ToV5(ctx)
 
 	default:
 		// No path from anything else. Newer is refused too: this binary
@@ -428,10 +463,51 @@ func (s *SQLiteStore) migrateV2ToV3Once(ctx context.Context) error {
 // accurate answer.
 func (s *SQLiteStore) migrateV3ToV4(ctx context.Context) error {
 	if err := s.migrateV3ToV4Once(ctx); err != nil {
+		if s.migrationRaceRecovered(ctx, schemaVersionV4) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// migrateV4ToV5 adds the three child-collection indexes task 074 reads
+// through, and nothing else.
+//
+// Index-only, which makes it the first migration in this schema that changes
+// no table and no row. That is deliberate and is the property its tests
+// assert: a v4 database's every stored value must be byte-identical
+// afterwards, and no project, agent, candidate, run or promotion may appear
+// that nobody created. A schema change is not a source of platform state.
+func (s *SQLiteStore) migrateV4ToV5(ctx context.Context) error {
+	if err := s.migrateV4ToV5Once(ctx); err != nil {
 		if s.migrationRaceRecovered(ctx, SchemaVersion) {
 			return nil
 		}
 		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateV4ToV5Once(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: migrate schema v4 to v5: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, statement := range v5IndexStatements() {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("platform: migrate schema v4 to v5: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
+		SchemaVersion); err != nil {
+		return fmt.Errorf("platform: migrate schema v4 to v5: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: migrate schema v4 to v5: %w", err)
 	}
 	return nil
 }
@@ -453,7 +529,7 @@ func (s *SQLiteStore) migrateV3ToV4Once(ctx context.Context) error {
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
-		SchemaVersion); err != nil {
+		schemaVersionV4); err != nil {
 		return fmt.Errorf("platform: migrate schema v3 to v4: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -589,6 +665,14 @@ const schemaVersionV2 = 2
 // promotion history.
 const schemaVersionV3 = 3
 
+// schemaVersionV4 is task 066's schema: every table v5 has.
+//
+// v5 adds no table — only the three child-collection indexes task 074 needs —
+// so v4 and v5 are indistinguishable by table set and are told apart by the
+// stamped version alone. That is why schemaTablesByVersion maps both to the
+// same list rather than to two that happen to be equal.
+const schemaVersionV4 = 4
+
 // schemaTablesV1 is what a complete v1 database holds.
 var schemaTablesV1 = []string{
 	tableSchemaVersion, tableProjects, tableAgents, tableCandidates,
@@ -600,6 +684,10 @@ var schemaTablesV2 = append(append([]string{}, schemaTablesV1...), tableIngestSt
 
 // schemaTablesV3 is what a complete v3 database holds.
 var schemaTablesV3 = append(append([]string{}, schemaTablesV2...), tableEnvironments)
+
+// schemaTablesV4 is what a complete v4 database holds — the same tables v5
+// does, because v5's migration adds only indexes.
+var schemaTablesV4 = schemaTables
 
 // schemaTablesByVersion maps every schema version this binary can recognize to
 // the tables a complete database at that version holds.
@@ -615,6 +703,7 @@ var schemaTablesByVersion = map[int][]string{
 	schemaVersionV1: schemaTablesV1,
 	schemaVersionV2: schemaTablesV2,
 	schemaVersionV3: schemaTablesV3,
+	schemaVersionV4: schemaTablesV4,
 	SchemaVersion:   schemaTables,
 }
 
@@ -814,6 +903,51 @@ func schemaStatements() []string {
 
 		promotionsTableStatement(),
 		promotionsIndexStatement(),
+
+		// v5: the child-collection indexes, listed last for the same reason
+		// every other version's additions are — the migration that introduced
+		// them applies exactly these, and a fresh database must end up
+		// identical to a migrated one.
+		agentsByProjectIndexStatement(),
+		candidatesByAgentIndexStatement(),
+		runsByCandidateIndexStatement(),
+	}
+}
+
+// The v5 index statements, written once so the fresh schema and the v4 → v5
+// migration cannot disagree about them.
+//
+// Identical text on both backends: the indexed columns already carry
+// COLLATE "C" in the PostgreSQL schema, so the index inherits byte ordering
+// and needs no collation clause of its own. Writing one here would create a
+// second collation spelling to keep in step with the column's, which is the
+// drift these single definitions exist to prevent.
+func agentsByProjectIndexStatement() string {
+	return `CREATE INDEX ` + indexAgentsByProject +
+		` ON ` + tableAgents + ` (project_id, id)`
+}
+
+func candidatesByAgentIndexStatement() string {
+	return `CREATE INDEX ` + indexCandidatesByAgent +
+		` ON ` + tableCandidates + ` (agent_id, id)`
+}
+
+func runsByCandidateIndexStatement() string {
+	return `CREATE INDEX ` + indexRunsByCandidate +
+		` ON ` + tableRuns + ` (candidate_id, id)`
+}
+
+// v5IndexStatements is the whole content of the v4 → v5 migration.
+//
+// Three indexes and a version stamp. No table, no column, no backfill, no data
+// rewrite and no synthesized entity: task 074 adds a way to *read* the
+// hierarchy that already exists, and a migration that invented a row would be
+// fabricating platform state from a schema change.
+func v5IndexStatements() []string {
+	return []string{
+		agentsByProjectIndexStatement(),
+		candidatesByAgentIndexStatement(),
+		runsByCandidateIndexStatement(),
 	}
 }
 
@@ -1238,6 +1372,66 @@ func (s *SQLiteStore) ProjectEnvironments(
 		return nil, err
 	}
 	return queryEnvironmentPage(ctx, sqlQuerier{s.db}, projectID, after, limit)
+}
+
+// ---------------------------------------------------------------------
+// Hierarchy collections (task 074)
+// ---------------------------------------------------------------------
+
+// Projects returns one bounded page of projects in id byte order.
+func (s *SQLiteStore) Projects(
+	ctx context.Context, after ProjectID, limit int,
+) ([]Project, error) {
+	if err := validateListPage("project", string(after), limit); err != nil {
+		return nil, err
+	}
+	// No parent to verify: this is the root collection, and an empty platform
+	// is an empty page rather than a missing anything.
+	return queryProjectPage(ctx, sqlQuerier{s.db}, after, limit)
+}
+
+// ProjectAgents returns one bounded page of a project's agents.
+//
+// The parent is checked before the scan so a project that does not exist is
+// ErrStoreNotFound rather than an empty page — a caller browsing a hierarchy
+// needs to tell "no agents yet" from "wrong identifier", and an empty array
+// answers both.
+func (s *SQLiteStore) ProjectAgents(
+	ctx context.Context, projectID ProjectID, after AgentID, limit int,
+) ([]Agent, error) {
+	if err := validateListPage("agent", string(after), limit); err != nil {
+		return nil, err
+	}
+	if err := s.requireExists(ctx, tableProjects, "project", string(projectID)); err != nil {
+		return nil, err
+	}
+	return queryAgentPage(ctx, sqlQuerier{s.db}, projectID, after, limit)
+}
+
+// AgentCandidates returns one bounded page of an agent's candidates.
+func (s *SQLiteStore) AgentCandidates(
+	ctx context.Context, agentID AgentID, after CandidateID, limit int,
+) ([]Candidate, error) {
+	if err := validateListPage("candidate", string(after), limit); err != nil {
+		return nil, err
+	}
+	if err := s.requireExists(ctx, tableAgents, "agent", string(agentID)); err != nil {
+		return nil, err
+	}
+	return queryCandidatePage(ctx, sqlQuerier{s.db}, agentID, after, limit)
+}
+
+// CandidateEvaluationRuns returns one bounded page of a candidate's runs.
+func (s *SQLiteStore) CandidateEvaluationRuns(
+	ctx context.Context, candidateID CandidateID, after EvaluationRunID, limit int,
+) ([]EvaluationRun, error) {
+	if err := validateListPage("evaluation run", string(after), limit); err != nil {
+		return nil, err
+	}
+	if err := s.requireExists(ctx, tableCandidates, "candidate", string(candidateID)); err != nil {
+		return nil, err
+	}
+	return queryRunPage(ctx, sqlQuerier{s.db}, candidateID, after, limit)
 }
 
 // ---------------------------------------------------------------------

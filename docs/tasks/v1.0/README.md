@@ -24,7 +24,7 @@ Tasks for the `v1.0` milestone.
 | [066 — Promotion Workflow](066-promotion-workflow.md) | Specified and implemented |
 | 067–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
 | [073 — OTel Collector Evaluation Ingest](073-otel-collector-evaluation-ingest.md) | Specified and implemented |
-| [074 — Zero-Input Live Behavior WebUI](074-zero-input-live-behavior-webui.md) | Specified; not implemented |
+| [074 — Zero-Input Live Behavior WebUI](074-zero-input-live-behavior-webui.md) | Specified and implemented |
 | [075 — AI Semantic Telemetry Normalization](075-ai-semantic-telemetry-normalization.md) | Specified; not implemented |
 | [076 — Behavioral Trace & Session Evidence Explorer](076-behavioral-evidence-explorer.md) | Specified; not implemented |
 | [077 — Unified OTLP Local Dev Runtime](077-unified-otlp-local-dev-runtime.md) | Specified; not implemented |
@@ -76,17 +76,24 @@ Task 073 is **implemented**: the Collector produced a `Result` and the control
 plane accepted a `DecisionRecord`, and nothing joined them, so a workload
 observable only through OpenTelemetry could not be evaluated at all.
 
-**Tasks 074–078 are specified and not implemented.** Together they are the
-difference between a platform that works and one a developer can pick up:
+**Task 074 is implemented; 075–078 are specified and not implemented.**
+Together they are the difference between a platform that works and one a
+developer can pick up:
 
-- **074 — Zero-Input Live Behavior WebUI.** Opening the WebUI shows a form
-  asking for an identifier the developer does not have, so *run locally,
-  observe behavior live* requires reading one out of a producer's logs. The
-  milestone discovers active work from the realtime stream it can already
-  subscribe to unfiltered, renders a bounded run-scoped behavior graph, and
-  rediscovers the durable hierarchy after a reload through bounded routes —
-  one request at startup, no automatic continuation, descent only when asked.
-  Its schema step is **4 → 5**, which places it after 066 in the chain.
+- **074 — Zero-Input Live Behavior WebUI** is **implemented**. Opening the
+  WebUI used to show a form asking for an identifier the developer did not
+  have, so *run locally, observe behavior live* meant reading one out of a
+  producer's logs. It now discovers active work from the realtime stream it
+  could always subscribe to unfiltered, renders a bounded run-scoped behavior
+  graph, and rediscovers the durable hierarchy after a reload through four
+  bounded collection routes — one request at startup, no automatic
+  continuation, descent only when asked. The graph is one selected run because
+  `fingerprint_id` is behavioral identity and not global observation identity;
+  merging two runs that share one would let one run's decision overwrite
+  another's. Its schema step was **4 → 5**, three indexes and nothing else, and
+  it landed after 066 as the chain required.
+  [ADR 0041](../../adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md)
+  records the reasoning.
 - **075 — AI Semantic Telemetry Normalization.** Zero-code instrumentation
   reduces an agent's tool call to an HTTP POST against a hostname, so the
   baseline learns transport shapes rather than behavior. Where a producer
@@ -132,8 +139,9 @@ entity capped at creation and the response capped per page, because a migrated
 database may already hold more than the cap allows anyone to create. No other
 list route was added, because no other entity had a consumer that needed one.
 
-[Task 074](074-zero-input-live-behavior-webui.md) is the first milestone with a
-concrete requirement for the rest of the hierarchy: a browser that reloads when
+[Task 074](074-zero-input-live-behavior-webui.md) was the first milestone with a
+concrete requirement for the rest of the hierarchy, and is the one that
+resolved it: a browser that reloads when
 nothing is happening has to find the Projects, Agents, Candidates and
 EvaluationRuns that already exist, and the alternatives — browser storage,
 direct database access, pretending realtime replays — are each refused for

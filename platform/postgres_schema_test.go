@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -45,49 +46,86 @@ func createsTable(stmt, table string) bool {
 	return strings.HasPrefix(strings.TrimSpace(stmt), `CREATE TABLE `+table+` (`)
 }
 
-// createOlderSchema builds a historical schema by replaying the statements the
-// store uses, minus the ones later versions appended, and stamping the version
-// they belonged to.
+// statementVersion says which schema version first shipped each statement.
+//
+// A classification rather than a position, and this is the third spelling of
+// this fixture. The first two counted from the end of the statement list —
+// "the last is environments, the second-to-last is the ingest cursor" — and
+// both broke the moment a version appended something: task 066 added two
+// statements and task 074 added three more, and each time every offset had to
+// be re-counted by hand after a guard caught it. The guard working is not the
+// same as the design working.
+//
+// Keyed by the object each statement creates, so a version's fixture is "every
+// statement introduced at or before it" and appending a statement cannot
+// silently shift another version's fixture. Forgetting to register a new one
+// is caught by classifyStatement, which refuses to guess.
+func statementVersion(stmt string) (int, bool) {
+	introduced := []struct {
+		object  string
+		version int
+	}{
+		// v1: task 057's tables.
+		{tableSchemaVersion, schemaVersionV1},
+		{tableProjects, schemaVersionV1},
+		{tableAgents, schemaVersionV1},
+		{tableCandidates, schemaVersionV1},
+		{tableRuns, schemaVersionV1},
+		{tableAggregates, schemaVersionV1},
+		{tableSnapshots, schemaVersionV1},
+		{tableEntries, schemaVersionV1},
+		// v2: task 058's ingest cursor.
+		{tableIngestState, schemaVersionV2},
+		// v3: task 065's environment registry.
+		{tableEnvironments, schemaVersionV3},
+		// v4: task 066's promotion history and its index.
+		{tablePromotions, schemaVersionV4},
+		{indexPromotionsByProject, schemaVersionV4},
+		// v5: task 074's child-collection indexes.
+		{indexAgentsByProject, SchemaVersion},
+		{indexCandidatesByAgent, SchemaVersion},
+		{indexRunsByCandidate, SchemaVersion},
+	}
+
+	trimmed := strings.TrimSpace(stmt)
+	for _, entry := range introduced {
+		if strings.HasPrefix(trimmed, `CREATE TABLE `+entry.object+` (`) ||
+			strings.HasPrefix(trimmed, `CREATE INDEX `+entry.object+` `) {
+			return entry.version, true
+		}
+	}
+	return 0, false
+}
+
+// createOlderSchema builds a historical schema by replaying exactly the
+// statements that version shipped.
 //
 // Assembled from the live statements rather than copied, so a fixture cannot
-// drift from what that version actually was. The omitted statements are named
-// and checked from the end backwards: appending a table without extending this
-// would otherwise silently build the wrong past. Task 066 appended two — the
-// promotions table and its index — which is exactly the check firing as
-// designed rather than a fixture that quietly kept working.
+// drift from what that version actually was.
 func createOlderSchema(t *testing.T, pool *pgxpool.Pool, version int) {
 	t.Helper()
 	ctx := context.Background()
 
-	statements := postgresSchemaStatements()
-	tail := []struct {
-		offset   int
-		contains string
-	}{
-		{1, indexPromotionsByProject},
-		{2, `CREATE TABLE ` + tablePromotions},
-		{3, `CREATE TABLE ` + tableEnvironments},
-		{4, `CREATE TABLE ` + tableIngestState},
-	}
-	for _, want := range tail {
-		if !strings.Contains(statements[len(statements)-want.offset], want.contains) {
-			t.Fatalf("schema statement %d from the end no longer contains %q; the "+
-				"fixture would build the wrong version", want.offset, want.contains)
-		}
+	if version < schemaVersionV1 || version >= SchemaVersion {
+		t.Fatalf("no fixture for schema version %d", version)
 	}
 
-	// One entry per version this binary can still open, counting back over the
-	// statements every later version appended.
 	var older []string
-	switch version {
-	case schemaVersionV1:
-		older = statements[:len(statements)-4]
-	case schemaVersionV2:
-		older = statements[:len(statements)-3]
-	case schemaVersionV3:
-		older = statements[:len(statements)-2]
-	default:
-		t.Fatalf("no fixture for schema version %d", version)
+	for _, stmt := range postgresSchemaStatements() {
+		introduced, known := statementVersion(stmt)
+		if !known {
+			// A statement nobody classified. Refused rather than guessed at:
+			// including it would put a future version's object in an older
+			// fixture, and excluding it would omit one this version needs.
+			t.Fatalf("schema statement is not registered in statementVersion:\n%s\n\n"+
+				"add it there with the version that introduced it", strings.TrimSpace(stmt))
+		}
+		if introduced <= version {
+			older = append(older, stmt)
+		}
+	}
+	if len(older) == 0 {
+		t.Fatalf("v%d fixture is empty", version)
 	}
 
 	for _, stmt := range older {
@@ -121,6 +159,41 @@ func createV2Schema(t *testing.T, pool *pgxpool.Pool) {
 func createV3Schema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	createOlderSchema(t, pool, schemaVersionV3)
+}
+
+// createV4Schema builds a task 066 schema: every table, and none of v5's
+// child-collection indexes, stamped version 4.
+func createV4Schema(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	createOlderSchema(t, pool, schemaVersionV4)
+}
+
+// TestEverySchemaStatementIsClassified keeps the fixtures above honest.
+//
+// Registering a new statement is one line; forgetting to is a fixture that
+// builds the wrong past. This fails next to the change rather than inside
+// whichever migration test happens to notice.
+func TestEverySchemaStatementIsClassified(t *testing.T) {
+	statements := postgresSchemaStatements()
+	if len(statements) == 0 {
+		t.Fatal("no schema statements; this guard would pass vacuously")
+	}
+	seen := map[int]int{}
+	for _, stmt := range statements {
+		version, known := statementVersion(stmt)
+		if !known {
+			t.Errorf("unregistered schema statement:\n%s", strings.TrimSpace(stmt))
+			continue
+		}
+		seen[version]++
+	}
+	// Every version from 1 to the current one contributed something, which is
+	// what makes "introduced at or before" a meaningful filter.
+	for version := schemaVersionV1; version <= SchemaVersion; version++ {
+		if seen[version] == 0 {
+			t.Errorf("no statement is attributed to v%d", version)
+		}
+	}
 }
 
 func storedVersion(t *testing.T, pool *pgxpool.Pool) int {
@@ -461,6 +534,245 @@ func seedPostgresV3Environments(t *testing.T, pool *pgxpool.Pool, projectID stri
 			t.Fatalf("seed v3 environment %s: %v", ref, err)
 		}
 	}
+}
+
+// postgresIndexNames lists the named indexes in the current schema.
+func postgresIndexNames(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() ORDER BY indexname`)
+	if err != nil {
+		t.Fatalf("list indexes: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan index name: %v", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("list indexes: %v", err)
+	}
+	return names
+}
+
+// postgresColumnsOf lists one table's columns.
+func postgresColumnsOf(t *testing.T, pool *pgxpool.Pool, table string) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`SELECT column_name FROM information_schema.columns
+		 WHERE table_schema = current_schema() AND table_name = $1
+		 ORDER BY column_name`, table)
+	if err != nil {
+		t.Fatalf("list columns of %s: %v", table, err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan column name: %v", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("list columns of %s: %v", table, err)
+	}
+	return names
+}
+
+// TestPostgresMigratesV4ToV5AddingOnlyIndexes is task 074's migration, and the
+// PostgreSQL half of a pair: SQLite's is
+// TestSchemaV4MigratesToV5AddingOnlyIndexes, and the two must agree because
+// the migration statements are shared definitions.
+//
+// The negative assertions carry the weight. An index-only migration that
+// added a column, wrote a row or synthesized an entity would be inventing
+// platform state from a schema change.
+func TestPostgresMigratesV4ToV5AddingOnlyIndexes(t *testing.T) {
+	pool, dsn := schemaTestPool(t)
+	createV4Schema(t, pool)
+	seedPostgresV2Environments(t, pool, "proj-1", []string{"staging", "production"})
+	seedPostgresV3Environments(t, pool, "proj-1", []string{"staging", "production"})
+
+	if got := storedVersion(t, pool); got != schemaVersionV4 {
+		t.Fatalf("fixture version = %d, want %d", got, schemaVersionV4)
+	}
+	beforeIndexes := postgresIndexNames(t, pool)
+	beforeTables := sortedPostgresTables(t, pool)
+	beforeColumns := map[string][]string{}
+	for _, table := range beforeTables {
+		beforeColumns[table] = postgresColumnsOf(t, pool, table)
+	}
+	beforeRows := map[string]int{}
+	for _, table := range beforeTables {
+		beforeRows[table] = countPostgresRows(t, pool, table)
+	}
+
+	store, err := OpenPostgresStore(context.Background(), PostgresConfig{DSN: dsn})
+	if err != nil {
+		t.Fatalf("opening a v4 schema: %v", err)
+	}
+	defer store.Close()
+
+	if got := storedVersion(t, pool); got != SchemaVersion {
+		t.Errorf("version after migration = %d, want %d", got, SchemaVersion)
+	}
+
+	// Exactly the three intended indexes.
+	afterIndexes := postgresIndexNames(t, pool)
+	var added []string
+	for _, name := range afterIndexes {
+		if !slices.Contains(beforeIndexes, name) {
+			added = append(added, name)
+		}
+	}
+	want := []string{indexAgentsByProject, indexCandidatesByAgent, indexRunsByCandidate}
+	slices.Sort(want)
+	slices.Sort(added)
+	if !slices.Equal(added, want) {
+		t.Errorf("migration added indexes %v, want exactly %v", added, want)
+	}
+	for _, name := range beforeIndexes {
+		if !slices.Contains(afterIndexes, name) {
+			t.Errorf("migration dropped index %s", name)
+		}
+	}
+
+	// No table, no column, no row.
+	if after := sortedPostgresTables(t, pool); !slices.Equal(after, beforeTables) {
+		t.Errorf("tables after = %v, before = %v", after, beforeTables)
+	}
+	for _, table := range beforeTables {
+		if after := postgresColumnsOf(t, pool, table); !slices.Equal(after, beforeColumns[table]) {
+			t.Errorf("%s columns after = %v, before = %v", table, after, beforeColumns[table])
+		}
+		after := countPostgresRows(t, pool, table)
+		if table == tableSchemaVersion {
+			if after != 1 {
+				t.Errorf("%s holds %d rows, want 1", table, after)
+			}
+			continue
+		}
+		if after != beforeRows[table] {
+			t.Errorf("%s holds %d rows after, %d before; an index-only migration "+
+				"writes none", table, after, beforeRows[table])
+		}
+	}
+	if countPostgresRows(t, pool, tablePromotions) != 0 {
+		t.Error("the migration fabricated a promotion decision")
+	}
+
+	// Pre-existing content survived and the new collections work against it.
+	if got := len(listAllPostgresEnvironments(t, store, "proj-1")); got != 2 {
+		t.Errorf("proj-1 has %d environments after migration, want 2", got)
+	}
+	agents, err := store.ProjectAgents(t.Context(), "proj-1", "", MaxListPage)
+	if err != nil {
+		t.Fatalf("ProjectAgents() after migration error = %v", err)
+	}
+	if len(agents) != 1 {
+		t.Errorf("proj-1 has %d agents, want 1", len(agents))
+	}
+}
+
+// TestPostgresFreshAndMigratedSchemasAgree is the drift guard between the two
+// ways a v5 PostgreSQL schema comes into existence.
+//
+// A fresh create runs postgresSchemaStatements(); a migration runs each
+// version's own statements in turn. If those disagree, one deployment gets an
+// index the other lacks and it surfaces as a performance mystery rather than
+// as a failure.
+func TestPostgresFreshAndMigratedSchemasAgree(t *testing.T) {
+	freshPool, freshDSN := schemaTestPool(t)
+	fresh, err := OpenPostgresStore(context.Background(), PostgresConfig{DSN: freshDSN})
+	if err != nil {
+		t.Fatalf("fresh open error = %v", err)
+	}
+	defer fresh.Close()
+
+	migratedPool, migratedDSN := schemaTestPool(t)
+	createV1Schema(t, migratedPool)
+	migrated, err := OpenPostgresStore(context.Background(), PostgresConfig{DSN: migratedDSN})
+	if err != nil {
+		t.Fatalf("migrated open error = %v", err)
+	}
+	defer migrated.Close()
+
+	if a, b := sortedPostgresTables(t, freshPool), sortedPostgresTables(t, migratedPool); !slices.Equal(a, b) {
+		t.Errorf("fresh tables = %v, migrated = %v", a, b)
+	}
+	if a, b := postgresIndexNames(t, freshPool), postgresIndexNames(t, migratedPool); !slices.Equal(a, b) {
+		t.Errorf("fresh indexes = %v, migrated = %v; a fresh database and a fully "+
+			"migrated one must end up identical", a, b)
+	}
+}
+
+// TestPostgresReopeningV5DoesNotRemigrate: v4 and v5 hold the same tables, so
+// the dispatch tells them apart by the stamp alone. A v5 database must verify
+// rather than attempt v5's CREATE INDEX statements a second time.
+func TestPostgresReopeningV5DoesNotRemigrate(t *testing.T) {
+	pool, dsn := schemaTestPool(t)
+	createV4Schema(t, pool)
+
+	first, err := OpenPostgresStore(context.Background(), PostgresConfig{DSN: dsn})
+	if err != nil {
+		t.Fatalf("first open error = %v", err)
+	}
+	first.Close()
+
+	second, err := OpenPostgresStore(context.Background(), PostgresConfig{DSN: dsn})
+	if err != nil {
+		t.Fatalf("reopening a v5 database error = %v; the migration ran twice", err)
+	}
+	defer second.Close()
+
+	if got := storedVersion(t, pool); got != SchemaVersion {
+		t.Errorf("version = %d, want %d", got, SchemaVersion)
+	}
+}
+
+// countPostgresRows counts one table.
+func countPostgresRows(t *testing.T, pool *pgxpool.Pool, table string) int {
+	t.Helper()
+	var count int
+	// table comes from information_schema, never from a caller.
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM `+table).Scan(&count); err != nil {
+		t.Fatalf("count %s: %v", table, err)
+	}
+	return count
+}
+
+// sortedPostgresTables lists the platform tables present, sorted.
+func sortedPostgresTables(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(),
+		`SELECT table_name FROM information_schema.tables
+		 WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'
+		 ORDER BY table_name`)
+	if err != nil {
+		t.Fatalf("list tables: %v", err)
+	}
+	defer rows.Close()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan table name: %v", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("list tables: %v", err)
+	}
+	return names
 }
 
 // TestPostgresRefusesANewerSchema is the fail-closed case.

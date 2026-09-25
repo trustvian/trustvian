@@ -14,6 +14,7 @@ package webui
 // stripping, never loosening the pattern.
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -821,12 +822,19 @@ func TestOnlyDesignedCollectionRoutesAreCalled(t *testing.T) {
 
 	// Task 063 shipped with no collection route at all, because pagination,
 	// ordering, cursor semantics and scoping were undesigned. Task 065
-	// designed them for environments and task 066 reused them unchanged for
-	// promotions, so the rule is no longer "no collections" — it is "only the
-	// two that have a designed contract, both project-scoped and bounded".
+	// designed them for environments, task 066 reused them unchanged for
+	// promotions, and task 074 extended the same contract to the control
+	// hierarchy once a consumer existed — a browser that reloads with no live
+	// traffic and must still find what is there. The rule is therefore "only
+	// the designed set", and the forbidden list below is what keeps that from
+	// meaning "anything".
 	allowed := []string{
 		"/v1/projects/${segment(projectID)}/promotions",
 		"/v1/projects/${segment(projectID)}/environments",
+		"/v1/projects${query}",
+		"/v1/projects/${segment(projectID)}/agents${query}",
+		"/v1/agents/${segment(agentID)}/candidates${query}",
+		"/v1/candidates/${segment(candidateID)}/evaluation-runs${query}",
 	}
 	for _, route := range allowed {
 		if !strings.Contains(raw, route) {
@@ -836,13 +844,20 @@ func TestOnlyDesignedCollectionRoutesAreCalled(t *testing.T) {
 
 	// The unscoped, undesigned shapes stay forbidden. Each would freeze
 	// semantics nobody has specified.
+	// The unscoped listings that were never designed. `GET /v1/projects` has
+	// left this list because task 074 designed it — it is the hierarchy's one
+	// entry point, and without it there is no way in that does not require
+	// already knowing an identifier. The other three have not: each would be
+	// an unscoped listing of an entity whose natural scope is its parent.
 	forbidden := []regexp.Regexp{
-		*regexp.MustCompile(`"GET",\s*"/v1/projects"`),
-		*regexp.MustCompile(`"GET",\s*"/v1/agents"`),
-		*regexp.MustCompile(`"GET",\s*"/v1/candidates"`),
-		*regexp.MustCompile(`"GET",\s*"/v1/evaluation-runs"`),
-		*regexp.MustCompile(`"GET",\s*"/v1/promotions"`),
+		*regexp.MustCompile("\"GET\",\\s*[\"`]/v1/agents[\"`]"),
+		*regexp.MustCompile("\"GET\",\\s*[\"`]/v1/candidates[\"`]"),
+		*regexp.MustCompile("\"GET\",\\s*[\"`]/v1/evaluation-runs[\"`]"),
+		*regexp.MustCompile("\"GET\",\\s*[\"`]/v1/promotions[\"`]"),
 		*regexp.MustCompile(`[?&](cursor|offset|page|sort|order_by)=`),
+		// Nothing task 074 defines, and each would be a route shape this API
+		// deliberately does not publish.
+		*regexp.MustCompile(`/v1/(everything|hierarchy|active-agents|all-runs)`),
 	}
 	for _, pattern := range forbidden {
 		if match := pattern.FindString(raw); match != "" {
@@ -1499,4 +1514,625 @@ func TestPromotionNavStateIsAppliedAfterTheButtonIsRestored(t *testing.T) {
 			"busy(); busy's restore would undo it and leave the control enabled on " +
 			"the last page")
 	}
+}
+
+// ---------------------------------------------------------------------
+// Zero-input Live view (task 074)
+// ---------------------------------------------------------------------
+//
+// Source guards, for the standing reason task 063's testing strategy gives:
+// no Node, no headless browser and no frontend tooling, so nothing in this
+// package executes JavaScript. Each guard therefore pins a specific construct
+// whose removal is the regression, not merely a word that happens to appear.
+
+// TestLiveIsTheDefaultLandingView is the milestone in one assertion.
+//
+// A developer whose agent is producing telemetry must be able to open `/` and
+// see it. If the shell still opens on the ID form, everything else here is
+// decoration.
+func TestLiveIsTheDefaultLandingView(t *testing.T) {
+	shell := readAsset(t, "index.html")
+
+	// Exactly one tab is selected on load, and it is Live.
+	selected := regexp.MustCompile(`id="(tab-[a-z]+)"[^>]*aria-selected="true"`).
+		FindAllStringSubmatch(shell, -1)
+	if len(selected) != 1 {
+		t.Fatalf("%d tabs are selected on load, want exactly 1", len(selected))
+	}
+	if selected[0][1] != "tab-live" {
+		t.Errorf("the default tab is %s, want tab-live; the ID form must not be the "+
+			"front door", selected[0][1])
+	}
+
+	// And exactly one panel is visible, which must be the Live one.
+	visible := regexp.MustCompile(`<section class="panel" id="(panel-[a-z]+)"([^>]*)>`).
+		FindAllStringSubmatch(shell, -1)
+	if len(visible) < 5 {
+		t.Fatalf("found %d panels; this guard would not be meaningful", len(visible))
+	}
+	shown := []string{}
+	for _, match := range visible {
+		if !strings.Contains(match[2], "hidden") {
+			shown = append(shown, match[1])
+		}
+	}
+	if len(shown) != 1 || shown[0] != "panel-live" {
+		t.Errorf("panels visible on load = %v, want exactly [panel-live]", shown)
+	}
+}
+
+// TestEveryManualCapabilityIsStillReachable: nothing was removed to make room.
+//
+// The information architecture changed; the capabilities did not. Create,
+// open, drive a lifecycle, compare and promote all remain, because they are
+// the right tools for debugging even though they are the wrong front door.
+func TestEveryManualCapabilityIsStillReachable(t *testing.T) {
+	shell := readAsset(t, "index.html")
+
+	for _, id := range []string{
+		"form-open-project", "form-open-agent", "form-open-candidate", "form-open-run",
+		"form-create-project", "form-create-agent", "form-create-candidate", "form-create-run",
+		"form-compare", "form-promotion-create", "form-promotion-get", "form-promotion-list",
+		"form-watch",
+	} {
+		if !strings.Contains(shell, `id="`+id+`"`) {
+			t.Errorf("index.html no longer contains %s; task 074 reorganizes the manual "+
+				"surface and removes none of it", id)
+		}
+	}
+	for _, id := range []string{"run-start", "run-complete", "run-fail", "run-cancel"} {
+		if !strings.Contains(shell, `id="`+id+`"`) {
+			t.Errorf("the run lifecycle control %s is gone", id)
+		}
+	}
+	// Every tab still has a panel and vice versa, so nothing was orphaned by
+	// the reordering.
+	tabs := regexp.MustCompile(`data-panel="(panel-[a-z]+)"`).FindAllStringSubmatch(shell, -1)
+	for _, tab := range tabs {
+		if !strings.Contains(shell, `id="`+tab[1]+`"`) {
+			t.Errorf("tab points at %s, which does not exist", tab[1])
+		}
+	}
+}
+
+// TestLiveSubscribesUnfilteredAndWithNoRunID is the zero-input premise.
+//
+// An empty run id means unconstrained on the server — RealtimeFilter treats
+// every empty dimension that way and says so. The Live view relies on it, so
+// this pins both halves: the client asks for no filter, and the path builder
+// really does omit the parameter rather than sending an empty one.
+func TestLiveSubscribesUnfilteredAndWithNoRunID(t *testing.T) {
+	app := stripJSNoise(readAsset(t, "app.js"))
+	apiSource := stripJSComments(readAsset(t, "api.js"))
+
+	if !strings.Contains(app, `realtimePath: () => api.realtimePath("")`) {
+		t.Error("the Live session does not subscribe with an empty run id")
+	}
+	if !strings.Contains(app, `liveSession.watch("")`) {
+		t.Error("the Live session is not started unfiltered at load")
+	}
+	// Both halves of the ternary, asserted separately because a Go raw string
+	// cannot hold the template literal's backticks.
+	if !strings.Contains(apiSource, "runID ?") ||
+		!strings.Contains(apiSource, `: "/v1/realtime"`) {
+		t.Error("realtimePath does not omit the query for an empty run id; an empty " +
+			"filter must send no parameter at all")
+	}
+	if !strings.Contains(apiSource, "run_id=${encodeURIComponent(runID)}") {
+		t.Error("realtimePath no longer sends run_id for a named run; the single-run " +
+			"watch depends on it")
+	}
+
+	// No new realtime route, parameter or event kind. The protocol is
+	// untouched and every addition this task made is elsewhere.
+	for _, forbidden := range []string{
+		"/v1/realtime/", "/v1/live", "/v1/activity",
+		"scope_id=", "unfiltered=", "all=true",
+	} {
+		if strings.Contains(apiSource, forbidden) {
+			t.Errorf("api.js references %q; GET /v1/realtime keeps its route and "+
+				"parameters unchanged", forbidden)
+		}
+	}
+}
+
+// TestLiveStartupBudgetIsOneProjectsPage is the resync-loop regression.
+//
+// 64 projects × 64 agents × 64 candidates × 64 runs is sixteen million rows
+// across a quarter of a million requests, during which the resync buffer holds
+// 64 frames. Under live traffic that buffer overflows, the client abandons and
+// resynchronizes, and the crawl starts again — worse the larger the database
+// is, which is precisely backwards. A bounded route is not a bounded workflow.
+func TestLiveStartupBudgetIsOneProjectsPage(t *testing.T) {
+	app := stripJSNoise(readAsset(t, "app.js"))
+
+	// The snapshot is the projects page and nothing else.
+	if !regexp.MustCompile(`snapshot:\s*\(\)\s*=>\s*loadRootProjects\(\)`).MatchString(app) {
+		t.Fatal("the Live session's authoritative snapshot is not loadRootProjects")
+	}
+	loader := app[strings.Index(app, "async function loadRootProjects"):]
+	if cut := strings.Index(loader, "\nfunction "); cut > 0 {
+		loader = loader[:cut]
+	}
+	for _, child := range []string{
+		"listProjectAgents", "listAgentCandidates", "listCandidateRuns",
+	} {
+		if strings.Contains(loader, child) {
+			t.Errorf("loadRootProjects calls %s; startup performs no child traversal", child)
+		}
+	}
+	// It must not follow its own continuation either.
+	if strings.Contains(loader, "next_after") {
+		t.Error("loadRootProjects reads next_after; startup follows no continuation")
+	}
+	if strings.Contains(loader, "while") || strings.Contains(loader, "for (") {
+		t.Error("loadRootProjects loops; the startup budget is one request")
+	}
+}
+
+// TestLiveHasNoPollingOrPrefetch: every request is caused by a person, by the
+// single startup snapshot, or by a reconnect taking that snapshot again.
+func TestLiveHasNoPollingOrPrefetch(t *testing.T) {
+	for name, source := range scriptAssets(t) {
+		stripped := stripJSNoise(source)
+		for _, timer := range []string{"setInterval(", "requestIdleCallback(", "setImmediate("} {
+			if strings.Contains(stripped, timer) {
+				t.Errorf("%s uses %s; there is no refresh loop anywhere in this bundle",
+					name, timer)
+			}
+		}
+	}
+
+	// setTimeout survives, and only for the two bounded, non-repeating uses
+	// realtime.js already had: the handshake deadline and the reconnect
+	// backoff. Neither polls, and neither fetches.
+	realtime := stripJSNoise(readAsset(t, "realtime.js"))
+	if got := strings.Count(realtime, "setTimeout("); got != 2 {
+		t.Errorf("realtime.js uses setTimeout %d times, want 2 (handshake deadline, "+
+			"reconnect backoff); a third is likely a poll", got)
+	}
+	app := stripJSNoise(readAsset(t, "app.js"))
+	if strings.Contains(app, "setTimeout(") {
+		t.Error("app.js schedules a timer; every request must be caused by a person " +
+			"or by the startup snapshot")
+	}
+}
+
+// TestLiveDescentIsLazyAndOnePagePerAction: one click, one request.
+func TestLiveDescentIsLazyAndOnePagePerAction(t *testing.T) {
+	app := stripJSNoise(readAsset(t, "app.js"))
+
+	levels := []struct{ fn, call, next string }{
+		{"openAgentsLevel", "api.listProjectAgents(projectID, after)", "openCandidatesLevel"},
+		{"openCandidatesLevel", "api.listAgentCandidates(agentID, after)", "openRunsLevel"},
+		{"openRunsLevel", "api.listCandidateRuns(candidateID, after)", ""},
+	}
+	for _, level := range levels {
+		body := functionBodyForTest(t, app, "async function "+level.fn)
+		if !strings.Contains(body, level.call) {
+			t.Errorf("%s does not issue %s", level.fn, level.call)
+		}
+		if got := strings.Count(body, "await api."); got != 1 {
+			t.Errorf("%s makes %d awaited API calls, want exactly 1 per user action",
+				level.fn, got)
+		}
+		// A level must not fetch the level below it as a side effect of
+		// loading. Descent happens when a person clicks a row.
+		if level.next != "" && !strings.Contains(body, "onOpen:") {
+			t.Errorf("%s does not offer an explicit open control for the next level",
+				level.fn)
+		}
+		// The continuation is an affordance, never followed automatically.
+		if !strings.Contains(body, "onMore:") {
+			t.Errorf("%s offers no explicit More control", level.fn)
+		}
+	}
+
+	// And nothing calls a level loader from another level's body without a
+	// user gesture: every call site is inside an onOpen or onMore callback.
+	for _, loader := range []string{"openAgentsLevel(", "openCandidatesLevel(", "openRunsLevel("} {
+		for _, line := range strings.Split(app, "\n") {
+			if !strings.Contains(line, loader) || strings.Contains(line, "async function") {
+				continue
+			}
+			if !strings.Contains(line, "onOpen") && !strings.Contains(line, "onMore") &&
+				!strings.Contains(line, "=>") {
+				t.Errorf("%s is called outside a user-triggered callback: %q", loader,
+					strings.TrimSpace(line))
+			}
+		}
+	}
+}
+
+// TestLiveGraphIsScopedToOneRun is the correctness guard behind the whole
+// scope-identity section.
+//
+// fingerprint_id is behavioral identity and carries no project, agent,
+// candidate, run or actor — task 051 was explicit that run and candidate
+// metadata must never become fingerprint dimensions. Two unrelated agents
+// doing the same thing therefore produce the same fingerprint, and merging
+// them would let one run's new_behavior, decision and risk overwrite
+// another's.
+func TestLiveGraphIsScopedToOneRun(t *testing.T) {
+	live := stripJSNoise(readAsset(t, "live.js"))
+
+	// The model must refuse to draw a frame from an unselected scope.
+	if !regexp.MustCompile(`card\.key !== this\.selectedKey[\s\S]{0,120}?edge:\s*null`).MatchString(live) {
+		t.Error("LiveModel.observe does not refuse to draw an unselected scope's " +
+			"observation; two runs sharing a fingerprint would share an edge")
+	}
+	// Selecting a different scope must start a new graph rather than keep the
+	// old topology beside the new one.
+	if !regexp.MustCompile(`this\.selectedKey = key;[\s\S]{0,120}?new RunGraph`).MatchString(live) {
+		t.Error("selecting a scope does not rebuild the graph; the previous run's " +
+			"topology would remain as residue")
+	}
+
+	// Scope identity is structured, never a delimiter join. `a|b` and `a|b`
+	// are the same string whether the parts were ("a","b") or ("a|b",""), and
+	// identifiers here may contain almost any printable character.
+	if !strings.Contains(live, "JSON.stringify([") {
+		t.Error("scopeKey does not build a structured key")
+	}
+	for _, join := range []string{`.join("|")`, `.join(":")`, `.join("/")`, `+ "|" +`, "`${scope.project_id}|"} {
+		if strings.Contains(live, join) {
+			t.Errorf("live.js builds a key with %q; a delimiter join can collide "+
+				"across scopes", join)
+		}
+	}
+	// All six dimensions participate, so two runs of one candidate and the
+	// same env ref under two projects are distinct.
+	for _, dimension := range []string{
+		"scope.project_id", "scope.agent_id", "scope.candidate_id",
+		"scope.run_id", "scope.environment", "scope.behavioral_profile",
+	} {
+		if !strings.Contains(live, dimension) {
+			t.Errorf("scopeKey omits %s; scopes that differ only there would merge",
+				dimension)
+		}
+	}
+}
+
+// TestLiveViewDecidesNothing extends the authority scan to the new modules.
+func TestLiveViewDecidesNothing(t *testing.T) {
+	sources := map[string]string{
+		"live.js":      stripJSNoise(readAsset(t, "live.js")),
+		"livegraph.js": stripJSNoise(readAsset(t, "livegraph.js")),
+		"app.js":       stripJSNoise(readAsset(t, "app.js")),
+	}
+	forbidden := []struct {
+		pattern *regexp.Regexp
+		why     string
+	}{
+		{regexp.MustCompile(`\.rank\s*[<>]`), "environment precedence is CanPromote's, server-side"},
+		{regexp.MustCompile(`verdict\s*===?\s*"pass"`), "the gate verdict is read, never computed"},
+		{regexp.MustCompile(`outcome\s*=[^=][^;\n]*\b(verdict|passed|gate)\b`), "the outcome is the server's field"},
+		{regexp.MustCompile(`trust_score\s*[<>]`), "a trust threshold is a policy decision"},
+		{regexp.MustCompile(`anomaly_score\s*[<>]`), "an anomaly threshold is a policy decision"},
+		{regexp.MustCompile(`risk_level\s*===?\s*"(critical|high)"\s*\?`), "risk severity is not ranked here"},
+		{regexp.MustCompile(`new_behavior\s*=\s*[^=]`), "new-behavior is observed, never assigned"},
+	}
+	for name, source := range sources {
+		for _, rule := range forbidden {
+			if match := rule.pattern.FindString(source); match != "" {
+				t.Errorf("%s contains %q; %s", name, match, rule.why)
+			}
+		}
+	}
+
+	// Every value the graph shows is read from the observation, not derived.
+	live := sources["live.js"]
+	for _, field := range []string{
+		"observation.decision", "observation.risk_level", "observation.trust_score",
+		"observation.anomaly_score", "observation.anomaly_confidence",
+		"observation.new_behavior", "observation.behavior_complete",
+	} {
+		if !strings.Contains(live, field) {
+			t.Errorf("live.js never reads %s; the graph must show the server's own "+
+				"values", field)
+		}
+	}
+}
+
+// TestLiveGraphInventsNoSemanticName pins task 075's boundary.
+//
+// If telemetry proves only `POST → export.localhost`, that is what is drawn.
+// A friendlier verb inferred here would be the browser asserting something no
+// evidence supports.
+func TestLiveGraphInventsNoSemanticName(t *testing.T) {
+	live := stripJSComments(readAsset(t, "live.js"))
+	graph := stripJSComments(readAsset(t, "livegraph.js"))
+
+	// The edge is built from the descriptor's own fields, unmodified.
+	for _, field := range []string{
+		"behavior.operation_category", "behavior.operation_name",
+		"behavior.target_name", "behavior.target_category", "behavior.actor_type",
+	} {
+		if !strings.Contains(live, field) {
+			t.Errorf("live.js does not read %s", field)
+		}
+	}
+	// No mapping table, no inference, no vocabulary of invented verbs. Task
+	// 075 owns semantic fidelity; task 074 renders what arrived.
+	for name, source := range map[string]string{"live.js": live, "livegraph.js": graph} {
+		for _, invented := range []string{
+			"export_customer", "data_export", "send_email", "tool.name", "agent.name",
+			"openinference", "gen_ai.", "llm.",
+		} {
+			if strings.Contains(strings.ToLower(source), invented) {
+				t.Errorf("%s references %q; semantic normalization is task 075's, and "+
+					"task 074 renders only the fidelity the observation carries",
+					name, invented)
+			}
+		}
+	}
+
+	// StableFeatures has no Direction, and this task does not add one — that
+	// would change behavioral identity for a visualization.
+	for name, source := range map[string]string{"live.js": live, "livegraph.js": graph} {
+		if regexp.MustCompile(`\bdirection\b`).MatchString(strings.ToLower(source)) {
+			t.Errorf("%s references a direction dimension; StableFeatures carries none "+
+				"and adding one would change behavioral identity", name)
+		}
+	}
+}
+
+// TestLiveBoundsAreTheDocumentedValues pins each visualization limit, and the
+// two it reuses rather than re-chooses.
+func TestLiveBoundsAreTheDocumentedValues(t *testing.T) {
+	live := stripJSNoise(readAsset(t, "live.js"))
+	realtime := stripJSNoise(readAsset(t, "realtime.js"))
+
+	bounds := map[string]int{
+		"MAX_SCOPE_CARDS":  16,
+		"MAX_SOURCE_NODES": 8,
+		"MAX_TARGET_NODES": 64,
+		"MAX_EDGES":        128,
+	}
+	for name, want := range bounds {
+		pattern := regexp.MustCompile(`export const ` + name + ` = (\d+);`)
+		match := pattern.FindStringSubmatch(live)
+		if match == nil {
+			t.Errorf("live.js declares no %s", name)
+			continue
+		}
+		if match[1] != fmt.Sprint(want) {
+			t.Errorf("%s = %s, want %d", name, match[1], want)
+		}
+	}
+
+	// The existing two are reused, not duplicated. A second feed bound or a
+	// second resync bound would be two numbers meaning one thing.
+	if !regexp.MustCompile(`DISPLAY_MAX = 100`).MatchString(realtime) {
+		t.Error("realtime.js no longer declares DISPLAY_MAX = 100")
+	}
+	if !regexp.MustCompile(`PENDING_MAX = 64`).MatchString(realtime) {
+		t.Error("realtime.js no longer declares PENDING_MAX = 64")
+	}
+	for _, competing := range []string{"MAX_FEED_ROWS", "MAX_OBSERVATIONS", "MAX_PENDING_FRAMES"} {
+		if strings.Contains(live, competing) {
+			t.Errorf("live.js declares %s; the feed and resync bounds already exist "+
+				"in realtime.js and are reused", competing)
+		}
+	}
+}
+
+// TestLiveStatesSaturationRatherThanTruncating, and keeps the three kinds of
+// limit distinguishable.
+//
+// A saturated viewport means the browser chose not to draw everything.
+// behavior_complete: false means the platform's behavioral evidence itself
+// saturated. A realtime queue overflow means notification continuity was lost.
+// Reporting any as another would misdescribe the run.
+func TestLiveStatesSaturationRatherThanTruncating(t *testing.T) {
+	live := stripJSComments(readAsset(t, "live.js"))
+	graph := stripJSComments(readAsset(t, "livegraph.js"))
+
+	// Saturation names the bound and how much is missing.
+	if !strings.Contains(live, "saturation()") {
+		t.Fatal("live.js exposes no saturation state")
+	}
+	for _, field := range []string{"bound:", "limit:", "omitted:"} {
+		if !strings.Contains(live, field) {
+			t.Errorf("saturation() omits %s; a bound that does not say what is missing "+
+				"is a silent truncation with a label", field)
+		}
+	}
+
+	// The three statements are separate strings, so one can never be rendered
+	// in place of another.
+	for _, phrase := range []string{
+		"This is a display limit",
+		"behavioral evidence as incomplete",
+	} {
+		if !strings.Contains(graph, phrase) {
+			t.Errorf("livegraph.js does not state %q", phrase)
+		}
+	}
+	// And the viewport notice explicitly disclaims the evidence reading.
+	if !strings.Contains(graph, "The run's own evidence is unaffected") {
+		t.Error("the viewport-saturation notice does not distinguish itself from " +
+			"the platform's evidence bound")
+	}
+	// The overflow path still abandons rather than dropping.
+	realtime := stripJSComments(readAsset(t, "realtime.js"))
+	if !strings.Contains(realtime, "buffered more than ") {
+		t.Error("realtime.js no longer abandons on resync buffer overflow")
+	}
+}
+
+// TestLiveHonoursReducedMotion, with no information carried by movement.
+func TestLiveHonoursReducedMotion(t *testing.T) {
+	css := readAsset(t, "styles.css")
+	// Literals kept: the media query is a string value, and stripping strings
+	// would blank the very thing being located.
+	app := stripJSComments(readAsset(t, "app.js"))
+	graph := stripJSNoise(readAsset(t, "livegraph.js"))
+
+	if !strings.Contains(css, "@media (prefers-reduced-motion: reduce)") {
+		t.Fatal("styles.css has no prefers-reduced-motion block")
+	}
+	// The preference is also read in script, so the animated element is never
+	// created rather than merely hidden.
+	if !strings.Contains(app, `matchMedia("(prefers-reduced-motion: reduce)")`) {
+		t.Error("app.js does not read prefers-reduced-motion")
+	}
+	if !regexp.MustCompile(`if \(!options\.reducedMotion\)`).MatchString(graph) {
+		t.Error("livegraph.js creates the pulse unconditionally; under reduced motion " +
+			"it must not be built at all")
+	}
+	// Nothing that carries information may live inside the motion branch. The
+	// label, the state text and the NEW badge are all built outside it.
+	pulseBlock := graph[strings.Index(graph, "if (!options.reducedMotion)"):]
+	if cut := strings.Index(pulseBlock, "\n  }"); cut > 0 {
+		pulseBlock = pulseBlock[:cut]
+	}
+	for _, informative := range []string{"edge-label", "edge-state", "NEW", "aria-label"} {
+		if strings.Contains(pulseBlock, informative) {
+			t.Errorf("the reduced-motion-only branch builds %q; no information may "+
+				"exist only in movement", informative)
+		}
+	}
+	// No strobe: the one animation is a single non-repeating traversal.
+	if !strings.Contains(stripJSComments(readAsset(t, "livegraph.js")), `["repeatCount", "1"]`) {
+		t.Error("the pulse is not pinned to a single repetition")
+	}
+}
+
+// TestLiveRendersWithoutDangerousPrimitives is the escaping rule extended to
+// SVG, which is where an animated surface most invites an exception.
+func TestLiveRendersWithoutDangerousPrimitives(t *testing.T) {
+	for _, name := range []string{"live.js", "livegraph.js"} {
+		source := stripJSNoise(readAsset(t, name))
+		for _, forbidden := range []string{
+			"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write",
+			"eval(", "new Function(", "srcdoc",
+		} {
+			if strings.Contains(source, forbidden) {
+				t.Errorf("%s uses %s", name, forbidden)
+			}
+		}
+	}
+
+	graph := stripJSNoise(readAsset(t, "livegraph.js"))
+	// SVG nodes are built, and their text is set as text.
+	if !strings.Contains(graph, "document.createElementNS(SVG_NS, tag)") {
+		t.Error("livegraph.js does not build SVG through createElementNS")
+	}
+	if !strings.Contains(graph, "node.textContent = content") {
+		t.Error("livegraph.js does not set SVG text through textContent")
+	}
+	// A tooltip and an accessible name are not exemptions: both are text.
+	if !strings.Contains(graph, "title.textContent") {
+		t.Error("livegraph.js sets a title by some means other than textContent")
+	}
+}
+
+// TestLiveStoresNothingInTheBrowser: the collection routes are what make
+// browser storage unnecessary, and it stays unused.
+func TestLiveStoresNothingInTheBrowser(t *testing.T) {
+	for name, source := range scriptAssets(t) {
+		stripped := stripJSNoise(source)
+		for _, api := range []string{
+			"localStorage", "sessionStorage", "indexedDB", "document.cookie",
+			"caches.open", "navigator.storage",
+		} {
+			if strings.Contains(stripped, api) {
+				t.Errorf("%s uses %s; the hierarchy comes from /v1, which is what makes "+
+					"browser storage unnecessary", name, api)
+			}
+		}
+	}
+}
+
+// TestLiveClaimsNoHistory keeps the viewport from reading as a trace explorer.
+//
+// Task 067 owns event history. Realtime publishes replay_available: false, so
+// a page implying that what it draws is a record of what happened would be
+// contradicting the protocol it is speaking.
+func TestLiveClaimsNoHistory(t *testing.T) {
+	shell := strings.ToLower(readAsset(t, "index.html"))
+
+	// Claims of history, not disclaimers of it.
+	//
+	// The panel legitimately says "the stream keeps no history and replays
+	// nothing", which is the sentence doing the work — banning the words
+	// "history" and "replay" outright would ban the denial along with the
+	// claim. So each phrase below is one that would only appear in an
+	// assertion that history exists here.
+	for _, phrase := range []string{
+		"full history", "complete history", "all past observations",
+		"since startup", "complete trace", "every observation ever",
+		"replays the", "replayed from", "historical view",
+	} {
+		if strings.Contains(shell, phrase) {
+			t.Errorf("index.html says %q; the Live view is a current viewport and the "+
+				"stream replays nothing", phrase)
+		}
+	}
+	// And it says what it is, in the positive.
+	if !strings.Contains(shell, "viewport") {
+		t.Error("index.html does not describe the Live view as a viewport")
+	}
+	if !strings.Contains(shell, "keeps no history") {
+		t.Error("index.html does not state that the stream keeps no history")
+	}
+
+	// No persistence of observations anywhere in the model.
+	live := stripJSNoise(readAsset(t, "live.js"))
+	for _, forbidden := range []string{"history", "archive", "persist"} {
+		if regexp.MustCompile(`\b` + forbidden + `\b`).MatchString(strings.ToLower(live)) {
+			t.Errorf("live.js references %q; nothing here retains an observation", forbidden)
+		}
+	}
+}
+
+// TestNoFrontendDependencyOrBuildStep: the stack is unchanged.
+func TestNoFrontendDependencyOrBuildStep(t *testing.T) {
+	root := "assets"
+	entries, err := assetFS.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read assets: %v", err)
+	}
+	for _, entry := range entries {
+		for _, forbidden := range []string{
+			"package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+			"vite.config.js", "webpack.config.js", "rollup.config.js", "tsconfig.json",
+		} {
+			if entry.Name() == forbidden {
+				t.Errorf("the bundle contains %s; there is no build step", forbidden)
+			}
+		}
+	}
+	for name, source := range scriptAssets(t) {
+		// Every import is a relative path to a sibling module.
+		for _, match := range regexp.MustCompile(`from\s+"([^"]+)"`).FindAllStringSubmatch(source, -1) {
+			if !strings.HasPrefix(match[1], "./") {
+				t.Errorf("%s imports %q; only same-directory modules are allowed",
+					name, match[1])
+			}
+		}
+	}
+}
+
+// functionBodyForTest returns one top-level function's source text.
+//
+// Stops at the next top-level declaration of any kind, so the last function in
+// a file does not swallow everything after it — which it did, and made a
+// per-function assertion count the whole module's API calls.
+func functionBodyForTest(t *testing.T, source, header string) string {
+	t.Helper()
+	start := strings.Index(source, header)
+	if start < 0 {
+		t.Fatalf("no declaration %q", header)
+		return ""
+	}
+	body := source[start+len(header):]
+	next := len(body)
+	for _, boundary := range []string{"\nasync function ", "\nfunction ", "\nconst ", "\n// ---"} {
+		if cut := strings.Index(body, boundary); cut >= 0 && cut < next {
+			next = cut
+		}
+	}
+	return body[:next]
 }

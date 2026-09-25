@@ -520,6 +520,47 @@ export function promotionCursorFault(previous, response) {
   return "";
 }
 
-// realtimePath builds the SSE URL for one run.
+// realtimePath builds the SSE URL.
+//
+// An empty runID produces `/v1/realtime` with no query at all, which the
+// server already defines as unconstrained — RealtimeFilter treats every empty
+// dimension as "no constraint", and its doc comment says so. That is the Live
+// view's subscription: no route change, no new parameter, no new event kind.
+// Sending `run_id=` explicitly would be the same thing to the server and a
+// worse thing to read in a log.
 export const realtimePath = (runID) =>
-  `/v1/realtime?run_id=${encodeURIComponent(runID)}`;
+  runID ? `/v1/realtime?run_id=${encodeURIComponent(runID)}` : "/v1/realtime";
+
+// ---------------------------------------------------------------------
+// Hierarchy collections (task 074)
+// ---------------------------------------------------------------------
+
+// Four bounded pages, one per level. Each takes an exclusive `after` cursor
+// and returns at most MaxListPage rows with `next_after` present exactly when
+// another row follows.
+//
+// Deliberately four plain functions rather than one generic pager: the paths
+// differ, the envelope keys differ, and a generic pagination layer would be an
+// abstraction over four call sites. There is also no `listAll…` traversal for
+// any of them — the Live view's whole discovery budget is one page of
+// projects, and a helper that walked a level would make an unbounded workflow
+// one keystroke away.
+export const listProjects = (after) => {
+  const query = after ? `?after=${encodeURIComponent(after)}` : "";
+  return request("GET", `/v1/projects${query}`);
+};
+
+export const listProjectAgents = (projectID, after) => {
+  const query = after ? `?after=${encodeURIComponent(after)}` : "";
+  return request("GET", `/v1/projects/${segment(projectID)}/agents${query}`);
+};
+
+export const listAgentCandidates = (agentID, after) => {
+  const query = after ? `?after=${encodeURIComponent(after)}` : "";
+  return request("GET", `/v1/agents/${segment(agentID)}/candidates${query}`);
+};
+
+export const listCandidateRuns = (candidateID, after) => {
+  const query = after ? `?after=${encodeURIComponent(after)}` : "";
+  return request("GET", `/v1/candidates/${segment(candidateID)}/evaluation-runs${query}`);
+};
