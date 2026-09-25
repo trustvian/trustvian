@@ -136,7 +136,14 @@ export function validateEvent(eventName, payload, watchedRunID) {
   if (scope === undefined || scope === null || typeof scope !== "object") {
     return { ok: false, reason: "event carries no scope" };
   }
-  if (scope.run_id !== watchedRunID) {
+  // An empty watchedRunID is unconstrained, exactly as an empty RunID is in
+  // the server's RealtimeFilter. That is what the Live view subscribes with:
+  // it watches every scope and decides per frame which card to update, so a
+  // run check here would reject every frame it exists to receive. A non-empty
+  // one still pins the stream to its run — the single-run view depends on it,
+  // and a frame for another run would mean the subscription is not the one
+  // this view asked for.
+  if (watchedRunID !== "" && scope.run_id !== watchedRunID) {
     return { ok: false, reason: "event belongs to a different run" };
   }
 
@@ -226,8 +233,10 @@ export function nextBackoff(attempt) {
 // the TUI enforces with contexts, expressed here with a token because the
 // browser has no cancellation primitive for an in-flight promise.
 export class RealtimeSession {
-  // deps: { getRun, getProgress, realtimePath, now } — injected so the session
-  // has no import-time dependency on the transport it drives.
+  // deps: { snapshot, realtimePath } — injected so the session has no
+  // import-time dependency on the transport it drives. snapshot(runID)
+  // performs the view's one authoritative read and returns whatever
+  // onSnapshot should receive.
   constructor(deps, callbacks) {
     this.deps = deps;
     this.callbacks = callbacks;
@@ -320,6 +329,12 @@ export class RealtimeSession {
     // viewport so nothing implies continuity across the gap.
     this.rows.clear();
     this.emitRows();
+    // Same rule for anything else a view accumulated from frames. A graph or a
+    // card set that survived a reconnect would be asserting a continuity the
+    // stream explicitly denies — stream_ready carries replay_available: false.
+    if (this.callbacks.onConnect) {
+      this.callbacks.onConnect();
+    }
     this.setState(STATE.CONNECTING);
 
     const source = new EventSource(this.deps.realtimePath(this.runID));
@@ -407,6 +422,13 @@ export class RealtimeSession {
     if (kind === "observation") {
       this.rows.add(payload.observation);
       this.emitRows();
+      // The scope travels with the observation, because a view watching every
+      // run needs to know which one this belonged to and the observation
+      // itself does not say. Optional: the single-run view has one scope and
+      // does not register it.
+      if (this.callbacks.onObservation) {
+        this.callbacks.onObservation(payload.scope, payload.observation);
+      }
       return;
     }
     // Lifecycle events change status, and a terminal one is the trigger for
@@ -441,15 +463,17 @@ export class RealtimeSession {
     }
 
     try {
-      const run = await this.deps.getRun(this.runID);
+      // One injected read, whatever "authoritative state" means for this
+      // view. The single-run view reads its run and its progress; the Live
+      // view reads one bounded page of projects and nothing else, because it
+      // has no single run to read and a hierarchy walk here is how a bounded
+      // route becomes an unbounded client. The session does not know or care
+      // which — it owns the ordering, not the payload.
+      const snapshot = await this.deps.snapshot(this.runID);
       if (generation !== this.generation) {
         return;
       }
-      const progress = await this.deps.getProgress(this.runID);
-      if (generation !== this.generation) {
-        return;
-      }
-      this.callbacks.onSnapshot(run, progress);
+      this.callbacks.onSnapshot(snapshot);
     } catch (error) {
       if (generation !== this.generation) {
         return;

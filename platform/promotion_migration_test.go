@@ -41,7 +41,13 @@ func writeSchemaV3(t *testing.T, path string) *sql.DB {
 }
 
 // A populated task 065 database migrates, and everything it held survives.
-func TestSchemaV3MigratesToV4PreservingContent(t *testing.T) {
+//
+// It now lands on v5 rather than v4, because task 074 extended the chain. The
+// assertions are written against SchemaVersion for that reason: what matters
+// here is that a v3 database reaches whatever the current version is with its
+// content intact and no promotion invented, not which number that happens to
+// be this release.
+func TestSchemaV3MigratesForwardPreservingContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v3.db")
 	db := writeSchemaV3(t, path)
 	seedV1Content(t, db, "run-legacy", 4)
@@ -92,8 +98,8 @@ func TestSchemaV3MigratesToV4PreservingContent(t *testing.T) {
 	}
 }
 
-// A task 057 database reaches v4 through v2 and v3, one step at a time.
-func TestMigrationFromV1ReachesV4(t *testing.T) {
+// A task 057 database reaches the current schema one step at a time.
+func TestMigrationFromV1ReachesTheCurrentSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v1.db")
 	db := writeSchemaV1(t, path)
 	seedV1Content(t, db, "run-legacy", 4)
@@ -109,7 +115,9 @@ func TestMigrationFromV1ReachesV4(t *testing.T) {
 		t.Fatalf("version = %d, want %d", version, SchemaVersion)
 	}
 	// v2's cursor table, v3's backfilled environment and v4's promotion table
-	// all exist, which is the whole chain in one assertion.
+	// all exist, which is the whole chain in one assertion. v5 adds indexes
+	// rather than tables, so its step is asserted in
+	// collection_migration_test.go where the indexes can be inspected.
 	if err := store.requireTables(t.Context(), SchemaVersion, schemaTables); err != nil {
 		t.Errorf("chained migration is missing tables: %v", err)
 	}
@@ -126,8 +134,9 @@ func TestMigrationFromV1ReachesV4(t *testing.T) {
 	}
 }
 
-// Reopening a v4 database verifies rather than re-migrating.
-func TestV4MigrationIsNotRepeated(t *testing.T) {
+// Reopening a database that already holds the promotion table verifies
+// rather than re-migrating.
+func TestPromotionMigrationIsNotRepeated(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v3.db")
 	db := writeSchemaV3(t, path)
 	db.Close()
@@ -150,19 +159,27 @@ func TestV4MigrationIsNotRepeated(t *testing.T) {
 }
 
 // A newer schema fails closed, as every version step here does.
-func TestV5DatabaseIsRefusedByThisBuild(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "v5.db")
+//
+// Written against SchemaVersion+1 rather than a literal. The first version of
+// this test stamped 5 because 5 was the future; task 074 made 5 the present,
+// and the test then asserted that the current schema is refused. A relative
+// bound cannot go stale that way — whatever this build supports, one past it
+// is still unreadable.
+func TestANewerSchemaIsRefusedByThisBuild(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "newer.db")
 	store, err := OpenSQLiteStore(t.Context(), path)
 	if err != nil {
 		t.Fatalf("OpenSQLiteStore() error = %v", err)
 	}
 	if _, err := store.db.ExecContext(t.Context(),
-		`UPDATE platform_schema_version SET version = 5 WHERE id = 1`); err != nil {
-		t.Fatalf("stamp v5: %v", err)
+		`UPDATE platform_schema_version SET version = ? WHERE id = 1`,
+		SchemaVersion+1); err != nil {
+		t.Fatalf("stamp v%d: %v", SchemaVersion+1, err)
 	}
 	store.Close()
 
 	if _, err := OpenSQLiteStore(t.Context(), path); !errors.Is(err, ErrStoreSchemaVersion) {
-		t.Errorf("opening a v5 database error = %v, want ErrStoreSchemaVersion", err)
+		t.Errorf("opening a v%d database error = %v, want ErrStoreSchemaVersion",
+			SchemaVersion+1, err)
 	}
 }

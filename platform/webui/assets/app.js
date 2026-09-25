@@ -13,6 +13,8 @@
 import * as api from "./api.js";
 import * as render from "./render.js";
 import { RealtimeSession, STATE } from "./realtime.js";
+import { LiveModel } from "./live.js";
+import * as livegraph from "./livegraph.js";
 
 const byID = (id) => document.getElementById(id);
 
@@ -314,12 +316,28 @@ openForm("form-open-candidate", "open-candidate-id", loadCandidate);
 openForm("form-open-run", "open-run-id", loadRun);
 
 // ---------------------------------------------------------------------
-// Live view
+// Live view — the default landing surface
 // ---------------------------------------------------------------------
+//
+// Two subscriptions, deliberately separate rather than one mode switch.
+//
+// The global one opens on load with no filter and answers "what is happening
+// now": it discovers scopes from RealtimeScope alone, with no /v1 read per
+// event, and draws the selected run's topology. The single-run one is the
+// pre-existing watch, kept because narrowing to one run and reading its
+// authoritative snapshot is still the right tool when a run is finishing.
+//
+// Neither polls. Every request this page makes is caused by a person, by the
+// single startup snapshot, or by a reconnect taking that same snapshot again.
 
 const liveState = byID("live-state");
+const watchState = byID("watch-state");
 const liveSnapshot = byID("live-snapshot");
 const liveRows = byID("live-rows");
+const liveCards = byID("live-cards");
+const liveGraph = byID("live-graph");
+const liveNotices = byID("live-notices");
+const liveSelected = byID("live-selected");
 const watchReconnect = byID("watch-reconnect");
 const watchStop = byID("watch-stop");
 
@@ -332,21 +350,226 @@ const STATE_TEXT = Object.freeze({
   [STATE.FAILED]: "Failed. The stream never synchronized; use Reconnect now to try again.",
 });
 
+// The global Live view's own wording, which must never say "Live" while the
+// connection is not established. A graph that keeps drawing while
+// disconnected is claiming a continuity it does not have.
+const GLOBAL_STATE_TEXT = Object.freeze({
+  [STATE.IDLE]: "Not connected.",
+  [STATE.CONNECTING]: "Connecting to the activity stream…",
+  [STATE.RESYNCING]: "Connected. Reading what already exists…",
+  [STATE.LIVE]: "Live — watching all local activity.",
+  [STATE.RECONNECTING]: "Disconnected. Reconnecting — the graph below is no longer live.",
+  [STATE.FAILED]: "Disconnected. The activity stream could not be established.",
+});
+
+// prefers-reduced-motion is read once and re-read on change. When it is set,
+// no pulse is created at all — the stylesheet also disables movement, and
+// doing both means a reduced-motion browser never even builds the animated
+// element. Every fact the pulse carried stays in the edge's text and badges.
+const reducedMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+let reducedMotion = reducedMotionQuery.matches;
+reducedMotionQuery.addEventListener("change", (event) => {
+  reducedMotion = event.matches;
+  drawGraph();
+});
+
+const liveModel = new LiveModel();
+
+function drawGraph() {
+  livegraph.renderGraph(liveGraph, liveModel.graph, { reducedMotion });
+  livegraph.renderSelectedScope(liveSelected, liveModel.selectedCard());
+  livegraph.renderLiveNotices(liveNotices, liveModel);
+}
+
+function drawCards() {
+  livegraph.renderScopeCards(liveCards, liveModel.cards, liveModel.selectedKey, (key) => {
+    // An explicit choice. From here a newly active scope raises its own card
+    // but never steals the graph the developer is reading.
+    liveModel.select(key);
+    drawCards();
+    drawGraph();
+  });
+}
+
+// The global session. Its authoritative snapshot is one page of projects and
+// nothing else — see loadRootProjects.
+const liveSession = new RealtimeSession(
+  {
+    snapshot: () => loadRootProjects(),
+    realtimePath: () => api.realtimePath(""),
+  },
+  {
+    onState: (state) => {
+      liveState.textContent = GLOBAL_STATE_TEXT[state] || state;
+    },
+    onRows: (rows) => render.renderObservationRows(liveRows, rows),
+    onSnapshot: (projects) => {
+      renderProjectsLevel(projects);
+    },
+    onLifecycle: () => {
+      // Lifecycle frames move a card's activity, which the observation path
+      // already does. Nothing durable is derived from an event.
+    },
+    onProblem: (reason) => showProblem(`Activity stream: ${reason}`),
+    onObservation: (scope, observation) => {
+      const { edge } = liveModel.observe(scope, observation, Date.now());
+      drawCards();
+      // Redrawn only when the frame belonged to the selected run. An
+      // observation elsewhere updated its card and must not touch the graph.
+      if (edge !== null) {
+        drawGraph();
+      } else {
+        livegraph.renderLiveNotices(liveNotices, liveModel);
+      }
+    },
+    onConnect: () => {
+      // A card and an edge are both statements about the current stream, so
+      // both are cleared. The selected key survives as an intent: if the same
+      // run is still active it re-selects itself on its next frame.
+      liveModel.reset();
+      drawCards();
+      drawGraph();
+    },
+  },
+);
+
+// ---------------------------------------------------------------------
+// Bounded hierarchy browsing
+// ---------------------------------------------------------------------
+//
+// The startup budget, in one place so it cannot drift: one page of
+// GET /v1/projects, no child traversal, no continuation followed. The same on
+// every reconnect, so a flapping connection cannot amplify into a crawl.
+//
+// 64 projects × 64 agents × 64 candidates × 64 runs is sixteen million rows
+// across a quarter of a million requests, during which the resync buffer holds
+// 64 frames. Under live traffic that buffer overflows, the client abandons and
+// resynchronizes, and the crawl starts again — a resync loop that gets worse
+// the larger the database is. A bounded route is not a bounded workflow.
+
+async function loadRootProjects(after) {
+  const response = await api.listProjects(after);
+  return response;
+}
+
+function rowsOf(list, key) {
+  return Array.isArray(list[key]) ? list[key] : [];
+}
+
+function renderProjectsLevel(response) {
+  livegraph.renderHierarchyLevel(byID("hierarchy-projects"), {
+    title: "Projects",
+    rows: rowsOf(response, "projects").map((row) => ({ id: row.id, detail: row.name })),
+    nextAfter: response.next_after || "",
+    emptyMessage: "No projects exist yet.",
+    openLabel: "Show agents of project",
+    onOpen: (id) => { void openAgentsLevel(id, ""); },
+    onMore: (cursor) => {
+      void (async () => {
+        try {
+          renderProjectsLevel(await loadRootProjects(cursor));
+          clearProblem();
+        } catch (error) {
+          report(byID("hierarchy-projects"), error);
+        }
+      })();
+    },
+  });
+}
+
+// Each descent is one request, caused by one click. Nothing below is ever
+// called on a timer, from a loop, or as a consequence of another level
+// loading.
+async function openAgentsLevel(projectID, after) {
+  const host = byID("hierarchy-agents");
+  try {
+    const response = await api.listProjectAgents(projectID, after);
+    livegraph.renderHierarchyLevel(host, {
+      title: "Agents",
+      rows: rowsOf(response, "agents").map((row) => ({ id: row.id, detail: row.name })),
+      nextAfter: response.next_after || "",
+      emptyMessage: `Project ${projectID} has no agents.`,
+      openLabel: "Show candidates of agent",
+      onOpen: (id) => { void openCandidatesLevel(id, ""); },
+      onMore: (cursor) => { void openAgentsLevel(projectID, cursor); },
+    });
+    clearProblem();
+  } catch (error) {
+    report(host, error);
+  }
+}
+
+async function openCandidatesLevel(agentID, after) {
+  const host = byID("hierarchy-candidates");
+  try {
+    const response = await api.listAgentCandidates(agentID, after);
+    livegraph.renderHierarchyLevel(host, {
+      title: "Candidates",
+      rows: rowsOf(response, "candidates").map((row) => ({
+        id: row.id,
+        detail: row.metadata ? row.metadata.label : "",
+      })),
+      nextAfter: response.next_after || "",
+      emptyMessage: `Agent ${agentID} has no candidates.`,
+      openLabel: "Show runs of candidate",
+      onOpen: (id) => { void openRunsLevel(id, ""); },
+      onMore: (cursor) => { void openCandidatesLevel(agentID, cursor); },
+    });
+    clearProblem();
+  } catch (error) {
+    report(host, error);
+  }
+}
+
+async function openRunsLevel(candidateID, after) {
+  const host = byID("hierarchy-runs");
+  try {
+    const response = await api.listCandidateRuns(candidateID, after);
+    livegraph.renderHierarchyLevel(host, {
+      title: "Evaluation runs",
+      rows: rowsOf(response, "evaluation_runs").map((row) => ({
+        id: row.id,
+        detail: row.status,
+      })),
+      nextAfter: response.next_after || "",
+      emptyMessage: `Candidate ${candidateID} has no runs.`,
+      openLabel: "Open evaluation run",
+      // Opens the run's own authoritative detail, which is one bounded read
+      // of an existing by-id route rather than a walk.
+      onOpen: (id) => { void loadRun(id, null); },
+      onMore: (cursor) => { void openRunsLevel(candidateID, cursor); },
+    });
+    clearProblem();
+  } catch (error) {
+    report(host, error);
+  }
+}
+
+// ---------------------------------------------------------------------
+// The single-run watch, unchanged in behaviour
+// ---------------------------------------------------------------------
+
 const session = new RealtimeSession(
   {
-    getRun: (id) => api.getRun(id),
-    getProgress: (id) => api.getProgress(id),
+    snapshot: async (id) => ({
+      run: await api.getRun(id),
+      progress: await api.getProgress(id),
+    }),
     realtimePath: (id) => api.realtimePath(id),
   },
   {
     onState: (state) => {
-      liveState.textContent = STATE_TEXT[state] || state;
+      watchState.textContent = STATE_TEXT[state] || state;
       const watching = state !== STATE.IDLE;
       watchStop.disabled = !watching;
       watchReconnect.disabled = !watching;
     },
-    onRows: (rows) => render.renderObservationRows(liveRows, rows),
-    onSnapshot: (run, progress) => {
+    onRows: () => {
+      // The global stream owns the observation feed. A second writer would
+      // interleave two connections' rows into one apparent sequence, which is
+      // the thing the feed's own comment forbids.
+    },
+    onSnapshot: ({ run, progress }) => {
       render.renderSnapshot(liveSnapshot, run, progress);
       // The live view and the evaluation panel describe the same run, so an
       // authoritative read refreshes both rather than letting one go stale.
@@ -651,6 +874,16 @@ byID("promotion-restart").addEventListener("click", async (event) => {
 // ---------------------------------------------------------------------
 
 byID("conn-status").textContent = "Ready · same-origin /v1";
+
+// The Live view opens itself, with no identifier and no user action.
+//
+// One unfiltered subscription and, once it hands over, exactly one page of
+// GET /v1/projects. That is the entire startup budget: no child level is
+// fetched, no continuation is followed, and there is no timer anywhere in this
+// bundle that would fetch anything later.
+drawCards();
+drawGraph();
+liveSession.watch("");
 
 // A run named in the fragment is prefilled, not auto-watched: opening a stream
 // because of a URL would start network activity nobody asked for.

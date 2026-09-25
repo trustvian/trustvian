@@ -152,25 +152,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.mux.Serv
 
 // routes registers the whole surface.
 //
-// One collection GET, added by task 065 and scoped to one project's
-// environments. Task 058 deferred collection semantics because sort order,
-// cursors, limits and scoping were undecided; they are decided for this
-// entity and this entity only. Projects, agents, candidates and runs still
-// have no list route.
+// Task 058 deferred collection semantics because sort order, cursors, limits
+// and scoping were undecided. Task 065 decided all four for environments,
+// task 066 reused them unchanged for promotions, and task 074 extended the
+// same contract to the control hierarchy once a consumer existed for it — a
+// browser that reloads with no live traffic and must still find what is there.
+//
+// Every list route on this mux shares one shape: parent-scoped except the
+// root, id byte order, an exclusive `after` cursor, `limit` 1..64 defaulting
+// to 64, and `next_after` present exactly when another row follows. There is
+// no unscoped collection beyond `GET /v1/projects`, and no route returns an
+// unbounded page.
 func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /v1/projects", h.createProject)
+	h.mux.HandleFunc("GET /v1/projects", h.listProjects)
 	h.mux.HandleFunc("GET /v1/projects/{project_id}", h.getProject)
+	h.mux.HandleFunc("GET /v1/projects/{project_id}/agents", h.listProjectAgents)
 
 	h.mux.HandleFunc("POST /v1/agents", h.createAgent)
 	h.mux.HandleFunc("GET /v1/agents/{agent_id}", h.getAgent)
+	h.mux.HandleFunc("GET /v1/agents/{agent_id}/candidates", h.listAgentCandidates)
 
 	h.mux.HandleFunc("POST /v1/candidates", h.createCandidate)
 	h.mux.HandleFunc("GET /v1/candidates/{candidate_id}", h.getCandidate)
+	h.mux.HandleFunc("GET /v1/candidates/{candidate_id}/evaluation-runs", h.listCandidateRuns)
 
-	// One collection route, for one entity, because task 065 is the milestone
-	// with a concrete need for it: a caller cannot open an environment by ref
-	// when knowing the refs is the question. Its scope, order, cursor and
-	// limit are all decided — see listEnvironments.
 	h.mux.HandleFunc("POST /v1/environments", h.createEnvironment)
 	h.mux.HandleFunc("GET /v1/projects/{project_id}/environments", h.listEnvironments)
 	h.mux.HandleFunc("GET /v1/projects/{project_id}/environments/{environment_ref}",
@@ -1019,4 +1025,165 @@ func promotionLimitParam(r *http.Request) (int, error) {
 				platform.MaxPromotionPage)}
 	}
 	return limit, nil
+}
+
+// ---------------------------------------------------------------------
+// Hierarchy collections (task 074)
+// ---------------------------------------------------------------------
+
+// Four bounded list routes, one per level of the control hierarchy.
+//
+// They exist so a browser that reloads with no live traffic can still find
+// what exists. Realtime answers "what is active now" and needs no read at all;
+// these answer "what is there", and are what make browser storage unnecessary
+// rather than merely discouraged.
+//
+// Every one shares the continuation shape listEnvironments established: a
+// short page is the end, and a full page is resolved by a second bounded
+// `limit=1` probe rather than by asking the store for limit+1. That keeps the
+// store's public range honest at 1..64 — task 066 corrected exactly this
+// widening — at the cost of one indexed single-row lookup per full page.
+
+// listLimitParam parses `limit` against the one shared page bound.
+//
+// Absent means the maximum, and out of range is 400 rather than a silent
+// clamp: a caller asking for 200 has a belief about the response, and quietly
+// returning 64 lets that belief survive.
+func listLimitParam(r *http.Request) (int, error) {
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return platform.MaxListPage, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > platform.MaxListPage {
+		return 0, apiError{status: http.StatusBadRequest, code: codeInvalidRequest,
+			message: fmt.Sprintf("limit must be an integer between 1 and %d",
+				platform.MaxListPage)}
+	}
+	return limit, nil
+}
+
+func (h *Handler) listProjects(w http.ResponseWriter, r *http.Request) {
+	limit, err := listLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	after := platform.ProjectID(r.URL.Query().Get("after"))
+
+	page, err := h.controlPlane.Projects(r.Context(), after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	nextAfter := ""
+	if len(page) == limit {
+		last := page[len(page)-1].ID()
+		probe, err := h.controlPlane.Projects(r.Context(), last, 1)
+		if err != nil {
+			h.writeError(w, err)
+			return
+		}
+		if len(probe) > 0 {
+			nextAfter = string(last)
+		}
+	}
+	writeJSON(w, http.StatusOK, newProjectListResponse(page, nextAfter))
+}
+
+func (h *Handler) listProjectAgents(w http.ResponseWriter, r *http.Request) {
+	projectID := platform.ProjectID(r.PathValue("project_id"))
+
+	limit, err := listLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	after := platform.AgentID(r.URL.Query().Get("after"))
+
+	page, err := h.controlPlane.ProjectAgents(r.Context(), projectID, after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	nextAfter := ""
+	if len(page) == limit {
+		last := page[len(page)-1].ID()
+		probe, err := h.controlPlane.ProjectAgents(r.Context(), projectID, last, 1)
+		if err != nil {
+			h.writeError(w, err)
+			return
+		}
+		if len(probe) > 0 {
+			nextAfter = string(last)
+		}
+	}
+	writeJSON(w, http.StatusOK,
+		newAgentListResponse(string(projectID), page, nextAfter))
+}
+
+func (h *Handler) listAgentCandidates(w http.ResponseWriter, r *http.Request) {
+	agentID := platform.AgentID(r.PathValue("agent_id"))
+
+	limit, err := listLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	after := platform.CandidateID(r.URL.Query().Get("after"))
+
+	page, err := h.controlPlane.AgentCandidates(r.Context(), agentID, after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	nextAfter := ""
+	if len(page) == limit {
+		last := page[len(page)-1].ID()
+		probe, err := h.controlPlane.AgentCandidates(r.Context(), agentID, last, 1)
+		if err != nil {
+			h.writeError(w, err)
+			return
+		}
+		if len(probe) > 0 {
+			nextAfter = string(last)
+		}
+	}
+	writeJSON(w, http.StatusOK,
+		newCandidateListResponse(string(agentID), page, nextAfter))
+}
+
+func (h *Handler) listCandidateRuns(w http.ResponseWriter, r *http.Request) {
+	candidateID := platform.CandidateID(r.PathValue("candidate_id"))
+
+	limit, err := listLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	after := platform.EvaluationRunID(r.URL.Query().Get("after"))
+
+	page, err := h.controlPlane.CandidateEvaluationRuns(r.Context(), candidateID, after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	nextAfter := ""
+	if len(page) == limit {
+		last := page[len(page)-1].ID()
+		probe, err := h.controlPlane.CandidateEvaluationRuns(r.Context(), candidateID, last, 1)
+		if err != nil {
+			h.writeError(w, err)
+			return
+		}
+		if len(probe) > 0 {
+			nextAfter = string(last)
+		}
+	}
+	writeJSON(w, http.StatusOK,
+		newEvaluationRunListResponse(string(candidateID), page, nextAfter))
 }

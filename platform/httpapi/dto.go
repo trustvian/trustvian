@@ -662,3 +662,115 @@ type promotionListResponse struct {
 	Promotions []promotionResponse `json:"promotions"`
 	NextAfter  string              `json:"next_after,omitempty"`
 }
+
+// ---------------------------------------------------------------------
+// Hierarchy collections (task 074)
+// ---------------------------------------------------------------------
+
+// Four bounded pages, each carrying the *existing* detail DTO for its entity.
+//
+// A collection publishes no field a by-id read does not already publish, so a
+// listing cannot become a privacy regression by accident and the two shapes
+// cannot drift into disagreeing about what a Project is. The cost is one
+// redundant `version` per element, which is what the environment and promotion
+// collections already pay for the same guarantee.
+//
+// Each envelope is an object rather than a bare array so `next_after` is an
+// additive field rather than a shape change, and it is omitted on the last
+// page — its presence means "call again", never "there might be more".
+//
+// No total_count, page_number, offset or sort. Task 074 defines none of them:
+// a count over an unbounded collection is a table scan, and an offset is the
+// pagination model this API deliberately did not choose.
+
+// projectListResponse is the root collection. It carries no scope field
+// because it has no parent.
+type projectListResponse struct {
+	Version  string            `json:"version"`
+	Projects []projectResponse `json:"projects"`
+
+	NextAfter string `json:"next_after,omitempty"`
+}
+
+func newProjectListResponse(
+	projects []platform.Project, nextAfter string,
+) projectListResponse {
+	page := make([]projectResponse, 0, len(projects))
+	for _, project := range projects {
+		page = append(page, newProjectResponse(project))
+	}
+	return projectListResponse{
+		Version:   WireVersion,
+		Projects:  page,
+		NextAfter: nextAfter,
+	}
+}
+
+type agentListResponse struct {
+	Version   string          `json:"version"`
+	ProjectID string          `json:"project_id"`
+	Agents    []agentResponse `json:"agents"`
+
+	NextAfter string `json:"next_after,omitempty"`
+}
+
+func newAgentListResponse(
+	projectID string, agents []platform.Agent, nextAfter string,
+) agentListResponse {
+	page := make([]agentResponse, 0, len(agents))
+	for _, agent := range agents {
+		page = append(page, newAgentResponse(agent))
+	}
+	return agentListResponse{
+		Version:   WireVersion,
+		ProjectID: projectID,
+		Agents:    page,
+		NextAfter: nextAfter,
+	}
+}
+
+type candidateListResponse struct {
+	Version    string              `json:"version"`
+	AgentID    string              `json:"agent_id"`
+	Candidates []candidateResponse `json:"candidates"`
+
+	NextAfter string `json:"next_after,omitempty"`
+}
+
+func newCandidateListResponse(
+	agentID string, candidates []platform.Candidate, nextAfter string,
+) candidateListResponse {
+	page := make([]candidateResponse, 0, len(candidates))
+	for _, candidate := range candidates {
+		page = append(page, newCandidateResponse(candidate))
+	}
+	return candidateListResponse{
+		Version:    WireVersion,
+		AgentID:    agentID,
+		Candidates: page,
+		NextAfter:  nextAfter,
+	}
+}
+
+type evaluationRunListResponse struct {
+	Version     string                  `json:"version"`
+	CandidateID string                  `json:"candidate_id"`
+	Runs        []evaluationRunResponse `json:"evaluation_runs"`
+
+	NextAfter string `json:"next_after,omitempty"`
+}
+
+func newEvaluationRunListResponse(
+	candidateID string, runs []platform.EvaluationRun, nextAfter string,
+) evaluationRunListResponse {
+	page := make([]evaluationRunResponse, 0, len(runs))
+	for _, run := range runs {
+		page = append(page, newEvaluationRunResponse(run))
+	}
+	return evaluationRunListResponse{
+		Version:     WireVersion,
+		CandidateID: candidateID,
+		Runs:        page,
+		NextAfter:   nextAfter,
+	}
+}

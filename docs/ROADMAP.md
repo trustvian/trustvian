@@ -390,17 +390,24 @@ gate result the decision consumed is snapshotted field for field rather than
 re-derived on read, and the write commits only against the environment state it
 was decided against. Schema version is now **4** on both backends.
 
-**Five gap-closing milestones are specified and not implemented: 074–078.**
+**Four gap-closing milestones remain specified and not implemented: 075–078.
+074 is implemented.**
 Each was found by running the product end to end — an instrumented agent, a
 browser, and a developer who has not read the source — rather than by planning,
 which is why they sit outside the reserved 049–072 block alongside 073.
 
-- **[074 — zero-input live behavior WebUI](tasks/v1.0/074-zero-input-live-behavior-webui.md).**
-  Opening the browser today shows a form asking for an identifier the developer
-  does not have. The milestone makes the WebUI discover active work by itself,
-  render it as a bounded run-scoped behavior graph, and browse the hierarchy
-  with nothing typed. It shares the schema chain with 066 — 066 owns 3 → 4,
-  now landed, and 074 owns 4 → 5 — so its implementation follows 066's.
+- **[074 — zero-input live behavior WebUI](tasks/v1.0/074-zero-input-live-behavior-webui.md)
+  is implemented.** Opening the browser used to show a form asking for an
+  identifier the developer did not have. The WebUI now opens on Live,
+  subscribes to all local activity unfiltered, shows every active run as a
+  card with nothing typed, and draws one selected run's behavior flow. Four
+  bounded collection routes make the durable hierarchy discoverable after a
+  reload with no traffic — the capability tasks 063 and 058 deferred until a
+  consumer existed for it. Startup costs exactly one collection request and
+  follows no continuation automatically, because a bounded route is not a
+  bounded workflow. It shared the schema chain with 066 — 066 owned 3 → 4 and
+  074 owned 4 → 5 — so it landed after it, and schema version is now **5**.
+  See [ADR 0041](adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md).
 - **[075 — AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md).**
   Generic instrumentation flattens an agent's behavior into its transport, so a
   tool call learns as an HTTP POST. Where a producer emits agent-oriented
@@ -687,8 +694,8 @@ decision that needs a measurement behind it.
 
 Small, independently shippable tasks continuing this repository's numbering.
 **Partly implemented:** tasks 049–066 are done; 067–072 remain PLANNED.
-Outside that reserved sequence, 073 is done and 074–078 are specified — see the
-gap-closing table below.
+Outside that reserved sequence, 073 and 074 are done and 075–078 are
+specified — see the gap-closing table below.
 
 **Numbering is identity, not order.** A task's number records when it was
 added to the plan, never when it is built. Tasks 073–078 were discovered by
@@ -749,7 +756,7 @@ an instrumented agent, a browser, and a developer who has not read the source.
 | Task | Milestone | Status |
 |---|---|---|
 | 073 | OTel Collector evaluation ingest — the Collector produces a `Result`, the control plane accepts a `DecisionRecord`, and nothing joined them | **Implemented** |
-| 074 | [Zero-input live behavior WebUI](tasks/v1.0/074-zero-input-live-behavior-webui.md) — automatic active-scope discovery, a bounded live behavior graph, and a browseable hierarchy without entering an identifier | Specified |
+| 074 | [Zero-input live behavior WebUI](tasks/v1.0/074-zero-input-live-behavior-webui.md) — automatic active-scope discovery, a bounded live behavior graph, and a browseable hierarchy without entering an identifier | Implemented |
 | 075 | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) — read agent-oriented OpenTelemetry where a producer emits it, so a tool call is a tool call rather than an HTTP POST | Specified |
 | 076 | [Behavioral trace and session evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md) — see *why* behavior was familiar, new or anomalous, from metadata alone | Specified |
 | 077 | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — one command wraps an existing agent, composes the runtime, and needs no change to the application | Specified |

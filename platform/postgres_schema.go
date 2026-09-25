@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -173,6 +174,14 @@ func postgresSchemaStatements() []string {
 
 		postgresPromotionsStatement(),
 		postgresPromotionsIndexStatement(),
+
+		// v5: the child-collection indexes. Shared statement text with
+		// SQLite — the indexed columns already carry COLLATE "C", so the
+		// index inherits byte ordering and a collation clause here would be a
+		// second spelling of the same fact to keep in step.
+		agentsByProjectIndexStatement(),
+		candidatesByAgentIndexStatement(),
+		runsByCandidateIndexStatement(),
 	}
 }
 
@@ -311,7 +320,19 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			return s.createPostgresSchema(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTables()):
-			// Complete current schema. Verify the stamp agrees.
+			// v4 and v5 hold the same tables — v5's migration adds only
+			// indexes — so the table set cannot tell them apart and the
+			// stamped version is the only distinction. A v4 stamp is migrated
+			// forward; a v5 stamp is verified; anything else fails closed
+			// inside verifyPostgresVersion, the newer-than-this-binary case
+			// included.
+			version, err := postgresStoredVersion(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if version == schemaVersionV4 {
+				return migratePostgresV4ToV5(ctx, tx)
+			}
 			return verifyPostgresVersion(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV1()):
@@ -323,16 +344,25 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV2ToV3(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV3ToV4(ctx, tx)
+			if err := migratePostgresV3ToV4(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV4ToV5(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV2()):
 			if err := migratePostgresV2ToV3(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV3ToV4(ctx, tx)
+			if err := migratePostgresV3ToV4(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV4ToV5(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV3()):
-			return migratePostgresV3ToV4(ctx, tx)
+			if err := migratePostgresV3ToV4(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV4ToV5(ctx, tx)
 
 		default:
 			// A recognized subset that is neither version. Nothing here knows
@@ -421,6 +451,26 @@ func migratePostgresV3ToV4(ctx context.Context, tx pgx.Tx) error {
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
+		schemaVersionV4); err != nil {
+		return mapPostgresError("schema version", "", err)
+	}
+	return nil
+}
+
+// migratePostgresV4ToV5 adds the three child-collection indexes and nothing
+// else, mirroring SQLite's migrateV4ToV5 statement for statement.
+//
+// Index-only: no table, no column, no backfill, no row written and no row
+// changed. Both backends apply the same three statements from the same
+// definitions, so neither can acquire an index the other lacks.
+func migratePostgresV4ToV5(ctx context.Context, tx pgx.Tx) error {
+	for _, statement := range v5IndexStatements() {
+		if _, err := tx.Exec(ctx, statement); err != nil {
+			return mapPostgresError("schema migration", "", err)
+		}
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
 		SchemaVersion); err != nil {
 		return mapPostgresError("schema version", "", err)
 	}
@@ -429,15 +479,41 @@ func migratePostgresV3ToV4(ctx context.Context, tx pgx.Tx) error {
 
 // postgresIngestStateStatement is v2's only addition, kept separate so the
 // v1 → v2 migration applies exactly this.
+//
+// Located by what it creates rather than by its position in the list. The
+// offset spelling broke twice — task 066 appended two statements and task 074
+// appended three more, and each time the constant had to be re-counted by
+// hand against a fixture guard that caught it. A search cannot drift.
 func postgresIngestStateStatement() string {
-	statements := postgresSchemaStatements()
-	// Fourth from the end: v3 appended the environments table after it, and
-	// v4 appended the promotions table and its index after that.
-	return statements[len(statements)-4]
+	return postgresStatementCreating(tableIngestState)
+}
+
+// postgresStatementCreating returns the CREATE TABLE for exactly this table.
+//
+// Matching on the statement's own prefix, not on containment: every child
+// table names its parent in a REFERENCES clause, so a substring search would
+// find the wrong statement.
+func postgresStatementCreating(table string) string {
+	want := `CREATE TABLE ` + table + ` (`
+	for _, statement := range postgresSchemaStatements() {
+		if strings.HasPrefix(strings.TrimSpace(statement), want) {
+			return statement
+		}
+	}
+	// Unreachable while the table is in the schema, and a panic rather than a
+	// silent empty statement: a migration that executed "" would report
+	// success having created nothing.
+	panic("platform: no CREATE TABLE statement for " + table)
 }
 
 // verifyPostgresVersion refuses a schema this binary does not understand.
-func verifyPostgresVersion(ctx context.Context, tx pgx.Tx) error {
+// postgresStoredVersion reads the stamped version, refusing a schema that
+// carries tables and no version row.
+//
+// Separate from verifyPostgresVersion because the dispatch now needs the
+// number before it can decide whether to verify or to migrate: v4 and v5 are
+// distinguishable only by the stamp.
+func postgresStoredVersion(ctx context.Context, tx pgx.Tx) (int, error) {
 	var version int
 	err := tx.QueryRow(ctx,
 		`SELECT version FROM `+tableSchemaVersion+` WHERE id = 1`).Scan(&version)
@@ -445,9 +521,17 @@ func verifyPostgresVersion(ctx context.Context, tx pgx.Tx) error {
 	case errors.Is(err, pgx.ErrNoRows):
 		// Tables without a version. Deliberately refused rather than stamped:
 		// the safe reading is that something else wrote here.
-		return fmt.Errorf("%w: version table holds no version row", ErrStoreSchemaVersion)
+		return 0, fmt.Errorf("%w: version table holds no version row", ErrStoreSchemaVersion)
 	case err != nil:
-		return mapPostgresError("schema version", "", err)
+		return 0, mapPostgresError("schema version", "", err)
+	}
+	return version, nil
+}
+
+func verifyPostgresVersion(ctx context.Context, tx pgx.Tx) error {
+	version, err := postgresStoredVersion(ctx, tx)
+	if err != nil {
+		return err
 	}
 	if version != SchemaVersion {
 		// Includes the newer-than-this-binary case, which must fail closed.

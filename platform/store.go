@@ -78,12 +78,14 @@ type Store interface {
 // a finished run was evaluated against. Evaluating a different artifact means
 // a different caller-owned CandidateID.
 //
-// One list method, for one entity, added by task 065 because that is the
+// Task 065 added the first list method, for one entity, because that was the
 // milestone with a concrete need for it: a caller cannot open an environment
-// by ref when knowing the refs is the question. Its scope, order, cursor and
-// limit are all decided — see ProjectEnvironments. Projects, agents,
-// candidates and runs still have none, and freezing those four decisions for
-// them by accident is what task 058 was avoiding.
+// by ref when knowing the refs is the question. Task 074 added the rest of the
+// hierarchy for the same reason and no sooner — a browser that reloads with no
+// live traffic has to find what exists, and every alternative (browser
+// storage, a database handed to a static client, pretending realtime replays)
+// is refused on its own grounds. Every collection shares one scope, order,
+// cursor and limit design; see ProjectEnvironments for the long form.
 //
 // No delete method: nothing in this milestone deletes, and a delete API
 // implies a retention model that does not exist. An environment is archived
@@ -92,11 +94,53 @@ type ControlStore interface {
 	CreateProject(ctx context.Context, project Project) error
 	Project(ctx context.Context, id ProjectID) (Project, error)
 
+	// Projects returns at most limit projects whose id sorts after `after`,
+	// in id byte order. An empty `after` starts at the beginning.
+	//
+	// The one unscoped collection in this API, and deliberately so: it is the
+	// root of the hierarchy, and without it there is no entry point that does
+	// not require already knowing an identifier. It is bounded by the same
+	// MaxListPage as every scoped one — being the root buys no exemption.
+	//
+	// limit outside 1..MaxListPage is ErrInvalidID. There is no parent to be
+	// missing, so there is no ErrStoreNotFound here; an empty platform returns
+	// an empty slice.
+	Projects(ctx context.Context, after ProjectID, limit int) ([]Project, error)
+
 	CreateAgent(ctx context.Context, agent Agent) error
 	Agent(ctx context.Context, id AgentID) (Agent, error)
 
+	// ProjectAgents returns at most limit of one project's agents whose id
+	// sorts after `after`, in id byte order.
+	//
+	// Traversal is by id because id is immutable and an agent's name is not.
+	// Ordering by a mutable column lets a rename move a row between pages
+	// mid-traversal, which silently skips and repeats entries. The same
+	// reasoning ProjectEnvironments gives for ref over rank.
+	//
+	// limit outside 1..MaxListPage is ErrInvalidID. A project with no agents
+	// returns an empty slice; a project that does not exist returns
+	// ErrStoreNotFound, because "there is nothing here" and "there is no here"
+	// are different answers and a caller acts differently on each.
+	ProjectAgents(
+		ctx context.Context, projectID ProjectID, after AgentID, limit int,
+	) ([]Agent, error)
+
 	CreateCandidate(ctx context.Context, candidate Candidate) error
 	Candidate(ctx context.Context, id CandidateID) (Candidate, error)
+
+	// AgentCandidates returns at most limit of one agent's candidates whose id
+	// sorts after `after`, in id byte order.
+	//
+	// Not by created time: candidate metadata carries no timestamp, and the
+	// schema's timestamps are RFC3339Nano text, which is not lexically
+	// ordered. Newest-first over an unbounded history is task 067's subject.
+	//
+	// limit outside 1..MaxListPage is ErrInvalidID; a missing agent is
+	// ErrStoreNotFound; an agent with no candidates is an empty slice.
+	AgentCandidates(
+		ctx context.Context, agentID AgentID, after CandidateID, limit int,
+	) ([]Candidate, error)
 
 	// CreateEnvironment stores one environment, with its checks ordered: a
 	// missing project is ErrStoreNotFound, an existing (project, ref) is
@@ -198,6 +242,25 @@ type ControlStore interface {
 type EvaluationStore interface {
 	CreateEvaluationRun(ctx context.Context, run EvaluationRun) error
 	EvaluationRun(ctx context.Context, id EvaluationRunID) (EvaluationRun, error)
+
+	// CandidateEvaluationRuns returns at most limit of one candidate's runs
+	// whose id sorts after `after`, in id byte order.
+	//
+	// On this interface rather than ControlStore, and that placement is the
+	// point rather than an accident of where browsing is convenient. Task 057
+	// split the two capabilities because "a later backend may reasonably
+	// implement one and not the other"; putting the run collection on
+	// ControlStore would oblige a backend implementing only the control
+	// capability to serve evaluation runs it does not store. A list method
+	// does not move an entity between capabilities.
+	//
+	// limit outside 1..MaxListPage is ErrInvalidID; a missing candidate is
+	// ErrStoreNotFound; a candidate with no runs is an empty slice. A run is
+	// restored by replaying its lifecycle transitions, exactly as a by-id read
+	// does, so a listed run is never less validated than a singly-read one.
+	CandidateEvaluationRuns(
+		ctx context.Context, candidateID CandidateID, after EvaluationRunID, limit int,
+	) ([]EvaluationRun, error)
 
 	// UpdateEvaluationRun replaces previous with next, and fails with
 	// ErrStoreConflict if the stored value is no longer previous.

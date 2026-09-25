@@ -559,6 +559,35 @@ revalidates both environment revisions inside the transaction that inserts.
 Schema version is now 4 on both backends. See
 [ADR 0040](adr/0040-promotions-are-immutable-evidence-backed-platform-decisions.md).
 
+Task 074 added the **bounded hierarchy collection capability** and the
+zero-input Live view that consumes it. Four routes — `GET /v1/projects`,
+`/v1/projects/{id}/agents`, `/v1/agents/{id}/candidates` and
+`/v1/candidates/{id}/evaluation-runs` — follow the entity graph the domain
+already makes immutable, and share task 065's paging design unchanged: `id`
+byte order, an exclusive `after` cursor, `limit` 1..64, and `next_after`
+present exactly when another row follows.
+
+**Where each half lives is the architectural point.** `ControlStore` owns the
+Project, Agent and Candidate collections; `EvaluationStore` owns the
+EvaluationRun collection; `ControlPlane` composes both into one browsing
+surface, and the HTTP adapter never learns they came from different
+capabilities. Task 057 split the two because a later backend may implement one
+and not the other, and a list method does not move an entity between
+capabilities — putting the run collection on `ControlStore` would oblige a
+control-only backend to serve evaluation runs it does not store. No fifth
+interface was added.
+
+The WebUI gained no capability, import or authority: `webui.NewHandler()` still
+takes no arguments. It gained server routes to call, which the CLI or any
+future client may use equally. Its Live view subscribes to `GET /v1/realtime`
+unfiltered — a capability that already existed, since an empty `RealtimeFilter`
+is unconstrained — and the realtime protocol is unchanged. Discovery is bounded
+as a whole workflow rather than only per route: one collection request at
+startup and on every reconnect, zero automatic continuations, and lazy
+user-triggered descent. Schema version is 5 on both backends, and that
+migration adds three indexes and nothing else. See
+[ADR 0041](adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md).
+
 Task 057 added the first persistence adapter: a local SQLite store behind two
 narrow capabilities — `ControlStore` for projects, agents and candidates, and
 `EvaluationStore` for runs and their evidence. There is no generic `Database`

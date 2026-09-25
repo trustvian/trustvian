@@ -232,6 +232,70 @@ func (c *ControlPlane) Candidate(ctx context.Context, id CandidateID) (Candidate
 }
 
 // ---------------------------------------------------------------------
+// Hierarchy browsing (task 074)
+// ---------------------------------------------------------------------
+
+// The four collections that make the hierarchy discoverable without knowing an
+// identifier, composed from both capabilities into one surface.
+//
+// Three come from ControlStore and one from EvaluationStore, and the split is
+// preserved rather than collapsed for browsing convenience: task 057 separated
+// the two because a later backend may implement one and not the other, and a
+// list method does not move an entity between capabilities. This is the layer
+// whose job it is to hold both — the HTTP adapter above never learns that the
+// run collection came from somewhere else, and must not need to.
+//
+// No business logic lives here. Each method validates the caller-owned
+// identifier it was given and forwards; the page bound, the ordering, the
+// cursor rules and the parent-missing-versus-empty distinction are all the
+// store's contract, enforced once at the store edge rather than restated here
+// where the two could disagree.
+
+// Projects returns one bounded page of projects, in id byte order.
+//
+// The root of the hierarchy and the only unscoped collection: there is no
+// parent to validate, and an empty platform is an empty page.
+func (c *ControlPlane) Projects(
+	ctx context.Context, after ProjectID, limit int,
+) ([]Project, error) {
+	return c.control.Projects(ctx, after, limit)
+}
+
+// ProjectAgents returns one bounded page of a project's agents.
+func (c *ControlPlane) ProjectAgents(
+	ctx context.Context, projectID ProjectID, after AgentID, limit int,
+) ([]Agent, error) {
+	if err := validateID("agent project id", string(projectID)); err != nil {
+		return nil, err
+	}
+	return c.control.ProjectAgents(ctx, projectID, after, limit)
+}
+
+// AgentCandidates returns one bounded page of an agent's candidates.
+func (c *ControlPlane) AgentCandidates(
+	ctx context.Context, agentID AgentID, after CandidateID, limit int,
+) ([]Candidate, error) {
+	if err := validateID("candidate agent id", string(agentID)); err != nil {
+		return nil, err
+	}
+	return c.control.AgentCandidates(ctx, agentID, after, limit)
+}
+
+// CandidateEvaluationRuns returns one bounded page of a candidate's runs.
+//
+// The one collection served by EvaluationStore. Composing it here is what lets
+// a caller browse project → agent → candidate → run through a single service
+// without knowing that the last step crosses a capability boundary.
+func (c *ControlPlane) CandidateEvaluationRuns(
+	ctx context.Context, candidateID CandidateID, after EvaluationRunID, limit int,
+) ([]EvaluationRun, error) {
+	if err := validateID("evaluation run candidate id", string(candidateID)); err != nil {
+		return nil, err
+	}
+	return c.evaluations.CandidateEvaluationRuns(ctx, candidateID, after, limit)
+}
+
+// ---------------------------------------------------------------------
 // Environments
 // ---------------------------------------------------------------------
 

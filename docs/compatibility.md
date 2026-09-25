@@ -74,7 +74,13 @@ reconstructed later. Everything else in this table is already released.
 | Platform error `code` values and HTTP statuses | STABLE | A code and its status keep the condition they name | New codes | Major |
 | Platform error `message` text | OBSERVATIONAL | The code and status are the contract; wording is diagnostic | Any change | None |
 | Platform ingest sequence semantics | STABLE | Monotonic from 1; expected applies, identical retry of the last replays, gap and stale fail | — | Major |
-| Platform SQLite schema | OPERATIONALLY STABLE | Forward-only, version-gated; currently version 4 | Additive tables or columns with a schema-version bump and a migration | Major for a destructive change |
+| Platform SQLite schema | OPERATIONALLY STABLE | Forward-only, version-gated; currently version 5 | Additive tables, columns or indexes with a schema-version bump and a migration | Major for a destructive change |
+| Platform collection paging | STABLE | Every `/v1` collection shares one shape: parent-scoped except `GET /v1/projects`, ordered by `id` byte-ascending, exclusive `after` cursor, `limit` 1–64 defaulting to 64, `next_after` present exactly when another row follows, `404` for a missing parent and `200` with an empty array for an empty one | New optional query parameters | Major, or a new path version |
+| `GET /v1/projects` | STABLE | Path, method, and the bounded paging contract above; the one unscoped collection | New optional query parameters | Major, or a new path version |
+| `GET /v1/projects/{project_id}/agents` | STABLE | Same | New optional query parameters | Major, or a new path version |
+| `GET /v1/agents/{agent_id}/candidates` | STABLE | Same | New optional query parameters | Major, or a new path version |
+| `GET /v1/candidates/{candidate_id}/evaluation-runs` | STABLE | Same | New optional query parameters | Major, or a new path version |
+| Collection element shape | STABLE | Each element is the entity's existing detail DTO, field for field; a listing publishes nothing a by-id read does not | New fields, in both places together | Major |
 | Platform environment identity | STABLE | An environment is `(project_id, ref)`; a run keeps recording only the ref, and refs are an open set rather than an enum | New optional environment fields | Major |
 | `GET /v1/projects/{project_id}/environments` paging | STABLE | Traversal by `ref` ascending, exclusive `after` cursor, `limit` 1–64 defaulting to 64, `next_after` present only when another page follows | New optional query parameters | Major, or a new path version |
 | Platform promotion semantics | STABLE | A promotion records a decision, never a deployment or a candidate's location; it is append-only, with no update or delete at any layer | New optional promotion fields | Major |

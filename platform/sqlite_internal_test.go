@@ -1231,17 +1231,31 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 	}
 	// Each version holds everything the one before it did. A list that lost a
 	// table would make requireTables accept a database missing one.
+	//
+	// Not "every step adds a table": v5 adds none. Its migration creates three
+	// indexes, which is why v4 and v5 are indistinguishable by table set and
+	// are told apart by the stamped version alone. Growth is therefore
+	// asserted as monotone rather than strict, and the index-only step is
+	// named so a future reader does not read it as an omission.
+	indexOnly := map[int]bool{SchemaVersion: true}
 	for version := schemaVersionV1 + 1; version <= SchemaVersion; version++ {
 		previous := schemaTablesByVersion[version-1]
 		current := schemaTablesByVersion[version]
-		if len(current) <= len(previous) {
-			t.Errorf("v%d holds %d tables, v%d holds %d; every step adds at least one",
-				version, len(current), version-1, len(previous))
-		}
 		for _, table := range previous {
 			if !slices.Contains(current, table) {
 				t.Errorf("v%d is missing %s, which v%d held", version, table, version-1)
 			}
+		}
+		switch {
+		case indexOnly[version]:
+			if len(current) != len(previous) {
+				t.Errorf("v%d holds %d tables and v%d holds %d; v%d is an index-only "+
+					"migration and must add none",
+					version, len(current), version-1, len(previous), version)
+			}
+		case len(current) <= len(previous):
+			t.Errorf("v%d holds %d tables, v%d holds %d; a table-adding step must add one",
+				version, len(current), version-1, len(previous))
 		}
 	}
 }
