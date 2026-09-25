@@ -238,7 +238,7 @@ meaning for every code, and assuming one will be wrong:
 | Commands | `0` | `1` | `2` | `3` |
 |---|---|---|---|---|
 | `analyze`, `baseline`, `version` | success | the run failed | top-level invocation was wrong | — |
-| `project`, `agent`, `candidate`, `eval` except `compare` | success | *unused* | usage | API, network, or server failure |
+| `project`, `agent`, `candidate`, `env`, `eval` except `compare` | success | *unused* | usage | API, network, or server failure |
 | `tui` | you quit | *unused* | usage | startup, HTTP, SSE, protocol, or terminal failure |
 | `eval compare` | gate **PASS** | gate **FAIL** | usage | API, network, or server failure |
 
