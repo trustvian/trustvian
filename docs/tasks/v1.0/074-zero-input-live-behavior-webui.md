@@ -4,11 +4,14 @@ Status: specified; not implemented
 Milestone: `v1.0`
 Depends on: [059](059-realtime-infrastructure.md),
 [063](063-minimal-web-control-plane.md),
+[064](064-postgresql-platform-backend.md),
 [065](065-environment-model.md),
 [066](066-promotion-workflow.md) — implementation ordering only, for the
 schema-version chain,
 [073](073-otel-collector-evaluation-ingest.md)
-Blocks: [072](README.md) — the OSS `v1.0` release gate
+Blocks: [072](README.md) — the OSS `v1.0` release gate;
+[076](076-behavioral-evidence-explorer.md);
+[077](077-unified-otlp-local-dev-runtime.md)
 
 ## Objective
 

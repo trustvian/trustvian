@@ -25,6 +25,10 @@ Tasks for the `v1.0` milestone.
 | 067–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
 | [073 — OTel Collector Evaluation Ingest](073-otel-collector-evaluation-ingest.md) | Specified and implemented |
 | [074 — Zero-Input Live Behavior WebUI](074-zero-input-live-behavior-webui.md) | Specified; not implemented |
+| [075 — AI Semantic Telemetry Normalization](075-ai-semantic-telemetry-normalization.md) | Specified; not implemented |
+| [076 — Behavioral Trace & Session Evidence Explorer](076-behavioral-evidence-explorer.md) | Specified; not implemented |
+| [077 — Unified OTLP Local Dev Runtime](077-unified-otlp-local-dev-runtime.md) | Specified; not implemented |
+| [078 — Behavioral Scenario Suites](078-behavioral-scenario-suites.md) | Specified; not implemented |
 
 The numbers 067–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
@@ -52,27 +56,56 @@ states are revalidated inside the transaction that writes the promotion, on
 both backends, with row-level writer concurrency where PostgreSQL offers it and
 plain write-transaction serialization where SQLite does not.
 
-Tasks 073 and 074 sit **after** that reserved block rather than inside it.
-Neither was in the approved sequence; both close a gap the sequence did not
-anticipate, found by using the product end to end rather than by planning it.
+Tasks 073–078 sit **after** that reserved block rather than inside it. None
+was in the approved sequence; each closes a gap the sequence did not
+anticipate, found by running the product end to end — an instrumented agent, a
+browser, and a developer who has not read the source.
 
-Task 073: the Collector produced a `Result` and the control plane accepted a
-`DecisionRecord`, and nothing joined them, so a workload observable only
-through OpenTelemetry could not be evaluated at all.
+**Numbering is identity, not execution order.** 067–072 keep their original
+identity and scope; 073–078 close concrete gaps; and 072 remains the release
+gate while now depending on several tasks numbered above it. That is correct
+rather than untidy: a number records when a milestone entered the plan, and
+renumbering one would break every specification, ADR, commit message and
+document already citing it. `ROADMAP.md` carries the dependency order.
 
-Task 074 is **specified and not implemented**. Running a local agent and
-opening the WebUI shows a form asking for a Project, Agent, Candidate or
-EvaluationRun identifier the developer does not have, so the one journey the
-`v1.0` gate opens with — run locally, observe behavior live — requires reading
-an identifier out of a producer's logs first. The milestone makes the browser
-discover active work from the realtime stream it can already subscribe to
-unfiltered, render it as a bounded run-scoped behavior graph, and rediscover
-the durable hierarchy after a reload through bounded authoritative routes —
-one request at startup, no automatic continuation, and descent only when a
-person asks. Its schema step is **4 → 5**, three indexes and nothing else,
-which places its implementation after task 066's in the migration chain.
-Taking a number inside 049–072 for either 073 or 074 would have renamed a
-milestone whose scope is already decided.
+Task 073 is **implemented**: the Collector produced a `Result` and the control
+plane accepted a `DecisionRecord`, and nothing joined them, so a workload
+observable only through OpenTelemetry could not be evaluated at all.
+
+**Tasks 074–078 are specified and not implemented.** Together they are the
+difference between a platform that works and one a developer can pick up:
+
+- **074 — Zero-Input Live Behavior WebUI.** Opening the WebUI shows a form
+  asking for an identifier the developer does not have, so *run locally,
+  observe behavior live* requires reading one out of a producer's logs. The
+  milestone discovers active work from the realtime stream it can already
+  subscribe to unfiltered, renders a bounded run-scoped behavior graph, and
+  rediscovers the durable hierarchy after a reload through bounded routes —
+  one request at startup, no automatic continuation, descent only when asked.
+  Its schema step is **4 → 5**, which places it after 066 in the chain.
+- **075 — AI Semantic Telemetry Normalization.** Zero-code instrumentation
+  reduces an agent's tool call to an HTTP POST against a hostname, so the
+  baseline learns transport shapes rather than behavior. Where a producer
+  emits agent-oriented OpenTelemetry, Trustvian reads it — same pipeline, no
+  AI-specific engine, no framework dependency, and no prompt, completion or
+  argument ever retained.
+- **076 — Behavioral Trace & Session Evidence Explorer.** A verdict without
+  its evidence is not explainable, and `DecisionRecord` already carries trace,
+  span and session correlation that the platform receives and does not retain.
+  The explorer presents sessions, traces and behavioral sequence over whatever
+  history **067** makes durable — 067 keeps ownership of the storage contract.
+- **077 — Unified OTLP Local Dev Runtime.** Watching an agent today means a
+  control plane, a Collector, a processor config, a manually created
+  hierarchy and the right OTLP environment. One command should wrap an
+  existing agent and compose the rest, with no source modification and no
+  Trustvian dependency in the application.
+- **078 — Behavioral Scenario Suites.** Diff, scorecard and gate all exist;
+  what is missing is repeatability. A scenario runs the same workload again,
+  compares the behavioral surface and applies deterministic limits — reusing
+  the control plane for every verdict, and evaluating no answer quality.
+
+Taking a number inside 049–072 for any of them would have renamed a milestone
+whose scope is already decided.
 
 Task 063's open question — collection semantics — was recorded in its
 specification rather than resolved: the WebUI navigates by caller-known ID, and
