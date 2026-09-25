@@ -10,6 +10,62 @@ actually depend on.
 
 ### Added
 
+- **The web interface is now a live observability cockpit** (task 074). The
+  primary surface stopped being a CRUD console organized around
+  `Open by ID` and became a window into what an agent is doing.
+
+  **Information architecture.** Five surfaces — **Live**, **Investigate**,
+  **Compare**, **Promotions**, **Manage** — replacing eight tabs of which four
+  were entity forms. Every control-plane operation still works, moved into
+  Manage's five sub-sections: nothing was deleted, only demoted.
+
+  **The Live Observatory** is the default. A header carrying connection state,
+  the agent being watched and the run's authoritative counts; an active-scope
+  rail populated from `RealtimeScope` alone; a behavior canvas; an inspector;
+  and a bounded timeline. Opening `/` asks for nothing — the page subscribes,
+  discovers active agents by itself, selects the most recently active one and
+  animates its behavior flow.
+
+  **Selection follows, or is pinned.** The newest active run is drawn until a
+  developer clicks a card; from then on the choice is theirs and activity
+  elsewhere raises its own card without taking the graph they are reading. A
+  **Follow active** control returns to auto-selection, and the rail says which
+  mode it is in.
+
+  **Animation is evidence.** One pulse per received observation, along the edge
+  that observation describes, ending when it arrives. No ambient loop, no idle
+  motion, no simulated traffic, no replay after a reconnect — a quiet agent
+  draws a still graph. A new behavior gets a persistent `NEW` badge on the
+  edge, its target, the timeline row and the inspector, which opens it unless
+  the developer is already reading something else. `NEW` means new: it is never
+  labelled dangerous or unsafe.
+
+  **The inspector shows the server's values and only those.** Decision, risk,
+  trust, anomaly, confidence and new-behavior state, rendered as reported.
+  Nothing is computed, combined, thresholded or ranked, and there is
+  deliberately no aggregate health score — collapsing five independent readings
+  into one red/amber/green verdict would be the browser inventing a judgement
+  the platform never made. The privacy allowlist is unchanged: a richer panel
+  is not permission to widen it, and a detail drawer is not an exemption.
+
+  **The counters are authoritative.** The header's observation and
+  distinct-behavior counts come from `GET /v1/evaluation-runs/{id}/progress`,
+  read once per selection. A card's own number is labelled *seen live* and is a
+  frame count, which is a different fact.
+
+  **Forms explain themselves.** Every caller-owned identifier in Manage carries
+  inline help with an example, and Compare and Promotions offer run selectors
+  filled from the hierarchy browser so an opaque identifier no longer has to be
+  copied out of a log. The gate limits say that they are policy rather than
+  evidence.
+
+  Unchanged: the startup budget of one `GET /v1/projects` page, zero automatic
+  continuations, the run-scoped graph model, every visualization bound, and the
+  technology — vanilla ES modules, SVG, same-origin `/v1` and SSE, with no
+  framework, npm, CDN, external font or build step. The modules are split by
+  responsibility (`graph.js`, `rail.js`, `timeline.js`, `inspector.js`,
+  `discovery.js`) rather than grown into one `app.js`.
+
 - **Zero-input live behavior WebUI** (task 074). Opening the WebUI used to show
   a form asking for four identifiers a developer did not have; *run locally,
   observe behavior live* meant reading a run ID out of a producer's logs. The

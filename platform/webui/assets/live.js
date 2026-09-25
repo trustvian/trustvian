@@ -215,6 +215,11 @@ export class RunGraph {
         operationName: behavior.operation_name || "",
         actorType: behavior.actor_type || "",
         environment: behavior.environment || "",
+        // Carried on the edge as well as on the target node, because the
+        // inspector and the timeline describe a behavior rather than a node
+        // and would otherwise have to resolve a target key back to its name.
+        targetName: behavior.target_name || "",
+        targetCategory: behavior.target_category || "",
         pulses: 0,
         newBehavior: false,
       };
@@ -334,10 +339,30 @@ export class LiveModel {
     this.bounds = bounds;
     this.cards = new ScopeCards(bounds.maxCards ?? MAX_SCOPE_CARDS);
     this.selectedKey = "";
-    // Once a developer picks a card, a newly active scope raises its own card
-    // but must not steal the graph they are reading.
-    this.selectionIsExplicit = false;
+    // Two selection modes, and the distinction is the whole reason a developer
+    // can read a graph while several agents are working.
+    //
+    // Following: the most recently active scope is drawn, and each new scope
+    // takes over. Pinned: the developer chose a run and it stays chosen, no
+    // matter what else becomes active — a newly active scope raises its own
+    // card and nothing more. Stealing focus mid-read is the failure this
+    // exists to prevent.
+    //
+    // Ephemeral UI state. It is not persisted and a reload starts following
+    // again, which is correct: nothing about which run somebody was reading is
+    // platform state.
+    this.following = true;
     this.graph = null;
+  }
+
+  // follow returns to auto-selection and immediately adopts the most recently
+  // active scope, so the control does something visible when pressed.
+  follow() {
+    this.following = true;
+    const newest = this.cards.ordered()[0];
+    if (newest !== undefined) {
+      this.applySelection(newest.key);
+    }
   }
 
   // observe folds one frame in and reports what changed.
@@ -349,9 +374,13 @@ export class LiveModel {
     const card = this.cards.observe(scope, at);
     card.lastDecision = observation.decision || "";
     card.lastRisk = observation.risk_level || "";
+    card.lastObservation = observation;
 
-    if (this.selectedKey === "" && !this.selectionIsExplicit) {
-      this.select(card.key, { explicit: false });
+    // While following, the most recently active scope is the selected one —
+    // which this frame just made this card. Pinned, nothing here changes the
+    // selection, however loud another run gets.
+    if (this.following && card.key !== this.selectedKey) {
+      this.applySelection(card.key);
     }
 
     if (card.key !== this.selectedKey) {
@@ -363,15 +392,23 @@ export class LiveModel {
     return { card, edge: this.graph.add(observation, scope, at) };
   }
 
-  // select changes which run the graph draws.
+  // select is a developer's explicit choice, which pins it.
+  //
+  // Pressing Follow active is the only way back to auto-selection. A click is
+  // an intent to read one thing, and an intent that evaporates on the next
+  // frame is not one.
+  select(key) {
+    this.following = false;
+    this.applySelection(key);
+  }
+
+  // applySelection changes which run the graph draws, without touching the
+  // follow mode.
   //
   // The previous run's topology is discarded rather than kept beside the new
   // one: a graph that retained it would be a combined multi-run graph, which
   // is exactly what fingerprint collisions make unsound.
-  select(key, { explicit = true } = {}) {
-    if (explicit) {
-      this.selectionIsExplicit = true;
-    }
+  applySelection(key) {
     if (key === this.selectedKey) {
       return;
     }
@@ -386,10 +423,11 @@ export class LiveModel {
   // reset clears everything one connection owned.
   //
   // Called on every connect, because a card and an edge are both statements
-  // about the current stream. The selected key survives as an intent, so the
-  // same run re-selects itself if it is still active, but no observation does.
+  // about the current stream. The selected key and the follow mode survive as
+  // intent — a pinned run re-selects itself if it is still active — but no
+  // observation does.
   reset() {
     this.cards.clear();
-    this.graph = null;
+    this.graph = this.selectedKey === "" ? null : new RunGraph(this.selectedKey, this.bounds);
   }
 }

@@ -1,7 +1,14 @@
-# Web control plane
+# Web interface
 
-A browser interface to the local control plane. One command starts it; the URL
-is printed.
+A live window into what an agent is doing. One command starts it; the URL is
+printed.
+
+Trustvian's browser surface is an **observability cockpit first and a control
+plane second**. Opening it shows the agents that are working right now, what
+they are touching, and what Trustvian decided about each call. The
+control-plane forms still exist — creating entities, driving a run's lifecycle,
+opening something by an identifier — but they are a secondary surface called
+**Manage**, and watching an agent never requires them.
 
 ## Quick start
 
@@ -30,28 +37,54 @@ one URL and needs no second field.
 
 ## What it can do
 
-| Section | Actions |
+| Section | Purpose |
 |---|---|
-| **Live** *(default)* | Discover active runs with nothing typed; draw one run's behavior flow; read a bounded observation feed; browse the durable hierarchy a page at a time; watch a single run and read its authoritative snapshot |
-| **Evaluations** | Create; view identity, status, timestamps, failure reason; start, complete, fail, cancel; read authoritative progress |
-| **Compare** | Compare two runs and read the gate, diff and scorecard |
-| **Promotion** | Record a promotion decision; open one by ID; page a project's history |
-| **Manage** | Open a project, agent, candidate or evaluation run by ID |
-| **Project / Agent / Candidate** | Create; view their fields |
+| **Live** *(default)* | Watch. Active agents appear by themselves, one run's behavior flow animates as calls arrive, and an inspector shows what Trustvian decided |
+| **Investigate** | Explore. Browse the durable hierarchy a bounded page at a time, open a run's authoritative detail, or narrow the stream to one run |
+| **Compare** | Measure. Compare a reference run against a candidate and read the server's gate, diff and scorecard |
+| **Promotions** | Decide. Record a promotion decision and page a project's history |
+| **Manage** | Administer. Create projects, agents, candidates and runs; drive a run's lifecycle; open anything by identifier |
 
 What it deliberately cannot do: ingest decision records (that is the job of the
 application under evaluation, through the CLI or the API), browse event history
 (task 067), or manage environments (task 065).
 
-## Live is the default view
+## The Live Observatory
 
 ```text
 open /
-  → Live, already connected
-  → active runs appear by themselves
-  → select one
-  → behavior graph + observation feed
+  → already connected
+  → active agents appear by themselves
+  → the newest is selected and its behavior flow animates
+  → click a behavior to inspect what Trustvian decided
 ```
+
+The layout is four regions:
+
+```text
+┌───────────────────────────────────────────────────────────────┐
+│ Trustvian  ● LIVE   support-agent · local   127 obs · 5 behav. │
+├──────────────┬───────────────────────────────┬────────────────┤
+│ Active now   │ Behavior flow                 │ Inspector      │
+│ ● support-   │                               │                │
+│   agent      │   support-agent ──POST──▶ …   │ POST           │
+│ ○ invoice-   │                    ──GET───▶ … │ export.local…  │
+│   agent      │                               │ NEW BEHAVIOR   │
+├──────────────┴───────────────────────────────┴────────────────┤
+│ Live stream · current connection                              │
+└───────────────────────────────────────────────────────────────┘
+```
+
+On a narrow screen these stack in reading order rather than compressing into
+three unreadable columns.
+
+**The header is operational.** A connection chip — `LIVE`, `SYNCING`,
+`RECONNECTING`, `DISCONNECTED` — the agent being watched, and the run's
+observation and distinct-behavior counts. Those counts are read from
+`GET /v1/evaluation-runs/{id}/progress`, never accumulated from the stream: a
+count derived from frames would drift the moment one was dropped, and the
+stream's own bound makes dropping possible by design. A card's own number is
+labelled *seen live* and is a frame count, which is a different fact.
 
 The page subscribes to `GET /v1/realtime` with no filter. An empty filter is
 unconstrained on every dimension — that is what the server already means by it
@@ -68,6 +101,16 @@ then. Task 067 owns retained history; this view owns what is happening now.
 which is a different question from *what is active*, and they are what a reload
 with no live traffic falls back on. The page never confuses the two: a card is
 activity, a hierarchy row is durable state.
+
+### Selection: following, or pinned
+
+The most recently active run is selected and drawn. When you click a different
+card, that choice is **pinned** — activity elsewhere raises its own card and
+never takes the graph you are reading. The rail says which mode it is in, in
+words, and offers **Follow active** to go back.
+
+This state is ephemeral. A reload starts following again, which is correct:
+nothing about which run somebody was reading is platform state.
 
 ### One run at a time, on purpose
 
@@ -101,9 +144,43 @@ from `StableFeatures` as the observation carried them.
 `export_customer`. Richer semantic fidelity is task 075's, and guessing one
 here would assert something no evidence supports.
 
-Each received observation produces one pulse along its edge. Nothing animates
-without a frame behind it, and a quiet agent draws a still graph — there is no
-decorative traffic and no replay after a reconnect.
+Each received observation produces **one** pulse along its edge, and the edge
+brightens for the length of that traversal. Nothing animates without a frame
+behind it: no ambient loop, no idle motion, no simulated packets, and no replay
+after a reconnect. A quiet agent draws a still graph, which is the correct
+picture.
+
+A behavior the run had not shown before gets a persistent `NEW` badge on both
+the edge and its target, a `NEW` column in the timeline, and — if you are not
+already reading something else — the inspector opens it. `NEW` means new: it is
+never labelled dangerous, malicious or unsafe, because those would be
+judgements the server did not make.
+
+### The inspector
+
+Clicking an edge, a timeline row or a target opens the evidence for that
+behavior:
+
+```text
+POST
+export.localhost
+
+NEW  This behavior was not already represented in the run's evidence.
+
+Decision   alert        Risk   high
+Trust      0.61  ▓▓▓▓▓▓░░░░
+Anomaly    0.82  ▓▓▓▓▓▓▓▓░░
+Confidence 0.74  ▓▓▓▓▓▓▓░░░
+```
+
+Every value is the server's, rendered. Nothing is computed, combined,
+thresholded or ranked here, and there is deliberately **no aggregate health
+score** — five independent readings collapsed into one red/amber/green verdict
+would be the browser inventing a judgement the platform never made. The bars
+are a second rendering of the same numbers, which stay printed beside them.
+
+Identifiers appear at the bottom of the panel as technical detail. They are not
+the visual hierarchy: what you are reading is what the agent did.
 
 ### Bounds, and what saturation means
 
@@ -113,7 +190,7 @@ decorative traffic and no replay after a reconnect.
 | graph source nodes | 8 |
 | graph target nodes | 64 |
 | graph edges | 128 |
-| observation feed rows | 100 |
+| timeline rows | 100 |
 | frames buffered during resync | 64 |
 | automatic collection requests at startup or reconnect | 1 |
 
@@ -151,18 +228,43 @@ the page.
 ### Accessibility
 
 Motion is decoration, never information. Under `prefers-reduced-motion` no
-pulse is created at all, and every fact it carried — which edge fired, the
-decision, the risk level, the `NEW` badge, the connection state — remains as
-text or a badge. Nothing is conveyed by colour alone: each state carries a word
-or a marker, graph nodes and edges are focusable with accessible names, and
-connection state stays in a `role="status"` region.
+pulse element is created at all, and every fact it carried — which edge fired,
+the decision, the risk level, the `NEW` badge, the connection state — remains
+as text or a badge.
 
-## Manage — navigating by ID
+Nothing is conveyed by colour alone: every state carries a word or a marker.
+Graph edges and target nodes are focusable and activate on Enter or Space with
+accessible names describing the operation, target, decision, risk and
+new-behavior state. The rail is a listbox whose cards report `aria-selected`.
+Timeline rows are focusable and readable without the graph, and selecting one
+moves focus to the inspector.
 
-The secondary surface, for when you already have an identifier from a log, a CI
-job or the CLI and want to go straight to it. It is no longer how you find
-things: **Live** discovers active work by itself, and its hierarchy browser
-walks Projects → Agents → Candidates → Runs with nothing typed.
+The timeline deliberately carries **no** `aria-live`: a busy agent produces
+many observations per second and announcing each would make a screen reader
+unusable. Connection state — the thing actually worth announcing — stays in the
+header's `role="status"` region.
+
+## Manage — the administrative surface
+
+Everything that creates or changes control-plane state, behind one tab with
+five sub-sections: **Open by ID**, **Projects**, **Agents**, **Candidates** and
+**Evaluations**. Nothing was removed when it moved here — creating entities,
+the full run lifecycle, and opening anything by identifier all work exactly as
+before.
+
+It is no longer how you *find* things: **Live** discovers active work by
+itself, and **Investigate** walks Projects → Agents → Candidates → Runs with
+nothing typed.
+
+**The forms explain themselves now.** A field labelled "Candidate ID" beside an
+empty box told a developer nothing about what belonged there. Each caller-owned
+identifier carries inline help and an example:
+
+```text
+Candidate ID
+A stable identifier for the version being evaluated.
+Example: git:43af19c
+```
 
 There is still no search. Every collection is parent-scoped, ordered by an
 immutable identifier in byte order, and bounded per page; filtering by name is
@@ -245,8 +347,15 @@ fails or reconnects; it does not sit there looking like it is working.
 
 ## Comparing two runs
 
-Supply two run IDs and all three gate limits. Limits are required, and `0` is
-valid.
+Browse to a candidate under **Investigate** and its runs fill the reference and
+candidate selectors here, so you pick a run you can see rather than copying an
+identifier out of a log. The text inputs remain, because a run you already have
+an identifier for should not require browsing to it first — the identifier is
+still the value the server receives.
+
+All three gate limits are required, and `0` is valid. They are **policy, not
+evidence**: they are yours to choose, the same comparison yields PASS or FAIL
+depending only on them, and each carries inline help saying what it bounds.
 
 The verdict shown is the server's `gate.verdict`. The browser does no gate
 arithmetic — it renders the five checks the control plane returned, with the

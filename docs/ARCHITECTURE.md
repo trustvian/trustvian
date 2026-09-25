@@ -577,6 +577,13 @@ capabilities — putting the run collection on `ControlStore` would oblige a
 control-only backend to serve evaluation runs it does not store. No fifth
 interface was added.
 
+Its browser surface is organized as an observability cockpit rather than a CRUD
+console — Live, Investigate, Compare, Promotions, Manage — built from vanilla
+ES modules split by responsibility (`graph.js`, `rail.js`, `timeline.js`,
+`inspector.js`, `discovery.js`, `live.js`) over the same static same-origin
+`/v1` and SSE. No framework, no npm, no CDN, no build step: the information
+model changed, the technology did not.
+
 The WebUI gained no capability, import or authority: `webui.NewHandler()` still
 takes no arguments. It gained server routes to call, which the CLI or any
 future client may use equally. Its Live view subscribes to `GET /v1/realtime`
