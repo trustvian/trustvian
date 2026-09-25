@@ -10,6 +10,47 @@ actually depend on.
 
 ### Added
 
+- **Environment model** (task 065). A project now owns the environments its runs
+  name. `POST /v1/environments` registers one, and `POST /v1/evaluation-runs`
+  refuses an `environment` the project has not registered (`404`) or has
+  archived (`409`) — so `"stagin"` is an error rather than a perfectly valid run
+  whose comparisons describe a population of one. Existing databases keep
+  working: the v2 → v3 migration backfills every distinct
+  `(project, environment)` pair the stored runs reference, unranked and active,
+  dropping, merging and renaming nothing.
+
+  Identity is `(ProjectID, EnvironmentRef)` — the reference a run already
+  records, with no second identifier to disagree with it — and uniqueness is per
+  project, so two projects may each own a `staging`. There is no delete at any
+  layer: archiving closes an environment to new work while keeping every
+  historical reference resolvable, and is reversible.
+
+  Ordering is an optional per-project integer rank and one primitive,
+  `CanPromote(from, to)`, true iff both environments belong to one project, are
+  active, are ranked, and the target's rank is strictly greater. Unranked is a
+  real state rather than rank 0. **Ordering is not authorization** — the
+  promotion workflow that decides whether a candidate *may* move is a later
+  milestone, and nothing here moves one.
+
+  A project may create at most 64 environments, enforced inside a transaction
+  that serializes on the owning project row (`SELECT … FOR UPDATE` on
+  PostgreSQL, a write-intent touch on SQLite) so concurrent creation cannot
+  exceed it; different projects never block each other. The cap governs
+  **creation, not existence**, which is what lets a migrated database hold more
+  and still be read, configured and archived.
+  `GET /v1/projects/{project_id}/environments` is the platform API's first
+  collection route, bounded at 64 rows per page and paginating on the immutable
+  `ref` rather than the mutable rank, so enumeration is exact under concurrent
+  renaming and re-ranking. `trustvian env create|get|list|set|archive|activate`
+  drives all of it over `/v1`, and `env list` follows every page.
+
+  `CompareEvaluations` now requires both runs to belong to one project, checked
+  before any evidence is loaded: project-scoped refs made the existing
+  ref-equality check a hazard when two projects each own a `staging`.
+  `SchemaVersion` is 3 on both backends. See
+  [docs/tasks/v1.0/065-environment-model.md](docs/tasks/v1.0/065-environment-model.md)
+  and [ADR 0039](docs/adr/0039-environments-are-project-owned-ranked-references.md).
+
 - **PostgreSQL platform backend.** The control plane can now persist to a shared
   PostgreSQL database instead of a local SQLite file, so several processes can
   work against one set of authoritative state. **SQLite remains the default and

@@ -992,6 +992,10 @@ func TestUnknownSubcommandsAreUsageErrors(t *testing.T) {
 		// Explicitly including the commands later milestones own: they must
 		// read as "not a command", never as a broken server.
 		"eval": {"watch", "tui", "serve", "run-local", "promote", "list", ""},
+		// "promote" and "delete" are the two an operator would reach for
+		// first, and task 065 implements neither: promotion is task 066's,
+		// and an environment is archived rather than deleted.
+		"env": {"promote", "delete", "rank", ""},
 	}
 
 	for family, subcommands := range families {
@@ -1025,6 +1029,12 @@ func TestMissingRuntimeIsOperationalNotUsage(t *testing.T) {
 		{"eval", "start", "--id", "run-42"},
 		{"eval", "progress", "--id", "run-42"},
 		{"eval", "ingest-state", "--id", "run-42"},
+		{"env", "get", "--project-id", "proj-1", "--ref", "staging"},
+		{"env", "list", "--project-id", "proj-1"},
+		{"env", "create", "--project-id", "proj-1", "--ref", "staging", "--name", "Staging"},
+		{"env", "set", "--project-id", "proj-1", "--ref", "staging", "--revision", "1", "--name", "S"},
+		{"env", "archive", "--project-id", "proj-1", "--ref", "staging", "--revision", "1"},
+		{"env", "activate", "--project-id", "proj-1", "--ref", "staging", "--revision", "1"},
 	}
 
 	for _, args := range commands {
@@ -1472,6 +1482,7 @@ func TestFamilyLevelUsageIsUnchanged(t *testing.T) {
 		{"agent"}, {"agent", "update"},
 		{"candidate"}, {"candidate", "promote"},
 		{"eval"}, {"eval", "watch"}, {"eval", "serve"},
+		{"env"}, {"env", "promote"},
 	}
 	for _, args := range cases {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {

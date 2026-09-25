@@ -103,6 +103,10 @@ func TestStoreConformance(t *testing.T) {
 			t.Run("projects", func(t *testing.T) { conformProjects(t, backend.open) })
 			t.Run("agents", func(t *testing.T) { conformAgents(t, backend.open) })
 			t.Run("candidates", func(t *testing.T) { conformCandidates(t, backend.open) })
+			t.Run("environments", func(t *testing.T) { conformEnvironments(t, backend.open) })
+			t.Run("environment-cap", func(t *testing.T) { conformEnvironmentCap(t, backend.open) })
+			t.Run("environment-paging", func(t *testing.T) { conformEnvironmentPaging(t, backend.open) })
+			t.Run("environment-contention", func(t *testing.T) { conformEnvironmentContention(t, backend.open) })
 			t.Run("runs", func(t *testing.T) { conformRuns(t, backend.open) })
 			t.Run("lifecycle", func(t *testing.T) { conformLifecycle(t, backend.open) })
 			t.Run("evidence", func(t *testing.T) { conformEvidence(t, backend.open) })
@@ -672,4 +676,413 @@ func conformanceCommit(
 		PreviousNextSequence: previousNext,
 		RecordDigest:         digest,
 	}
+}
+
+// ---------------------------------------------------------------------
+// Environments (task 065)
+// ---------------------------------------------------------------------
+
+func mustEnvironmentValue(t testing.TB, ref, project, name string) Environment {
+	t.Helper()
+	env, err := NewEnvironment(EnvironmentRef(ref), ProjectID(project), name)
+	if err != nil {
+		t.Fatalf("NewEnvironment() error = %v", err)
+	}
+	return env
+}
+
+// seedProject creates one project, for the environment cases that do not need
+// an agent or a candidate.
+func seedProject(t testing.TB, store Store, id string) {
+	t.Helper()
+	if err := store.CreateProject(context.Background(), mustProject(t, ProjectID(id), "P")); err != nil {
+		t.Fatalf("seed project %s: %v", id, err)
+	}
+}
+
+func conformEnvironments(t *testing.T, open func(testing.TB) Store) {
+	ctx := context.Background()
+	store := open(t)
+	seedProject(t, store, "proj-1")
+	seedProject(t, store, "proj-2")
+
+	// Create and read back, field for field, including the unranked case.
+	env := mustEnvironmentValue(t, "staging", "proj-1", "Staging")
+	if err := store.CreateEnvironment(ctx, env); err != nil {
+		t.Fatalf("CreateEnvironment() error = %v", err)
+	}
+	loaded, err := store.Environment(ctx, "proj-1", "staging")
+	if err != nil {
+		t.Fatalf("Environment() error = %v", err)
+	}
+	if loaded.Ref() != "staging" || loaded.ProjectID() != "proj-1" ||
+		loaded.Name() != "Staging" || loaded.Status() != EnvironmentActive ||
+		loaded.Revision() != 1 {
+		t.Errorf("loaded = %+v, want the created value", loaded)
+	}
+	if _, ranked := loaded.Rank(); ranked {
+		t.Error("loaded environment is ranked; it was created without one")
+	}
+
+	// A ranked one round-trips its rank, including rank 0.
+	for _, rank := range []uint16{0, 30} {
+		ref := fmt.Sprintf("ranked-%d", rank)
+		ranked, err := NewRankedEnvironment(EnvironmentRef(ref), "proj-1", "R", rank)
+		if err != nil {
+			t.Fatalf("NewRankedEnvironment() error = %v", err)
+		}
+		if err := store.CreateEnvironment(ctx, ranked); err != nil {
+			t.Fatalf("CreateEnvironment(%s) error = %v", ref, err)
+		}
+		back, err := store.Environment(ctx, "proj-1", EnvironmentRef(ref))
+		if err != nil {
+			t.Fatalf("Environment(%s) error = %v", ref, err)
+		}
+		got, isRanked := back.Rank()
+		if !isRanked || got != rank {
+			t.Errorf("%s rank = (%d, %t), want (%d, true)", ref, got, isRanked, rank)
+		}
+	}
+
+	// Duplicate identity, with the stored value untouched.
+	other := mustEnvironmentValue(t, "staging", "proj-1", "Different name")
+	if err := store.CreateEnvironment(ctx, other); !errors.Is(err, ErrStoreAlreadyExists) {
+		t.Errorf("duplicate create error = %v, want ErrStoreAlreadyExists", err)
+	}
+	if again, _ := store.Environment(ctx, "proj-1", "staging"); again.Name() != "Staging" {
+		t.Errorf("a refused create rewrote the stored name to %q", again.Name())
+	}
+
+	// The same ref in another project is another environment.
+	if err := store.CreateEnvironment(ctx,
+		mustEnvironmentValue(t, "staging", "proj-2", "Other staging")); err != nil {
+		t.Fatalf("same ref in a second project error = %v, want it accepted", err)
+	}
+	second, err := store.Environment(ctx, "proj-2", "staging")
+	if err != nil {
+		t.Fatalf("Environment(proj-2) error = %v", err)
+	}
+	if second.Name() != "Other staging" {
+		t.Errorf("proj-2 staging name = %q; the two projects share a row", second.Name())
+	}
+
+	// Missing parent, missing environment.
+	if err := store.CreateEnvironment(ctx,
+		mustEnvironmentValue(t, "staging", "proj-absent", "X")); !errors.Is(err, ErrStoreNotFound) {
+		t.Errorf("create under a missing project error = %v, want ErrStoreNotFound", err)
+	}
+	if _, err := store.Environment(ctx, "proj-1", "absent"); !errors.Is(err, ErrStoreNotFound) {
+		t.Errorf("Environment(absent) error = %v, want ErrStoreNotFound", err)
+	}
+
+	// Compare-and-swap: the current revision wins, a stale one does not.
+	current, _ := store.Environment(ctx, "proj-1", "staging")
+	renamed, err := current.Rename("Staging EU")
+	if err != nil {
+		t.Fatalf("Rename() error = %v", err)
+	}
+	if err := store.UpdateEnvironment(ctx, current, renamed); err != nil {
+		t.Fatalf("UpdateEnvironment() error = %v", err)
+	}
+	stale, err := current.Rename("Written by a stale caller")
+	if err != nil {
+		t.Fatalf("Rename() error = %v", err)
+	}
+	if err := store.UpdateEnvironment(ctx, current, stale); !errors.Is(err, ErrStoreConflict) {
+		t.Errorf("stale update error = %v, want ErrStoreConflict", err)
+	}
+	after, _ := store.Environment(ctx, "proj-1", "staging")
+	if after.Name() != "Staging EU" || after.Revision() != 2 {
+		t.Errorf("after a refused stale update: name %q revision %d, want Staging EU / 2",
+			after.Name(), after.Revision())
+	}
+
+	// Identity cannot move.
+	moved := mustEnvironmentValue(t, "renamed-ref", "proj-1", "X")
+	if err := store.UpdateEnvironment(ctx, after, moved); !errors.Is(err, ErrInvalidID) {
+		t.Errorf("update changing the ref error = %v, want ErrInvalidID", err)
+	}
+	crossProject := mustEnvironmentValue(t, "staging", "proj-2", "X")
+	if err := store.UpdateEnvironment(ctx, after, crossProject); !errors.Is(err, ErrInvalidID) {
+		t.Errorf("update changing the project error = %v, want ErrInvalidID", err)
+	}
+
+	// Archive and reactivate survive a round trip.
+	archived, _ := after.Archive()
+	if err := store.UpdateEnvironment(ctx, after, archived); err != nil {
+		t.Fatalf("archive error = %v", err)
+	}
+	if back, _ := store.Environment(ctx, "proj-1", "staging"); back.Status() != EnvironmentArchived {
+		t.Errorf("status = %q, want archived", back.Status())
+	}
+	reactivated, _ := archived.Activate()
+	if err := store.UpdateEnvironment(ctx, archived, reactivated); err != nil {
+		t.Fatalf("activate error = %v", err)
+	}
+	if back, _ := store.Environment(ctx, "proj-1", "staging"); back.Status() != EnvironmentActive {
+		t.Errorf("status = %q, want active", back.Status())
+	}
+}
+
+// conformEnvironmentCap covers the creation cap and — the part that is easy to
+// get backwards — its interaction with identity.
+func conformEnvironmentCap(t *testing.T, open func(testing.TB) Store) {
+	ctx := context.Background()
+	store := open(t)
+	seedProject(t, store, "proj-1")
+	seedProject(t, store, "proj-2")
+
+	for i := range maxProjectEnvironments {
+		ref := fmt.Sprintf("env-%03d", i)
+		if err := store.CreateEnvironment(ctx,
+			mustEnvironmentValue(t, ref, "proj-1", "E")); err != nil {
+			t.Fatalf("create %s error = %v; the first %d must fit",
+				ref, err, maxProjectEnvironments)
+		}
+	}
+
+	// One more new ref is refused.
+	if err := store.CreateEnvironment(ctx,
+		mustEnvironmentValue(t, "one-too-many", "proj-1", "E")); !errors.Is(err, ErrEnvironmentLimit) {
+		t.Errorf("create past the cap error = %v, want ErrEnvironmentLimit", err)
+	}
+
+	// Identity before cap: re-creating a ref the project already has is a
+	// duplicate, never a limit. This is the assertion that fails if the two
+	// checks are ever reordered, and it needs no concurrency to catch it.
+	if err := store.CreateEnvironment(ctx,
+		mustEnvironmentValue(t, "env-000", "proj-1", "E")); !errors.Is(err, ErrStoreAlreadyExists) {
+		t.Errorf("duplicate at the cap error = %v, want ErrStoreAlreadyExists", err)
+	}
+
+	// The cap is per project.
+	if err := store.CreateEnvironment(ctx,
+		mustEnvironmentValue(t, "env-000", "proj-2", "E")); err != nil {
+		t.Errorf("create in a second project error = %v; the cap is per project", err)
+	}
+}
+
+func conformEnvironmentPaging(t *testing.T, open func(testing.TB) Store) {
+	ctx := context.Background()
+	store := open(t)
+	seedProject(t, store, "proj-1")
+	seedProject(t, store, "proj-empty")
+
+	// A project that does not exist, and one that exists with nothing in it,
+	// are different answers.
+	if _, err := store.ProjectEnvironments(ctx, "proj-absent", "", 10); !errors.Is(err, ErrStoreNotFound) {
+		t.Errorf("list for a missing project error = %v, want ErrStoreNotFound", err)
+	}
+	empty, err := store.ProjectEnvironments(ctx, "proj-empty", "", 10)
+	if err != nil {
+		t.Fatalf("list for an empty project error = %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("empty project returned %d environments", len(empty))
+	}
+
+	// Refs whose byte order differs from a locale-aware collation: "Zulu"
+	// sorts before "alpha" by byte value and after it in many locales, which
+	// is what proves COLLATE "C" is doing its job on PostgreSQL.
+	refs := []string{"Zulu", "alpha", "_under", "beta"}
+	for _, ref := range refs {
+		if err := store.CreateEnvironment(ctx,
+			mustEnvironmentValue(t, ref, "proj-1", "E")); err != nil {
+			t.Fatalf("create %s error = %v", ref, err)
+		}
+	}
+	page, err := store.ProjectEnvironments(ctx, "proj-1", "", 10)
+	if err != nil {
+		t.Fatalf("ProjectEnvironments() error = %v", err)
+	}
+	want := []string{"Zulu", "_under", "alpha", "beta"} // byte order
+	got := make([]string, 0, len(page))
+	for _, env := range page {
+		got = append(got, string(env.Ref()))
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("order = %v, want %v (byte order, not locale order)", got, want)
+	}
+
+	// The cursor is exclusive and need not name an existing row.
+	after, err := store.ProjectEnvironments(ctx, "proj-1", "_under", 10)
+	if err != nil {
+		t.Fatalf("ProjectEnvironments(after) error = %v", err)
+	}
+	if len(after) != 2 || after[0].Ref() != "alpha" {
+		t.Errorf("after=_under returned %d rows starting at %q, want 2 starting at alpha",
+			len(after), after[0].Ref())
+	}
+	between, err := store.ProjectEnvironments(ctx, "proj-1", "aaa", 10)
+	if err != nil {
+		t.Fatalf("ProjectEnvironments(nonexistent cursor) error = %v", err)
+	}
+	if len(between) != 2 {
+		t.Errorf("a cursor naming no row returned %d rows, want the 2 that sort after it", len(between))
+	}
+
+	// The limit is honoured and bounded.
+	limited, err := store.ProjectEnvironments(ctx, "proj-1", "", 2)
+	if err != nil {
+		t.Fatalf("ProjectEnvironments(limit 2) error = %v", err)
+	}
+	if len(limited) != 2 {
+		t.Errorf("limit 2 returned %d rows", len(limited))
+	}
+	// The bound is exactly MaxEnvironmentPage, and both backends say so.
+	//
+	// 65 is refused like 500 is. It used to be accepted, because the HTTP
+	// handler fetched one row beyond a page to detect a continuation and the
+	// store was widened to let it — which made the public contract say 64 and
+	// mean 65. The transport asks a second bounded question instead.
+	if _, err := store.ProjectEnvironments(ctx, "proj-1", "", MaxEnvironmentPage); err != nil {
+		t.Errorf("limit %d error = %v, want the documented maximum accepted",
+			MaxEnvironmentPage, err)
+	}
+	for _, limit := range []int{0, -1, MaxEnvironmentPage + 1, MaxEnvironmentPage + 2, 500} {
+		if _, err := store.ProjectEnvironments(ctx, "proj-1", "", limit); !errors.Is(err, ErrInvalidID) {
+			t.Errorf("limit %d error = %v, want it refused", limit, err)
+		}
+	}
+
+	// Renaming, re-ranking and archiving between pages moves nothing: the
+	// traversal key is the immutable ref.
+	first, err := store.ProjectEnvironments(ctx, "proj-1", "", 2)
+	if err != nil {
+		t.Fatalf("first page error = %v", err)
+	}
+	target, _ := store.Environment(ctx, "proj-1", "beta")
+	ranked, _ := target.WithRank(1)
+	if err := store.UpdateEnvironment(ctx, target, ranked); err != nil {
+		t.Fatalf("re-rank between pages error = %v", err)
+	}
+	archivedTarget, _ := ranked.Archive()
+	if err := store.UpdateEnvironment(ctx, ranked, archivedTarget); err != nil {
+		t.Fatalf("archive between pages error = %v", err)
+	}
+	second, err := store.ProjectEnvironments(ctx, "proj-1", first[len(first)-1].Ref(), 2)
+	if err != nil {
+		t.Fatalf("second page error = %v", err)
+	}
+	seen := append([]string{}, string(first[0].Ref()), string(first[1].Ref()))
+	for _, env := range second {
+		seen = append(seen, string(env.Ref()))
+	}
+	if fmt.Sprint(seen) != fmt.Sprint(want) {
+		t.Errorf("paged traversal saw %v, want %v — a mutable field moved a row", seen, want)
+	}
+
+	// An archived environment still lists: the collection is configuration,
+	// not a work queue.
+	if len(second) != 2 {
+		t.Errorf("second page returned %d rows, want 2 including the archived one", len(second))
+	}
+}
+
+// conformEnvironmentContention is the cap under concurrent writers, stated as
+// four races because the answer depends on both the ref and the count.
+func conformEnvironmentContention(t *testing.T, open func(testing.TB) Store) {
+	// Each race is its own store, so a failure names one scenario.
+	race := func(t *testing.T, seed int, refs [2]string) (successes, duplicates, limits int, total int) {
+		t.Helper()
+		ctx := context.Background()
+		store := open(t)
+		seedProject(t, store, "proj-1")
+		for i := range seed {
+			if err := store.CreateEnvironment(ctx,
+				mustEnvironmentValue(t, fmt.Sprintf("seed-%03d", i), "proj-1", "E")); err != nil {
+				t.Fatalf("seeding %d error = %v", i, err)
+			}
+		}
+
+		start := make(chan struct{})
+		results := make(chan error, 2)
+		for _, ref := range refs {
+			go func(ref string) {
+				env, err := NewEnvironment(EnvironmentRef(ref), "proj-1", "Racing")
+				if err != nil {
+					results <- err
+					return
+				}
+				<-start
+				results <- store.CreateEnvironment(ctx, env)
+			}(ref)
+		}
+		close(start)
+
+		for range 2 {
+			switch err := <-results; {
+			case err == nil:
+				successes++
+			case errors.Is(err, ErrStoreAlreadyExists):
+				duplicates++
+			case errors.Is(err, ErrEnvironmentLimit):
+				limits++
+			default:
+				t.Fatalf("unexpected create error = %v", err)
+			}
+		}
+
+		// Count what actually landed, in pages, since a migrated-size project
+		// would not fit one.
+		after := EnvironmentRef("")
+		for {
+			page, err := store.ProjectEnvironments(ctx, "proj-1", after, MaxEnvironmentPage)
+			if err != nil {
+				t.Fatalf("counting environments error = %v", err)
+			}
+			total += len(page)
+			if len(page) < MaxEnvironmentPage {
+				break
+			}
+			after = page[len(page)-1].Ref()
+		}
+		return successes, duplicates, limits, total
+	}
+
+	cap := maxProjectEnvironments
+
+	t.Run("below the cap, distinct refs", func(t *testing.T) {
+		successes, duplicates, limits, total := race(t, cap-1, [2]string{"new-a", "new-b"})
+		if successes != 1 || limits != 1 || duplicates != 0 {
+			t.Errorf("successes=%d duplicates=%d limits=%d, want 1/0/1",
+				successes, duplicates, limits)
+		}
+		if total != cap {
+			t.Errorf("final count = %d, want %d — two writers must not both fit", total, cap)
+		}
+	})
+
+	t.Run("below the cap, same absent ref", func(t *testing.T) {
+		successes, duplicates, limits, total := race(t, cap-1, [2]string{"new-a", "new-a"})
+		if successes != 1 || duplicates != 1 || limits != 0 {
+			t.Errorf("successes=%d duplicates=%d limits=%d, want 1/1/0 — "+
+				"the loser found the row, not the cap", successes, duplicates, limits)
+		}
+		if total != cap {
+			t.Errorf("final count = %d, want %d", total, cap)
+		}
+	})
+
+	t.Run("at the cap, same absent ref", func(t *testing.T) {
+		successes, duplicates, limits, total := race(t, cap, [2]string{"new-a", "new-a"})
+		if successes != 0 || limits != 2 || duplicates != 0 {
+			t.Errorf("successes=%d duplicates=%d limits=%d, want 0/0/2 — "+
+				"sharing a name creates no room", successes, duplicates, limits)
+		}
+		if total != cap {
+			t.Errorf("final count = %d, want %d", total, cap)
+		}
+	})
+
+	t.Run("at the cap, distinct refs", func(t *testing.T) {
+		successes, duplicates, limits, total := race(t, cap, [2]string{"new-a", "new-b"})
+		if successes != 0 || limits != 2 || duplicates != 0 {
+			t.Errorf("successes=%d duplicates=%d limits=%d, want 0/0/2",
+				successes, duplicates, limits)
+		}
+		if total != cap {
+			t.Errorf("final count = %d, want %d", total, cap)
+		}
+	})
 }

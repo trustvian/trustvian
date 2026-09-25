@@ -93,6 +93,7 @@ func TestDomainTypesCarryNoJSONTags(t *testing.T) {
 		platform.Agent{},
 		platform.Candidate{},
 		platform.CandidateMetadata{},
+		platform.Environment{},
 		platform.EvaluationRun{},
 		platform.EvaluationAggregate{},
 		platform.BehaviorSnapshot{},

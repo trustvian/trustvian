@@ -14,6 +14,7 @@ package httpapi
 // See docs/adr/0031-control-plane-owns-ingest-and-http-is-an-adapter.md.
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -151,8 +152,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.mux.Serv
 
 // routes registers the whole surface.
 //
-// No collection GET. Task 059+ has not specified sort order, cursors, limits
-// or scoping, and a list route added here would freeze all four by accident.
+// One collection GET, added by task 065 and scoped to one project's
+// environments. Task 058 deferred collection semantics because sort order,
+// cursors, limits and scoping were undecided; they are decided for this
+// entity and this entity only. Projects, agents, candidates and runs still
+// have no list route.
 func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /v1/projects", h.createProject)
 	h.mux.HandleFunc("GET /v1/projects/{project_id}", h.getProject)
@@ -162,6 +166,21 @@ func (h *Handler) routes() {
 
 	h.mux.HandleFunc("POST /v1/candidates", h.createCandidate)
 	h.mux.HandleFunc("GET /v1/candidates/{candidate_id}", h.getCandidate)
+
+	// One collection route, for one entity, because task 065 is the milestone
+	// with a concrete need for it: a caller cannot open an environment by ref
+	// when knowing the refs is the question. Its scope, order, cursor and
+	// limit are all decided — see listEnvironments.
+	h.mux.HandleFunc("POST /v1/environments", h.createEnvironment)
+	h.mux.HandleFunc("GET /v1/projects/{project_id}/environments", h.listEnvironments)
+	h.mux.HandleFunc("GET /v1/projects/{project_id}/environments/{environment_ref}",
+		h.getEnvironment)
+	h.mux.HandleFunc("POST /v1/projects/{project_id}/environments/{environment_ref}/configure",
+		h.configureEnvironment)
+	h.mux.HandleFunc("POST /v1/projects/{project_id}/environments/{environment_ref}/archive",
+		h.archiveEnvironment)
+	h.mux.HandleFunc("POST /v1/projects/{project_id}/environments/{environment_ref}/activate",
+		h.activateEnvironment)
 
 	h.mux.HandleFunc("POST /v1/evaluation-runs", h.createEvaluationRun)
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}", h.getEvaluationRun)
@@ -292,7 +311,12 @@ func classify(err error) (int, string, string) {
 
 	case errors.Is(err, platform.ErrEvaluationState),
 		errors.Is(err, platform.ErrStoreConflict),
-		errors.Is(err, platform.ErrInvalidTransition):
+		errors.Is(err, platform.ErrInvalidTransition),
+		// An archived environment and a full project are both "the request is
+		// coherent, the current configuration refuses it" — the same class a
+		// stale revision is in, and the same code a client already handles.
+		errors.Is(err, platform.ErrEnvironmentUnavailable),
+		errors.Is(err, platform.ErrEnvironmentLimit):
 		return http.StatusConflict, codeConflict, err.Error()
 
 	case errors.Is(err, platform.ErrStoreCorrupt),
@@ -308,6 +332,9 @@ func classify(err error) (int, string, string) {
 		errors.Is(err, platform.ErrInvalidBehaviorRecord),
 		errors.Is(err, platform.ErrEnvironmentMismatch),
 		errors.Is(err, platform.ErrBehaviorEnvironmentMismatch),
+		// A comparison spanning two projects can never succeed, whatever the
+		// state changes to, so it is the caller's request that is wrong.
+		errors.Is(err, platform.ErrComparisonScope),
 		errors.Is(err, platform.ErrFingerprintConflict):
 		return http.StatusBadRequest, codeInvalidRequest, err.Error()
 
@@ -409,6 +436,206 @@ func (h *Handler) getCandidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, newCandidateResponse(candidate))
+}
+
+// ---------------------------------------------------------------------
+// Environments
+// ---------------------------------------------------------------------
+
+func (h *Handler) createEnvironment(w http.ResponseWriter, r *http.Request) {
+	var request createEnvironmentRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		h.writeError(w, err)
+		return
+	}
+	// Two constructors rather than a create-then-rank, because a create is
+	// one act: an environment created with a rank is still revision 1.
+	var environment platform.Environment
+	var err error
+	if request.Rank != nil {
+		environment, err = platform.NewRankedEnvironment(
+			platform.EnvironmentRef(request.Ref), platform.ProjectID(request.ProjectID),
+			request.Name, *request.Rank)
+	} else {
+		environment, err = platform.NewEnvironment(
+			platform.EnvironmentRef(request.Ref), platform.ProjectID(request.ProjectID), request.Name)
+	}
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	if err := h.controlPlane.CreateEnvironment(r.Context(), environment); err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, newEnvironmentResponse(environment))
+}
+
+func (h *Handler) getEnvironment(w http.ResponseWriter, r *http.Request) {
+	environment, err := h.controlPlane.Environment(r.Context(),
+		platform.ProjectID(r.PathValue("project_id")),
+		platform.EnvironmentRef(r.PathValue("environment_ref")))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newEnvironmentResponse(environment))
+}
+
+// listEnvironments returns one bounded page of a project's environments.
+//
+// Keyset pagination on `ref`, which is immutable: rank is mutable, and a
+// cursor over a mutable key could move a row from a page the caller has not
+// read into one it already read. The page is never larger than the limit,
+// whatever the project holds — a migrated project may hold more environments
+// than may now be created, so the response bound cannot rely on the creation
+// cap.
+func (h *Handler) listEnvironments(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("project_id")
+
+	limit, err := environmentLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	after := r.URL.Query().Get("after")
+
+	page, err := h.controlPlane.ProjectEnvironments(r.Context(),
+		platform.ProjectID(projectID), platform.EnvironmentRef(after), limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	nextAfter, err := h.environmentContinuation(r.Context(), projectID, page, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newEnvironmentListResponse(projectID, page, nextAfter))
+}
+
+// environmentContinuation reports the cursor to publish after this page, or
+// "" when the traversal is complete.
+//
+// A short page is the end: the store returned everything it had before
+// reaching the limit. A full page is ambiguous — the project may hold exactly
+// this many rows, or more — and the ambiguity is resolved by asking for one
+// row past the last ref.
+//
+// The obvious alternative is to fetch limit+1 rows and drop the extra, and
+// that is what this used to do. It required the store to accept 65, so the
+// public contract said "at most 64 per page" and meant 65, with an off-by-one
+// that existed only because one transport wanted it. A second bounded call
+// keeps the store's range honest and costs an indexed single-row lookup on
+// the primary key, once per full page.
+func (h *Handler) environmentContinuation(
+	ctx context.Context, projectID string, page []platform.Environment, limit int,
+) (string, error) {
+	if len(page) < limit {
+		return "", nil
+	}
+	last := page[len(page)-1].Ref()
+	probe, err := h.controlPlane.ProjectEnvironments(
+		ctx, platform.ProjectID(projectID), last, 1)
+	if err != nil {
+		return "", err
+	}
+	if len(probe) == 0 {
+		return "", nil
+	}
+	return string(last), nil
+}
+
+// environmentLimitParam reads and bounds ?limit=.
+//
+// Absent means the maximum. A value above it is refused rather than clamped:
+// a client that asked for 500 and silently received 64 would conclude it had
+// seen everything.
+func environmentLimitParam(r *http.Request) (int, error) {
+	raw := r.URL.Query().Get("limit")
+	if raw == "" {
+		return platform.MaxEnvironmentPage, nil
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit < 1 || limit > platform.MaxEnvironmentPage {
+		return 0, apiError{status: http.StatusBadRequest, code: codeInvalidRequest,
+			message: fmt.Sprintf("limit must be an integer between 1 and %d", platform.MaxEnvironmentPage)}
+	}
+	return limit, nil
+}
+
+func (h *Handler) configureEnvironment(w http.ResponseWriter, r *http.Request) {
+	var request configureEnvironmentRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		h.writeError(w, err)
+		return
+	}
+	if err := requireRevision(request.Revision); err != nil {
+		h.writeError(w, err)
+		return
+	}
+	environment, err := h.controlPlane.ConfigureEnvironment(r.Context(),
+		platform.ProjectID(r.PathValue("project_id")),
+		platform.EnvironmentRef(r.PathValue("environment_ref")),
+		platform.ConfigureEnvironmentRequest{
+			Revision:  request.Revision,
+			Name:      request.Name,
+			Rank:      request.Rank,
+			ClearRank: request.ClearRank,
+		})
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newEnvironmentResponse(environment))
+}
+
+func (h *Handler) archiveEnvironment(w http.ResponseWriter, r *http.Request) {
+	h.environmentLifecycle(w, r, h.controlPlane.ArchiveEnvironment)
+}
+
+func (h *Handler) activateEnvironment(w http.ResponseWriter, r *http.Request) {
+	h.environmentLifecycle(w, r, h.controlPlane.ActivateEnvironment)
+}
+
+// environmentLifecycle is the shape archive and activate share: a revision in,
+// the new environment out.
+func (h *Handler) environmentLifecycle(
+	w http.ResponseWriter, r *http.Request,
+	transition func(context.Context, platform.ProjectID, platform.EnvironmentRef, uint64) (platform.Environment, error),
+) {
+	var request revisionRequest
+	if err := decodeJSON(w, r, &request); err != nil {
+		h.writeError(w, err)
+		return
+	}
+	if err := requireRevision(request.Revision); err != nil {
+		h.writeError(w, err)
+		return
+	}
+	environment, err := transition(r.Context(),
+		platform.ProjectID(r.PathValue("project_id")),
+		platform.EnvironmentRef(r.PathValue("environment_ref")),
+		request.Revision)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newEnvironmentResponse(environment))
+}
+
+// requireRevision refuses a mutation that did not say what it was changing.
+//
+// Revision 0 never exists — a new environment starts at 1 — so an absent
+// field and an explicit zero are the same mistake, and both are refused
+// rather than treated as "whatever is current".
+func requireRevision(revision uint64) error {
+	if revision == 0 {
+		return apiError{status: http.StatusBadRequest, code: codeInvalidRequest,
+			message: "revision is required; it is the revision the caller read"}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------

@@ -70,6 +70,98 @@ func newProjectResponse(p platform.Project) projectResponse {
 	return projectResponse{Version: WireVersion, ID: string(p.ID()), Name: p.Name()}
 }
 
+// ---------------------------------------------------------------------
+// Environments
+// ---------------------------------------------------------------------
+
+// createEnvironmentRequest is flat, with project_id in the body, matching
+// POST /v1/agents. The reads and mutations below are project-scoped instead,
+// because an environment ref is unique within a project and nowhere else.
+type createEnvironmentRequest struct {
+	ProjectID string `json:"project_id"`
+	Ref       string `json:"ref"`
+	Name      string `json:"name"`
+
+	// Rank is optional: omitted or null means unranked, which is a different
+	// state from rank 0. A pointer is what makes those two distinguishable on
+	// the wire.
+	Rank *uint16 `json:"rank"`
+}
+
+// configureEnvironmentRequest changes a name, a rank, or both.
+//
+// Revision is required on every mutation. There is deliberately no
+// unconditional write: two operators reordering ranks would otherwise
+// overwrite each other, and the loser would never know.
+type configureEnvironmentRequest struct {
+	Revision  uint64  `json:"revision"`
+	Name      *string `json:"name"`
+	Rank      *uint16 `json:"rank"`
+	ClearRank bool    `json:"clear_rank"`
+}
+
+// revisionRequest is the body archive and activate share.
+type revisionRequest struct {
+	Revision uint64 `json:"revision"`
+}
+
+type environmentResponse struct {
+	Version   string `json:"version"`
+	ProjectID string `json:"project_id"`
+	Ref       string `json:"ref"`
+	Name      string `json:"name"`
+
+	// Rank is omitted entirely when the environment is unranked, rather than
+	// sent as 0 — the wire keeps the distinction the domain makes.
+	Rank *uint16 `json:"rank,omitempty"`
+
+	Status   string `json:"status"`
+	Revision uint64 `json:"revision"`
+}
+
+func newEnvironmentResponse(e platform.Environment) environmentResponse {
+	response := environmentResponse{
+		Version:   WireVersion,
+		ProjectID: string(e.ProjectID()),
+		Ref:       string(e.Ref()),
+		Name:      e.Name(),
+		Status:    string(e.Status()),
+		Revision:  e.Revision(),
+	}
+	if rank, ranked := e.Rank(); ranked {
+		response.Rank = &rank
+	}
+	return response
+}
+
+// environmentListResponse is an object rather than a bare array, so the
+// envelope has somewhere to live and next_after is an additive field rather
+// than a shape change.
+type environmentListResponse struct {
+	Version      string                `json:"version"`
+	ProjectID    string                `json:"project_id"`
+	Environments []environmentResponse `json:"environments"`
+
+	// NextAfter is present exactly when another page follows, and absent on
+	// the last one. A caller pages until it is gone.
+	NextAfter string `json:"next_after,omitempty"`
+}
+
+func newEnvironmentListResponse(
+	projectID string, environments []platform.Environment, nextAfter string,
+) environmentListResponse {
+	page := make([]environmentResponse, 0, len(environments))
+	for _, env := range environments {
+		page = append(page, newEnvironmentResponse(env))
+	}
+	return environmentListResponse{
+		Version:      WireVersion,
+		ProjectID:    projectID,
+		Environments: page,
+		NextAfter:    nextAfter,
+	}
+}
+
 type createAgentRequest struct {
 	ID        string `json:"id"`
 	ProjectID string `json:"project_id"`

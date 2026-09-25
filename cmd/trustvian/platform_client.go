@@ -210,6 +210,17 @@ func (c *platformClient) get(ctx context.Context, segments ...string) (apiResult
 	return c.do(ctx, http.MethodGet, nil, segments...)
 }
 
+// getQuery is get with a query string, for the one route that pages.
+//
+// Separate from get rather than a variadic option, so every other call site
+// stays a path and nothing else — a query string is the only part of a URL
+// this CLI ever builds beyond escaped segments.
+func (c *platformClient) getQuery(
+	ctx context.Context, query url.Values, segments ...string,
+) (apiResult, error) {
+	return c.doQuery(ctx, http.MethodGet, nil, query, segments...)
+}
+
 // post issues a POST carrying a JSON body, or no body when payload is nil.
 func (c *platformClient) post(ctx context.Context, payload any, segments ...string) (apiResult, error) {
 	var encoded []byte
@@ -232,8 +243,17 @@ func (c *platformClient) post(ctx context.Context, payload any, segments ...stri
 func (c *platformClient) do(
 	ctx context.Context, method string, body []byte, segments ...string,
 ) (apiResult, error) {
+	return c.doQuery(ctx, method, body, nil, segments...)
+}
+
+func (c *platformClient) doQuery(
+	ctx context.Context, method string, body []byte, query url.Values, segments ...string,
+) (apiResult, error) {
 	target := *c.baseURL
 	target.Path, target.RawPath = apiPath(segments...)
+	if len(query) > 0 {
+		target.RawQuery = query.Encode()
+	}
 
 	var reader io.Reader
 	if body != nil {

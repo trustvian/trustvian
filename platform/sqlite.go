@@ -35,7 +35,7 @@ import (
 // schema version. They change for different reasons, and coupling them would
 // force a migration on an unrelated release or hide a real one behind an
 // unchanged number.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // Table names. Compile-time constants: these are the only identifiers that
 // ever appear in assembled SQL. Every caller-supplied value is a bound
@@ -52,6 +52,10 @@ const (
 
 	// Added by schema v2: one ingest cursor row per run.
 	tableIngestState = "platform_evaluation_ingest_state"
+
+	// Added by schema v3: the environment registry a run's EnvironmentRef
+	// resolves against, keyed by (project_id, ref).
+	tableEnvironments = "platform_environments"
 )
 
 // schemaTables is every table this schema owns, and the allowlist a test
@@ -60,7 +64,7 @@ const (
 var schemaTables = []string{
 	tableSchemaVersion, tableProjects, tableAgents, tableCandidates,
 	tableRuns, tableAggregates, tableSnapshots, tableEntries,
-	tableIngestState,
+	tableIngestState, tableEnvironments,
 }
 
 // SQLiteStore is the local persistence adapter.
@@ -206,7 +210,18 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.requireTables(ctx, schemaVersionV1, schemaTablesV1); err != nil {
 			return err
 		}
-		return s.migrateV1ToV2(ctx)
+		if err := s.migrateV1ToV2(ctx); err != nil {
+			return err
+		}
+		// Then forward, one step at a time: a v1 database reaches v3 through
+		// v2 rather than through a second, separately-maintained jump.
+		return s.migrateV2ToV3(ctx)
+
+	case schemaVersionV2:
+		if err := s.requireTables(ctx, schemaVersionV2, schemaTablesV2); err != nil {
+			return err
+		}
+		return s.migrateV2ToV3(ctx)
 
 	default:
 		// No path from anything else. Newer is refused too: this binary
@@ -266,9 +281,19 @@ func (s *SQLiteStore) migrateV1ToV2(ctx context.Context) error {
 		// loop, and the transaction is already rolled back before it runs —
 		// the store holds a single connection, so verifying inside the
 		// transaction would deadlock against itself.
-		if version, verr := s.storedSchemaVersion(ctx); verr == nil && version == SchemaVersion {
-			if tablesErr := s.requireTables(ctx, SchemaVersion, schemaTables); tablesErr == nil {
-				return nil
+		// A racing opener may have completed v1→v2, or gone all the way to v3
+		// behind this one. Either is "somebody else finished the step this
+		// opener was taking"; anything else keeps the original error.
+		if version, verr := s.storedSchemaVersion(ctx); verr == nil {
+			switch version {
+			case schemaVersionV2:
+				if tablesErr := s.requireTables(ctx, schemaVersionV2, schemaTablesV2); tablesErr == nil {
+					return nil
+				}
+			case SchemaVersion:
+				if tablesErr := s.requireTables(ctx, SchemaVersion, schemaTables); tablesErr == nil {
+					return nil
+				}
 			}
 		}
 		return err
@@ -287,13 +312,94 @@ func (s *SQLiteStore) migrateV1ToV2Once(ctx context.Context) error {
 		return fmt.Errorf("platform: migrate schema v1 to v2: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`, SchemaVersion); err != nil {
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`, schemaVersionV2); err != nil {
 		return fmt.Errorf("platform: migrate schema v1 to v2: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("platform: migrate schema v1 to v2: %w", err)
 	}
 	return nil
+}
+
+// migrateV2ToV3 adds the environment registry and backfills what history
+// already references.
+//
+// One transaction, so a failure leaves a readable v2 rather than a
+// half-stamped hybrid — the same discipline migrateV1ToV2 uses. Existing rows
+// are not touched: this adds a table, fills it from what runs already say,
+// and changes a number.
+//
+// The backfill is the point. Schema 2 had no registry, so every environment
+// a run ever named exists only as a string on that run; creating the registry
+// without them would make every historical ref unresolvable and would refuse
+// the next run against an environment that has been in use for months. Each
+// distinct (project, environment) reachable through runs → candidates →
+// agents becomes an environment named after itself, active, and **unranked** —
+// inventing a promotion order here would be inventing the one thing task 065
+// deliberately makes an operator choose.
+//
+// The creation cap does not apply. A valid v2 database may hold a project
+// whose runs reference far more than maxProjectEnvironments distinct
+// environments, and discarding the excess would orphan the evidence that
+// names it. The cap governs what may be created from here; it is not a claim
+// about what a project already contains.
+func (s *SQLiteStore) migrateV2ToV3(ctx context.Context) error {
+	if err := s.migrateV2ToV3Once(ctx); err != nil {
+		// Same racing-opener recovery as v1→v2: the durable schema decides,
+		// never a driver's error text.
+		if version, verr := s.storedSchemaVersion(ctx); verr == nil && version == SchemaVersion {
+			if tablesErr := s.requireTables(ctx, SchemaVersion, schemaTables); tablesErr == nil {
+				return nil
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateV2ToV3Once(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: migrate schema v2 to v3: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	if _, err := tx.ExecContext(ctx, environmentsTableStatement()); err != nil {
+		return fmt.Errorf("platform: migrate schema v2 to v3: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, backfillEnvironmentsStatement()); err != nil {
+		return fmt.Errorf("platform: migrate schema v2 to v3: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`, SchemaVersion); err != nil {
+		return fmt.Errorf("platform: migrate schema v2 to v3: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: migrate schema v2 to v3: %w", err)
+	}
+	return nil
+}
+
+// backfillEnvironmentsStatement derives the registry from history.
+//
+// Written once and used by both backends: the join is the same shape in both
+// dialects, and two copies of "which environments did history reference" is
+// exactly where they would drift. DISTINCT does the deduplication, so one
+// environment used by a thousand runs is one row, and the same ref under two
+// projects is two rows — identity is the pair.
+//
+// The rank is CAST(NULL AS INTEGER) rather than a bare NULL because PostgreSQL
+// types an untyped NULL in a SELECT list as text and then refuses to insert it
+// into an integer column. SQLite is indifferent, so the cast that one backend
+// requires is what keeps the statement genuinely shared.
+func backfillEnvironmentsStatement() string {
+	return `INSERT INTO ` + tableEnvironments + `
+	            (project_id, ref, name, rank, status, revision)
+	        SELECT DISTINCT a.project_id, r.environment, r.environment,
+	               CAST(NULL AS INTEGER), '` + string(EnvironmentActive) + `', 1
+	        FROM ` + tableRuns + ` r
+	        JOIN ` + tableCandidates + ` c ON c.id = r.candidate_id
+	        JOIN ` + tableAgents + ` a ON a.id = c.agent_id`
 }
 
 func (s *SQLiteStore) tablesPresent(ctx context.Context) ([]string, error) {
@@ -324,11 +430,18 @@ func (s *SQLiteStore) tablesPresent(ctx context.Context) ([]string, error) {
 // cursor table. Named so the migration path reads as a version, not a number.
 const schemaVersionV1 = 1
 
+// schemaVersionV2 is task 058's schema: everything v3 has except the
+// environment registry.
+const schemaVersionV2 = 2
+
 // schemaTablesV1 is what a complete v1 database holds.
 var schemaTablesV1 = []string{
 	tableSchemaVersion, tableProjects, tableAgents, tableCandidates,
 	tableRuns, tableAggregates, tableSnapshots, tableEntries,
 }
+
+// schemaTablesV2 is what a complete v2 database holds.
+var schemaTablesV2 = append(append([]string{}, schemaTablesV1...), tableIngestState)
 
 func (s *SQLiteStore) storedSchemaVersion(ctx context.Context) (int, error) {
 	var version int
@@ -428,6 +541,8 @@ func schemaStatements() []string {
 			config_digest   TEXT NOT NULL
 		)`,
 
+		environmentsTableStatement(),
+
 		`CREATE TABLE ` + tableRuns + ` (
 			id                 TEXT PRIMARY KEY,
 			candidate_id       TEXT NOT NULL REFERENCES ` + tableCandidates + `(id),
@@ -522,6 +637,32 @@ func schemaStatements() []string {
 
 		ingestStateTableStatement(),
 	}
+}
+
+// environmentsTableStatement is the v3 table, written once so the fresh
+// schema and the v2 migration cannot disagree about it.
+//
+// rank is the one nullable column and the one INTEGER that is not a boolean:
+// the counters in this schema are TEXT because they can exceed MaxInt64 and
+// must round-trip exactly, while a rank is a human-chosen 0..9999 and is the
+// only value SQL here ever compares numerically. NULL means unranked, which
+// is a different statement from rank 0.
+//
+// No foreign key from evaluation runs to this table. A run stores a ref and
+// no project_id, so the composite cannot be expressed without denormalizing
+// the hierarchy onto runs, and a foreign key would make a historical run
+// unloadable if its environment ever became unreachable. Creation-time
+// validation in ControlPlane is the enforcement point instead.
+func environmentsTableStatement() string {
+	return `CREATE TABLE ` + tableEnvironments + ` (
+			project_id TEXT    NOT NULL REFERENCES ` + tableProjects + `(id),
+			ref        TEXT    NOT NULL,
+			name       TEXT    NOT NULL,
+			rank       INTEGER,
+			status     TEXT    NOT NULL,
+			revision   INTEGER NOT NULL,
+			PRIMARY KEY (project_id, ref)
+		)`
 }
 
 // ingestStateTableStatement is schema v2's only addition, kept separate
@@ -759,6 +900,153 @@ func (s *SQLiteStore) writeError(kind, id string, err error) error {
 		return fmt.Errorf("%w: %s %s references a missing parent", ErrStoreNotFound, kind, preview(id))
 	}
 	return fmt.Errorf("platform: store %s: %w", kind, err)
+}
+
+// ---------------------------------------------------------------------
+// Environments
+// ---------------------------------------------------------------------
+
+// sqlExecQuerier adapts a database/sql transaction to environmentWriter.
+type sqlExecQuerier struct{ tx *sql.Tx }
+
+func (q sqlExecQuerier) queryRow(ctx context.Context, query string, args ...any) rowScanner {
+	return q.tx.QueryRowContext(ctx, query, args...)
+}
+
+func (q sqlExecQuerier) noRows(err error) bool { return errors.Is(err, sql.ErrNoRows) }
+
+func (q sqlExecQuerier) rebind(query string) string { return query }
+
+func (q sqlExecQuerier) exec(ctx context.Context, query string, args ...any) (int64, error) {
+	result, err := q.tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// lockProject takes SQLite's write intent on the owning project row.
+//
+// SQLite has no SELECT ... FOR UPDATE, and a deferred transaction would read
+// the environment count as a reader and only discover it cannot write when it
+// tried to insert — after the cap decision had already been made. Writing the
+// project row moves the transaction to RESERVED here, which is SQLite's
+// equivalent of the row lock PostgreSQL takes, and it happens before anything
+// is counted.
+//
+// The row is set to its own value: this takes a lock, it does not change a
+// project. RowsAffected doubles as the existence check, so a missing project
+// costs no second query.
+func lockProjectForWrite(ctx context.Context, w environmentWriter, projectID string) error {
+	affected, err := w.exec(ctx, w.rebind(
+		`UPDATE `+tableProjects+` SET name = name WHERE id = ?`), projectID)
+	if err != nil {
+		return fmt.Errorf("platform: lock project: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("%w: project %s", ErrStoreNotFound, preview(projectID))
+	}
+	return nil
+}
+
+func (q sqlExecQuerier) lockProject(ctx context.Context, projectID string) error {
+	return lockProjectForWrite(ctx, q, projectID)
+}
+
+// CreateEnvironment stores one environment under the cap, atomically.
+//
+// The whole check-then-insert sequence runs in one write transaction.
+// BEGIN IMMEDIATE — expressed here as an immediate write against the project
+// row — rather than a deferred transaction, so the write intent is taken
+// before the count is read instead of being upgraded after it. Relying on
+// SetMaxOpenConns(1) would put the guarantee in a pool setting rather than in
+// the code that depends on it, and a later pool change would silently remove
+// it.
+//
+// The checks are ordered, and the order is the contract: missing project,
+// then existing identity, then the cap. A ref the project already has is
+// ErrStoreAlreadyExists whatever the count, because that request adds nothing.
+func (s *SQLiteStore) CreateEnvironment(ctx context.Context, env Environment) error {
+	if env.Ref() == "" || env.ProjectID() == "" {
+		return fmt.Errorf("%w: environment has no identity", ErrInvalidID)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: create environment: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	// Take the write lock first. SQLite has no SELECT ... FOR UPDATE, and a
+	// deferred transaction would read the count as a reader and only then
+	// discover it cannot write. Touching the owning project row establishes
+	// the write intent at the same granularity PostgreSQL locks, and it fails
+	// here rather than after the decision has been made.
+	writer := sqlExecQuerier{tx}
+	if err := writer.lockProject(ctx, string(env.ProjectID())); err != nil {
+		return err
+	}
+
+	rank, ranked := env.Rank()
+	if err := insertEnvironmentLocked(ctx, writer, env, rank, ranked); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: create environment: %w", err)
+	}
+	return nil
+}
+
+// Environment loads one environment by (project, ref).
+func (s *SQLiteStore) Environment(
+	ctx context.Context, projectID ProjectID, ref EnvironmentRef,
+) (Environment, error) {
+	return loadEnvironment(ctx, sqlQuerier{s.db}, projectID, ref)
+}
+
+// UpdateEnvironment replaces previous with next if the stored revision still
+// matches previous's.
+//
+// One predicated UPDATE, so the database serializes concurrent writers with
+// no lock held across a round trip: the predicate *is* the revision. A
+// non-matching row means either the environment is gone or somebody else
+// moved it, and the distinction is resolved by a follow-up read rather than
+// guessed at.
+func (s *SQLiteStore) UpdateEnvironment(ctx context.Context, previous, next Environment) error {
+	if err := validateEnvironmentUpdate(previous, next); err != nil {
+		return err
+	}
+	rank, ranked := next.Rank()
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE `+tableEnvironments+`
+		 SET name = ?, rank = ?, status = ?, revision = ?
+		 WHERE project_id = ? AND ref = ? AND revision = ?`,
+		next.Name(), nullRank(rank, ranked), string(next.Status()), int64(next.Revision()),
+		string(previous.ProjectID()), string(previous.Ref()), int64(previous.Revision()))
+	if err != nil {
+		return fmt.Errorf("platform: update environment: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("platform: update environment: %w", err)
+	}
+	if affected == 0 {
+		return environmentUpdateMiss(ctx, sqlQuerier{s.db}, previous)
+	}
+	return nil
+}
+
+// ProjectEnvironments returns one bounded page in ref byte order.
+func (s *SQLiteStore) ProjectEnvironments(
+	ctx context.Context, projectID ProjectID, after EnvironmentRef, limit int,
+) ([]Environment, error) {
+	if err := validateEnvironmentPage(after, limit); err != nil {
+		return nil, err
+	}
+	if err := s.requireExists(ctx, tableProjects, "project", string(projectID)); err != nil {
+		return nil, err
+	}
+	return queryEnvironmentPage(ctx, sqlQuerier{s.db}, projectID, after, limit)
 }
 
 // ---------------------------------------------------------------------

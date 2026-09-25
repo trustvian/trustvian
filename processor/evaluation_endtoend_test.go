@@ -197,6 +197,9 @@ func TestEndToEndSpanReachesEvaluationProgress(t *testing.T) {
 		"id": "agent-e2e", "project_id": "proj-e2e", "name": "Support agent"})
 	postJSON(t, apiURL, "/v1/candidates", map[string]any{
 		"id": "cand-e2e", "agent_id": "agent-e2e", "metadata": map[string]string{}})
+	// A run may only name an environment its project owns (task 065).
+	postJSON(t, apiURL, "/v1/environments", map[string]string{
+		"project_id": "proj-e2e", "ref": environment, "name": "Local"})
 	postJSON(t, apiURL, "/v1/evaluation-runs", map[string]string{
 		"id": runID, "candidate_id": "cand-e2e",
 		"environment": environment, "behavioral_profile": profile})
@@ -254,6 +257,8 @@ func TestEndToEndResumesFromTheServerCursor(t *testing.T) {
 		"id": "a", "project_id": "p", "name": "A"})
 	postJSON(t, apiURL, "/v1/candidates", map[string]any{
 		"id": "c", "agent_id": "a", "metadata": map[string]string{}})
+	postJSON(t, apiURL, "/v1/environments", map[string]string{
+		"project_id": "p", "ref": "local", "name": "Local"})
 	postJSON(t, apiURL, "/v1/evaluation-runs", map[string]string{
 		"id": runID, "candidate_id": "c",
 		"environment": "local", "behavioral_profile": profile})
@@ -379,6 +384,8 @@ func TestEndToEndLostResponseIsReplayedUpstream(t *testing.T) {
 		"id": "a", "project_id": "p", "name": "A"})
 	postJSON(t, apiURL, "/v1/candidates", map[string]any{
 		"id": "c", "agent_id": "a", "metadata": map[string]string{}})
+	postJSON(t, apiURL, "/v1/environments", map[string]string{
+		"project_id": "p", "ref": "local", "name": "Local"})
 	postJSON(t, apiURL, "/v1/evaluation-runs", map[string]string{
 		"id": runID, "candidate_id": "c",
 		"environment": "local", "behavioral_profile": profile})
@@ -444,6 +451,8 @@ func TestEndToEndRestartCompletesAPendingRecord(t *testing.T) {
 		"id": "a", "project_id": "p", "name": "A"})
 	postJSON(t, apiURL, "/v1/candidates", map[string]any{
 		"id": "c", "agent_id": "a", "metadata": map[string]string{}})
+	postJSON(t, apiURL, "/v1/environments", map[string]string{
+		"project_id": "p", "ref": "local", "name": "Local"})
 	postJSON(t, apiURL, "/v1/evaluation-runs", map[string]string{
 		"id": runID, "candidate_id": "c",
 		"environment": "local", "behavioral_profile": profile})

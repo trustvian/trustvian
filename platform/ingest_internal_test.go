@@ -230,14 +230,14 @@ func seedV1Content(t *testing.T, db *sql.DB, runID string, records uint64) {
 // Migration
 // ---------------------------------------------------------------------
 
-func TestFreshDatabaseIsSchemaV2(t *testing.T) {
+func TestFreshDatabaseIsSchemaV3(t *testing.T) {
 	store, _ := testStore(t)
 	version, err := store.storedSchemaVersion(t.Context())
 	if err != nil {
 		t.Fatalf("storedSchemaVersion() error = %v", err)
 	}
-	if version != SchemaVersion || SchemaVersion != 2 {
-		t.Fatalf("version = %d, SchemaVersion = %d, want 2", version, SchemaVersion)
+	if version != SchemaVersion || SchemaVersion != 3 {
+		t.Fatalf("version = %d, SchemaVersion = %d, want 3", version, SchemaVersion)
 	}
 	if err := store.requireTables(t.Context(), SchemaVersion, schemaTables); err != nil {
 		t.Errorf("fresh database is missing tables: %v", err)
