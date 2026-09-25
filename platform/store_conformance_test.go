@@ -107,6 +107,14 @@ func TestStoreConformance(t *testing.T) {
 			t.Run("environment-cap", func(t *testing.T) { conformEnvironmentCap(t, backend.open) })
 			t.Run("environment-paging", func(t *testing.T) { conformEnvironmentPaging(t, backend.open) })
 			t.Run("environment-contention", func(t *testing.T) { conformEnvironmentContention(t, backend.open) })
+			t.Run("promotions", func(t *testing.T) { conformPromotions(t, backend.open) })
+			t.Run("promotion-staleness", func(t *testing.T) {
+				conformPromotionStaleness(t, backend.open)
+			})
+			t.Run("promotion-paging", func(t *testing.T) { conformPromotionPaging(t, backend.open) })
+			t.Run("promotion-enumeration", func(t *testing.T) {
+				conformPromotionPagingEnumeratesEverything(t, backend.open)
+			})
 			t.Run("runs", func(t *testing.T) { conformRuns(t, backend.open) })
 			t.Run("lifecycle", func(t *testing.T) { conformLifecycle(t, backend.open) })
 			t.Run("evidence", func(t *testing.T) { conformEvidence(t, backend.open) })

@@ -805,7 +805,8 @@ Project
   │   └─ Candidate
   │       └─ EvaluationRun ──▶ EnvironmentRef
   │                       └──▶ BehavioralProfileRef
-  └─ Environment ◀──────────────────┘
+  ├─ Environment ◀──────────────────┘
+  └─ Promotion ──▶ two EvaluationRuns, two Environments, one gate result
 ```
 
 - **Project** — a local control-plane workspace owning agents. Not a tenant,
@@ -829,6 +830,9 @@ Project
   `production` are plausible values, not a closed enum.
 - **BehavioralProfileRef** — an opaque reference. How behavioral profiles are
   allocated remains a later task, and an environment is not that choice.
+- **Promotion** — one immutable record that a candidate's evidence was gated
+  and the verdict accepted or refused advancement from one environment toward
+  another. It is a record of a **decision**, not of a deployment: see below.
 
 **These two domains never merge, and the separation is the point.** No
 platform identifier is a behavioral dimension: a candidate is not an actor, a
@@ -982,7 +986,8 @@ Four properties define it:
   never means "unset"; a private marker separates the strictest policy from
   an absent one.
 - **A verdict, not an action.** PASS means only that the configured gates
-  passed. Promotion is task 066's, and the result performs nothing.
+  passed. Recording a promotion on that verdict is task 066's (below), and the
+  result itself performs nothing.
 
 Names stay factual: a block decision is not a policy violation, a
 critical-risk observation is not an incident, and an added behavior is not a
@@ -991,6 +996,62 @@ sensitive-resource access, approval compliance — remain **absent rather than
 reported as zero**.
 
 See [ADR 0029](adr/0029-hard-gates-use-explicit-integer-evidence.md).
+
+### Promotion decisions
+
+`Promotion` (task 066) is the first platform layer allowed to conclude that a
+candidate may advance between environments, and the last one that could be
+mistaken for deploying something. One sentence governs it:
+
+> Trustvian records a promotion decision. Trustvian does not deploy anything.
+
+```text
+reference run ─┐
+               ├─▶ gate result ──▶ Promotion ──▶ accepted | rejected
+candidate run ─┘        │
+                        └─ source environment inferred from the two runs
+```
+
+It is **not** a deployment, a release, a rollout, an approval, an
+authorization, or a rollback; it triggers nothing and nothing in the platform
+acts on it. There is no `Deployment`, no `Release`, and no
+`CurrentEnvironment`: modeling where a candidate "currently lives" would mean
+setting a field at the moment of the *decision* and serving it as fact
+thereafter, kept accurate only by a deployment system Trustvian is not
+integrated with and cannot observe. A consumer wanting a current-state view
+computes one from promotion history and owns that assumption.
+
+Five properties define it:
+
+- **Append-only.** `CreatePromotion`, read, and list. No update, no delete, no
+  status field, at any layer. A decision made in error is superseded by a later
+  decision, and both stay visible.
+- **Both verdicts recorded.** FAIL produces a stored `rejected` promotion.
+  Because gate limits are caller-owned, a history of acceptances only would
+  hide a caller retrying with progressively looser limits until one passed. A
+  *structural* failure — unknown runs, two different agents, a target that is
+  not forward — is not a decision and is not recorded.
+- **The outcome is derived, never supplied.** `outcomeFor` is the only place
+  `accepted ↔ PASS` is written. No request field can set it, and a stored
+  `accepted` beside a FAIL verdict is corruption on read rather than something
+  to repair.
+- **The gate result is snapshotted, field for field.** The stored promotion
+  holds the exact `EvaluationGateResult` the decision consumed — every count,
+  every limit, every per-check `Passed` flag — restored without recomputation.
+  A corrected gate may legitimately answer the same immutable evidence
+  differently later; history has to survive its own bug fixes, so a row that
+  disagrees with today's arithmetic is history rather than damage.
+- **It commits only against the state it was decided against.** The invariant
+  spans three rows, so the write re-reads both environments inside its own
+  transaction, compares both revisions, re-asks `CanPromote`, and inserts —
+  anything moved, including a rename, yields `ErrStoreConflict` and no row.
+
+Stage skipping is allowed: `sandbox → production` is valid if the ranks are
+forward and the gate passed. `CanPromote` remains the only ordering primitive,
+and it still authorizes nothing. There is no `approved_by` and no actor
+identity — an audit field nobody authenticates is one that can say anything.
+
+See [ADR 0040](adr/0040-promotions-are-immutable-evidence-backed-platform-decisions.md).
 
 ### Local persistence
 

@@ -877,3 +877,269 @@ func inOrder(text string, want []string) bool {
 	}
 	return true
 }
+
+// ---------------------------------------------------------------------
+// Promotion
+// ---------------------------------------------------------------------
+
+func TestPromotionCommandRouting(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantMethod string
+		wantPath   string
+		wantBody   map[string]any
+	}{
+		{
+			name: "create",
+			args: []string{"promotion", "create", "--id", "promo-1",
+				"--reference-run", "run-ref", "--candidate-run", "run-can",
+				"--target-environment", "production",
+				"--max-added-behaviors", "3",
+				"--max-block-decisions", "0",
+				"--max-critical-risk-observations", "0"},
+			wantMethod: "POST", wantPath: "/v1/promotions",
+			wantBody: map[string]any{
+				"id":                 "promo-1",
+				"reference_run_id":   "run-ref",
+				"candidate_run_id":   "run-can",
+				"target_environment": "production",
+				"gate_limits": map[string]any{
+					"max_added_behaviors":            "3",
+					"max_block_decisions":            "0",
+					"max_critical_risk_observations": "0",
+				},
+			},
+		},
+		{
+			name:       "get",
+			args:       []string{"promotion", "get", "--id", "promo-1"},
+			wantMethod: "GET", wantPath: "/v1/promotions/promo-1",
+		},
+		{
+			name:       "list",
+			args:       []string{"promotion", "list", "--project-id", "proj-1"},
+			wantMethod: "GET", wantPath: "/v1/projects/proj-1/promotions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api := newFakeAPI(t)
+			api.serve(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == "GET" && strings.Contains(r.URL.Path, "/promotions") &&
+					strings.Contains(r.URL.Path, "/projects/") {
+					fmt.Fprint(w, `{"version":"1","project_id":"proj-1","promotions":[]}`)
+					return
+				}
+				fmt.Fprint(w, samplePromotionJSON)
+			})
+
+			result := runPlatformCLI(t, append(tt.args, "--api-url", api.url())...)
+			result.mustExit(t, 0, tt.name)
+
+			captured := api.captured()
+			if len(captured) == 0 {
+				t.Fatal("no request was made")
+			}
+			request := captured[0]
+			if request.method != tt.wantMethod {
+				t.Errorf("method = %s, want %s", request.method, tt.wantMethod)
+			}
+			if !strings.HasPrefix(request.escapedPath, tt.wantPath) {
+				t.Errorf("path = %s, want %s", request.escapedPath, tt.wantPath)
+			}
+			if tt.wantBody != nil {
+				var body map[string]any
+				if err := json.Unmarshal(request.body, &body); err != nil {
+					t.Fatalf("request body is not JSON: %v", err)
+				}
+				want, _ := json.Marshal(tt.wantBody)
+				got, _ := json.Marshal(body)
+				if string(got) != string(want) {
+					t.Errorf("body = %s, want %s", got, want)
+				}
+			}
+		})
+	}
+}
+
+// A rejected decision is a successfully recorded decision. The CLI exits 0,
+// and exit code 1 stays scoped to `eval compare` as the compatibility
+// contract says.
+func TestPromotionRejectedDecisionExitsZero(t *testing.T) {
+	api := newFakeAPI(t)
+	api.reply(http.StatusCreated, strings.Replace(
+		samplePromotionJSON, `"outcome":"accepted"`, `"outcome":"rejected"`, 1))
+
+	result := runPlatformCLI(t, "promotion", "create", "--id", "promo-1",
+		"--reference-run", "run-ref", "--candidate-run", "run-can",
+		"--target-environment", "production",
+		"--max-added-behaviors", "0", "--max-block-decisions", "0",
+		"--max-critical-risk-observations", "0", "--api-url", api.url())
+
+	result.mustExit(t, 0, "a rejected decision is still recorded")
+	if result.code == exitGateFail {
+		t.Fatal("a rejected promotion produced exit 1, which means gate FAIL for eval compare only")
+	}
+	if !strings.Contains(result.stdout, "rejected") {
+		t.Errorf("stdout does not state the outcome:\n%s", result.stdout)
+	}
+	// The one sentence that keeps the product honest.
+	if !strings.Contains(result.stdout, "Nothing was deployed") {
+		t.Errorf("stdout does not say that nothing was deployed:\n%s", result.stdout)
+	}
+}
+
+func TestPromotionCommandUsageErrors(t *testing.T) {
+	complete := []string{"promotion", "create", "--id", "p", "--reference-run", "r",
+		"--candidate-run", "c", "--target-environment", "e",
+		"--max-added-behaviors", "0", "--max-block-decisions", "0",
+		"--max-critical-risk-observations", "0"}
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"no subcommand", []string{"promotion"}},
+		{"unknown subcommand", []string{"promotion", "approve"}},
+		{"create without an id", []string{"promotion", "create", "--reference-run", "r",
+			"--candidate-run", "c", "--target-environment", "e",
+			"--max-added-behaviors", "0", "--max-block-decisions", "0",
+			"--max-critical-risk-observations", "0"}},
+		{"create without a target", []string{"promotion", "create", "--id", "p",
+			"--reference-run", "r", "--candidate-run", "c",
+			"--max-added-behaviors", "0", "--max-block-decisions", "0",
+			"--max-critical-risk-observations", "0"}},
+		{"create without the added limit", []string{"promotion", "create", "--id", "p",
+			"--reference-run", "r", "--candidate-run", "c", "--target-environment", "e",
+			"--max-block-decisions", "0", "--max-critical-risk-observations", "0"}},
+		{"create with a non-canonical limit", append(append([]string{}, complete[:len(complete)-6]...),
+			"--max-added-behaviors", "007", "--max-block-decisions", "0",
+			"--max-critical-risk-observations", "0")},
+		{"get without an id", []string{"promotion", "get"}},
+		{"list without a project", []string{"promotion", "list"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api := newFakeAPI(t)
+			result := runPlatformCLI(t, append(tt.args, "--api-url", api.url())...)
+			result.mustExit(t, exitUsage, tt.name)
+			if len(api.captured()) != 0 {
+				t.Error("a usage error still reached the API")
+			}
+		})
+	}
+}
+
+// A server refusal is operational, and the server's own envelope is what
+// --json forwards. It is never a gate failure.
+func TestPromotionCommandServerErrors(t *testing.T) {
+	api := newFakeAPI(t)
+	api.reply(http.StatusConflict,
+		`{"version":"1","error":{"code":"conflict","message":"target environment is not forward of the source"}}`)
+
+	result := runPlatformCLI(t, "promotion", "create", "--id", "p",
+		"--reference-run", "r", "--candidate-run", "c", "--target-environment", "e",
+		"--max-added-behaviors", "0", "--max-block-decisions", "0",
+		"--max-critical-risk-observations", "0", "--api-url", api.url())
+
+	result.mustExit(t, exitOperational, "backward promotion")
+	if result.code == exitGateFail {
+		t.Fatal("a refused promotion produced exit 1")
+	}
+	if !strings.Contains(result.stderr, "not forward") {
+		t.Errorf("stderr does not carry the server's message:\n%s", result.stderr)
+	}
+}
+
+// promotion list follows every page, and --json synthesizes one document.
+func TestPromotionListFollowsEveryPage(t *testing.T) {
+	api := newFakeAPI(t)
+	api.serve(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Query().Get("after") {
+		case "":
+			fmt.Fprint(w, `{"version":"1","project_id":"proj-1","future_total":2,"promotions":[
+				{"id":"promo-a","outcome":"accepted","future_field":"kept",
+				 "source_environment":{"ref":"staging","rank":30,"revision":"1"},
+				 "target_environment":{"ref":"production","rank":40,"revision":"1"},
+				 "gate_result":{"verdict":"pass"},"decided_at":"2026-03-01T09:00:00Z"}
+			],"next_after":"promo-a"}`)
+		case "promo-a":
+			fmt.Fprint(w, `{"version":"1","project_id":"proj-1","future_total":2,"promotions":[
+				{"id":"promo-b","outcome":"rejected",
+				 "source_environment":{"ref":"staging","rank":30,"revision":"1"},
+				 "target_environment":{"ref":"production","rank":40,"revision":"1"},
+				 "gate_result":{"verdict":"fail"},"decided_at":"2026-03-01T10:00:00Z"}
+			]}`)
+		default:
+			t.Errorf("unexpected cursor %q", r.URL.Query().Get("after"))
+		}
+	})
+
+	result := runPlatformCLI(t, "promotion", "list", "--project-id", "proj-1",
+		"--api-url", api.url(), "--json")
+	result.mustExit(t, 0, "promotion list --json")
+
+	if got := len(api.captured()); got != 2 {
+		t.Errorf("made %d requests, want 2 — the second page was not followed", got)
+	}
+
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(result.stdout), &envelope); err != nil {
+		t.Fatalf("--json output is not JSON: %v (%s)", err, result.stdout)
+	}
+	// Unknown fields survive at both levels, and the traversal finished.
+	if envelope["future_total"] != float64(2) {
+		t.Errorf("future_total = %v, want the server's value preserved", envelope["future_total"])
+	}
+	if _, present := envelope["next_after"]; present {
+		t.Error("next_after survived a completed traversal")
+	}
+	rows, ok := envelope["promotions"].([]any)
+	if !ok || len(rows) != 2 {
+		t.Fatalf("promotions = %v, want both rows", envelope["promotions"])
+	}
+	first, _ := rows[0].(map[string]any)
+	if first["future_field"] != "kept" {
+		t.Error("an unknown row field was dropped from --json output")
+	}
+}
+
+// A pagination stream that cannot progress is reported, not followed.
+func TestPromotionListRefusesNonProgressingPagination(t *testing.T) {
+	api := newFakeAPI(t)
+	api.serve(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"version":"1","project_id":"proj-1","promotions":[
+			{"id":"promo-a","outcome":"accepted",
+			 "source_environment":{"ref":"staging","rank":30,"revision":"1"},
+			 "target_environment":{"ref":"production","rank":40,"revision":"1"},
+			 "gate_result":{"verdict":"pass"},"decided_at":"2026-03-01T09:00:00Z"}
+		],"next_after":"promo-a"}`)
+	})
+
+	result := runPlatformCLI(t, "promotion", "list", "--project-id", "proj-1",
+		"--api-url", api.url(), "--json")
+	result.mustExit(t, exitOperational, "repeating cursor")
+	if !strings.Contains(result.stderr, "did not advance") {
+		t.Errorf("stderr = %q, want it to mention a cursor that did not advance", result.stderr)
+	}
+}
+
+const samplePromotionJSON = `{"version":"1","id":"promo-1","project_id":"proj-1",
+ "candidate_id":"cand-2","reference_candidate_id":"cand-1",
+ "reference_run_id":"run-ref","candidate_run_id":"run-can",
+ "source_environment":{"ref":"staging","rank":30,"revision":"7"},
+ "target_environment":{"ref":"production","rank":40,"revision":"3"},
+ "gate_limits":{"max_added_behaviors":"3","max_block_decisions":"0",
+   "max_critical_risk_observations":"0"},
+ "gate_result":{"reference_evidence":{"actual":"412","minimum":"1","passed":true},
+   "candidate_evidence":{"actual":"388","minimum":"1","passed":true},
+   "added_behaviors":{"actual":"1","maximum":"3","passed":true},
+   "block_decisions":{"actual":"0","maximum":"0","passed":true},
+   "critical_risk_observations":{"actual":"0","maximum":"0","passed":true},
+   "verdict":"pass"},
+ "outcome":"accepted","decided_at":"2026-03-01T09:14:22.481Z"}`

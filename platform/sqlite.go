@@ -35,7 +35,7 @@ import (
 // schema version. They change for different reasons, and coupling them would
 // force a migration on an unrelated release or hide a real one behind an
 // unchanged number.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // Table names. Compile-time constants: these are the only identifiers that
 // ever appear in assembled SQL. Every caller-supplied value is a bound
@@ -56,7 +56,15 @@ const (
 	// Added by schema v3: the environment registry a run's EnvironmentRef
 	// resolves against, keyed by (project_id, ref).
 	tableEnvironments = "platform_environments"
+
+	// Added by schema v4: one immutable row per recorded promotion decision.
+	tablePromotions = "platform_promotions"
 )
+
+// indexPromotionsByProject supports the one query that is not a primary-key
+// lookup: the project-scoped promotion page. Named as a constant for the same
+// reason table names are — it is the only identifier assembled into SQL.
+const indexPromotionsByProject = "platform_promotions_by_project"
 
 // schemaTables is every table this schema owns, and the allowlist a test
 // asserts against so an event, scorecard, or gate-result table cannot appear
@@ -64,7 +72,7 @@ const (
 var schemaTables = []string{
 	tableSchemaVersion, tableProjects, tableAgents, tableCandidates,
 	tableRuns, tableAggregates, tableSnapshots, tableEntries,
-	tableIngestState, tableEnvironments,
+	tableIngestState, tableEnvironments, tablePromotions,
 }
 
 // SQLiteStore is the local persistence adapter.
@@ -213,15 +221,27 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV1ToV2(ctx); err != nil {
 			return err
 		}
-		// Then forward, one step at a time: a v1 database reaches v3 through
-		// v2 rather than through a second, separately-maintained jump.
-		return s.migrateV2ToV3(ctx)
+		// Then forward, one step at a time: a v1 database reaches v4 through
+		// v2 and v3 rather than through separately-maintained jumps.
+		if err := s.migrateV2ToV3(ctx); err != nil {
+			return err
+		}
+		return s.migrateV3ToV4(ctx)
 
 	case schemaVersionV2:
 		if err := s.requireTables(ctx, schemaVersionV2, schemaTablesV2); err != nil {
 			return err
 		}
-		return s.migrateV2ToV3(ctx)
+		if err := s.migrateV2ToV3(ctx); err != nil {
+			return err
+		}
+		return s.migrateV3ToV4(ctx)
+
+	case schemaVersionV3:
+		if err := s.requireTables(ctx, schemaVersionV3, schemaTablesV3); err != nil {
+			return err
+		}
+		return s.migrateV3ToV4(ctx)
 
 	default:
 		// No path from anything else. Newer is refused too: this binary
@@ -281,20 +301,12 @@ func (s *SQLiteStore) migrateV1ToV2(ctx context.Context) error {
 		// loop, and the transaction is already rolled back before it runs —
 		// the store holds a single connection, so verifying inside the
 		// transaction would deadlock against itself.
-		// A racing opener may have completed v1→v2, or gone all the way to v3
-		// behind this one. Either is "somebody else finished the step this
-		// opener was taking"; anything else keeps the original error.
-		if version, verr := s.storedSchemaVersion(ctx); verr == nil {
-			switch version {
-			case schemaVersionV2:
-				if tablesErr := s.requireTables(ctx, schemaVersionV2, schemaTablesV2); tablesErr == nil {
-					return nil
-				}
-			case SchemaVersion:
-				if tablesErr := s.requireTables(ctx, SchemaVersion, schemaTables); tablesErr == nil {
-					return nil
-				}
-			}
+		//
+		// A racing opener may have completed v1→v2, or carried the database
+		// further still behind this one. Any of those is "somebody else
+		// finished the step this opener was taking".
+		if s.migrationRaceRecovered(ctx, schemaVersionV2) {
+			return nil
 		}
 		return err
 	}
@@ -347,14 +359,35 @@ func (s *SQLiteStore) migrateV2ToV3(ctx context.Context) error {
 	if err := s.migrateV2ToV3Once(ctx); err != nil {
 		// Same racing-opener recovery as v1→v2: the durable schema decides,
 		// never a driver's error text.
-		if version, verr := s.storedSchemaVersion(ctx); verr == nil && version == SchemaVersion {
-			if tablesErr := s.requireTables(ctx, SchemaVersion, schemaTables); tablesErr == nil {
-				return nil
-			}
+		if s.migrationRaceRecovered(ctx, schemaVersionV3) {
+			return nil
 		}
 		return err
 	}
 	return nil
+}
+
+// migrationRaceRecovered reports whether another opener already carried the
+// database to at least this step, with a schema that actually backs the
+// number it claims.
+//
+// A step failing because a concurrent opener did the work is not a failure;
+// a step failing because the disk is damaged is. The durable schema is what
+// distinguishes them, never a driver's error text — and a version claim with
+// missing tables is damage whichever opener wrote it.
+func (s *SQLiteStore) migrationRaceRecovered(ctx context.Context, atLeast int) bool {
+	version, err := s.storedSchemaVersion(ctx)
+	if err != nil || version < atLeast {
+		return false
+	}
+	tables, known := schemaTablesByVersion[version]
+	if !known {
+		// A version with no table list is not a version this binary can
+		// vouch for, whoever wrote it. Fail closed and keep the original
+		// error.
+		return false
+	}
+	return s.requireTables(ctx, version, tables) == nil
 }
 
 func (s *SQLiteStore) migrateV2ToV3Once(ctx context.Context) error {
@@ -371,13 +404,131 @@ func (s *SQLiteStore) migrateV2ToV3Once(ctx context.Context) error {
 		return fmt.Errorf("platform: migrate schema v2 to v3: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`, SchemaVersion); err != nil {
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
+		schemaVersionV3); err != nil {
 		return fmt.Errorf("platform: migrate schema v2 to v3: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("platform: migrate schema v2 to v3: %w", err)
 	}
 	return nil
+}
+
+// migrateV3ToV4 adds the promotion history.
+//
+// One transaction, matching every earlier step's failure discipline: a
+// failure leaves a readable v3 rather than a half-stamped hybrid.
+//
+// **No backfill, deliberately.** A schema-3 database recorded no promotion
+// decisions, because no promotion decision could be made. Synthesizing one
+// from historical evaluation runs would fabricate an audit record — inventing
+// a decision nobody made, a set of limits nobody chose and a moment nothing
+// happened at — which is the one thing an audit history must never contain.
+// An existing database migrates to an empty promotion history, which is the
+// accurate answer.
+func (s *SQLiteStore) migrateV3ToV4(ctx context.Context) error {
+	if err := s.migrateV3ToV4Once(ctx); err != nil {
+		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateV3ToV4Once(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: migrate schema v3 to v4: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, statement := range []string{
+		promotionsTableStatement(),
+		promotionsIndexStatement(),
+	} {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("platform: migrate schema v3 to v4: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
+		SchemaVersion); err != nil {
+		return fmt.Errorf("platform: migrate schema v3 to v4: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: migrate schema v3 to v4: %w", err)
+	}
+	return nil
+}
+
+// promotionsTableStatement is v4's only table, kept separate so the v3 → v4
+// migration applies exactly this and nothing else.
+//
+// Thirty columns, every one a bounded scalar. The gate result is stored as
+// explicit columns rather than a JSON blob: a serialized value is a schema the
+// database cannot check and a migration cannot see, and this one is historical
+// audit evidence that has to survive every future change to how a gate is
+// computed.
+//
+// Foreign keys to project and both candidates, which are ControlStore entities
+// in the same capability and are never deleted. **No** foreign key to either
+// run: those are EvaluationStore entities, and task 065 refused the mirror
+// constraint for the same reason — a constraint there would make a historical
+// decision unloadable if the referenced row ever became unreachable, and a
+// record that stops loading is worse than a dangling reference it can report.
+func promotionsTableStatement() string {
+	return `CREATE TABLE ` + tablePromotions + ` (
+		id                              TEXT PRIMARY KEY,
+		project_id                      TEXT NOT NULL REFERENCES ` + tableProjects + `(id),
+		candidate_id                    TEXT NOT NULL REFERENCES ` + tableCandidates + `(id),
+		reference_candidate_id          TEXT NOT NULL REFERENCES ` + tableCandidates + `(id),
+
+		reference_run_id                TEXT NOT NULL,
+		candidate_run_id                TEXT NOT NULL,
+
+		source_environment_ref          TEXT NOT NULL,
+		source_environment_rank         INTEGER NOT NULL,
+		source_environment_revision     TEXT NOT NULL,
+
+		target_environment_ref          TEXT NOT NULL,
+		target_environment_rank         INTEGER NOT NULL,
+		target_environment_revision     TEXT NOT NULL,
+
+		max_added_behaviors             TEXT NOT NULL,
+		max_block_decisions             TEXT NOT NULL,
+		max_critical_risk_observations  TEXT NOT NULL,
+
+		gate_reference_evidence_actual  TEXT NOT NULL,
+		gate_reference_evidence_minimum TEXT NOT NULL,
+		gate_reference_evidence_passed  INTEGER NOT NULL,
+		gate_candidate_evidence_actual  TEXT NOT NULL,
+		gate_candidate_evidence_minimum TEXT NOT NULL,
+		gate_candidate_evidence_passed  INTEGER NOT NULL,
+		gate_added_behaviors_actual     TEXT NOT NULL,
+		gate_added_behaviors_passed     INTEGER NOT NULL,
+		gate_block_decisions_actual     TEXT NOT NULL,
+		gate_block_decisions_passed     INTEGER NOT NULL,
+		gate_critical_risk_actual       TEXT NOT NULL,
+		gate_critical_risk_passed       INTEGER NOT NULL,
+		gate_verdict                    TEXT NOT NULL,
+
+		outcome                         TEXT NOT NULL,
+		decided_at                      TEXT NOT NULL
+	)`
+}
+
+// promotionsIndexStatement supports the one query that is not a primary-key
+// lookup.
+//
+// `WHERE project_id = ? AND id > ? ORDER BY id LIMIT ?` is a range scan along
+// (project_id, id) in its own order. The primary key is `id` alone, because
+// promotion identity is global, so unlike platform_environments the scan is
+// not free from it. No index on candidate_id, decided_at or outcome: no query
+// reads them.
+func promotionsIndexStatement() string {
+	return `CREATE INDEX ` + indexPromotionsByProject +
+		` ON ` + tablePromotions + ` (project_id, id)`
 }
 
 // backfillEnvironmentsStatement derives the registry from history.
@@ -434,6 +585,10 @@ const schemaVersionV1 = 1
 // environment registry.
 const schemaVersionV2 = 2
 
+// schemaVersionV3 is task 065's schema: everything v4 has except the
+// promotion history.
+const schemaVersionV3 = 3
+
 // schemaTablesV1 is what a complete v1 database holds.
 var schemaTablesV1 = []string{
 	tableSchemaVersion, tableProjects, tableAgents, tableCandidates,
@@ -442,6 +597,26 @@ var schemaTablesV1 = []string{
 
 // schemaTablesV2 is what a complete v2 database holds.
 var schemaTablesV2 = append(append([]string{}, schemaTablesV1...), tableIngestState)
+
+// schemaTablesV3 is what a complete v3 database holds.
+var schemaTablesV3 = append(append([]string{}, schemaTablesV2...), tableEnvironments)
+
+// schemaTablesByVersion maps every schema version this binary can recognize to
+// the tables a complete database at that version holds.
+//
+// A map rather than a switch in each caller, because the switch is what broke:
+// migrateV1ToV2's racing-opener recovery listed v2 and "SchemaVersion", which
+// was 3 at the time and silently stopped covering 3 the moment v4 landed — an
+// opener that found a concurrently-migrated v3 database then matched no case
+// and failed an open that had in fact succeeded. Every step now consults this
+// one table, and TestSchemaTablesCoverEveryKnownVersion fails if a new version
+// is added without an entry.
+var schemaTablesByVersion = map[int][]string{
+	schemaVersionV1: schemaTablesV1,
+	schemaVersionV2: schemaTablesV2,
+	schemaVersionV3: schemaTablesV3,
+	SchemaVersion:   schemaTables,
+}
 
 func (s *SQLiteStore) storedSchemaVersion(ctx context.Context) (int, error) {
 	var version int
@@ -636,6 +811,9 @@ func schemaStatements() []string {
 		)`,
 
 		ingestStateTableStatement(),
+
+		promotionsTableStatement(),
+		promotionsIndexStatement(),
 	}
 }
 
@@ -888,6 +1066,15 @@ func (s *SQLiteStore) requireExists(ctx context.Context, table, kind, id string)
 // foreign-key violation to ErrStoreNotFound, without parsing driver text
 // beyond the stable SQLite constraint markers.
 func (s *SQLiteStore) writeError(kind, id string, err error) error {
+	return sqliteWriteError(kind, id, err)
+}
+
+// sqliteWriteError maps SQLite's constraint text onto the shared sentinels.
+//
+// A free function because both the store and its transaction querier need it,
+// and two copies of "which message means already exists" is where a duplicate
+// would start reading as an internal failure.
+func sqliteWriteError(kind, id string, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -900,6 +1087,10 @@ func (s *SQLiteStore) writeError(kind, id string, err error) error {
 		return fmt.Errorf("%w: %s %s references a missing parent", ErrStoreNotFound, kind, preview(id))
 	}
 	return fmt.Errorf("platform: store %s: %w", kind, err)
+}
+
+func (q sqlExecQuerier) writeError(kind, id string, err error) error {
+	return sqliteWriteError(kind, id, err)
 }
 
 // ---------------------------------------------------------------------
@@ -1047,6 +1238,93 @@ func (s *SQLiteStore) ProjectEnvironments(
 		return nil, err
 	}
 	return queryEnvironmentPage(ctx, sqlQuerier{s.db}, projectID, after, limit)
+}
+
+// ---------------------------------------------------------------------
+// Promotions
+// ---------------------------------------------------------------------
+
+// lockEnvironment takes SQLite's write intent on one environment row.
+//
+// Not a row lock — SQLite has none. It is how the transaction becomes a
+// writer before it reads anything, and its RowsAffected doubles as the
+// existence check. The same no-op-write idiom lockProjectForWrite uses for the
+// creation cap, narrowed from the project row to the two environments a
+// promotion names. It changes no column, so it advances no revision.
+func (q sqlExecQuerier) lockEnvironment(ctx context.Context, projectID, ref string) error {
+	affected, err := q.exec(ctx,
+		`UPDATE `+tableEnvironments+` SET name = name WHERE project_id = ? AND ref = ?`,
+		projectID, ref)
+	if err != nil {
+		return fmt.Errorf("platform: lock environment: %w", err)
+	}
+	if affected == 0 {
+		return fmt.Errorf("%w: environment %s in project %s",
+			ErrStoreNotFound, preview(ref), preview(projectID))
+	}
+	return nil
+}
+
+// CreatePromotion stores one decision, revalidating the environment state it
+// was built against.
+//
+// One write transaction, entered with write intent **before** anything is
+// read — the BEGIN IMMEDIATE equivalent task 065 established, never a reliance
+// on SetMaxOpenConns(1). SQLite serializes writers database-wide whatever rows
+// they touch, so what matters here is not lock granularity but the absence of
+// a gap: the authoritative re-read, the revision comparison, the CanPromote
+// re-ask and the insert are one atomic decision.
+//
+// Both environments are touched in (project_id, ref) byte order, matching
+// PostgreSQL's sequence for readability rather than for deadlock avoidance,
+// which SQLite's serialization already provides.
+func (s *SQLiteStore) CreatePromotion(ctx context.Context, promotion Promotion) error {
+	if promotion.ID() == "" || promotion.ProjectID() == "" {
+		return fmt.Errorf("%w: promotion has no identity", ErrInvalidID)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: create promotion: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	writer := sqlExecQuerier{tx}
+	for _, ref := range promotionEnvironmentOrder(promotion) {
+		if err := writer.lockEnvironment(
+			ctx, string(promotion.ProjectID()), string(ref)); err != nil {
+			return err
+		}
+	}
+
+	if err := insertPromotionLocked(ctx, writer, promotion); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: create promotion: %w", err)
+	}
+	return nil
+}
+
+// Promotion loads one recorded decision by identifier.
+func (s *SQLiteStore) Promotion(ctx context.Context, id PromotionID) (Promotion, error) {
+	if id == "" {
+		return Promotion{}, fmt.Errorf("%w: promotion id is empty", ErrInvalidID)
+	}
+	return loadPromotion(ctx, sqlQuerier{s.db}, id)
+}
+
+// ProjectPromotions returns one bounded page in identifier byte order.
+func (s *SQLiteStore) ProjectPromotions(
+	ctx context.Context, projectID ProjectID, after PromotionID, limit int,
+) ([]Promotion, error) {
+	if err := validatePromotionPage(after, limit); err != nil {
+		return nil, err
+	}
+	if err := s.requireExists(ctx, tableProjects, "project", string(projectID)); err != nil {
+		return nil, err
+	}
+	return queryPromotionPage(ctx, sqlQuerier{s.db}, projectID, after, limit)
 }
 
 // ---------------------------------------------------------------------

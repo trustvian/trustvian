@@ -1,6 +1,6 @@
 # 066 — Promotion Workflow
 
-Status: specified. Not implemented
+Status: specified and implemented
 Depends on: [052](052-evaluation-domain.md),
 [055](055-evaluation-scorecards.md),
 [056](056-deterministic-hard-gates.md),
@@ -1345,11 +1345,24 @@ multi-row `FOR UPDATE` follows the query plan, and a specification that depends
 on a planner choice is not a specification. Two statements make the order a
 property of the code.
 
-**Deterministic ordering is what prevents deadlock.** Two concurrent promotions
-with overlapping environment pairs — `staging → production` and
-`production → eu-prod`, say — would deadlock if each locked its own source
-first. Locking in ref byte order means both reach `production` at the same
-point in their sequence, so one waits and neither dies.
+**Deterministic ordering makes deadlock freedom a property of the code rather
+than of the promotion rule.** Two concurrent promotions with overlapping
+environment pairs — `staging → production` and `production → eu-prod`, say —
+both reach `production` at the same point in their sequence, so one waits and
+neither dies.
+
+It is worth stating precisely what this does and does not buy, because the
+obvious justification is wrong. Locking source-then-target would *also* be
+deadlock-free today, and provably rather than by luck: `CanPromote` requires
+the target to rank strictly above the source, so every transaction takes its
+two rows in increasing rank order, and two transactions can never take the same
+pair in opposite orders. No cycle is reachable. But that proof belongs to
+`CanPromote`, not to the store, and it lapses the moment the promotion rule
+admits anything that is not strictly rank-forward — a sideways move between
+equally ranked environments, for instance. Byte order is a property of the two
+rows themselves, so it survives such a change, and it costs one comparison.
+The implementation must not justify the ordering with a deadlock scenario that
+the current rule makes unreachable.
 
 **The lock is on two rows, not the project.** Unlike task 065's creation cap,
 which is a cross-row invariant over *all* of a project's environments and
@@ -1362,7 +1375,8 @@ concurrency, which its tests assert:
 - promotions in one project over disjoint environment pairs proceed
   independently;
 - promotions sharing an environment serialize on that row and no other;
-- deterministic ordering means overlapping pairs never deadlock;
+- overlapping pairs serialize on the shared row and never deadlock, in an
+  acquisition order derived from the refs rather than from the roles;
 - no project-wide lock, no table lock, no process-local mutex.
 
 These are PostgreSQL's guarantees, not task 066's. The shared contract above
@@ -1441,7 +1455,7 @@ backend.
 | either environment renamed before the commit | Same. Any revision change invalidates the attempt, by the rule above |
 | promotions in two different projects | **PostgreSQL:** disjoint locks, neither blocks the other. **SQLite:** they may serialize database-wide, and both still commit correctly |
 | promotions in one project over disjoint environment pairs | Same: independent on PostgreSQL, possibly serialized on SQLite, correct on both |
-| overlapping environment pairs approached from opposite directions | **PostgreSQL:** both lock in ref byte order, so one waits and neither deadlocks. **SQLite:** writers serialize anyway |
+| overlapping environment pairs, including ones whose source ref sorts after its target | **PostgreSQL:** both lock in ref byte order, so one waits and neither deadlocks. **SQLite:** writers serialize anyway |
 | a concurrent `CreateEvaluationRun` or ingest | Cannot affect the decision: both referenced runs are already completed, and ingest is refused on a run that is not running |
 
 **No uniqueness constraint on `(candidate_id, source_ref, target_ref)`.** That
@@ -2074,13 +2088,18 @@ and not task 066's:
 - Concurrent creates over **overlapping environment pairs** *do* exclude each
   other, by the same hook — the positive proof that the lock is real rather
   than merely uncontended.
-- **Deterministic lock order prevents deadlock.** Two promotions whose
-  environment pairs overlap in opposite directions — `a → b` and `b → c`, with
-  refs chosen so a naive source-first order would acquire them in opposite
-  sequences — run concurrently many times and never produce a deadlock
-  (SQLSTATE 40P01). The ref-ordered acquisition is additionally asserted by
-  inspecting the statements the transaction issues, so the property is proved
-  structurally rather than only by the absence of a failure.
+- **The lock order follows the refs, not the roles.** Asserted directly, on
+  environments named so that byte order and rank order disagree, including
+  pairs whose *source* ref sorts after its target: the acquisition order must
+  still be byte-ascending. This is the load-bearing assertion, because the
+  live-contention half cannot distinguish the two orders — as the design
+  section explains, source-then-target is also deadlock-free while promotion is
+  strictly rank-forward, so no test can construct a cycle against it today. The
+  concurrent half therefore asserts the weaker live property it can honestly
+  prove: overlapping pairs run many times with the acquisition window widened
+  and never produce a deadlock (SQLSTATE 40P01). A test that claimed to
+  construct a deadlock the current rule makes unreachable would be asserting
+  nothing.
 - The locks are `FOR UPDATE` on two rows of `platform_environments`, never on
   `platform_projects` and never table-wide — asserted by the same statement
   inspection, so a later change to a project-wide lock fails here.
@@ -2348,7 +2367,7 @@ Every question this task owns, answered:
 | Collection semantics? | `id` byte-ascending, exclusive `after`, `limit` 1–64 default 64, `next_after` only when another page follows |
 | CLI commands? | `trustvian promotion create`, `get`, `list` |
 | Exit code for a rejection? | **`0`** — a recorded decision. Code `1` is not extended |
-| WebUI surface? | Environment list (read-only), promotion panel, promotion history |
+| WebUI surface? | Environment list (read-only, traversed to completion for the target picker), promotion panel, promotion history paged one bounded page at a time with run-evidence links |
 | Does the TUI gain promotion? | **No** |
 | Realtime events? | **None added** |
 | ADR? | 0040, by the implementation PR |
@@ -2383,6 +2402,14 @@ decision this document left open.
 9. `httpapi`: three routes, DTOs reusing `gateResultDTO`, `classify` cases.
 10. `cmd/trustvian/promotion.go` and its dispatch entry.
 11. WebUI: environment list, promotion panel, promotion history.
+    The target picker traverses every bounded environment page, because a
+    migrated project may hold more environments than the creation cap now
+    allows and a valid target may sit past page one. History is navigated a
+    page at a time rather than traversed: it grows without bound, and a
+    browser that assembled all of it would be an unbounded accumulator. Each
+    history row reaches its two evaluation runs through the page's existing
+    run path. No rank comparison, gate arithmetic, source inference or outcome
+    derivation happens in the browser in any of it.
 12. The full test matrix above, on both backends.
 13. Documentation and ADR 0040.
 

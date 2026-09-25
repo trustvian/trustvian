@@ -34,21 +34,28 @@ one URL and needs no second field.
 | **Evaluation** | Create; view identity, status, timestamps, failure reason; start, complete, fail, cancel; read authoritative progress |
 | **Live** | Watch one run over SSE |
 | **Compare** | Compare two runs and read the gate, diff and scorecard |
+| **Promotion** | Record a promotion decision; open one by ID; page a project's history |
 
 What it deliberately cannot do: ingest decision records (that is the job of the
-application under evaluation, through the CLI or the API), promote anything
-(task 066), browse history (task 067), or manage environments (task 065).
+application under evaluation, through the CLI or the API), browse event history
+(task 067), or manage environments (task 065).
 
 ## Navigating by ID
 
-There is no list and no search. That is a deliberate omission, not an
-unfinished screen.
+There is no search, and no way to browse the hierarchy. That is a deliberate
+omission, not an unfinished screen.
 
-The control plane has no collection route — `GET /v1/projects` and its siblings
-do not exist — because pagination, sort order, cursor semantics and scoping have
-not been designed, and `/v1` route shapes are a stable contract once published.
-Adding a list endpoint so a browser could open with one would freeze four
-undesigned decisions at once.
+The control plane has no collection route for the hierarchy —
+`GET /v1/projects` and its siblings do not exist — because pagination, sort
+order, cursor semantics and scoping have not been designed for them, and `/v1`
+route shapes are a stable contract once published. Adding a list endpoint so a
+browser could open with one would freeze four undesigned decisions at once.
+
+Two project-scoped collections do exist, because two entities had a consumer
+that needed one: a project's environments (task 065) and its promotion history
+(task 066). Both traverse by an immutable key in byte order with the server
+bounding every page, and neither opens the hierarchy — you still need the
+project ID to ask.
 
 So you open things by the ID you already know, which is the same ID the CLI
 uses:
@@ -144,6 +151,56 @@ Two things that look similar and are not:
 A comparison of two runs with no ingested evidence returns a real FAIL, because
 the gate requires a minimum of one observation on each side and fails closed
 when evidence is missing. That is the gate working, not a bug.
+
+## Recording a promotion
+
+The Promotion panel records a **decision** — that a candidate's evidence was
+gated, and that the verdict accepted or refused advancement toward a target
+environment. It is not a deploy button. Trustvian has no deployer and no
+observer that could confirm a deployment happened, so the UI never says a
+candidate was deployed, released, rolled out, or is now running or live
+anywhere.
+
+The form asks for the two run IDs, the target environment and the three gate
+limits, and nothing else. The source environment is not a field: the server
+infers it from the environment the two runs share. Neither is the outcome —
+that comes from the gate verdict alone, and a browser cannot propose one.
+
+The browser performs no promotion logic of its own. It compares no environment
+ranks, computes no gate result, and infers no source: every one of those is the
+control plane's answer, rendered as received.
+
+**Target environments** come from the project's whole environment collection,
+not its first page. Task 065's cap of 64 per project governs creation rather
+than existence — a database migrated from schema 2 holds one environment per
+distinct reference its runs recorded — so **Load environments** follows
+`next_after` to the end and offers everything it finds. Which of those are
+valid targets is still the server's answer: nothing is filtered out here, and a
+promotion toward an invalid one is refused with its own message. If a server
+will not terminate the collection, the traversal stops and says so rather than
+offering a short list that would read as "that environment does not exist".
+
+**Project history** is read one bounded page at a time. **Load next page**
+requests exactly one more page using the cursor the previous one published, and
+replaces what is on screen — so the memory a history costs is a page, however
+far you read. **Start over** returns to the first page. There is no
+previous-page control: reverse traversal is not something `/v1` offers, and
+keeping every visited page in order to walk backwards is the unbounded
+accumulation this shape avoids.
+
+Your position in the history lives in the tab and nowhere else. A reload starts
+again at the first page, for the same reason nothing else here survives one.
+
+Each history row carries the two evaluation runs the decision was made on, each
+with an **Open** control. Opening one re-reads `GET /v1/evaluation-runs/{id}`
+through the same path the Evaluation panel uses, so what you see is the run's
+own current state — the promotion record does not become a second source of
+truth for it.
+
+`accepted` and `rejected` mean exactly what the gate said under the limits that
+were supplied. `accepted` does not mean deployed, and it does not mean safe;
+`rejected` does not mean unsafe. The same caveat as the gate verdict applies,
+for the same reason.
 
 ### Large counters
 

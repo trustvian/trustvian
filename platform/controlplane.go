@@ -400,6 +400,219 @@ func (c *ControlPlane) PromotionOrder(
 }
 
 // ---------------------------------------------------------------------
+// Promotions
+// ---------------------------------------------------------------------
+
+// PromotionRequest is the fixed-shape input to Promote.
+//
+// Everything the server can derive is absent by construction: no project,
+// agent or candidate identity, no source environment, no ranks, no verdict,
+// no timestamp. A caller supplies an identifier, two completed runs, a target,
+// and the limits the gate should apply.
+type PromotionRequest struct {
+	ID PromotionID
+
+	ReferenceRunID EvaluationRunID
+	CandidateRunID EvaluationRunID
+
+	TargetEnvironment EnvironmentRef
+
+	GateLimits EvaluationGateLimits
+}
+
+// Promote records one promotion decision.
+//
+// The ordering below is the contract, and it puts every structural
+// precondition before any evidence is read: an impossible promotion costs a
+// handful of primary-key lookups rather than the evidence reads and three
+// derivations a comparison costs.
+//
+//	 1  validate the request shape                       no reads
+//	 2  load candidate run, require completed            1 read
+//	 3  load reference run, require completed            1 read
+//	 4  resolve both runs to candidates and agents       4 reads
+//	 5  require same project                             ErrComparisonScope
+//	 6  require same agent                               ErrPromotionScope
+//	 7  require same environment ref → the source        ErrPromotionScope
+//	 8  load source and target environments              2 reads
+//	 9  require CanPromote(source, target)               ErrPromotionOrder
+//	10  CompareEvaluations — diff, scorecard, gate       evidence reads
+//	11  NewPromotion, which derives the outcome          no reads
+//	12  CreatePromotion, which revalidates and inserts   1 transaction
+//
+// Steps 9 and 12 both check ordering and they are different checks. Step 9
+// asks whether the request is structurally possible, on values just read, and
+// its failure is the caller's — ErrPromotionOrder. Step 12 asks whether the
+// configuration the decision was built on is still authoritative, atomically
+// with the insert, and its failure is a race — ErrStoreConflict. Keeping them
+// separate is what makes the race observable without pretending the caller
+// sent something invalid.
+//
+// Step 10 reuses CompareEvaluations whole, including its own repeat of
+// completedRun and requireSameProject. That redundancy is accepted
+// deliberately: an internal variant that skipped the checks would create a
+// path where they *can* be skipped, and a future edit routing another caller
+// through it would lose them silently.
+//
+// A structural failure writes nothing. A gate FAIL writes a rejected record,
+// because a verdict was reached.
+func (c *ControlPlane) Promote(
+	ctx context.Context, request PromotionRequest, at time.Time,
+) (Promotion, error) {
+	for _, field := range []struct{ name, value string }{
+		{"promotion id", string(request.ID)},
+		{"reference run id", string(request.ReferenceRunID)},
+		{"candidate run id", string(request.CandidateRunID)},
+		{"target environment", string(request.TargetEnvironment)},
+	} {
+		if err := validateID(field.name, field.value); err != nil {
+			return Promotion{}, err
+		}
+	}
+	if request.ReferenceRunID == request.CandidateRunID {
+		return Promotion{}, fmt.Errorf(
+			"%w: reference and candidate run are both %s; a promotion compares two runs",
+			ErrInvalidID, preview(string(request.CandidateRunID)))
+	}
+
+	candidateRun, err := c.completedRun(ctx, "candidate", request.CandidateRunID)
+	if err != nil {
+		return Promotion{}, err
+	}
+	referenceRun, err := c.completedRun(ctx, "reference", request.ReferenceRunID)
+	if err != nil {
+		return Promotion{}, err
+	}
+
+	source, target, err := c.promotionEnvironments(
+		ctx, referenceRun, candidateRun, request.TargetEnvironment)
+	if err != nil {
+		return Promotion{}, err
+	}
+
+	comparison, err := c.CompareEvaluations(
+		ctx, request.ReferenceRunID, request.CandidateRunID, request.GateLimits)
+	if err != nil {
+		return Promotion{}, err
+	}
+
+	promotion, err := NewPromotion(PromotionDecision{
+		ID:         request.ID,
+		Source:     source,
+		Target:     target,
+		GateResult: comparison.Gate,
+		DecidedAt:  at,
+	})
+	if err != nil {
+		return Promotion{}, err
+	}
+
+	if err := c.control.CreatePromotion(ctx, promotion); err != nil {
+		return Promotion{}, err
+	}
+	return promotion, nil
+}
+
+// promotionEnvironments resolves the source and target a promotion runs
+// between, and refuses every pairing that is not promotion-eligible.
+//
+// The source is **inferred**, never supplied. Both runs already carry an
+// EnvironmentRef, CompareBehaviorSnapshots already refuses two snapshots whose
+// environments differ, and the project is already derived from the runs — so
+// (project, shared ref) is unambiguously bound into the evidence, and asking
+// the caller to restate it would add an input whose only possible effect is to
+// disagree with it.
+//
+// The same-agent rule lives here rather than in CompareEvaluations. A
+// comparison between two agents of one project is unusual but coherent; a
+// promotion asserts that one candidate's evidence justifies that candidate
+// advancing, and evidence drawn from a different agent justifies nothing about
+// this one.
+func (c *ControlPlane) promotionEnvironments(
+	ctx context.Context, reference, candidate EvaluationRun, targetRef EnvironmentRef,
+) (Environment, Environment, error) {
+	none := func(err error) (Environment, Environment, error) {
+		return Environment{}, Environment{}, err
+	}
+
+	if err := c.requireSameProject(ctx, reference, candidate); err != nil {
+		return none(err)
+	}
+
+	referenceAgent, err := c.agentOf(ctx, reference)
+	if err != nil {
+		return none(err)
+	}
+	candidateAgent, err := c.agentOf(ctx, candidate)
+	if err != nil {
+		return none(err)
+	}
+	if referenceAgent != candidateAgent {
+		return none(fmt.Errorf(
+			"%w: reference run belongs to agent %s, candidate run to agent %s; "+
+				"one agent's evidence does not justify another agent's promotion",
+			ErrPromotionScope, preview(string(referenceAgent)), preview(string(candidateAgent))))
+	}
+
+	if reference.Environment() != candidate.Environment() {
+		return none(fmt.Errorf(
+			"%w: reference run is in environment %s, candidate run in %s; "+
+				"a promotion advances out of one environment",
+			ErrPromotionScope, preview(string(reference.Environment())),
+			preview(string(candidate.Environment()))))
+	}
+
+	projectID, err := c.projectOf(ctx, candidate)
+	if err != nil {
+		return none(err)
+	}
+
+	source, err := c.control.Environment(ctx, projectID, candidate.Environment())
+	if err != nil {
+		return none(err)
+	}
+	target, err := c.control.Environment(ctx, projectID, targetRef)
+	if err != nil {
+		return none(err)
+	}
+
+	if !CanPromote(source, target) {
+		return none(fmt.Errorf(
+			"%w: %s cannot promote toward %s in project %s",
+			ErrPromotionOrder, preview(string(source.Ref())),
+			preview(string(target.Ref())), preview(string(projectID))))
+	}
+	return source, target, nil
+}
+
+// agentOf walks a run to the agent that owns it.
+func (c *ControlPlane) agentOf(ctx context.Context, run EvaluationRun) (AgentID, error) {
+	candidate, err := c.control.Candidate(ctx, run.CandidateID())
+	if err != nil {
+		return "", err
+	}
+	return candidate.AgentID(), nil
+}
+
+// Promotion loads one recorded decision.
+func (c *ControlPlane) Promotion(ctx context.Context, id PromotionID) (Promotion, error) {
+	if err := validateID("promotion id", string(id)); err != nil {
+		return Promotion{}, err
+	}
+	return c.control.Promotion(ctx, id)
+}
+
+// ProjectPromotions returns one bounded page of a project's promotion history.
+func (c *ControlPlane) ProjectPromotions(
+	ctx context.Context, projectID ProjectID, after PromotionID, limit int,
+) ([]Promotion, error) {
+	if err := validateID("project id", string(projectID)); err != nil {
+		return nil, err
+	}
+	return c.control.ProjectPromotions(ctx, projectID, after, limit)
+}
+
+// ---------------------------------------------------------------------
 // Evaluation run lifecycle
 // ---------------------------------------------------------------------
 

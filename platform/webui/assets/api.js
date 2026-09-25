@@ -286,7 +286,8 @@ function segment(value) {
 }
 
 // ---------------------------------------------------------------------
-// Routes. Every one of these exists already; this task adds no API surface.
+// Routes. Every one of these is a /v1 route the server publishes; this module
+// adds no capability of its own.
 // ---------------------------------------------------------------------
 
 export const createProject = (id, name) =>
@@ -349,6 +350,175 @@ export const compare = (referenceRunID, candidateRunID, limits) =>
       max_critical_risk_observations: limits.maxCriticalRiskObservations,
     },
   });
+
+// createPromotion records one decision.
+//
+// The body carries only what the caller owns: an identifier, two completed
+// runs, a target environment and the three limits. The source environment, the
+// project, the candidate, the gate verdict and the outcome are all derived by
+// the server, and sending any of them is a 400 because /v1 decodes strictly.
+// That is the point — a browser cannot express an outcome it did not earn.
+export const createPromotion = (id, referenceRunID, candidateRunID, target, limits) =>
+  request("POST", "/v1/promotions", {
+    id,
+    reference_run_id: referenceRunID,
+    candidate_run_id: candidateRunID,
+    target_environment: target,
+    gate_limits: {
+      max_added_behaviors: limits.maxAddedBehaviors,
+      max_block_decisions: limits.maxBlockDecisions,
+      max_critical_risk_observations: limits.maxCriticalRiskObservations,
+    },
+  });
+
+// getPromotion reads one recorded decision.
+export const getPromotion = (id) =>
+  request("GET", `/v1/promotions/${segment(id)}`);
+
+// listPromotions reads one bounded page of a project's history.
+//
+// One page, and the caller decides whether to ask for another. `after` is the
+// exclusive cursor the previous page published as `next_after`.
+export const listPromotions = (projectID, after) => {
+  const query = after ? `?after=${encodeURIComponent(after)}` : "";
+  return request("GET", `/v1/projects/${segment(projectID)}/promotions${query}`);
+};
+
+// listEnvironments reads one bounded page of a project's environments.
+//
+// The promotion form uses it to offer targets rather than asking a person to
+// type a ref. Which of them are promotable is the server's answer, not this
+// page's: nothing here compares a rank.
+export const listEnvironments = (projectID, after) => {
+  const query = after ? `?after=${encodeURIComponent(after)}` : "";
+  return request("GET", `/v1/projects/${segment(projectID)}/environments${query}`);
+};
+
+// MAX_ENVIRONMENT_PAGES bounds the target-picker traversal below.
+//
+// A browser-only defensive ceiling, not a product rule. Task 065's cap of 64
+// environments per project governs *creation, not existence*: a database
+// migrated from schema 2 backfills one environment per distinct reference its
+// runs recorded, so a valid project may legitimately hold more than 64 and a
+// promotable target may sit on page 2. That is exactly why this traverses
+// instead of reading page one.
+//
+// But "more than the cap" is not "without limit" as far as this page is
+// concerned. The server bounds each page at 64 rows, so 64 pages is 4096
+// environments — sixty-four times what any project may now create, and far
+// past any migrated history a person could pick from a dropdown. Reaching it
+// means the server is not terminating the collection, and the operation is
+// refused rather than allowed to grow a list forever.
+//
+// The server's collection contract stays authoritative. Nothing here asks for
+// a larger page, and nothing here decides an environment is uninteresting.
+export const MAX_ENVIRONMENT_PAGES = 64;
+
+// listAllEnvironments traverses one project's bounded environment collection.
+//
+// The target picker is the one place the browser needs the *whole* collection
+// rather than a page: a person choosing a promotion target has to be able to
+// choose one that a migrated database put on page 2. So this follows
+// `next_after` to completion, and the rows live only for the duration of the
+// pick.
+//
+// Promotion history deliberately does **not** use this. History is navigated a
+// page at a time, because it grows without bound and a browser that assembled
+// all of it would be an unbounded accumulator with a nicer name.
+//
+// Cursor safety mirrors the CLI's validatePromotionCursor: each condition
+// below is impossible from a correct server and non-terminating if believed,
+// so each is refused rather than followed.
+export async function listAllEnvironments(projectID) {
+  const environments = [];
+  let after = "";
+  let version;
+  let scope;
+
+  for (let page = 0; page < MAX_ENVIRONMENT_PAGES; page++) {
+    const response = await listEnvironments(projectID, after);
+    const rows = Array.isArray(response.environments) ? response.environments : [];
+
+    // The envelope must keep describing the same collection. A version or
+    // project that changes mid-traversal means the pages are not one listing,
+    // and merging them would present a set that never existed.
+    if (page === 0) {
+      version = response.version;
+      scope = response.project_id;
+    } else if (response.version !== version || response.project_id !== scope) {
+      throw new ApiError(
+        "the environment listing changed identity mid-traversal",
+        { operational: true },
+      );
+    }
+
+    for (const row of rows) {
+      environments.push(row);
+    }
+
+    const next = typeof response.next_after === "string" ? response.next_after : "";
+    if (next === "") {
+      return { version, project_id: scope, environments };
+    }
+
+    // A continuation that cannot make progress. Believing any of these loops
+    // forever, so each is reported as the server fault it is.
+    if (rows.length === 0) {
+      throw new ApiError(
+        `the server offered cursor "${next}" on an empty page of environments`,
+        { operational: true },
+      );
+    }
+    if (after !== "" && next <= after) {
+      throw new ApiError(
+        `the environment listing cursor did not advance: "${next}" followed "${after}"`,
+        { operational: true },
+      );
+    }
+    const last = rows[rows.length - 1];
+    if (!last || last.ref !== next) {
+      throw new ApiError(
+        `the environment listing cursor "${next}" is not the page's last environment`,
+        { operational: true },
+      );
+    }
+    after = next;
+  }
+
+  // Deliberately an error rather than a truncated list. Returning what fitted
+  // would offer a target picker that silently omits valid targets, and a
+  // person would read the absence as "that environment does not exist".
+  throw new ApiError(
+    `too many environment pages were returned to display safely (over ${MAX_ENVIRONMENT_PAGES})`,
+    { operational: true },
+  );
+}
+
+// promotionCursorFault reports why a promotion continuation cannot be followed,
+// or "" when it can.
+//
+// History is paged rather than traversed, so the check runs per click instead
+// of inside a loop — but it is the same rule the environment traversal and the
+// CLI apply, and for the same reason: a cursor that cannot advance is a server
+// fault, and following it is how a "Load next page" button becomes infinite.
+export function promotionCursorFault(previous, response) {
+  const next = typeof response.next_after === "string" ? response.next_after : "";
+  if (next === "") {
+    return "";
+  }
+  const rows = Array.isArray(response.promotions) ? response.promotions : [];
+  if (rows.length === 0) {
+    return `the server offered cursor "${next}" on an empty page of decisions`;
+  }
+  if (previous !== "" && next <= previous) {
+    return `the promotion history cursor did not advance: "${next}" followed "${previous}"`;
+  }
+  const last = rows[rows.length - 1];
+  if (!last || last.id !== next) {
+    return `the promotion history cursor "${next}" is not the page's last decision`;
+  }
+  return "";
+}
 
 // realtimePath builds the SSE URL for one run.
 export const realtimePath = (runID) =>

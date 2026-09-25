@@ -21,7 +21,7 @@ Tasks for the `v1.0` milestone.
 | [063 — Minimal Web Control Plane](063-minimal-web-control-plane.md) | Specified and implemented |
 | [064 — PostgreSQL Platform Backend](064-postgresql-platform-backend.md) | Specified and implemented |
 | [065 — Environment Model](065-environment-model.md) | Specified and implemented |
-| [066 — Promotion Workflow](066-promotion-workflow.md) | Specified. Not implemented |
+| [066 — Promotion Workflow](066-promotion-workflow.md) | Specified and implemented |
 | 067–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
 | [073 — OTel Collector Evaluation Ingest](073-otel-collector-evaluation-ingest.md) | Specified and implemented |
 | [074 — Zero-Input Live Behavior WebUI](074-zero-input-live-behavior-webui.md) | Specified; not implemented |
@@ -41,20 +41,24 @@ primitive task 066 asks and it authorizes nothing; and schema 3 backfills
 every environment a schema-2 database's runs referenced, whatever the creation
 cap now allows.
 
-Task 066 is **specified and not implemented**. It is the first layer allowed
-to decide that a candidate may advance between environments, and the last one
-that could be mistaken for deploying something — so the specification settles
-that first: a promotion is a durable record of a *decision*, it models no
-deployment and no candidate residence, and both verdicts of the gate are
-recorded while a malformed request is not. It keeps the gate result the
-decision actually consumed — field for field, every check's verdict flag
-included — rather than promising that today's code would re-derive it, because
-a corrected gate may legitimately answer differently from the same evidence and
-history has to survive its own bug fixes. And it commits that decision only
-against the environment configuration it was decided on: both environment
-states are revalidated inside the transaction that writes the promotion, on
-both backends, with row-level writer concurrency where PostgreSQL offers it and
-plain write-transaction serialization where SQLite does not.
+Task 066 is **implemented**. It is the first layer allowed to decide that a
+candidate may advance between environments, and the last one that could be
+mistaken for deploying something — so it settles that first: a promotion is a
+durable record of a *decision*, it models no deployment and no candidate
+residence, and both verdicts of the gate are recorded while a malformed request
+is not. It keeps the gate result the decision actually consumed — field for
+field, every check's verdict flag included — rather than promising that today's
+code would re-derive it, because a corrected gate may legitimately answer
+differently from the same evidence and history has to survive its own bug
+fixes. And it commits that decision only against the environment configuration
+it was decided on: both environment states are revalidated inside the
+transaction that writes the promotion, on both backends, with row-level writer
+concurrency where PostgreSQL offers it and plain write-transaction
+serialization where SQLite does not. Its schema step is **3 → 4**, and the
+migration adds an empty history: synthesizing promotions from old evaluations
+would fabricate decisions nobody made.
+[ADR 0040](../../adr/0040-promotions-are-immutable-evidence-backed-platform-decisions.md)
+records the reasoning.
 
 Tasks 073–078 sit **after** that reserved block rather than inside it. None
 was in the approved sequence; each closes a gap the sequence did not

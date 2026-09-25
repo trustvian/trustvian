@@ -578,3 +578,87 @@ type realtimeEventPayload struct {
 	Evaluation  *realtimeEvaluationDTO  `json:"evaluation,omitempty"`
 	Observation *realtimeObservationDTO `json:"observation,omitempty"`
 }
+
+// ---------------------------------------------------------------------
+// Promotions (task 066)
+// ---------------------------------------------------------------------
+
+// createPromotionRequest is flat, with no scope in the path — matching
+// POST /v1/agents and POST /v1/environments, because the scope is derived
+// rather than routed.
+//
+// Everything the server derives is absent by construction. Strict decoding
+// makes that a security property rather than a style choice: a caller cannot
+// express `"outcome": "accepted"`, `"source_environment": …` or
+// `"source_rank": 0`, so no adapter bug can forward one.
+type createPromotionRequest struct {
+	ID string `json:"id"`
+
+	ReferenceRunID string `json:"reference_run_id"`
+	CandidateRunID string `json:"candidate_run_id"`
+
+	TargetEnvironment string `json:"target_environment"`
+
+	GateLimits gateLimitsDTO `json:"gate_limits"`
+}
+
+// environmentPositionDTO is one environment as the decision saw it.
+//
+// `rank` is a number, like the environment response. `revision` is a string,
+// like every other uint64 crossing /v1.
+type environmentPositionDTO struct {
+	Ref      string `json:"ref"`
+	Rank     uint16 `json:"rank"`
+	Revision string `json:"revision"`
+}
+
+// promotionResponse is the stored record, including the decision-time gate
+// result.
+//
+// `gate_result` reuses gateResultDTO byte for byte — the same shape
+// POST /v1/evaluations/compare publishes under its `gate` key — so a client
+// that can render a comparison's gate can render a promotion's with no new
+// code. It is served from the stored row, never re-derived per request.
+type promotionResponse struct {
+	Version string `json:"version"`
+
+	ID        string `json:"id"`
+	ProjectID string `json:"project_id"`
+
+	CandidateID          string `json:"candidate_id"`
+	ReferenceCandidateID string `json:"reference_candidate_id"`
+
+	ReferenceRunID string `json:"reference_run_id"`
+	CandidateRunID string `json:"candidate_run_id"`
+
+	SourceEnvironment environmentPositionDTO `json:"source_environment"`
+	TargetEnvironment environmentPositionDTO `json:"target_environment"`
+
+	GateLimits gateLimitsResponseDTO `json:"gate_limits"`
+	GateResult gateResultDTO         `json:"gate_result"`
+
+	Outcome   string `json:"outcome"`
+	DecidedAt string `json:"decided_at"`
+}
+
+// gateLimitsResponseDTO is the response form of the three limits.
+//
+// Plain strings rather than gateLimitsDTO's pointers: on a request a nil
+// distinguishes "omitted" from "0", and on a response every limit is present
+// by construction.
+type gateLimitsResponseDTO struct {
+	MaxAddedBehaviors           string `json:"max_added_behaviors"`
+	MaxBlockDecisions           string `json:"max_block_decisions"`
+	MaxCriticalRiskObservations string `json:"max_critical_risk_observations"`
+}
+
+// promotionListResponse is one bounded page of a project's history.
+//
+// next_after is omitted on the last page, so its presence means exactly "call
+// again" rather than "there might be more".
+type promotionListResponse struct {
+	Version    string              `json:"version"`
+	ProjectID  string              `json:"project_id"`
+	Promotions []promotionResponse `json:"promotions"`
+	NextAfter  string              `json:"next_after,omitempty"`
+}

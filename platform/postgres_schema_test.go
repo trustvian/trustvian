@@ -35,34 +35,57 @@ func schemaTestPool(t *testing.T) (*pgxpool.Pool, string) {
 	return pool, dsn
 }
 
+// createsTable reports whether stmt is the CREATE TABLE for exactly this
+// table, rather than merely a statement mentioning it.
+//
+// Containment is not enough: every child table names its parent in a REFERENCES
+// clause, so matching on the table name alone selects statements that create
+// something else entirely and depend on tables the fixture never created.
+func createsTable(stmt, table string) bool {
+	return strings.HasPrefix(strings.TrimSpace(stmt), `CREATE TABLE `+table+` (`)
+}
+
 // createOlderSchema builds a historical schema by replaying the statements the
 // store uses, minus the ones later versions appended, and stamping the version
 // they belonged to.
 //
 // Assembled from the live statements rather than copied, so a fixture cannot
-// drift from what that version actually was. The two omitted statements are
-// named and checked: appending a table without extending this would otherwise
-// silently build the wrong past.
+// drift from what that version actually was. The omitted statements are named
+// and checked from the end backwards: appending a table without extending this
+// would otherwise silently build the wrong past. Task 066 appended two — the
+// promotions table and its index — which is exactly the check firing as
+// designed rather than a fixture that quietly kept working.
 func createOlderSchema(t *testing.T, pool *pgxpool.Pool, version int) {
 	t.Helper()
 	ctx := context.Background()
 
 	statements := postgresSchemaStatements()
-	if !strings.Contains(statements[len(statements)-1], tableEnvironments) {
-		t.Fatalf("the last schema statement is no longer %s; the fixture would "+
-			"build the wrong version", tableEnvironments)
+	tail := []struct {
+		offset   int
+		contains string
+	}{
+		{1, indexPromotionsByProject},
+		{2, `CREATE TABLE ` + tablePromotions},
+		{3, `CREATE TABLE ` + tableEnvironments},
+		{4, `CREATE TABLE ` + tableIngestState},
 	}
-	if !strings.Contains(statements[len(statements)-2], tableIngestState) {
-		t.Fatalf("the second-to-last schema statement is no longer %s; the fixture "+
-			"would build the wrong version", tableIngestState)
+	for _, want := range tail {
+		if !strings.Contains(statements[len(statements)-want.offset], want.contains) {
+			t.Fatalf("schema statement %d from the end no longer contains %q; the "+
+				"fixture would build the wrong version", want.offset, want.contains)
+		}
 	}
 
+	// One entry per version this binary can still open, counting back over the
+	// statements every later version appended.
 	var older []string
 	switch version {
 	case schemaVersionV1:
-		older = statements[:len(statements)-2]
+		older = statements[:len(statements)-4]
 	case schemaVersionV2:
-		older = statements[:len(statements)-1]
+		older = statements[:len(statements)-3]
+	case schemaVersionV3:
+		older = statements[:len(statements)-2]
 	default:
 		t.Fatalf("no fixture for schema version %d", version)
 	}
@@ -91,6 +114,13 @@ func createV1Schema(t *testing.T, pool *pgxpool.Pool) {
 func createV2Schema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	createOlderSchema(t, pool, schemaVersionV2)
+}
+
+// createV3Schema builds a task 065 schema: the environment registry, but no
+// promotion history, stamped version 3.
+func createV3Schema(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	createOlderSchema(t, pool, schemaVersionV3)
 }
 
 func storedVersion(t *testing.T, pool *pgxpool.Pool) int {
@@ -345,6 +375,94 @@ func TestPostgresMigrationKeepsProjectsIndependent(t *testing.T) {
 	}
 }
 
+// TestPostgresMigratesV3ToV4AddingAnEmptyHistory is task 066's migration.
+//
+// The assertion that matters most is the negative one: a migrated database has
+// *no* promotions. Every completed evaluation in a v3 database was gated by
+// something, and a migration that turned those gate results into promotion rows
+// would be fabricating an audit trail — records asserting that somebody decided
+// to advance a candidate, when nobody did. An empty history is the only honest
+// answer, and the count below is what keeps it that way.
+func TestPostgresMigratesV3ToV4AddingAnEmptyHistory(t *testing.T) {
+	pool, dsn := schemaTestPool(t)
+	createV3Schema(t, pool)
+	seedPostgresV2Environments(t, pool, "proj-1", []string{"staging", "production"})
+	seedPostgresV3Environments(t, pool, "proj-1", []string{"staging", "production"})
+
+	if tableExists(t, pool, tablePromotions) {
+		t.Fatal("the v3 fixture already has the promotion table")
+	}
+	if got := storedVersion(t, pool); got != schemaVersionV3 {
+		t.Fatalf("fixture version = %d, want %d", got, schemaVersionV3)
+	}
+
+	store, err := OpenPostgresStore(context.Background(), PostgresConfig{DSN: dsn})
+	if err != nil {
+		t.Fatalf("opening a v3 schema: %v", err)
+	}
+	defer store.Close()
+
+	if got := storedVersion(t, pool); got != SchemaVersion {
+		t.Errorf("version after migration = %d, want %d", got, SchemaVersion)
+	}
+	if !tableExists(t, pool, tablePromotions) {
+		t.Fatal("the migration did not add the promotion table")
+	}
+
+	var rows int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM `+tablePromotions).Scan(&rows); err != nil {
+		t.Fatalf("count promotions: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("the migration synthesized %d promotion(s); a decision nobody "+
+			"made must not appear in the audit history", rows)
+	}
+
+	// The index the collection pages on has to exist too, or every project
+	// history would be a sequential scan that still returns the right answer.
+	var indexed bool
+	if err := pool.QueryRow(context.Background(),
+		`SELECT EXISTS (
+			SELECT 1 FROM pg_indexes
+			WHERE schemaname = current_schema() AND indexname = $1)`,
+		indexPromotionsByProject).Scan(&indexed); err != nil {
+		t.Fatalf("check index: %v", err)
+	}
+	if !indexed {
+		t.Errorf("the migration did not create %s", indexPromotionsByProject)
+	}
+
+	// Pre-existing state survived, and the migrated database accepts a decision.
+	if got := len(listAllPostgresEnvironments(t, store, "proj-1")); got != 2 {
+		t.Errorf("proj-1 has %d environments after migration, want 2", got)
+	}
+	history, err := store.ProjectPromotions(t.Context(), "proj-1", "", MaxPromotionPage)
+	if err != nil {
+		t.Fatalf("ProjectPromotions() error = %v", err)
+	}
+	if len(history) != 0 {
+		t.Errorf("ProjectPromotions() returned %d rows, want none", len(history))
+	}
+}
+
+// seedPostgresV3Environments gives a v3 fixture the ranked environments a
+// promotion needs, written directly because the store cannot open the database
+// until it has been migrated.
+func seedPostgresV3Environments(t *testing.T, pool *pgxpool.Pool, projectID string, refs []string) {
+	t.Helper()
+	for i, ref := range refs {
+		if _, err := pool.Exec(context.Background(),
+			`INSERT INTO `+tableEnvironments+`
+			 (project_id, ref, name, rank, status, revision)
+			 VALUES ($1, $2, $3, $4, 'active', 1)
+			 ON CONFLICT DO NOTHING`,
+			projectID, ref, ref, (i+1)*10); err != nil {
+			t.Fatalf("seed v3 environment %s: %v", ref, err)
+		}
+	}
+}
+
 // TestPostgresRefusesANewerSchema is the fail-closed case.
 //
 // A schema this binary does not understand is never rewritten, never partially
@@ -417,10 +535,10 @@ func TestPostgresRefusesTablesWithoutAVersionRow(t *testing.T) {
 func TestPostgresRefusesAPartialSchema(t *testing.T) {
 	pool, dsn := schemaTestPool(t)
 
-	// Two of the nine tables: enough to be recognized, not enough to be any
+	// Two of the eleven tables: enough to be recognized, not enough to be any
 	// version this binary knows.
 	for _, stmt := range postgresSchemaStatements() {
-		if strings.Contains(stmt, tableSchemaVersion) || strings.Contains(stmt, tableProjects) {
+		if createsTable(stmt, tableSchemaVersion) || createsTable(stmt, tableProjects) {
 			if _, err := pool.Exec(context.Background(), stmt); err != nil {
 				t.Fatalf("create partial schema: %v", err)
 			}

@@ -520,27 +520,59 @@ func TestEnvironmentCreationCapOverHTTP(t *testing.T) {
 	}
 }
 
-// TestNoPromotionRouteExists is the other half of the absence.
+// TestPromotionRoutesAreExactlyTheThreeTask066Specified is the evolved form
+// of task 065's "no promotion route exists" check.
 //
-// Task 065 answers an ordering question inside the process; it moves nothing.
-// A route that promoted a candidate would be task 066 arriving early, without
-// the record, the evidence rule or the approval it owes.
-func TestNoPromotionRouteExists(t *testing.T) {
+// That rule existed so 065 could not quietly acquire a workflow it had not
+// designed. 066 designed one, so the question becomes which routes exist — and
+// the alternatives that would mean Trustvian had started moving things are
+// still absent.
+func TestPromotionRoutesAreExactlyTheThreeTask066Specified(t *testing.T) {
 	a := newAPI(t)
 	a.seedHierarchy()
 
-	for _, path := range []string{
+	// The three that exist. Each is reachable, which is what distinguishes a
+	// registered route from a 404 — the bodies are wrong on purpose, so a 400
+	// or 404-on-the-resource is a route that ran.
+	for _, present := range []struct {
+		method, path string
+	}{
+		{"POST", "/v1/promotions"},
+		{"GET", "/v1/promotions/absent"},
+		{"GET", "/v1/projects/proj-1/promotions"},
+	} {
+		r := a.do(present.method, present.path, map[string]string{})
+		if r.Code == http.StatusMethodNotAllowed {
+			t.Errorf("%s %s is not registered", present.method, present.path)
+		}
+	}
+
+	// The ones that must not. A route that promoted a candidate directly, or
+	// named a promotion under an environment, would be a different product.
+	for _, absent := range []string{
+		"/v1/promote",
+		"/v1/candidates/cand-1/promote",
 		"/v1/projects/proj-1/environments/staging/promote",
 		"/v1/projects/proj-1/environments/staging/promotions",
-		"/v1/promotions",
-		"/v1/candidates/cand-1/promote",
+		"/v1/promotions/promo-1/deploy",
+		"/v1/promotions/promo-1/rollback",
+		"/v1/deployments",
 	} {
 		for _, method := range []string{"GET", "POST"} {
-			r := a.do(method, path, map[string]string{})
+			r := a.do(method, absent, map[string]string{})
 			if r.Code != http.StatusNotFound && r.Code != http.StatusMethodNotAllowed {
-				t.Errorf("%s %s = %d, want no such route; promotion is task 066's",
-					method, path, r.Code)
+				t.Errorf("%s %s = %d, want no such route; Trustvian records a decision "+
+					"and moves nothing", method, absent, r.Code)
 			}
+		}
+	}
+
+	// And no promotion route accepts a mutation of a recorded decision.
+	for _, method := range []string{"PUT", "PATCH", "DELETE"} {
+		r := a.do(method, "/v1/promotions/promo-1", map[string]string{})
+		if r.Code != http.StatusNotFound && r.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s /v1/promotions/promo-1 = %d; a promotion is append-only",
+				method, r.Code)
 		}
 	}
 }

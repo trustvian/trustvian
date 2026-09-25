@@ -10,6 +10,70 @@ actually depend on.
 
 ### Added
 
+- **Promotion workflow** (task 066). The platform can now record that a
+  candidate's evidence was gated and that the verdict accepted — or refused —
+  advancement from one environment toward another. One sentence bounds the
+  whole feature: **Trustvian records a promotion decision; Trustvian does not
+  deploy anything.** There is no `Deployment`, `Release`, `CurrentEnvironment`
+  or `DeployedCandidate`, no webhook and no pipeline trigger, and nothing in
+  the platform acts on a recorded promotion. Trustvian has no observer that
+  could confirm a deployment happened, so any such claim would be one it cannot
+  substantiate.
+
+  `POST /v1/promotions`, `GET /v1/promotions/{promotion_id}` and
+  `GET /v1/projects/{project_id}/promotions` are the routes, and
+  `trustvian promotion create|get|list` drives them over `/v1` — the noun,
+  because it names a record rather than an action Trustvian performs. The
+  request carries the two evaluation runs, the target environment and the three
+  gate limits. It carries no source environment, which the server infers from
+  the environment the two runs share, and no outcome: `accepted` and `rejected`
+  are derived from the gate verdict alone, and a request attempting to set
+  either is rejected. Both runs must belong to the same agent, while
+  `CompareEvaluations` stays same-project.
+
+  **Both verdicts are recorded.** A FAIL produces a stored `rejected`
+  promotion, because the gate limits are caller-owned and a history of
+  acceptances only would hide a caller retrying with progressively looser
+  limits until one passed. A *structural* failure — unknown runs, two agents, a
+  target that is not forward — is not a decision and is not recorded. Records
+  are append-only: no update, no delete, at any layer.
+
+  **The gate result is stored as historical evidence, field for field.** The
+  promotion holds the exact result the decision consumed, every count, limit and
+  per-check verdict flag included, restored without recomputation. A corrected
+  gate may legitimately answer the same immutable evidence differently later,
+  and history has to survive its own bug fixes — so a stored row that disagrees
+  with today's arithmetic restores exactly as written, and only a row that
+  cannot be read at all is corruption.
+
+  **A promotion commits only against the environment state it was decided
+  against.** The invariant spans three rows, so the write re-reads both
+  environments inside its own transaction, compares both revisions, re-asks
+  `CanPromote`, and inserts — anything moved, a rename included, yields a
+  conflict and no row. PostgreSQL holds the two environment rows with
+  `SELECT … FOR UPDATE` in `(project_id, ref)` byte order, so promotions in
+  different projects and over disjoint pairs make independent progress; SQLite
+  serializes writers database-wide instead, and nothing here claims otherwise.
+
+  Stage skipping is allowed: `sandbox → production` is valid if the ranks are
+  forward and the gate passed. There is no `approved_by`, no actor identity and
+  no RBAC — the platform records what it decided on evidence, not who asked.
+  `promotion_id` is the only identity: a duplicate is `409 already_exists`,
+  never a silent overwrite and never an idempotent replay decided by comparing
+  request bodies. `trustvian promotion create` exits `0` for a rejected
+  decision; exit `1` keeps its single existing meaning of a gate FAIL from
+  `eval compare`. The WebUI gains the promotion slice task 063 reserved, and
+  performs no rank comparison, gate calculation or source inference in the
+  browser.
+
+  `SchemaVersion` is 4 on both backends. The v3 → v4 migration creates the
+  table and its index and **writes no rows**: every completed evaluation in a v3
+  database was gated by something, but nobody decided to advance any of them,
+  and synthesizing promotions from old gate results would fabricate an audit
+  trail of decisions that were never made. See
+  [docs/tasks/v1.0/066-promotion-workflow.md](docs/tasks/v1.0/066-promotion-workflow.md)
+  and [ADR 0040](docs/adr/0040-promotions-are-immutable-evidence-backed-platform-decisions.md).
+
 - **Environment model** (task 065). A project now owns the environments its runs
   name. `POST /v1/environments` registers one, and `POST /v1/evaluation-runs`
   refuses an `environment` the project has not registered (`404`) or has

@@ -29,6 +29,7 @@ here, not moved or rewritten.
 | Threat | Test(s) |
 | --- | --- |
 | Shared PostgreSQL backend keeps credentials and internals off every surface | `TestPostgresErrorsNeverCarryTheDSN`, `TestPostgresIdentifierOrderingIsByteOrder`, `TestPostgresBuildsNoSQLFromNonConstants`, `TestPostgresRunScopedWritesTakeTheRowLock`, `TestPostgresUsesReadCommitted`, `TestPostgresRefusesANewerSchema`, `TestPostgresRefusesTablesWithoutAVersionRow`, `TestPostgresConcurrentInitializationYieldsOneSchema`, `TestPostgresMigrationDoesNotBlockOnTheEngineLock` in [`platform/postgres_internal_test.go`](../platform/postgres_internal_test.go), [`postgres_concurrency_test.go`](../platform/postgres_concurrency_test.go) and [`postgres_schema_test.go`](../platform/postgres_schema_test.go); `TestRuntimeErrorsNeverCarryTheDSN`, `TestUnknownBackendFailsClosed`, `TestPostgresBackendWithoutDSNFailsBeforeTheListener`, `TestDiscoveryNeverCarriesBackendConfiguration`, `TestRuntimeOnPostgresServesTheRealAPI`, `TestBackendSelectionDoesNotLeakAboveComposition` in [`platform/localruntime/backend_test.go`](../platform/localruntime/backend_test.go) and [`architecture_test.go`](../platform/localruntime/architecture_test.go) |
+| Recorded promotion decisions cannot be forged, rewritten, or re-derived | `TestRestorePreservesAHistoricallyInconsistentCheck`, `TestRestoreDoesNotRecomputeTheVerdictFromTheFlags`, `TestGateRestoreEvaluatesNothing`, `TestPromotionDeclaresNoDeploymentOrApprovalField`, `TestPromotionTypesAreTheOnesTask066Specified` in [`platform/promotion_test.go`](../platform/promotion_test.go), [`promotion_internal_test.go`](../platform/promotion_internal_test.go) and [`gate_internal_test.go`](../platform/gate_internal_test.go); `TestPostgresPromotionCommitWindowIsMutuallyExclusive`, `TestPostgresPromotionWaitsForTheLockAndSeesTheNewState`, `TestPostgresPromotionLocksEnvironmentsInByteOrder`, `TestPostgresPromotionLocksTwoEnvironmentRowsAndNothingElse` in [`platform/postgres_concurrency_test.go`](../platform/postgres_concurrency_test.go); `TestPostgresMigratesV3ToV4AddingAnEmptyHistory` in [`platform/postgres_schema_test.go`](../platform/postgres_schema_test.go), `TestSchemaV3MigratesToV4PreservingContent` in [`platform/promotion_migration_test.go`](../platform/promotion_migration_test.go); `TestPromotionUIDecidesNothing`, `TestPromotionUIClaimsNoDeployment` in [`platform/webui/assets_test.go`](../platform/webui/assets_test.go) |
 | Browser control plane renders untrusted text inertly | `TestShippedScriptsUseNoDangerousRenderingPrimitive`, `TestShippedScriptsDoNotEnumerateServerObjects`, `TestFieldAllowlistsExcludeEverySensitiveField`, `TestPrivacyFixtureFieldsAreUnreachable`, `TestContentSecurityPolicyForbidsEveryEscapeHatch`, `TestNoBrowserPersistenceOfPlatformState`, `TestUint64CountersAreNeverParsedAsNumbers`, `TestGateVerdictComesFromTheServer` in [`platform/webui/assets_test.go`](../platform/webui/assets_test.go) and [`handler_test.go`](../platform/webui/handler_test.go); `TestHandlerConstructorTakesNoControlPlane`, `TestDependencyGraphContainsNoPlatformOrStoreCode` in [`platform/webui/architecture_test.go`](../platform/webui/architecture_test.go); `TestUnknownAPIRoutesNeverReturnTheShell`, `TestWebUIResponsesCarryNoCORSHeader` in [`platform/localruntime/runtime_test.go`](../platform/localruntime/runtime_test.go); `TestHostileServerStringsSurviveTheAPIAsData` in [`platform/localruntime/endtoend_test.go`](../platform/localruntime/endtoend_test.go) |
 | Identity confusion (cross-actor isolation) | `TestAnalyzeCrossActorIsolation` in [`engine_test.go`](../engine_test.go) |
 | Baseline poisoning | `TestObserveLearnsOnlyFromEligibleDecisions`, `TestAnalyzeSensitiveTargetFloorEndToEnd` in [`engine_test.go`](../engine_test.go); `TestFingerprintStatsIgnoresNonPositiveInterval`, `TestFingerprintStatsOutOfOrderObservationDoesNotDistortNextInterval` in [`internal/baseline/baseline_test.go`](../internal/baseline/baseline_test.go); `TestScoreFrequencyDeviation` (negative-interval subtests) in [`internal/anomaly/anomaly_test.go`](../internal/anomaly/anomaly_test.go) |
@@ -541,6 +542,77 @@ what is running or what has finished — and there is no delete, so a completed
 run's reference always resolves. An environment stores no URL, credential,
 secret or deployment target, and the platform opens no connection on one's
 behalf.
+
+### A recorded promotion decision cannot be forged, rewritten, or re-derived
+
+**Threat:** the promotion record is the platform's audit answer to *who
+decided this candidate could advance, on what evidence, and when*. Four ways
+that answer goes wrong: a caller asserts the outcome instead of the gate
+deciding it; the stored evidence is recomputed on read, so a later code change
+silently rewrites what the platform "relied on"; the decision commits against
+an environment configuration that changed underneath it; or a migration
+fabricates decisions nobody made.
+
+**Status: all four are closed, and the closures are tested rather than
+asserted.** See
+[ADR 0040](adr/0040-promotions-are-immutable-evidence-backed-platform-decisions.md).
+
+- **The outcome is derived from the gate verdict, never supplied.**
+  `PromotionDecision` has no `Outcome` field, strict decoding rejects one in a
+  request body, and `outcomeFor` is the single place `accepted ↔ PASS` is
+  written. An `accepted` promotion carrying a FAIL result is unconstructible
+  through the domain; such a row is reported as corruption on read rather than
+  repaired, because repairing it would pick one of two contradictory claims
+  about a security decision and serve the guess as the record.
+- **The gate result is historical evidence, stored field for field.** The
+  promotion holds the exact `EvaluationGateResult` the decision consumed —
+  every count, every limit, every per-check `Passed` flag, and the verdict —
+  restored by `restoreEvaluationGateResult`, which calls neither
+  `EvaluateEvaluationGate` nor the gate helpers and derives no flag from its
+  own stored operands. A corrected gate may legitimately answer the same
+  immutable evidence differently later, and history has to survive its own bug
+  fixes. A row that disagrees with today's arithmetic — `actual = 1`,
+  `minimum = 1`, `passed = false` — restores exactly as written; only a row
+  that cannot be read at all is corruption.
+- **The decision commits only against the state it was decided against.** The
+  invariant spans three rows, so `CreatePromotion` re-reads both environments
+  inside its own transaction, compares both stored revisions, re-asks
+  `CanPromote` on the fresh values, and only then inserts. Any change,
+  including a rename, yields `ErrStoreConflict` and writes no row — the store
+  does not decide which environment changes are "relevant to promotion",
+  because that judgment is domain logic and would need revisiting whenever
+  `Environment` gains a field. PostgreSQL holds the two environment rows with
+  `FOR UPDATE` in `(project_id, ref)` byte order — two rows, never the project
+  row and never the table. SQLite serializes writers database-wide instead,
+  which is stated rather than dressed up: no test claims row-level writer
+  concurrency there.
+- **Migration invents no history.** The v3 → v4 step creates the table and its
+  index and stamps the version. It writes no rows, and both backends' migration
+  tests assert an empty promotion history. Every completed evaluation in a v3
+  database was gated by something, but nobody decided to advance any of them;
+  synthesizing promotions from old gate results would fabricate an audit trail
+  of decisions that were never made.
+
+**A promotion is not a deployment, and nothing pretends otherwise.** There is
+no `Deployment`, `Release`, `CurrentEnvironment` or `DeployedCandidate`, no
+webhook and no pipeline trigger; the WebUI and CLI carry absence tests
+forbidding "deployed to", "now running in", "is live in", "released to" and
+"rolled out" as descriptions of a promotion. Trustvian has no observer that
+could confirm a deployment happened, so any such claim would be one it cannot
+substantiate.
+
+There is also **no `approved_by` and no actor identity**. Task 066 records what
+the platform decided on evidence, not who asked, and authentication is its own
+milestone. A nullable or client-supplied actor label would be worse than none:
+an audit field nobody authenticates can say anything, and its presence invites
+readers to treat it as attested.
+
+Records are **append-only**. There is no update and no delete at any layer, so
+a decision made in error is superseded by a later decision and both remain
+visible. Both gate verdicts are recorded — a FAIL produces a stored `rejected`
+promotion — because the gate limits are caller-owned, and a history of
+acceptances only would hide a caller retrying with progressively looser limits
+until one passed.
 
 **Threat:** durable platform state becomes a way to forge evidence, adopt a
 database nobody vetted, silently rewrite what a finished run was evaluated

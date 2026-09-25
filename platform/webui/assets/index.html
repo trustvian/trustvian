@@ -23,6 +23,7 @@
   <button type="button" class="tab" id="tab-evaluation" data-panel="panel-evaluation" aria-selected="false">Evaluation</button>
   <button type="button" class="tab" id="tab-live" data-panel="panel-live" aria-selected="false">Live</button>
   <button type="button" class="tab" id="tab-compare" data-panel="panel-compare" aria-selected="false">Compare</button>
+  <button type="button" class="tab" id="tab-promotion" data-panel="panel-promotion" aria-selected="false">Promotion</button>
 </nav>
 
 <main id="main">
@@ -286,6 +287,101 @@
 
   <div class="result" id="compare-result" aria-live="polite">
     <p class="empty">No comparison run.</p>
+  </div>
+</section>
+
+<section class="panel" id="panel-promotion" aria-labelledby="tab-promotion" hidden>
+  <h2>Promotion</h2>
+
+  <p class="note">
+    A promotion is a durable record that Trustvian decided a candidate may
+    advance from one environment toward another, on the evidence of two
+    completed runs under the limits you supply. <strong>Trustvian records the
+    decision; it deploys nothing</strong>, and a recorded decision says nothing
+    about where a candidate is running.
+  </p>
+
+  <h3>Record a decision</h3>
+  <form class="stack" id="form-promotion-create">
+    <div class="field">
+      <label for="promotion-id">Promotion ID</label>
+      <input type="text" id="promotion-id" name="id" autocomplete="off" required>
+    </div>
+    <div class="field">
+      <label for="promotion-reference">Reference run ID</label>
+      <input type="text" id="promotion-reference" name="reference_run_id" autocomplete="off" required>
+    </div>
+    <div class="field">
+      <label for="promotion-candidate">Candidate run ID</label>
+      <input type="text" id="promotion-candidate" name="candidate_run_id" autocomplete="off" required>
+    </div>
+    <div class="field">
+      <label for="promotion-project">Project ID (to list target environments)</label>
+      <input type="text" id="promotion-project" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="promotion-target">Target environment</label>
+      <select id="promotion-target" name="target_environment" required>
+        <option value="">Load a project to choose a target</option>
+      </select>
+      <button type="button" id="promotion-load-environments">Load environments</button>
+    </div>
+    <fieldset>
+      <legend>Gate limits (all required; 0 is valid)</legend>
+      <div class="field">
+        <label for="promotion-max-added">Max added behaviors</label>
+        <input type="text" id="promotion-max-added" inputmode="numeric" autocomplete="off" required>
+      </div>
+      <div class="field">
+        <label for="promotion-max-block">Max block decisions</label>
+        <input type="text" id="promotion-max-block" inputmode="numeric" autocomplete="off" required>
+      </div>
+      <div class="field">
+        <label for="promotion-max-critical">Max critical risk observations</label>
+        <input type="text" id="promotion-max-critical" inputmode="numeric" autocomplete="off" required>
+      </div>
+    </fieldset>
+    <button type="submit">Record decision</button>
+  </form>
+
+  <p class="note">
+    The source environment is not asked for: the server infers it from the two
+    runs, which must already agree on it. The outcome is the server's — this
+    page renders what was recorded and computes no verdict, no ordering and no
+    outcome of its own.
+  </p>
+
+  <div class="result" id="promotion-result" aria-live="polite">
+    <p class="empty">No promotion recorded.</p>
+  </div>
+
+  <h3>Open a decision</h3>
+  <form class="row" id="form-promotion-get">
+    <label for="promotion-open-id">Promotion ID</label>
+    <input type="text" id="promotion-open-id" autocomplete="off" required>
+    <button type="submit">Open</button>
+  </form>
+
+  <h3>Project history</h3>
+  <p class="note">
+    History is read one bounded page at a time, newest identifiers last, in the
+    order the control plane recorded them. Your position is held only while
+    this page is open &mdash; a reload starts again at the first page.
+  </p>
+  <form class="row" id="form-promotion-list">
+    <label for="promotion-list-project">Project ID</label>
+    <input type="text" id="promotion-list-project" autocomplete="off" required>
+    <button type="submit">List</button>
+  </form>
+
+  <div class="result" id="promotion-history" aria-live="polite">
+    <p class="empty">No history loaded.</p>
+  </div>
+
+  <div class="row" id="promotion-history-nav" hidden>
+    <button type="button" id="promotion-next-page">Load next page</button>
+    <button type="button" id="promotion-restart">Start over</button>
+    <span class="note-inline" id="promotion-page-state" aria-live="polite"></span>
   </div>
 </section>
 

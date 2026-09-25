@@ -74,9 +74,14 @@ reconstructed later. Everything else in this table is already released.
 | Platform error `code` values and HTTP statuses | STABLE | A code and its status keep the condition they name | New codes | Major |
 | Platform error `message` text | OBSERVATIONAL | The code and status are the contract; wording is diagnostic | Any change | None |
 | Platform ingest sequence semantics | STABLE | Monotonic from 1; expected applies, identical retry of the last replays, gap and stale fail | — | Major |
-| Platform SQLite schema | OPERATIONALLY STABLE | Forward-only, version-gated; currently version 3 | Additive tables or columns with a schema-version bump and a migration | Major for a destructive change |
+| Platform SQLite schema | OPERATIONALLY STABLE | Forward-only, version-gated; currently version 4 | Additive tables or columns with a schema-version bump and a migration | Major for a destructive change |
 | Platform environment identity | STABLE | An environment is `(project_id, ref)`; a run keeps recording only the ref, and refs are an open set rather than an enum | New optional environment fields | Major |
 | `GET /v1/projects/{project_id}/environments` paging | STABLE | Traversal by `ref` ascending, exclusive `after` cursor, `limit` 1–64 defaulting to 64, `next_after` present only when another page follows | New optional query parameters | Major, or a new path version |
+| Platform promotion semantics | STABLE | A promotion records a decision, never a deployment or a candidate's location; it is append-only, with no update or delete at any layer | New optional promotion fields | Major |
+| Promotion `outcome` values | STABLE | Exactly `accepted` and `rejected`, derived from the gate verdict and never supplied by a caller | — | Major |
+| Promotion identity | STABLE | `promotion_id` is caller-owned and the only identity; a duplicate is `409 already_exists`, never a silent overwrite or a body-compared idempotent replay | — | Major |
+| Persisted promotion gate evidence | STABLE | The gate result the decision consumed, stored field for field and restored without recomputation; a later gate correction does not rewrite it | New additive evidence fields | Major |
+| `GET /v1/projects/{project_id}/promotions` paging | STABLE | Traversal by `promotion_id` ascending, exclusive `after` cursor, `limit` 1–64 defaulting to 64, `next_after` present only when another page follows | New optional query parameters | Major, or a new path version |
 | `GET /v1/realtime` route and filter query names | STABLE | Path, method, and the `project_id`, `agent_id`, `run_id` filters | New optional filters | Major, or a new path version |
 | Realtime SSE event names | STABLE | A published event name keeps the condition it names | New event names — **consumers must tolerate unknown names** | Major |
 | Realtime SSE JSON field names | STABLE | A published field name keeps its meaning | New fields — **consumers must tolerate unknown fields** | Major |
@@ -238,13 +243,17 @@ meaning for every code, and assuming one will be wrong:
 | Commands | `0` | `1` | `2` | `3` |
 |---|---|---|---|---|
 | `analyze`, `baseline`, `version` | success | the run failed | top-level invocation was wrong | — |
-| `project`, `agent`, `candidate`, `env`, `eval` except `compare` | success | *unused* | usage | API, network, or server failure |
+| `project`, `agent`, `candidate`, `env`, `promotion`, `eval` except `compare` | success | *unused* | usage | API, network, or server failure |
 | `tui` | you quit | *unused* | usage | startup, HTTP, SSE, protocol, or terminal failure |
 | `eval compare` | gate **PASS** | gate **FAIL** | usage | API, network, or server failure |
 
 **Exit code `1` means gate failure only for `trustvian eval compare`; it
 does not change the established meaning of code `1` for legacy
-commands.** It further requires the server to have returned the explicit
+commands.** In particular `trustvian promotion create` exits `0` for a
+**rejected** promotion: the gate said FAIL, the platform recorded that
+decision, and the API call succeeded. A recorded rejection is a result, not a
+failure, and reusing `1` for it would give the code a second meaning that no
+script could disambiguate from a gate FAIL. It further requires the server to have returned the explicit
 verdict `fail`: `pass` and `fail` are a closed vocabulary, and any other
 value — including a missing field, a different case, or a verdict from a
 newer server — is an unsupported response and exits `3`. Adding a verdict
@@ -277,14 +286,15 @@ rather than defining a second field namespace — the CLI adds no wrapper
 and removes no field, so a client must tolerate additive fields exactly
 as an HTTP client would.
 
-`trustvian env list` is the one command this describes imprecisely, and
-the exception is stable rather than incidental. It is not one request:
+`trustvian env list` and `trustvian promotion list` are the commands this
+describes imprecisely, and the exception is stable rather than incidental.
+Neither is one request:
 the collection route is bounded per response, so the command follows
 every `next_after` and then emits **one** document for the completed
 collection — never the first page alone, and never one document per
 page. That document is the first page's envelope with `environments`
-replaced by every row of every page in traversal order and `next_after`
-removed, because the traversal finished. Rows and unrecognized top-level
+(respectively `promotions`) replaced by every row of every page in traversal
+order and `next_after` removed, because the traversal finished. Rows and unrecognized top-level
 fields are forwarded as received, so the additive-field rule above holds
 at both levels. A `version` or `project_id` that changes mid-traversal
 is an operational error (`3`), not a merge. Results go to stdout and diagnostics to stderr,

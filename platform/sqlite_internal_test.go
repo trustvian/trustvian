@@ -24,6 +24,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1196,5 +1197,51 @@ func TestLifecycleUpdateCarriesItsPredicateInSQL(t *testing.T) {
 	if !strings.Contains(string(source), "RowsAffected()") {
 		t.Error("the lifecycle UPDATE does not check RowsAffected; a predicate " +
 			"that matches nothing would report success")
+	}
+}
+
+// TestSchemaTablesCoverEveryKnownVersion is the guard on the map the migration
+// race recovery consults.
+//
+// It exists because of a real regression: migrateV1ToV2's recovery switch
+// listed schemaVersionV2 and SchemaVersion, which were 2 and 3 when it was
+// written and covered every reachable state. Adding v4 left 3 covered by
+// neither case, so an opener that lost a race to a concurrent migrator saw a
+// perfectly valid v3 database, matched nothing, and returned the transient
+// error as a failed open. Nothing failed at the point of the change; the test
+// that caught it was a concurrency test several steps away.
+//
+// A missing entry now fails here, next to the change that caused it.
+func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
+	for version := schemaVersionV1; version <= SchemaVersion; version++ {
+		tables, known := schemaTablesByVersion[version]
+		if !known {
+			t.Errorf("schema version %d has no table list; a migration losing a "+
+				"race to a concurrent opener at this version would report the "+
+				"transient error as a failed open", version)
+			continue
+		}
+		if len(tables) == 0 {
+			t.Errorf("schema version %d maps to an empty table list", version)
+		}
+	}
+	if got := len(schemaTablesByVersion); got != SchemaVersion {
+		t.Errorf("schemaTablesByVersion has %d entries, want %d (one per version "+
+			"from 1 to SchemaVersion)", got, SchemaVersion)
+	}
+	// Each version holds everything the one before it did. A list that lost a
+	// table would make requireTables accept a database missing one.
+	for version := schemaVersionV1 + 1; version <= SchemaVersion; version++ {
+		previous := schemaTablesByVersion[version-1]
+		current := schemaTablesByVersion[version]
+		if len(current) <= len(previous) {
+			t.Errorf("v%d holds %d tables, v%d holds %d; every step adds at least one",
+				version, len(current), version-1, len(previous))
+		}
+		for _, table := range previous {
+			if !slices.Contains(current, table) {
+				t.Errorf("v%d is missing %s, which v%d held", version, table, version-1)
+			}
+		}
 	}
 }
