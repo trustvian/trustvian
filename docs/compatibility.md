@@ -275,7 +275,19 @@ valid, non-empty JSON body in both output modes; a `2xx` carrying
 anything else exits `3` rather than being forwarded as a result. Those fields inherit the `/v1` API contract
 rather than defining a second field namespace — the CLI adds no wrapper
 and removes no field, so a client must tolerate additive fields exactly
-as an HTTP client would. Results go to stdout and diagnostics to stderr,
+as an HTTP client would.
+
+`trustvian env list` is the one command this describes imprecisely, and
+the exception is stable rather than incidental. It is not one request:
+the collection route is bounded per response, so the command follows
+every `next_after` and then emits **one** document for the completed
+collection — never the first page alone, and never one document per
+page. That document is the first page's envelope with `environments`
+replaced by every row of every page in traversal order and `next_after`
+removed, because the traversal finished. Rows and unrecognized top-level
+fields are forwarded as received, so the additive-field rule above holds
+at both levels. A `version` or `project_id` that changes mid-traversal
+is an operational error (`3`), not a merge. Results go to stdout and diagnostics to stderr,
 including on a gate FAIL, where the comparison evidence is still written
 to stdout.
 

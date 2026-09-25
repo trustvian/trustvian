@@ -7,8 +7,17 @@ package main
 //
 // `list` follows the route's pages until there is no continuation, because a
 // project migrated from an older schema may hold more environments than one
-// page carries. It asks for no larger a page than the API allows and lets the
-// server decide the order.
+// page carries — and however many that is, since migration preserves what
+// history referenced and caps nothing. There is therefore no ceiling on the
+// number of pages followed; the loop is bounded by cursor progress instead,
+// and a cursor that cannot progress is reported rather than retried. It asks
+// for no larger a page than the API allows and lets the server decide the
+// order.
+//
+// `list --json` is consequently the one place this CLI does not forward a
+// server response verbatim: it emits one document for the completed
+// collection. See listEnvironmentPages for exactly what that document
+// preserves.
 //
 // Nothing here computes promotion precedence. Rank travels on every row and
 // this file sorts by it for display, which is presentation; whether one
@@ -21,6 +30,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"sort"
 	"strconv"
@@ -34,13 +44,6 @@ import (
 // remains the thing that enforces it. Asking for more is a 400, which is the
 // server telling this constant it has drifted.
 const maxEnvironmentPage = 64
-
-// maxEnvironmentPages bounds a full traversal.
-//
-// A cursor that failed to advance would otherwise loop forever against a
-// broken or hostile server. 256 pages is 16384 environments — far past any
-// real project, and finite.
-const maxEnvironmentPages = 256
 
 const environmentUsage = `usage:
   trustvian env create   --project-id <id> --ref <ref> --name <name> [--rank <n>] [--api-url <url>] [--json]
@@ -240,7 +243,7 @@ func runEnvironmentList(s streams, args []string, timeout time.Duration) int {
 		return usageFailure(s, environmentUsage, err)
 	}
 
-	var collected environmentPage
+	var collected environmentCollection
 	return runLeaf(s, common, environmentUsage, timeout,
 		func(ctx context.Context, c *platformClient) (apiResult, error) {
 			return listEnvironmentPages(ctx, c, *projectID, &collected)
@@ -251,23 +254,30 @@ func runEnvironmentList(s streams, args []string, timeout time.Duration) int {
 // listEnvironmentPages walks the collection and returns one synthesized
 // result carrying every row.
 //
-// The rows themselves are forwarded as the server sent them —
-// json.RawMessage, never decoded and re-encoded — so a field a newer server
-// adds survives `--json` instead of being silently dropped by this build's
-// struct. The envelope around them is the route's own shape minus
-// next_after, which is absent precisely because the traversal finished.
+// This is the one place in the CLI where `--json` does not forward a server
+// response verbatim, and the exception is deliberate. `env list` is not one
+// request: the route is bounded per response, a migrated project may hold far
+// more environments than one page carries, and a caller asking "what
+// environments does this project have" wants the answer rather than the first
+// page of it. Printing each page as it arrived would emit several JSON
+// documents; printing only the first would answer a different question. So
+// the traversal completes and one envelope is synthesized from it, with no
+// next_after because there is nothing left to follow. See
+// docs/tasks/v1.0/065-environment-model.md and docs/compatibility.md.
+//
+// What that envelope preserves matters as much as what it contains. Rows are
+// forwarded exactly as the server sent them — json.RawMessage, never decoded
+// and re-encoded — and so are top-level fields this build does not know
+// about. Only the two fields the aggregation owns, "environments" and
+// "next_after", are replaced. A newer server that adds a field to either
+// level does not lose it here.
 func listEnvironmentPages(
-	ctx context.Context, c *platformClient, projectID string, collected *environmentPage,
+	ctx context.Context, c *platformClient, projectID string, collected *environmentCollection,
 ) (apiResult, error) {
 	after := ""
 	var last apiResult
 
-	for page := 0; ; page++ {
-		if page >= maxEnvironmentPages {
-			return apiResult{}, operationalErrorf(
-				"environment listing did not finish within %d pages", maxEnvironmentPages)
-		}
-
+	for {
 		query := url.Values{}
 		query.Set("limit", strconv.Itoa(maxEnvironmentPage))
 		if after != "" {
@@ -284,43 +294,174 @@ func listEnvironmentPages(
 			return result, nil
 		}
 
-		var body environmentPage
-		if err := decodeJSON(result.body, &body); err != nil {
+		page, err := decodeEnvironmentPage(result.body)
+		if err != nil {
 			return apiResult{}, err
 		}
-		collected.Version = body.Version
-		collected.ProjectID = body.ProjectID
-		collected.Environments = append(collected.Environments, body.Environments...)
+		if err := collected.absorb(page); err != nil {
+			return apiResult{}, err
+		}
 		last = result
 
-		if body.NextAfter == "" {
+		if page.nextAfter == "" {
 			break
 		}
-		if body.NextAfter == after {
-			return apiResult{}, operationalErrorf(
-				"environment listing cursor did not advance past %q", after)
+		if err := validateEnvironmentCursor(after, page); err != nil {
+			return apiResult{}, err
 		}
-		after = body.NextAfter
+		after = page.nextAfter
 	}
 
-	// One body for the whole collection, in the route's own shape. --json
-	// forwards field names the server chose, and carries no next_after
-	// because there is nothing left to follow.
-	merged, err := json.Marshal(collected)
+	merged, err := collected.encode()
 	if err != nil {
-		return apiResult{}, operationalErrorf("encoding environment list: %v", err)
+		return apiResult{}, err
 	}
 	last.body = merged
 	return last, nil
 }
 
-// environmentPage is the list route's envelope. Rows stay raw; see
-// listEnvironmentPages.
-type environmentPage struct {
-	Version      string            `json:"version"`
-	ProjectID    string            `json:"project_id"`
-	Environments []json.RawMessage `json:"environments"`
-	NextAfter    string            `json:"next_after,omitempty"`
+// validateEnvironmentCursor refuses a continuation that cannot make progress.
+//
+// There is no cap on how many pages a traversal may take — a migrated project
+// holds whatever its history referenced, and an arbitrary ceiling would turn
+// a legitimately large project into a truncated answer that looked like a
+// complete one. What bounds the loop instead is that every step must move
+// strictly forward in the same byte order the route paginates in. A repeated
+// cursor, a cursor that moves backwards, and a continuation offered on an
+// empty page are all impossible from a correct server and all non-terminating
+// if believed, so each is reported rather than followed.
+func validateEnvironmentCursor(previous string, page environmentPageBody) error {
+	if len(page.rows) == 0 {
+		return operationalErrorf(
+			"server offered cursor %q on an empty page of environments", page.nextAfter)
+	}
+	if previous != "" && page.nextAfter <= previous {
+		return operationalErrorf(
+			"environment listing cursor did not advance: %q followed %q", page.nextAfter, previous)
+	}
+	// The route's own contract: the cursor a page publishes is that page's
+	// last ref. Anything else would resume somewhere this traversal cannot
+	// reason about.
+	if page.nextAfter != page.lastRef {
+		return operationalErrorf(
+			"environment listing cursor %q is not the page's last environment %q",
+			page.nextAfter, page.lastRef)
+	}
+	return nil
+}
+
+// environmentPageBody is one decoded page: the fields the traversal reads,
+// plus the whole envelope so nothing else is lost.
+type environmentPageBody struct {
+	envelope  map[string]json.RawMessage
+	version   string
+	projectID string
+	rows      []json.RawMessage
+	lastRef   string
+	nextAfter string
+}
+
+func decodeEnvironmentPage(body []byte) (environmentPageBody, error) {
+	var page environmentPageBody
+	if err := decodeJSON(body, &page.envelope); err != nil {
+		return environmentPageBody{}, err
+	}
+	if err := decodeEnvelopeString(page.envelope, "version", &page.version); err != nil {
+		return environmentPageBody{}, err
+	}
+	if err := decodeEnvelopeString(page.envelope, "project_id", &page.projectID); err != nil {
+		return environmentPageBody{}, err
+	}
+	if err := decodeEnvelopeString(page.envelope, "next_after", &page.nextAfter); err != nil {
+		return environmentPageBody{}, err
+	}
+	if raw, present := page.envelope["environments"]; present {
+		if err := decodeJSON(raw, &page.rows); err != nil {
+			return environmentPageBody{}, err
+		}
+	}
+	if len(page.rows) > 0 {
+		var lastRow struct {
+			Ref string `json:"ref"`
+		}
+		if err := decodeJSON(page.rows[len(page.rows)-1], &lastRow); err != nil {
+			return environmentPageBody{}, err
+		}
+		page.lastRef = lastRow.Ref
+	}
+	return page, nil
+}
+
+// decodeEnvelopeString reads an optional string field, leaving it empty when
+// absent and reporting a type mismatch rather than ignoring one.
+func decodeEnvelopeString(envelope map[string]json.RawMessage, field string, into *string) error {
+	raw, present := envelope[field]
+	if !present || string(raw) == "null" {
+		return nil
+	}
+	return decodeJSON(raw, into)
+}
+
+// environmentCollection accumulates a traversal into one envelope.
+type environmentCollection struct {
+	envelope  map[string]json.RawMessage
+	projectID string
+	version   string
+	rows      []json.RawMessage
+}
+
+// absorb folds one page in, refusing pages that are not part of the same
+// logical collection.
+//
+// Two pages disagreeing about project_id or version are not two halves of one
+// answer, and concatenating them would produce a document describing
+// something that never existed. The first page's envelope is the one kept,
+// because that is the one whose unknown fields describe this collection.
+func (c *environmentCollection) absorb(page environmentPageBody) error {
+	if c.envelope == nil {
+		c.envelope = page.envelope
+		c.projectID = page.projectID
+		c.version = page.version
+	}
+	if page.projectID != c.projectID {
+		return operationalErrorf(
+			"environment listing changed project mid-traversal: %q then %q",
+			c.projectID, page.projectID)
+	}
+	if page.version != c.version {
+		return operationalErrorf(
+			"environment listing changed version mid-traversal: %q then %q",
+			c.version, page.version)
+	}
+	c.rows = append(c.rows, page.rows...)
+	return nil
+}
+
+// encode renders the completed collection.
+//
+// Everything the first page carried survives except the two fields this owns:
+// "environments" becomes every row of every page, and "next_after" is removed
+// because the traversal finished.
+func (c *environmentCollection) encode() ([]byte, error) {
+	envelope := make(map[string]json.RawMessage, len(c.envelope)+1)
+	maps.Copy(envelope, c.envelope)
+	delete(envelope, "next_after")
+
+	rows := c.rows
+	if rows == nil {
+		rows = []json.RawMessage{}
+	}
+	encodedRows, err := json.Marshal(rows)
+	if err != nil {
+		return nil, operationalErrorf("encoding environment list: %v", err)
+	}
+	envelope["environments"] = encodedRows
+
+	merged, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, operationalErrorf("encoding environment list: %v", err)
+	}
+	return merged, nil
 }
 
 // ---------------------------------------------------------------------
@@ -362,9 +503,9 @@ func renderEnvironment(w io.Writer, e environmentDTO) error {
 // environment may promote toward which — that answer has one implementation,
 // in the platform. This comparator is the only place the CLI looks at two
 // ranks at once, and cli_architecture_test.go asserts it stays that way.
-func renderEnvironmentList(w io.Writer, page environmentPage) error {
-	rows := make([]environmentDTO, 0, len(page.Environments))
-	for _, raw := range page.Environments {
+func renderEnvironmentList(w io.Writer, collected environmentCollection) error {
+	rows := make([]environmentDTO, 0, len(collected.rows))
+	for _, raw := range collected.rows {
 		var dto environmentDTO
 		if err := decodeJSON(raw, &dto); err != nil {
 			return err
@@ -384,7 +525,7 @@ func renderEnvironmentList(w io.Writer, page environmentPage) error {
 		return left.Ref < right.Ref
 	})
 
-	fmt.Fprintf(w, "Environments in %s: %d\n", page.ProjectID, len(rows))
+	fmt.Fprintf(w, "Environments in %s: %d\n", collected.projectID, len(rows))
 	for _, row := range rows {
 		fmt.Fprintf(w, "  %-24s rank %-6s %-8s rev %d  %s\n",
 			row.Ref, environmentRankText(row.Rank), row.Status, row.Revision, row.Name)

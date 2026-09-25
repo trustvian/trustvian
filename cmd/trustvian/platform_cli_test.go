@@ -582,6 +582,232 @@ func TestEnvironmentListJSONPreservesUnknownFields(t *testing.T) {
 	}
 }
 
+// TestEnvironmentListHasNoTraversalCeiling is the regression for a fixed
+// 256-page bound this command used to carry.
+//
+// The creation cap is 64 per project, but the number of environments a
+// *migrated* project holds is whatever its history referenced — task 065 is
+// explicit that migration preserves everything and caps nothing. A traversal
+// ceiling would therefore turn a legitimately large project into a truncated
+// answer that looked complete, which is the worst shape a wrong answer can
+// take. Three hundred pages here, well past the old limit, and every row must
+// arrive.
+func TestEnvironmentListHasNoTraversalCeiling(t *testing.T) {
+	const pages = 300
+
+	// One row per page keeps this cheap: what is being tested is the number
+	// of continuations followed, not the number of rows carried.
+	ref := func(page int) string { return fmt.Sprintf("env-%04d", page) }
+
+	api := newFakeAPI(t)
+	api.serve(func(w http.ResponseWriter, r *http.Request) {
+		after := r.URL.Query().Get("after")
+		page := 0
+		if after != "" {
+			var n int
+			if _, err := fmt.Sscanf(after, "env-%04d", &n); err != nil {
+				t.Errorf("unexpected cursor %q", after)
+				return
+			}
+			page = n + 1
+		}
+		w.Header().Set("Content-Type", "application/json")
+		next := ""
+		if page < pages-1 {
+			next = fmt.Sprintf(`,"next_after":%q`, ref(page))
+		}
+		fmt.Fprintf(w, `{"version":"1","project_id":"proj-1","environments":[
+			{"project_id":"proj-1","ref":%q,"name":"E","status":"active","revision":1}
+		]%s}`, ref(page), next)
+	})
+
+	result := runPlatformCLI(t, "env", "list", "--project-id", "proj-1",
+		"--api-url", api.url(), "--json")
+	result.mustExit(t, 0, "env list across 300 pages")
+
+	if got := len(api.captured()); got != pages {
+		t.Errorf("made %d requests, want %d — the traversal stopped early", got, pages)
+	}
+
+	var body struct {
+		Environments []map[string]any `json:"environments"`
+		NextAfter    string           `json:"next_after"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &body); err != nil {
+		t.Fatalf("--json output is not JSON: %v", err)
+	}
+	if len(body.Environments) != pages {
+		t.Fatalf("aggregated %d rows, want %d", len(body.Environments), pages)
+	}
+	if body.NextAfter != "" {
+		t.Errorf("next_after = %q, want it absent", body.NextAfter)
+	}
+	// Every row exactly once, in the order the server sent them.
+	for i, row := range body.Environments {
+		if row["ref"] != ref(i) {
+			t.Fatalf("row %d = %v, want %s", i, row["ref"], ref(i))
+		}
+	}
+}
+
+// A pagination stream that cannot make progress is reported, not followed.
+//
+// Removing the page ceiling means the loop is bounded by cursor progress
+// alone, so each way a cursor can fail to progress has to terminate on its
+// own. None of these is reachable from a correct server; all of them loop
+// forever if believed.
+func TestEnvironmentListRefusesNonProgressingPagination(t *testing.T) {
+	tests := []struct {
+		name    string
+		first   string
+		second  string
+		wantErr string
+	}{
+		{
+			name: "cursor repeats itself",
+			first: `{"version":"1","project_id":"proj-1","environments":[
+				{"project_id":"proj-1","ref":"b","name":"B","status":"active","revision":1}
+			],"next_after":"b"}`,
+			second: `{"version":"1","project_id":"proj-1","environments":[
+				{"project_id":"proj-1","ref":"b","name":"B","status":"active","revision":1}
+			],"next_after":"b"}`,
+			wantErr: "did not advance",
+		},
+		{
+			name: "cursor moves backwards",
+			first: `{"version":"1","project_id":"proj-1","environments":[
+				{"project_id":"proj-1","ref":"m","name":"M","status":"active","revision":1}
+			],"next_after":"m"}`,
+			second: `{"version":"1","project_id":"proj-1","environments":[
+				{"project_id":"proj-1","ref":"a","name":"A","status":"active","revision":1}
+			],"next_after":"a"}`,
+			wantErr: "did not advance",
+		},
+		{
+			name: "continuation on an empty page",
+			first: `{"version":"1","project_id":"proj-1","environments":[
+				{"project_id":"proj-1","ref":"a","name":"A","status":"active","revision":1}
+			],"next_after":"a"}`,
+			second:  `{"version":"1","project_id":"proj-1","environments":[],"next_after":"zz"}`,
+			wantErr: "empty page",
+		},
+		{
+			name: "cursor is not the page's last row",
+			first: `{"version":"1","project_id":"proj-1","environments":[
+				{"project_id":"proj-1","ref":"a","name":"A","status":"active","revision":1}
+			],"next_after":"zzz"}`,
+			second:  `{"version":"1","project_id":"proj-1","environments":[]}`,
+			wantErr: "is not the page's last environment",
+		},
+		{
+			name: "project changes mid-traversal",
+			first: `{"version":"1","project_id":"proj-1","environments":[
+				{"project_id":"proj-1","ref":"a","name":"A","status":"active","revision":1}
+			],"next_after":"a"}`,
+			second: `{"version":"1","project_id":"proj-2","environments":[
+				{"project_id":"proj-2","ref":"b","name":"B","status":"active","revision":1}
+			]}`,
+			wantErr: "changed project mid-traversal",
+		},
+		{
+			name: "version changes mid-traversal",
+			first: `{"version":"1","project_id":"proj-1","environments":[
+				{"project_id":"proj-1","ref":"a","name":"A","status":"active","revision":1}
+			],"next_after":"a"}`,
+			second: `{"version":"2","project_id":"proj-1","environments":[
+				{"project_id":"proj-1","ref":"b","name":"B","status":"active","revision":1}
+			]}`,
+			wantErr: "changed version mid-traversal",
+		},
+		{
+			name: "a page is not JSON",
+			first: `{"version":"1","project_id":"proj-1","environments":[
+				{"project_id":"proj-1","ref":"a","name":"A","status":"active","revision":1}
+			],"next_after":"a"}`,
+			second:  `not json at all`,
+			wantErr: "not valid JSON",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api := newFakeAPI(t)
+			api.serve(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Query().Get("after") == "" {
+					fmt.Fprint(w, tt.first)
+					return
+				}
+				fmt.Fprint(w, tt.second)
+			})
+
+			result := runPlatformCLI(t, "env", "list", "--project-id", "proj-1",
+				"--api-url", api.url(), "--json")
+			result.mustExit(t, exitOperational, tt.name)
+			if !strings.Contains(result.stderr, tt.wantErr) {
+				t.Errorf("stderr = %q, want it to mention %q", result.stderr, tt.wantErr)
+			}
+			if result.stdout != "" {
+				t.Errorf("a broken traversal still printed output:\n%s", result.stdout)
+			}
+		})
+	}
+}
+
+// The aggregated envelope keeps what it does not understand.
+//
+// `env list --json` is the CLI's one synthesized document, so a field a newer
+// server adds to the *envelope* has to survive the synthesis the same way a
+// field added to a row does. Only "environments" and "next_after" are the
+// aggregation's to own.
+func TestEnvironmentListJSONPreservesUnknownEnvelopeFields(t *testing.T) {
+	api := newFakeAPI(t)
+	api.serve(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("after") == "" {
+			fmt.Fprint(w, `{"version":"1","project_id":"proj-1",
+				"future_total":131,"future_note":{"nested":true},
+				"environments":[
+					{"project_id":"proj-1","ref":"a","name":"A","status":"active","revision":1}
+				],"next_after":"a"}`)
+			return
+		}
+		fmt.Fprint(w, `{"version":"1","project_id":"proj-1","environments":[
+			{"project_id":"proj-1","ref":"b","name":"B","status":"active","revision":1}
+		]}`)
+	})
+
+	result := runPlatformCLI(t, "env", "list", "--project-id", "proj-1",
+		"--api-url", api.url(), "--json")
+	result.mustExit(t, 0, "env list --json")
+
+	// Exactly one JSON document, not one per page.
+	decoder := json.NewDecoder(strings.NewReader(result.stdout))
+	var envelope map[string]any
+	if err := decoder.Decode(&envelope); err != nil {
+		t.Fatalf("--json output is not JSON: %v (%s)", err, result.stdout)
+	}
+	if decoder.More() {
+		t.Error("--json emitted more than one JSON document; the traversal must " +
+			"produce one completed collection")
+	}
+
+	if envelope["future_total"] != float64(131) {
+		t.Errorf("future_total = %v, want the server's value preserved", envelope["future_total"])
+	}
+	nested, ok := envelope["future_note"].(map[string]any)
+	if !ok || nested["nested"] != true {
+		t.Errorf("future_note = %v, want the server's object preserved", envelope["future_note"])
+	}
+	if _, present := envelope["next_after"]; present {
+		t.Error("next_after survived a completed traversal")
+	}
+	rows, ok := envelope["environments"].([]any)
+	if !ok || len(rows) != 2 {
+		t.Fatalf("environments = %v, want both rows", envelope["environments"])
+	}
+}
+
 func TestEnvironmentCommandUsageErrors(t *testing.T) {
 	tests := []struct {
 		name string

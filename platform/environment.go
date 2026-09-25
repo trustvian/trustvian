@@ -43,14 +43,14 @@ const maxProjectEnvironments = 64
 // transport cannot rely on it. Exported because the HTTP layer must reject
 // the same number this one enforces, and two copies of a limit is how two
 // layers come to disagree about it.
-const MaxEnvironmentPage = 64
-
-// maxEnvironmentFetch is the largest page the store will assemble.
 //
-// One row beyond a full page, because a caller detecting "is there another
-// page" needs exactly one row more than it returns. The extra row is never
-// part of a response; see the HTTP list handler.
-const maxEnvironmentFetch = MaxEnvironmentPage + 1
+// This is the whole range: a store caller may ask for 1 to 64 rows and 65 is
+// refused like any other out-of-range limit. A transport that needs to know
+// whether another page exists asks a second bounded question rather than
+// borrowing a row from this one — an off-by-one fetch here would make the
+// public contract say 64 and mean 65, and every caller would then have to
+// know which. See the HTTP list handler.
+const MaxEnvironmentPage = 64
 
 var (
 	// ErrEnvironmentLimit reports a create that would take a project past
@@ -362,9 +362,9 @@ func validateEnvironmentIdentity(projectID ProjectID, ref EnvironmentRef) error 
 
 // validateEnvironmentPage bounds a list request before it reaches a query.
 func validateEnvironmentPage(after EnvironmentRef, limit int) error {
-	if limit < 1 || limit > maxEnvironmentFetch {
+	if limit < 1 || limit > MaxEnvironmentPage {
 		return fmt.Errorf("%w: environment page limit %d is outside 1..%d",
-			ErrInvalidID, limit, maxEnvironmentFetch)
+			ErrInvalidID, limit, MaxEnvironmentPage)
 	}
 	// An empty cursor starts at the beginning; a non-empty one faces the same
 	// rules as any other ref, because it is one.

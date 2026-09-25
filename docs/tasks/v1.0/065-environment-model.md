@@ -632,10 +632,19 @@ fail the build if either does not.
 ```go
 // ProjectEnvironments returns at most limit environments whose ref sorts
 // after `after`, in ref byte order. after == "" starts at the beginning.
+// limit is 1..64 inclusive; anything outside that is ErrInvalidID.
 ProjectEnvironments(
     ctx context.Context, projectID ProjectID, after EnvironmentRef, limit int,
 ) ([]Environment, error)
 ```
+
+That range is the whole range. There is no wider limit for a privileged
+caller and no row returned beyond the one asked for — in particular, the
+store must not be widened to 65 so that a transport can fetch one row past a
+page and drop it. An off-by-one there would make the public contract say 64
+and mean 65, and every caller would then have to know which. A transport that
+needs to know whether a further page exists asks a second bounded question;
+see the route below.
 
 ### Creating one is a cross-row invariant
 
@@ -937,6 +946,13 @@ project.
 
 `next_after` is present exactly when the page filled its limit and another
 row follows, and absent on the last page. A caller pages until it is absent.
+
+A short page needs no second thought: the store returned everything it had
+before reaching the limit. A **full** page is ambiguous — the project may hold
+exactly this many rows, or more — and the route resolves it by asking for one
+row after the page's last `ref`, with `limit=1`. Two bounded calls per full
+page, both inside the store's published range, rather than one call outside
+it.
 Ordering is by `ref`, which is immutable, so a traversal returns every row
 that exists throughout it exactly once — see
 [Listing](#listing-one-collection-two-bounds) for why the traversal key is
@@ -1091,7 +1107,8 @@ trustvian env activate --project-id <id> --ref <ref> --revision <n>
 
 Exit codes follow task 060's control-plane family — `0` success, `2` usage,
 `3` operational — leaving `1` unclaimed, which is what keeps `eval compare`'s
-gate-FAIL meaning scoped. `--json` prints the response unchanged.
+gate-FAIL meaning scoped. `--json` prints the response unchanged — with one
+stated exception, below.
 
 `env list` follows the route's pages until there is no continuation, so a
 migrated project holding more environments than one page still lists
@@ -1101,6 +1118,34 @@ carries; what it must not do is answer whether one environment precedes
 another for promotion. That question has one implementation, `CanPromote`,
 and it lives in the platform. The CLI imports no platform package and decides
 nothing.
+
+**`env list --json` is a stated exception to "print the response
+unchanged."** Every other control-plane subcommand issues one request, so
+forwarding its body verbatim is both possible and exactly right. `env list`
+issues as many as the collection needs, and the three obvious readings of the
+rule are each wrong for it: printing the first page answers a different
+question, printing each page emits several JSON documents where a caller
+expects one, and printing the last page silently discards everything before
+it. So the traversal completes and the CLI emits **one** document describing
+the whole collection.
+
+What that document is, precisely:
+
+- the envelope of the **first** page, which is the one whose fields describe
+  this collection;
+- with `environments` replaced by every row of every page, concatenated in
+  traversal order — each row forwarded as raw bytes, so a field a newer server
+  adds to a row survives;
+- with `next_after` **removed**, because the traversal finished and there is
+  nothing left to follow;
+- with every other top-level field preserved, known or not. The aggregation
+  owns two field names and nothing else, so a field a newer server adds to
+  the envelope survives the same way a field added to a row does.
+
+Pages must belong to one collection: `version` and `project_id` changing
+mid-traversal is an operational error rather than a silent merge of two
+answers. `docs/compatibility.md` carries the same statement for the CLI
+surface generally.
 
 **TUI: out of scope, deliberately.** Task 061 scoped the TUI to the live
 development loop, and
@@ -1322,7 +1367,8 @@ backends; the differential suite compares resulting logical state.
   each page after the first starts strictly after the previous page's last
   ref; the final page is short and carries no continuation.
 - `ProjectEnvironments` with a `limit` above 64 or below 1 is refused at the
-  store's edge rather than clamped.
+  store's edge rather than clamped — `64` succeeds and `65` is refused, in
+  the shared conformance suite, so both backends obey one contract.
 - Renaming, re-ranking and archiving rows **between** pages of a traversal
   changes none of the above — the property that made `ref` the cursor.
 - `ProjectEnvironments` on an empty project returns an empty slice and no
@@ -1469,6 +1515,11 @@ than by the row count.
   and the page starts at the first ref sorting after it.
 - The page is never larger than the limit, whatever the project holds — the
   regression a migrated project would otherwise expose.
+- `limit=64` returns at most 64 rows and reaches the store within its
+  published range: a project holding exactly 64 returns all of them with **no**
+  `next_after`, and a migrated project holding more returns 64 **with** one.
+  A full page is not by itself evidence of another page, and the route must
+  not learn the difference by asking the store for 65 rows.
 
 ### CLI
 
@@ -1477,14 +1528,35 @@ than by the row count.
 - Exit codes: `0` success, `2` usage (missing `--project-id`, missing
   `--revision`, `--rank` with `--clear-rank`), `3` operational (transport
   failure, `409`).
-- `--json` emits the response body unchanged.
+- `--json` emits the response body unchanged for every single-request
+  subcommand: `create`, `get`, `set`, `archive`, `activate`.
+- `env list --json` is the stated exception, and emits **one** completed
+  collection — see below. It is never the first page alone, and never a
+  stream of one document per page.
 - `env list` follows `next_after` until it is absent, so a migrated project
   with more environments than one page is fully listed, and it sends no
-  `limit` above the documented maximum.
+  `limit` above the documented maximum. There is no ceiling on how many pages
+  a traversal may follow: the number of environments a migrated project holds
+  is whatever its history referenced, so a page or row cap would turn a large
+  project into a truncated answer indistinguishable from a complete one. What
+  terminates the loop is cursor progress — a repeated cursor, a backwards
+  cursor, a continuation offered on an empty page, and a cursor that is not
+  the page's last ref are each an operational error rather than another
+  request.
 - `env list` may order rows for **display** by `(rank, ref)` with unranked
   last, using the rank the server supplied. What it must not do is decide
   precedence: no adapter implements `CanPromote`, and a test asserts the CLI
   contains no rank comparison that answers a promotion question.
+- A traversal well past any previous implementation ceiling — a stub serving
+  300 one-row pages and then terminating — completes, exits `0`, and carries
+  every row exactly once in traversal order.
+- Each non-progressing pagination stream is an operational error rather than
+  a loop: a repeated cursor, a backwards cursor, a continuation offered on an
+  empty page, and a cursor that is not the page's last ref.
+- `env list --json` emits exactly one JSON document; unknown fields survive
+  in both a row and the envelope; `next_after` is absent from it; and a
+  `project_id` or `version` that changes mid-traversal is refused rather than
+  merged.
 
 ### Boundary and absence tests
 

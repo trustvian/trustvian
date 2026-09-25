@@ -500,23 +500,51 @@ func (h *Handler) listEnvironments(w http.ResponseWriter, r *http.Request) {
 	}
 	after := r.URL.Query().Get("after")
 
-	// One row beyond the page, used only to decide whether a continuation
-	// exists and never returned. Asking for exactly `limit` would leave the
-	// handler unable to tell a full last page from a truncated one without a
-	// second query.
 	page, err := h.controlPlane.ProjectEnvironments(r.Context(),
-		platform.ProjectID(projectID), platform.EnvironmentRef(after), limit+1)
+		platform.ProjectID(projectID), platform.EnvironmentRef(after), limit)
 	if err != nil {
 		h.writeError(w, err)
 		return
 	}
 
-	nextAfter := ""
-	if len(page) > limit {
-		page = page[:limit]
-		nextAfter = string(page[limit-1].Ref())
+	nextAfter, err := h.environmentContinuation(r.Context(), projectID, page, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
 	}
 	writeJSON(w, http.StatusOK, newEnvironmentListResponse(projectID, page, nextAfter))
+}
+
+// environmentContinuation reports the cursor to publish after this page, or
+// "" when the traversal is complete.
+//
+// A short page is the end: the store returned everything it had before
+// reaching the limit. A full page is ambiguous — the project may hold exactly
+// this many rows, or more — and the ambiguity is resolved by asking for one
+// row past the last ref.
+//
+// The obvious alternative is to fetch limit+1 rows and drop the extra, and
+// that is what this used to do. It required the store to accept 65, so the
+// public contract said "at most 64 per page" and meant 65, with an off-by-one
+// that existed only because one transport wanted it. A second bounded call
+// keeps the store's range honest and costs an indexed single-row lookup on
+// the primary key, once per full page.
+func (h *Handler) environmentContinuation(
+	ctx context.Context, projectID string, page []platform.Environment, limit int,
+) (string, error) {
+	if len(page) < limit {
+		return "", nil
+	}
+	last := page[len(page)-1].Ref()
+	probe, err := h.controlPlane.ProjectEnvironments(
+		ctx, platform.ProjectID(projectID), last, 1)
+	if err != nil {
+		return "", err
+	}
+	if len(probe) == 0 {
+		return "", nil
+	}
+	return string(last), nil
 }
 
 // environmentLimitParam reads and bounds ?limit=.

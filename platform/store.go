@@ -131,6 +131,13 @@ type ControlStore interface {
 	// environments, active and archived, whose ref sorts after `after`, in
 	// ref byte order. An empty `after` starts at the beginning.
 	//
+	// limit is 1 to MaxEnvironmentPage inclusive; anything outside that is
+	// ErrInvalidID. The range is the whole range — there is no wider limit a
+	// privileged caller may pass, and no row returned beyond the one asked
+	// for. A caller that needs to know whether a further page exists asks a
+	// second bounded question from the last ref it received, which is what
+	// the HTTP list route does.
+	//
 	// Traversal is by ref because ref is immutable: rank is mutable, and
 	// re-ranking is one of the two operations an environment exists for, so a
 	// cursor over rank could move a row between pages mid-traversal. A

@@ -8,11 +8,15 @@ package httpapi_test
 // project that migration left far above the creation cap.
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	_ "modernc.org/sqlite" // the same pure-Go driver the store uses
 )
 
 // environmentBody decodes one environment response.
@@ -303,6 +307,143 @@ func TestEnvironmentListPagination(t *testing.T) {
 	for i := 1; i < len(seen); i++ {
 		if seen[i-1] >= seen[i] {
 			t.Fatalf("traversal is not ascending: %q then %q", seen[i-1], seen[i])
+		}
+	}
+}
+
+// TestEnvironmentListPageBoundIsExactlySixtyFour is the contract the store
+// and the route share.
+//
+// The route once asked the store for limit+1 rows so it could tell a full
+// last page from a truncated one, which forced the store's public range up to
+// 65. It now asks a second bounded question instead, so all three cases below
+// go through a store that accepts nothing above 64.
+func TestEnvironmentListPageBoundIsExactlySixtyFour(t *testing.T) {
+	a := newAPI(t)
+	a.seedHierarchy()
+	// 63 beside the fixture's own "staging": the creation cap exactly.
+	a.seedEnvironments("proj-1", 63)
+
+	// A full page that is also the last page must not claim a continuation.
+	r := a.do("GET", "/v1/projects/proj-1/environments?limit=64", nil)
+	a.mustStatus(r, 200, "limit=64")
+	body := decodeEnvironmentList(t, r.Body.Bytes())
+	if len(body.Environments) != 64 {
+		t.Fatalf("limit=64 returned %d rows, want all 64", len(body.Environments))
+	}
+	if body.NextAfter != "" {
+		t.Errorf("next_after = %q on a complete collection; a full page is not "+
+			"evidence of another one", body.NextAfter)
+	}
+
+	// A full page with a row after it must claim one, and the cursor is that
+	// page's last ref.
+	r = a.do("GET", "/v1/projects/proj-1/environments?limit=63", nil)
+	a.mustStatus(r, 200, "limit=63")
+	first := decodeEnvironmentList(t, r.Body.Bytes())
+	if len(first.Environments) != 63 {
+		t.Fatalf("limit=63 returned %d rows, want 63", len(first.Environments))
+	}
+	lastRef := first.Environments[len(first.Environments)-1].Ref
+	if first.NextAfter != lastRef {
+		t.Fatalf("next_after = %q, want the page's last ref %q", first.NextAfter, lastRef)
+	}
+
+	// And following it lands on the remaining row with no further cursor.
+	r = a.do("GET", "/v1/projects/proj-1/environments?limit=63&after="+first.NextAfter, nil)
+	a.mustStatus(r, 200, "second page")
+	second := decodeEnvironmentList(t, r.Body.Bytes())
+	if len(second.Environments) != 1 || second.NextAfter != "" {
+		t.Errorf("second page = %d rows, next_after %q; want the last row and no cursor",
+			len(second.Environments), second.NextAfter)
+	}
+}
+
+// TestEnvironmentListOfAMigratedProject is the case the creation cap cannot
+// reach and the page bound exists for.
+//
+// A project may hold more environments than may now be created, because
+// schema 2 had no registry and the v2 → v3 migration preserves everything its
+// runs referenced. Those rows are written here the way migration writes them
+// — straight into the table, past the cap — because the API deliberately has
+// no way to create them.
+func TestEnvironmentListOfAMigratedProject(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "platform.db")
+	a := openAPI(t, path)
+	a.seedHierarchy()
+
+	// 130 beyond the fixture's own "staging": two full pages and change.
+	insertMigratedEnvironments(t, path, "proj-1", 130)
+
+	// A full page at the maximum still reports the continuation correctly,
+	// which is the case that would silently break if the route went back to
+	// borrowing a 65th row from the store.
+	r := a.do("GET", "/v1/projects/proj-1/environments?limit=64", nil)
+	a.mustStatus(r, 200, "first page of a migrated project")
+	body := decodeEnvironmentList(t, r.Body.Bytes())
+	if len(body.Environments) != 64 {
+		t.Fatalf("page carried %d rows, want exactly 64", len(body.Environments))
+	}
+	if body.NextAfter != body.Environments[63].Ref {
+		t.Fatalf("next_after = %q, want the page's last ref %q",
+			body.NextAfter, body.Environments[63].Ref)
+	}
+
+	// And the whole collection enumerates, in ref byte order, once each.
+	var seen []string
+	after := ""
+	for page := 0; ; page++ {
+		if page > 10 {
+			t.Fatal("pagination did not terminate")
+		}
+		query := "/v1/projects/proj-1/environments?limit=64"
+		if after != "" {
+			query += "&after=" + after
+		}
+		r := a.do("GET", query, nil)
+		a.mustStatus(r, 200, "page")
+		got := decodeEnvironmentList(t, r.Body.Bytes())
+		if len(got.Environments) > 64 {
+			t.Fatalf("page carried %d rows, want at most 64", len(got.Environments))
+		}
+		for _, env := range got.Environments {
+			seen = append(seen, env.Ref)
+		}
+		if got.NextAfter == "" {
+			break
+		}
+		after = got.NextAfter
+	}
+
+	if len(seen) != 131 {
+		t.Fatalf("enumerated %d environments, want 131", len(seen))
+	}
+	for i := 1; i < len(seen); i++ {
+		if seen[i-1] >= seen[i] {
+			t.Fatalf("traversal is not ref-ascending: %q then %q", seen[i-1], seen[i])
+		}
+	}
+}
+
+// insertMigratedEnvironments writes rows the way the v2 → v3 migration does:
+// active, unranked, revision 1, named after the ref, and past the creation
+// cap. It writes through the same schema the store just created rather than
+// building one, so a column change fails this loudly instead of drifting.
+func insertMigratedEnvironments(t *testing.T, path, projectID string, count int) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path+"?_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	defer db.Close()
+
+	for i := range count {
+		ref := fmt.Sprintf("migrated-%03d", i)
+		if _, err := db.ExecContext(t.Context(),
+			`INSERT INTO platform_environments
+			 (project_id, ref, name, rank, status, revision)
+			 VALUES (?, ?, ?, NULL, 'active', 1)`, projectID, ref, ref); err != nil {
+			t.Fatalf("insert migrated environment %s: %v", ref, err)
 		}
 	}
 }

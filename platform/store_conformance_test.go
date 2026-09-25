@@ -929,7 +929,17 @@ func conformEnvironmentPaging(t *testing.T, open func(testing.TB) Store) {
 	if len(limited) != 2 {
 		t.Errorf("limit 2 returned %d rows", len(limited))
 	}
-	for _, limit := range []int{0, -1, maxEnvironmentFetch + 1} {
+	// The bound is exactly MaxEnvironmentPage, and both backends say so.
+	//
+	// 65 is refused like 500 is. It used to be accepted, because the HTTP
+	// handler fetched one row beyond a page to detect a continuation and the
+	// store was widened to let it — which made the public contract say 64 and
+	// mean 65. The transport asks a second bounded question instead.
+	if _, err := store.ProjectEnvironments(ctx, "proj-1", "", MaxEnvironmentPage); err != nil {
+		t.Errorf("limit %d error = %v, want the documented maximum accepted",
+			MaxEnvironmentPage, err)
+	}
+	for _, limit := range []int{0, -1, MaxEnvironmentPage + 1, MaxEnvironmentPage + 2, 500} {
 		if _, err := store.ProjectEnvironments(ctx, "proj-1", "", limit); !errors.Is(err, ErrInvalidID) {
 			t.Errorf("limit %d error = %v, want it refused", limit, err)
 		}
