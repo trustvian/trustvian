@@ -246,6 +246,14 @@ exactly like every other mapping this document describes — never in
 the "OTel is an adapter, never a dependency of the core" boundary
 [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) already establishes.
 
+> **Planned, not shipped.**
+> [Task 075](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) specifies
+> that adoption — GenAI and OpenInference identity attributes normalized at the
+> adapter boundary, with content deliberately ignored and graceful degradation
+> to the transport mapping above. It is specified and not implemented, so
+> everything this document states about current behavior remains accurate: no
+> `gen_ai.*` or OpenInference attribute is read today.
+
 ## Best-effort, not validated
 
 `EventFromSpan` never fabricates data it doesn't have. A span with no

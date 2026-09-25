@@ -62,6 +62,45 @@ agents and agentic applications.**
 > Develop locally. Evaluate in sandbox. Promote with evidence. Monitor in
 > production.
 
+Two principles govern what that means in practice.
+
+> **OpenTelemetry tells Trustvian what happened. Trustvian turns that telemetry
+> into behavioral evidence, trust, policy, and promotion decisions.**
+
+Trustvian is a *consumer* of observability, not a competitor to it. It does not
+ask a team to re-instrument, adopt a new SDK or move their traces. It reads
+what their instrumentation already emits and answers a question no trace
+backend answers.
+
+> **Run your agent locally. Trustvian shows how it behaves before you ship
+> it.**
+
+The progression the product builds, end to end:
+
+```text
+telemetry
+    ↓  live behavioral visibility
+    ↓  semantic normalization
+    ↓  behavioral evidence
+    ↓  baseline · anomaly · trust
+    ↓  decision
+    ↓  reference versus candidate
+    ↓  gate
+    ↓  promotion
+```
+
+And a privacy principle that constrains every step of it:
+
+> **Behavioral observability does not require content observability.**
+
+Trustvian answers *what did this actor do, and is that normal* from metadata:
+actor, operation, target, model and tool identity, sequence, timing, status
+and correlation. It does not need — and by default does not retain, fingerprint
+or display — prompt text, completions, reasoning, tool arguments, tool results,
+retrieved documents, HTTP bodies, SQL text or arbitrary span attributes. A
+capability that wants any of those is a separate, separately reviewed decision,
+and no `v1.0` milestone depends on one.
+
 The lifecycle it serves:
 
 ```text
@@ -346,16 +385,40 @@ The promotion workflow (066) is **specified and not implemented** — see
 is before anything is built: a durable record of a platform *decision*, never a
 deployment and never a claim about where a candidate now runs.
 
-The zero-input live behavior WebUI (074) is **specified and not implemented**
-— see [the task](tasks/v1.0/074-zero-input-live-behavior-webui.md). Running an
-agent locally and opening the browser currently shows a form asking for an
-identifier the developer does not have; the milestone makes the WebUI discover
-active work by itself, render it as a bounded run-scoped behavior graph, and
-browse the control-plane hierarchy without anything being typed. Like 073 it
-sits outside the reserved 049–072 block, because it closes a gap found by using
-the product end to end rather than one the sequence anticipated. It shares the
-schema chain with 066 — 066 owns 3 → 4 and 074 owns 4 → 5 — so 074's
-implementation follows 066's.
+**Five gap-closing milestones are specified and not implemented: 074–078.**
+Each was found by running the product end to end — an instrumented agent, a
+browser, and a developer who has not read the source — rather than by planning,
+which is why they sit outside the reserved 049–072 block alongside 073.
+
+- **[074 — zero-input live behavior WebUI](tasks/v1.0/074-zero-input-live-behavior-webui.md).**
+  Opening the browser today shows a form asking for an identifier the developer
+  does not have. The milestone makes the WebUI discover active work by itself,
+  render it as a bounded run-scoped behavior graph, and browse the hierarchy
+  with nothing typed. It shares the schema chain with 066 — 066 owns 3 → 4 and
+  074 owns 4 → 5 — so its implementation follows 066's.
+- **[075 — AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md).**
+  Generic instrumentation flattens an agent's behavior into its transport, so a
+  tool call learns as an HTTP POST. Where a producer emits agent-oriented
+  OpenTelemetry, Trustvian should read it — through the same pipeline, with no
+  AI-specific engine and no framework dependency, and with content kept out of
+  behavioral identity and every durable and published surface.
+- **[076 — behavioral evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md).**
+  A verdict without its evidence is not explainable. Sessions, traces and
+  behavioral sequence, from metadata alone, over whatever history 067 makes
+  durable.
+- **[077 — unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md).**
+  One command wraps an existing agent and composes the runtime around it, with
+  no source modification and no Trustvian dependency in the application.
+  Instrumentation ownership is explicit and positive-evidence-only: absence of
+  detectable instrumentation never selects injection, because a child that
+  instruments itself a moment later would then be observed twice. Independent
+  of 075, and implementable in parallel with it.
+- **[078 — behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md).**
+  Run the same scenario again, diff the behavior, gate the difference — reusing
+  the diff, scorecard and gate the platform already owns, and evaluating no
+  answer quality. The runner scripts no action ordering of its own, and does
+  not suppress the engine's learned sequence signals: a reorder that produces
+  gated evidence fails, and the verdict stays the control plane's.
 
 Still planned: everything from 066 onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
@@ -618,9 +681,18 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**Partly implemented:** tasks 049–065 are done; 066 is specified and not
-implemented; 067–072 remain PLANNED. Outside that sequence, 073 is done and
-074 is specified and not implemented — see the table below.
+**Partly implemented:** tasks 049–065 are done and 066 is specified; 067–072
+remain PLANNED. Outside that reserved sequence, 073 is done and 074–078 are
+specified — see the gap-closing table below.
+
+**Numbering is identity, not order.** A task's number records when it was
+added to the plan, never when it is built. Tasks 073–078 were discovered by
+using the product end to end, after 049–072 was already reserved, so several
+of them carry numbers *higher* than the release gate they block. That is
+correct and deliberate: renumbering a milestone would break every
+specification, ADR, commit message and document that already cites it. Read
+[the execution order](#execution-order-rather-than-numeric-order) for what
+actually happens first.
 
 **Architecture and core boundary** — the only tasks that touch the engine:
 
@@ -665,12 +737,18 @@ lost.
 | 065 | Environment model |
 | 066 | Promotion workflow — [specified](tasks/v1.0/066-promotion-workflow.md), not implemented |
 
-**Closing unplanned gaps:**
+**Closing unplanned gaps.** None of these was in the reserved 049–072
+sequence. Each closes a concrete gap found by running the product end to end —
+an instrumented agent, a browser, and a developer who has not read the source.
 
-| Task | Milestone |
-|---|---|
-| 073 | OTel Collector evaluation ingest — the Collector produces a `Result`, the control plane accepts a `DecisionRecord`, and nothing joined them |
-| 074 | [Zero-input live behavior WebUI](tasks/v1.0/074-zero-input-live-behavior-webui.md) — automatic active-scope discovery, a bounded live behavior graph, and a browseable control-plane hierarchy without entering an identifier |
+| Task | Milestone | Status |
+|---|---|---|
+| 073 | OTel Collector evaluation ingest — the Collector produces a `Result`, the control plane accepts a `DecisionRecord`, and nothing joined them | **Implemented** |
+| 074 | [Zero-input live behavior WebUI](tasks/v1.0/074-zero-input-live-behavior-webui.md) — automatic active-scope discovery, a bounded live behavior graph, and a browseable hierarchy without entering an identifier | Specified |
+| 075 | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) — read agent-oriented OpenTelemetry where a producer emits it, so a tool call is a tool call rather than an HTTP POST | Specified |
+| 076 | [Behavioral trace and session evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md) — see *why* behavior was familiar, new or anomalous, from metadata alone | Specified |
+| 077 | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — one command wraps an existing agent, composes the runtime, and needs no change to the application | Specified |
+| 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) — run the same scenario again, diff the behavior, gate the difference | Specified |
 
 **Production history and scale:**
 
@@ -682,6 +760,52 @@ lost.
 | 070 | Platform security hardening |
 | 071 | Platform backup, restore, and upgrade |
 | 072 | OSS platform `v1.0` release gate |
+
+### Execution order, rather than numeric order
+
+What is built next is a dependency question, and the numbers do not answer it.
+Conceptually:
+
+```text
+066  promotion workflow
+       ↓
+074  zero-input live WebUI ──┬──▶ 077  unified local dev runtime
+                             │             ↓
+                             │    078  behavioral scenario suites
+                             │
+075  AI semantic telemetry ──┤    (parallel to 077; enriches, never blocks)
+                             ↓
+                     067  event history
+                             ↓
+                     076  behavioral evidence explorer
+
+069  multi-node and load validation
+070  platform security hardening
+071  backup, restore and upgrade
+       ↓
+072  v1.0 release gate
+
+068  ClickHouse — only if measured volume justifies it
+```
+
+Four things this diagram says, and one it does not:
+
+- **074 and 075 are independent of each other** and can proceed in parallel.
+  076 needs both, plus whatever history 067 makes durable.
+- **075 does not block 077.** The local dev runtime transports whatever
+  telemetry the workload emits; 075 decides how richly it is read.
+  `trustvian dev` is useful at today's HTTP, DB and RPC fidelity and becomes
+  better when 075 lands. The two are parallel capabilities.
+- **077 and 078 are a second thread**, needing 074's discovery but not the
+  explorer. 078 needs 077's repeatable invocation.
+- **068 remains conditional**, exactly as its row says: an analytical backend
+  arrives if measured volume justifies one, and not otherwise. It is not a
+  release-gate prerequisite, and this restructuring does not make it one.
+
+What it does not say is that a lower number comes first. 066 is a prerequisite
+for nothing in the gap-closing set beyond a shared migration chain, and 074
+blocks 072 while carrying a higher number. **Do not renumber anything to make
+the diagram read left to right.**
 
 Tasks 050 and 051 are the only core changes currently expected, and both are
 additive. Everything from 052 onward lives in the platform layer. Any further
@@ -740,11 +864,15 @@ than asserted.
 who has not read the source:
 
 ```text
-run locally
+run an existing instrumented agent locally, with one Trustvian command
     ↓
-open the WebUI and see the running agent, with no identifier typed
+open the WebUI without entering an internal identifier
     ↓
-watch behavior flow live
+watch the actor's current behavior live
+    ↓
+see agent, model, tool and service flow at the fidelity the telemetry carries
+    ↓
+inspect why a behavior is familiar, new or anomalous
     ↓
 evaluate a candidate
     ↓
@@ -752,34 +880,63 @@ inspect the behavioral diff
     ↓
 receive a scorecard and a hard-gate decision
     ↓
+run the same behavioral scenario again
+    ↓
 share the evaluation in a sandbox
     ↓
 promote on the evidence
 ```
 
+Not one step of that requires the developer to modify their application, adopt
+a Trustvian SDK, or open a second tool to understand Trustvian's own evidence.
+
 Concretely:
 
 8. The platform starts locally with one command, no account, and loopback
    binding by default.
-9. With a local agent already producing telemetry, opening the WebUI shows the
-   active agent and its behavior live **without a Project, Agent, Candidate or
-   EvaluationRun identifier being entered in the browser** — see
-   [task 074](tasks/v1.0/074-zero-input-live-behavior-webui.md), which this
-   gate cannot be declared without.
-10. An evaluation run against a candidate produces a scorecard and a
+9. **One command runs an existing instrumented agent locally** — no source
+   modification, no Trustvian dependency in the application, no manual
+   creation of platform objects
+   ([task 077](tasks/v1.0/077-unified-otlp-local-dev-runtime.md)).
+10. With telemetry flowing, opening the WebUI shows the active agent and its
+    behavior live **without a Project, Agent, Candidate or EvaluationRun
+    identifier being entered in the browser**
+    ([task 074](tasks/v1.0/074-zero-input-live-behavior-webui.md)).
+11. That live view is a **bounded behavior visualization** driven by real
+    observations, which saturates explicitly rather than silently
+    ([task 074](tasks/v1.0/074-zero-input-live-behavior-webui.md)).
+12. Where a producer emits agent-oriented OpenTelemetry, behavior is shown at
+    that **semantic fidelity** — a tool call named as a tool call
+    ([task 075](tasks/v1.0/075-ai-semantic-telemetry-normalization.md)).
+13. Where it does not, Trustvian **degrades gracefully** to generic HTTP, DB
+    and RPC behavior with no regression and no fabricated semantics
+    ([task 075](tasks/v1.0/075-ai-semantic-telemetry-normalization.md)).
+14. A developer can inspect **why** a behavior was familiar, new or anomalous,
+    from metadata alone, without a prompt, completion, argument or body being
+    retained or displayed
+    ([task 076](tasks/v1.0/076-behavioral-evidence-explorer.md)).
+15. A behavioral scenario runs **repeatably**, producing a diff, a scorecard
+    and a deterministic gate result usable in CI
+    ([task 078](tasks/v1.0/078-behavioral-scenario-suites.md)).
+16. An evaluation run against a candidate produces a scorecard and a
     deterministic gate result, and every score is explainable from the
     evidence beneath it.
-11. A behavioral diff between two evaluation runs is produced and explained.
-12. A promotion decision is recorded together with the evidence it rested on.
-13. CLI, TUI, and WebUI each reach the same result through control-plane
+17. A behavioral diff between two evaluation runs is produced and explained.
+18. A promotion decision is recorded together with the evidence it rested on.
+19. CLI, TUI, and WebUI each reach the same result through control-plane
     services, with no interface carrying its own copy of evaluation, scoring,
     policy, diff, gate, or promotion logic.
-14. The platform imports no `internal/*` package from the core, proven by
+20. The platform imports no `internal/*` package from the core, proven by
     test rather than by review.
-15. The engine contains no platform-aware branch, type, or configuration.
+21. The engine contains no platform-aware branch, type, or configuration.
 
-Criteria 14 and 15 are the architectural invariants this whole direction
-rests on, which is why they are release gates rather than guidelines.
+Criteria 20 and 21 are the architectural invariants this whole direction rests
+on, which is why they are release gates rather than guidelines.
+
+Criteria 9 through 15 are the gap-closing milestones 074–078, which is why
+tasks numbered above the release gate nonetheless block it. Task 068 is
+**not** among them: it stays conditional on measured volume and is not a
+prerequisite for `v1.0`.
 
 ## v1.0 non-goals
 
@@ -803,8 +960,62 @@ this model any good", which is a different question from "did this agent do
 something it should not have", and answering both would blur the one the
 detection engine is built for.
 
+**Tasks 074–078 do not move that line, and it is worth saying why.** Adding AI
+semantic spans, a session view, trace correlation, behavior visualization and
+scenario suites makes Trustvian *better at reading observability evidence*. It
+does not make Trustvian an observability product, because the question it asks
+of that evidence is unchanged:
+
+```text
+an observability tool asks     what happened inside this trace?
+
+Trustvian asks                 which observed actions constitute this actor's
+                               behavior, how do they differ from its learned or
+                               reference behavior, and what decision follows?
+```
+
+The first needs prompts, completions, arguments, results and every attribute a
+span carries. The second needs none of them, which is why *behavioral
+observability does not require content observability* is a principle and not a
+limitation. Trustvian consumes observability evidence to answer a behavioral
+trust question, and sits beside a trace backend rather than replacing one —
+the Collector fan-out that makes that possible is deliberate and stays.
+
+Still outside the product, and not made less so by any of this: prompt
+management and playgrounds, LLM-as-a-judge, hallucination and groundedness
+scoring, RAG relevance metrics, model benchmarking, prompt or completion
+warehousing, generic dataset platforms, and provider marketplaces.
+
 No message broker is planned. No analytical store is a dependency of the
 engine. Neither becomes one without a measurement behind it.
+
+### The WebUI product model
+
+The information architecture the interface builds toward, at roadmap level.
+Labels will be refined during implementation; the ordering is the point.
+
+```text
+Live          active actors · animated behavior topology · new behavior
+              trust · anomaly · risk · decision                        (074)
+
+Evidence      sessions · traces · behavioral sequence
+              correlation and explanation                              (076)
+
+Evaluations   runs · reference and candidate · diff · scorecard · gate
+
+Promotions    environment advancement decisions                        (066)
+
+Manage        projects · agents · candidates · environments
+              advanced and manual operations
+```
+
+```text
+Manage is not the landing page. Live behavioral understanding is.
+```
+
+Today the shipped WebUI opens on Manage, in effect — a form asking for an
+identifier. That inversion is the gap task 074 closes, and everything above it
+in the list is what 074–078 add.
 
 ## Beyond v1.0
 
