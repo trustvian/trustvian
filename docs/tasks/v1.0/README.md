@@ -24,6 +24,7 @@ Tasks for the `v1.0` milestone.
 | [066 — Promotion Workflow](066-promotion-workflow.md) | Specified. Not implemented |
 | 067–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
 | [073 — OTel Collector Evaluation Ingest](073-otel-collector-evaluation-ingest.md) | Specified and implemented |
+| [074 — Zero-Input Live Behavior WebUI](074-zero-input-live-behavior-webui.md) | Specified; not implemented |
 
 The numbers 067–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
@@ -51,22 +52,49 @@ states are revalidated inside the transaction that writes the promotion, on
 both backends, with row-level writer concurrency where PostgreSQL offers it and
 plain write-transaction serialization where SQLite does not.
 
-Task 073 sits **after** that reserved block rather than inside it. It was not
-in the approved sequence: it closes a gap the sequence did not anticipate — the
-Collector produces a `Result` and the control plane accepts a `DecisionRecord`,
-and nothing joined them, so a workload observable only through OpenTelemetry
-could not be evaluated at all. Taking 065 for it would have renamed a milestone
-whose scope is already decided.
+Tasks 073 and 074 sit **after** that reserved block rather than inside it.
+Neither was in the approved sequence; both close a gap the sequence did not
+anticipate, found by using the product end to end rather than by planning it.
+
+Task 073: the Collector produced a `Result` and the control plane accepted a
+`DecisionRecord`, and nothing joined them, so a workload observable only
+through OpenTelemetry could not be evaluated at all.
+
+Task 074 is **specified and not implemented**. Running a local agent and
+opening the WebUI shows a form asking for a Project, Agent, Candidate or
+EvaluationRun identifier the developer does not have, so the one journey the
+`v1.0` gate opens with — run locally, observe behavior live — requires reading
+an identifier out of a producer's logs first. The milestone makes the browser
+discover active work from the realtime stream it can already subscribe to
+unfiltered, render it as a bounded run-scoped behavior graph, and rediscover
+the durable hierarchy after a reload through bounded authoritative routes —
+one request at startup, no automatic continuation, and descent only when a
+person asks. Its schema step is **4 → 5**, three indexes and nothing else,
+which places its implementation after task 066's in the migration chain.
+Taking a number inside 049–072 for either 073 or 074 would have renamed a
+milestone whose scope is already decided.
 
 Task 063's open question — collection semantics — was recorded in its
 specification rather than resolved: the WebUI navigates by caller-known ID, and
 a list route was deferred to the milestone that first has concrete filtering
-requirements. [Task 065](065-environment-model.md) is that milestone, and it
-resolved it narrowly: one collection, for one entity, scoped to a project,
-traversed by the immutable `ref`, and bounded twice — the entity capped at
-creation and the response capped per page, because a migrated database may
-already hold more than the cap allows anyone to create. No other list route
-was added.
+requirements. [Task 065](065-environment-model.md) is the milestone that
+resolved it, and it resolved it narrowly: one collection, for one entity,
+scoped to a project, traversed by the immutable `ref`, and bounded twice — the
+entity capped at creation and the response capped per page, because a migrated
+database may already hold more than the cap allows anyone to create. No other
+list route was added, because no other entity had a consumer that needed one.
+
+[Task 074](074-zero-input-live-behavior-webui.md) is the first milestone with a
+concrete requirement for the rest of the hierarchy: a browser that reloads when
+nothing is happening has to find the Projects, Agents, Candidates and
+EvaluationRuns that already exist, and the alternatives — browser storage,
+direct database access, pretending realtime replays — are each refused for
+their own reason. It reuses task 065's semantics unchanged rather than
+inventing a second pagination shape, and it keeps the capability split: the
+Project, Agent and Candidate collections belong to `ControlStore`, the
+EvaluationRun collection to `EvaluationStore`, composed by the control plane.
+None of this means task 063 should have built it: the deferral was correct, and
+what was missing then was precisely the consumer that now exists.
 
 Task 064 is implemented. SQLite remains the zero-configuration local default;
 PostgreSQL is opt-in and must be selected explicitly. One logical
