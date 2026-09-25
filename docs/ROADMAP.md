@@ -346,6 +346,15 @@ The promotion workflow (066) is **specified and not implemented** — see
 is before anything is built: a durable record of a platform *decision*, never a
 deployment and never a claim about where a candidate now runs.
 
+The zero-input live behavior WebUI (074) is **specified and not implemented**
+— see [the task](tasks/v1.0/074-zero-input-live-behavior-webui.md). Running an
+agent locally and opening the browser currently shows a form asking for an
+identifier the developer does not have; the milestone makes the WebUI discover
+active work by itself, render it as a bounded live behavior graph, and browse
+the control-plane hierarchy without anything being typed. Like 073 it sits
+outside the reserved 049–072 block, because it closes a gap found by using the
+product end to end rather than one the sequence anticipated.
+
 Still planned: everything from 066 onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
 behavioral snapshots, produce fixed-shape comparative scorecards, apply
@@ -608,8 +617,8 @@ decision that needs a measurement behind it.
 
 Small, independently shippable tasks continuing this repository's numbering.
 **Partly implemented:** tasks 049–065 are done; 066 is specified and not
-implemented; 067–072 remain PLANNED. 073, outside that sequence, is also
-done — see the table below.
+implemented; 067–072 remain PLANNED. Outside that sequence, 073 is done and
+074 is specified and not implemented — see the table below.
 
 **Architecture and core boundary** — the only tasks that touch the engine:
 
@@ -654,11 +663,12 @@ lost.
 | 065 | Environment model |
 | 066 | Promotion workflow — [specified](tasks/v1.0/066-promotion-workflow.md), not implemented |
 
-**Closing an unplanned gap:**
+**Closing unplanned gaps:**
 
 | Task | Milestone |
 |---|---|
 | 073 | OTel Collector evaluation ingest — the Collector produces a `Result`, the control plane accepts a `DecisionRecord`, and nothing joined them |
+| 074 | [Zero-input live behavior WebUI](tasks/v1.0/074-zero-input-live-behavior-webui.md) — automatic active-scope discovery, a bounded live behavior graph, and a browseable control-plane hierarchy without entering an identifier |
 
 **Production history and scale:**
 
@@ -730,7 +740,9 @@ who has not read the source:
 ```text
 run locally
     ↓
-observe behavior live
+open the WebUI and see the running agent, with no identifier typed
+    ↓
+watch behavior flow live
     ↓
 evaluate a candidate
     ↓
@@ -747,19 +759,24 @@ Concretely:
 
 8. The platform starts locally with one command, no account, and loopback
    binding by default.
-9. An evaluation run against a candidate produces a scorecard and a
-   deterministic gate result, and every score is explainable from the
-   evidence beneath it.
-10. A behavioral diff between two evaluation runs is produced and explained.
-11. A promotion decision is recorded together with the evidence it rested on.
-12. CLI, TUI, and WebUI each reach the same result through control-plane
+9. With a local agent already producing telemetry, opening the WebUI shows the
+   active agent and its behavior live **without a Project, Agent, Candidate or
+   EvaluationRun identifier being entered in the browser** — see
+   [task 074](tasks/v1.0/074-zero-input-live-behavior-webui.md), which this
+   gate cannot be declared without.
+10. An evaluation run against a candidate produces a scorecard and a
+    deterministic gate result, and every score is explainable from the
+    evidence beneath it.
+11. A behavioral diff between two evaluation runs is produced and explained.
+12. A promotion decision is recorded together with the evidence it rested on.
+13. CLI, TUI, and WebUI each reach the same result through control-plane
     services, with no interface carrying its own copy of evaluation, scoring,
     policy, diff, gate, or promotion logic.
-13. The platform imports no `internal/*` package from the core, proven by
+14. The platform imports no `internal/*` package from the core, proven by
     test rather than by review.
-14. The engine contains no platform-aware branch, type, or configuration.
+15. The engine contains no platform-aware branch, type, or configuration.
 
-Criteria 13 and 14 are the architectural invariants this whole direction
+Criteria 14 and 15 are the architectural invariants this whole direction
 rests on, which is why they are release gates rather than guidelines.
 
 ## v1.0 non-goals

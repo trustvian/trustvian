@@ -62,6 +62,13 @@ only — it is not a catalog, it is not history, and **a reload forgets it**.
 Nothing about which IDs you opened is stored in the browser; the control-plane
 database is the only source of truth.
 
+> **Planned, not shipped.**
+> [Task 074](tasks/v1.0/074-zero-input-live-behavior-webui.md) specifies a
+> default Live view that discovers active agents from the realtime stream and
+> browses the hierarchy through bounded collection routes, so opening the page
+> while an agent is running needs no identifier at all. It is specified and not
+> implemented; everything described on this page is what ships today.
+
 ## The live view
 
 Watching a run does this, in this order:
