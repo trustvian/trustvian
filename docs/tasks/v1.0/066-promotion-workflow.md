@@ -2367,7 +2367,7 @@ Every question this task owns, answered:
 | Collection semantics? | `id` byte-ascending, exclusive `after`, `limit` 1–64 default 64, `next_after` only when another page follows |
 | CLI commands? | `trustvian promotion create`, `get`, `list` |
 | Exit code for a rejection? | **`0`** — a recorded decision. Code `1` is not extended |
-| WebUI surface? | Environment list (read-only), promotion panel, promotion history |
+| WebUI surface? | Environment list (read-only, traversed to completion for the target picker), promotion panel, promotion history paged one bounded page at a time with run-evidence links |
 | Does the TUI gain promotion? | **No** |
 | Realtime events? | **None added** |
 | ADR? | 0040, by the implementation PR |
@@ -2402,6 +2402,14 @@ decision this document left open.
 9. `httpapi`: three routes, DTOs reusing `gateResultDTO`, `classify` cases.
 10. `cmd/trustvian/promotion.go` and its dispatch entry.
 11. WebUI: environment list, promotion panel, promotion history.
+    The target picker traverses every bounded environment page, because a
+    migrated project may hold more environments than the creation cap now
+    allows and a valid target may sit past page one. History is navigated a
+    page at a time rather than traversed: it grows without bound, and a
+    browser that assembled all of it would be an unbounded accumulator. Each
+    history row reaches its two evaluation runs through the page's existing
+    run path. No rank comparison, gate arithmetic, source inference or outcome
+    derivation happens in the browser in any of it.
 12. The full test matrix above, on both backends.
 13. Documentation and ADR 0040.
 

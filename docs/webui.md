@@ -168,9 +168,34 @@ that comes from the gate verdict alone, and a browser cannot propose one.
 
 The browser performs no promotion logic of its own. It compares no environment
 ranks, computes no gate result, and infers no source: every one of those is the
-control plane's answer, rendered as received. A page in the project history is
-the server's page, traversed by `promotion_id` with the server bounding the
-size.
+control plane's answer, rendered as received.
+
+**Target environments** come from the project's whole environment collection,
+not its first page. Task 065's cap of 64 per project governs creation rather
+than existence — a database migrated from schema 2 holds one environment per
+distinct reference its runs recorded — so **Load environments** follows
+`next_after` to the end and offers everything it finds. Which of those are
+valid targets is still the server's answer: nothing is filtered out here, and a
+promotion toward an invalid one is refused with its own message. If a server
+will not terminate the collection, the traversal stops and says so rather than
+offering a short list that would read as "that environment does not exist".
+
+**Project history** is read one bounded page at a time. **Load next page**
+requests exactly one more page using the cursor the previous one published, and
+replaces what is on screen — so the memory a history costs is a page, however
+far you read. **Start over** returns to the first page. There is no
+previous-page control: reverse traversal is not something `/v1` offers, and
+keeping every visited page in order to walk backwards is the unbounded
+accumulation this shape avoids.
+
+Your position in the history lives in the tab and nowhere else. A reload starts
+again at the first page, for the same reason nothing else here survives one.
+
+Each history row carries the two evaluation runs the decision was made on, each
+with an **Open** control. Opening one re-reads `GET /v1/evaluation-runs/{id}`
+through the same path the Evaluation panel uses, so what you see is the run's
+own current state — the promotion record does not become a second source of
+truth for it.
 
 `accepted` and `rejected` mean exactly what the gate said under the limits that
 were supplied. `accepted` does not mean deployed, and it does not mean safe;

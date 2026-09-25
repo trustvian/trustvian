@@ -295,7 +295,17 @@ export function table(headers, rows, caption) {
   for (const row of rows) {
     const tr = element("tr");
     for (const value of row) {
-      tr.append(element("td", null, value));
+      // A cell may carry a control rather than text — a promotion row's
+      // "Open" button, for instance. Appended as the node it is; anything
+      // else still goes through element(), which sets textContent and never
+      // parses markup.
+      if (value instanceof Node) {
+        const cell = element("td");
+        cell.append(value);
+        tr.append(cell);
+      } else {
+        tr.append(element("td", null, value));
+      }
     }
     body.append(tr);
   }
@@ -616,13 +626,55 @@ export function renderPromotion(target, promotion) {
   }
 }
 
+// runLink builds the control that opens one evaluation run.
+//
+// A button rather than an anchor, and that is the point: the promotion record
+// is not the source of truth for the run it names. Activating this re-reads
+// GET /v1/evaluation-runs/{id} through the page's existing run path, so what
+// is shown is the run's own current state rather than a copy frozen into a
+// decision. There is no href, no navigation and no external origin.
+//
+// An absent identifier yields plain text, not a control that would fail.
+function runLink(runID, onOpenRun) {
+  if (typeof runID !== "string" || runID === "") {
+    return display(runID);
+  }
+  if (typeof onOpenRun !== "function") {
+    return runID;
+  }
+
+  const wrapper = element("span", "run-cell");
+  wrapper.append(element("span", "run-id", runID));
+
+  const button = element("button", "link-button", "Open");
+  button.type = "button";
+  // The label alone reads as "Open" out of context, so the accessible name
+  // carries which run it opens.
+  button.setAttribute("aria-label", `Open evaluation run ${runID}`);
+  button.addEventListener("click", () => onOpenRun(runID));
+  wrapper.append(button);
+  return wrapper;
+}
+
 // renderPromotionList renders one bounded page of history.
 //
 // Server order is preserved exactly. Re-sorting an audit history in the
 // browser would present a sequence the platform did not record.
-export function renderPromotionList(target, response) {
+//
+// One page, and only one: the caller decides whether to ask for another. This
+// never accumulates pages, so the memory a history costs is a page rather than
+// a project's whole audit trail.
+//
+// `options.onOpenRun` is optional. When supplied, each row's two run
+// identifiers become controls that open the run through the page's existing
+// run path — a promotion is only investigable if its evidence is reachable
+// from it.
+export function renderPromotionList(target, response, options) {
   clear(target);
 
+  const onOpenRun = options && typeof options.onOpenRun === "function"
+    ? options.onOpenRun
+    : undefined;
   const rows = Array.isArray(response.promotions) ? response.promotions : [];
   if (rows.length === 0) {
     target.append(emptyState("No promotion decisions recorded for this project."));
@@ -630,24 +682,33 @@ export function renderPromotionList(target, response) {
   }
 
   target.append(table(
-    ["Promotion", "Outcome", "From", "To", "Gate", "Decided at"],
+    ["Promotion", "Outcome", "From", "To", "Gate", "Reference run", "Candidate run", "Decided at"],
     rows.map((row) => [
       display(row.id),
       display(row.outcome),
       display(row.source_environment ? row.source_environment.ref : undefined),
       display(row.target_environment ? row.target_environment.ref : undefined),
       display(row.gate_result ? row.gate_result.verdict : undefined),
+      runLink(row.reference_run_id, onOpenRun),
+      runLink(row.candidate_run_id, onOpenRun),
       display(row.decided_at),
     ]),
     "Recorded promotion decisions",
   ));
+}
 
-  if (typeof response.next_after === "string" && response.next_after !== "") {
-    target.append(element(
-      "p", "note-inline",
-      `More decisions exist. Continue after ${response.next_after}.`,
-    ));
-  }
+// renderPromotionPageState describes where in the history this page sits.
+//
+// Separate from the rows because the continuation controls are part of the
+// shell rather than of any page, and because a reload forgets the position —
+// nothing about it is stored in the browser.
+export function renderPromotionPageState(target, pageNumber, hasMore) {
+  clear(target);
+  target.append(document.createTextNode(
+    hasMore
+      ? `Page ${pageNumber}. More decisions exist.`
+      : `Page ${pageNumber}. End of history.`,
+  ));
 }
 
 // renderEnvironmentOptions fills a select with a project's environments.
@@ -656,9 +717,13 @@ export function renderPromotionList(target, response) {
 // is the server's decision, and a promotion toward an invalid one is refused
 // with its own message — filtering here would mean comparing ranks in the
 // browser, which is exactly what must not happen.
-export function renderEnvironmentOptions(select, response) {
+export function renderEnvironmentOptions(select, collection) {
   clear(select);
-  const rows = Array.isArray(response.environments) ? response.environments : [];
+  // The whole collection, assembled by api.listAllEnvironments from however
+  // many bounded pages the server needed. A migrated project may hold more
+  // than the creation cap, so the target on page 2 has to be offered like any
+  // other.
+  const rows = Array.isArray(collection.environments) ? collection.environments : [];
 
   const placeholder = element("option", null, rows.length === 0
     ? "No environments in this project"

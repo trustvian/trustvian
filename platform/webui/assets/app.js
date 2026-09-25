@@ -457,10 +457,18 @@ byID("promotion-load-environments").addEventListener("click", async (event) => {
       return;
     }
     try {
-      const response = await api.listEnvironments(projectID);
-      render.renderEnvironmentOptions(promotionTarget, response);
+      // Every page, not the first. Task 065's cap governs creation rather than
+      // existence, so a migrated project may hold more environments than it
+      // could now create and a valid target may sit past page one. The
+      // traversal, its cursor-progress checks and its defensive page ceiling
+      // all live in api.js beside the other client bounds.
+      const collection = await api.listAllEnvironments(projectID);
+      render.renderEnvironmentOptions(promotionTarget, collection);
       clearProblem();
     } catch (error) {
+      // A traversal the server would not terminate is reported, never
+      // silently truncated: a short list would read as "that environment does
+      // not exist" rather than as the failure it is.
       report(promotionResult, error);
     }
   });
@@ -520,17 +528,122 @@ byID("form-promotion-get").addEventListener("submit", async (event) => {
   });
 });
 
-byID("form-promotion-list").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  await busy(event.submitter, async () => {
+// Promotion history is navigated a page at a time.
+//
+// Three values, all in memory and none persisted: which project is being read,
+// the cursor the last page published, and which page number is on screen. A
+// reload forgets them, which is the same answer every other part of this page
+// gives and is why nothing is written to storage.
+//
+// Deliberately not the CLI's shape. `trustvian promotion list` traverses to
+// completion because a shell pipeline wants one document; a browser doing that
+// would hold a project's entire audit trail in an array that only grows.
+const promotionNav = byID("promotion-history-nav");
+const promotionPageState = byID("promotion-page-state");
+const promotionNextButton = byID("promotion-next-page");
+
+let promotionProject = "";
+let promotionCursor = "";
+let promotionPage = 0;
+
+function resetPromotionHistory() {
+  promotionProject = "";
+  promotionCursor = "";
+  promotionPage = 0;
+  render.clear(promotionPageState);
+  syncPromotionNav();
+}
+
+// loadPromotionPage reads exactly one page and replaces what is on screen.
+//
+// Replacement rather than append: the memory cost of history stays one page
+// however far anyone reads, and there is no array quietly growing behind the
+// view.
+async function loadPromotionPage(projectID, after, pageNumber, submitter) {
+  await busy(submitter, async () => {
     try {
-      const response = await api.listPromotions(value("promotion-list-project"));
-      render.renderPromotionList(promotionHistory, response);
+      const response = await api.listPromotions(projectID, after);
+
+      // The page that arrived is rendered either way. It is valid history the
+      // server returned, and withholding it because the *continuation* is
+      // malformed would hide evidence over a navigation fault.
+      render.renderPromotionList(promotionHistory, response, {
+        // The row opens the run through the page's existing path, so
+        // GET /v1/evaluation-runs/{id} stays authoritative and the promotion
+        // record never becomes a second source of truth for it.
+        //
+        // null, not an omitted argument: busy() distinguishes "no button to
+        // disable" by identity, and an undefined submitter would throw.
+        onOpenRun: (runID) => { void loadRun(runID, null); },
+      });
+      promotionProject = projectID;
+      promotionPage = pageNumber;
+
+      // A continuation that cannot advance is a server fault, and following it
+      // would turn "Load next page" into an infinite loop. The cursor is
+      // dropped rather than followed — which also leaves Start over reachable,
+      // because the cursor is broken and the project is not.
+      const fault = api.promotionCursorFault(after, response);
+      if (fault !== "") {
+        promotionCursor = "";
+        render.renderPromotionPageState(promotionPageState, pageNumber, false);
+        showProblem(fault);
+        return;
+      }
+
+      promotionCursor = typeof response.next_after === "string" ? response.next_after : "";
+      render.renderPromotionPageState(promotionPageState, pageNumber, promotionCursor !== "");
       clearProblem();
     } catch (error) {
+      // The cursor is not trustworthy after a failed read, but the project
+      // still is: leaving Start over available is the difference between a
+      // transient blip and having to retype the project.
+      promotionCursor = "";
+      promotionProject = projectID;
       report(promotionHistory, error);
     }
   });
+
+  // Applied after busy() has restored the clicked button, not inside it.
+  //
+  // busy() disables its submitter and restores the value it found on the way
+  // out. When the submitter *is* the next-page button, anything this function
+  // set inside that window is overwritten by the restore — so reaching the
+  // last page would leave "Load next page" enabled with nothing to load. The
+  // nav state is therefore the last thing that happens.
+  syncPromotionNav();
+}
+
+// syncPromotionNav makes the controls describe the state that actually exists.
+function syncPromotionNav() {
+  const loaded = promotionProject !== "";
+  promotionNav.hidden = !loaded;
+  promotionNextButton.disabled = promotionCursor === "";
+}
+
+byID("form-promotion-list").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  resetPromotionHistory();
+  await loadPromotionPage(value("promotion-list-project"), "", 1, event.submitter);
+});
+
+promotionNextButton.addEventListener("click", async (event) => {
+  if (promotionProject === "" || promotionCursor === "") {
+    return;
+  }
+  await loadPromotionPage(
+    promotionProject, promotionCursor, promotionPage + 1, event.currentTarget);
+});
+
+// Start over re-reads the first page rather than remembering earlier ones.
+// Reverse pagination would need an API semantic that does not exist, and
+// keeping every visited page to walk backwards is the accumulation this shape
+// exists to avoid.
+byID("promotion-restart").addEventListener("click", async (event) => {
+  if (promotionProject === "") {
+    return;
+  }
+  await loadPromotionPage(promotionProject, "", 1, event.currentTarget);
 });
 
 // ---------------------------------------------------------------------

@@ -119,6 +119,23 @@ main { padding: 1.25rem; max-width: 72rem; }
 }
 .note-inline { color: var(--muted); font-size: 0.86rem; margin: 0 0 0.6rem; }
 
+/* One history cell: the run identifier, and the control that opens it. */
+.run-cell { display: inline-flex; align-items: baseline; gap: 0.4rem; }
+.run-id { font-family: var(--mono); }
+.link-button {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.05rem 0.4rem;
+}
+.link-button:hover { border-color: currentColor; }
+/* Focus stays visible: the control is reachable by keyboard from the table. */
+.link-button:focus-visible { outline: 2px solid currentColor; outline-offset: 1px; }
+
 /* --------------------------------- forms --------------------------------- */
 
 form { margin: 0 0 1rem; }

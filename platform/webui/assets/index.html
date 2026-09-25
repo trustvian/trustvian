@@ -363,6 +363,11 @@
   </form>
 
   <h3>Project history</h3>
+  <p class="note">
+    History is read one bounded page at a time, newest identifiers last, in the
+    order the control plane recorded them. Your position is held only while
+    this page is open &mdash; a reload starts again at the first page.
+  </p>
   <form class="row" id="form-promotion-list">
     <label for="promotion-list-project">Project ID</label>
     <input type="text" id="promotion-list-project" autocomplete="off" required>
@@ -371,6 +376,12 @@
 
   <div class="result" id="promotion-history" aria-live="polite">
     <p class="empty">No history loaded.</p>
+  </div>
+
+  <div class="row" id="promotion-history-nav" hidden>
+    <button type="button" id="promotion-next-page">Load next page</button>
+    <button type="button" id="promotion-restart">Start over</button>
+    <span class="note-inline" id="promotion-page-state" aria-live="polite"></span>
   </div>
 </section>
 
