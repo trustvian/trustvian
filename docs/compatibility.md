@@ -252,6 +252,7 @@ meaning for every code, and assuming one will be wrong:
 | `project`, `agent`, `candidate`, `env`, `promotion`, `eval` except `compare` | success | *unused* | usage | API, network, or server failure |
 | `tui` | you quit | *unused* | usage | startup, HTTP, SSE, protocol, or terminal failure |
 | `eval compare` | gate **PASS** | gate **FAIL** | usage | API, network, or server failure |
+| `dev` | **the child's exit status**, whatever it is — see below | | | |
 
 **Exit code `1` means gate failure only for `trustvian eval compare`; it
 does not change the established meaning of code `1` for legacy
@@ -267,6 +268,34 @@ to that vocabulary is a minor change; changing what `1` means is major. [Task 06
 conflict by scoping rather than renumbering, so no released automation
 changed meaning. See
 [ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md).
+
+### `dev` propagates its child's status
+
+`trustvian dev` is a **documented exception** to the table above: it exits with
+the status of the command it ran, whatever that status is. A wrapper that
+rewrote its child's exit code would be unusable in a script, which is the only
+place a wrapper is used.
+
+```text
+before the child starts    2  the invocation was wrong
+                           3  dev could not start the child at all
+after the child starts     the child's status, unmodified
+```
+
+So `2` and `3` carry dev's own meaning only up to the moment the child is
+running. After that they mean whatever the workload means by them, and dev
+cannot tell the difference — the same ambiguity `env`, `nice` and `timeout`
+carry, accepted for the same reason: discarding the child's status is worse.
+
+A child killed by a signal exits **`128 + signal`**, the convention every shell
+uses. Go reports a signal death as exit code `-1`, which no script can branch
+on, and collapsing it to `1` would make "the workload was killed" look identical
+to "the workload failed".
+
+`dev` is **not supported on Windows** and refuses with exit `2`. It forwards
+`SIGINT` and `SIGTERM` to the child and Windows has no equivalent delivery, so a
+partial implementation would leave orphaned processes; see
+[task 077](tasks/v1.0/077-unified-otlp-local-dev-runtime.md).
 
 For the control-plane families, an API failure is always `3` and never
 `1`. A 409, a 404, a 500, a timeout, a refused redirect and a malformed
