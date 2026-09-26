@@ -64,7 +64,7 @@ func TestDevReportsAMissingCommandAsOperational(t *testing.T) {
 
 	var errOut strings.Builder
 	code := superviseChild(streams{out: io_Discard{}, err: &errOut},
-		[]string{"trustvian-dev-no-such-command-exists"})
+		[]string{"trustvian-dev-no-such-command-exists"}, nil)
 
 	// 3, not 127: the child never started, so there is no child status to
 	// report and this is the wrapper's own failure.
@@ -155,7 +155,7 @@ func TestDevPassesStdinThrough(t *testing.T) {
 	withDevStdio(t, stdin, stdout, stderr)
 
 	if code := superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
-		[]string{"cat"}); code != 0 {
+		[]string{"cat"}, nil); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 
@@ -176,7 +176,7 @@ func TestDevDoesNotReformatChildOutput(t *testing.T) {
 	// relayed output through a line-buffered pipe would add one or reorder them.
 	if code := superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
 		[]string{"sh", "-c", `printf 'out-no-newline'; printf 'err-no-newline' >&2`},
-	); code != 0 {
+		nil); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 
@@ -352,7 +352,7 @@ func runDevCapturingStdout(t *testing.T, args []string) string {
 	withDevStdio(t, nil, stdout, stderr)
 
 	code := superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
-		commandAfterSeparator(t, args))
+		commandAfterSeparator(t, args), nil)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0\nstderr: %s", code, readFile(t, stderr))
 	}
@@ -366,7 +366,7 @@ func runDevWithFiles(t *testing.T, args []string) int {
 	withDevStdio(t, nil,
 		newTempFile(t, dir, "stdout"), newTempFile(t, dir, "stderr"))
 	return superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
-		commandAfterSeparator(t, args))
+		commandAfterSeparator(t, args), nil)
 }
 
 // runDevWithSignal starts dev, waits for the child to say it is ready, sends a
@@ -390,7 +390,7 @@ func runDevWithSignal(t *testing.T, args []string, readyPath string,
 	started := time.Now()
 	command := commandAfterSeparator(t, args)
 	go func() {
-		code := superviseChild(streams{out: io_Discard{}, err: io_Discard{}}, command)
+		code := superviseChild(streams{out: io_Discard{}, err: io_Discard{}}, command, nil)
 		done <- result{code: code, elapsed: time.Since(started)}
 	}()
 

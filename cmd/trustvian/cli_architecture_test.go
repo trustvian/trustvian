@@ -187,10 +187,30 @@ func TestRootModuleDoesNotDependOnThePlatform(t *testing.T) {
 }
 
 // TestCLIStartsNoListener keeps a client from becoming a server.
+//
+// Serving constructs are forbidden everywhere in the shipped sources. `net.Listen`
+// is forbidden everywhere except one named file, for one narrow reason recorded
+// below — the exemption is a decision, not a hole, and it fails the moment
+// anything else reaches for a listener.
 func TestCLIStartsNoListener(t *testing.T) {
+	// Serving. None of these has a legitimate use in a client.
 	forbidden := []string{
-		"ListenAndServe", "net.Listen", "http.Server{", "httptest.NewServer",
+		"ListenAndServe", "http.Server{", "httptest.NewServer",
 	}
+
+	// net.Listen is narrower than the rule it was written for.
+	//
+	// `trustvian dev` composes a Collector whose OTLP receivers and health
+	// endpoint need explicit port numbers: an OTLP receiver given :0 binds a
+	// port nothing can then discover, and ADR 0035 §8 rules out fixed numbers.
+	// So dev binds 127.0.0.1:0, reads the port the OS assigned, and closes it
+	// immediately — a reservation, never a service. Nothing is accepted on it and
+	// nothing is served from it.
+	//
+	// The exemption is one file and is paired with the assertion below that the
+	// file accepts no connections, so "reserve a port" cannot quietly become
+	// "handle a request".
+	const portReservationFile = "dev_collector.go"
 
 	entries, err := os.ReadDir(".")
 	if err != nil {
@@ -211,6 +231,15 @@ func TestCLIStartsNoListener(t *testing.T) {
 				t.Errorf("%s contains %q; task 062 owns the local runtime, not the CLI",
 					name, pattern)
 			}
+		}
+		if strings.Contains(string(source), "net.Listen") && name != portReservationFile {
+			t.Errorf("%s contains \"net.Listen\"; only %s may reserve a port, and "+
+				"only by binding and closing it — task 062 owns the local runtime",
+				name, portReservationFile)
+		}
+		// Whatever the file, a listener that accepts is a server.
+		if strings.Contains(string(source), ".Accept(") {
+			t.Errorf("%s accepts connections; the CLI is a client", name)
 		}
 	}
 }

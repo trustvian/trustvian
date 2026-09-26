@@ -513,6 +513,7 @@ printf '{"version":"1","api_url":"http://127.0.0.1:45701"}\n' > "$2/runtime.json
 while :; do sleep 0.05; done
 `)
 	t.Setenv(localRuntimeBinaryEnv, fake)
+	withFakeCollector(t, "")
 	// HOME decides where state lands, so the test's own home keeps this run out
 	// of the developer's real ~/.trustvian.
 	home := t.TempDir()
@@ -534,7 +535,8 @@ while :; do sleep 0.05; done
 	// The banner reports what was composed and where the state is, because a
 	// hashed state path is unguessable and the endpoint is ephemeral.
 	banner := out.String()
-	for _, want := range []string{"Trustvian dev", "http://127.0.0.1:45701", home} {
+	for _, want := range []string{"Trustvian dev", "http://127.0.0.1:45701", home,
+		"OTLP", "gRPC"} {
 		if !strings.Contains(banner, want) {
 			t.Errorf("the banner does not mention %q:\n%s", want, banner)
 		}
@@ -561,6 +563,7 @@ func TestDevAttachesToAnExistingRuntimeWithoutStartingOne(t *testing.T) {
 	// plane. With it, dev must not start a runtime at all — so a helper that
 	// would fail if executed proves nothing executed it.
 	t.Setenv(localRuntimeBinaryEnv, filepath.Join(t.TempDir(), "does-not-exist"))
+	withFakeCollector(t, "")
 	t.Setenv("HOME", t.TempDir())
 	t.Chdir(t.TempDir())
 
@@ -630,5 +633,41 @@ func TestDevReportsAMissingHelperAsOperational(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "make dev") {
 		t.Errorf("the message does not name the way forward:\n%s", errOut.String())
+	}
+}
+
+func TestDevFailsBeforeTheChildWhenTheCollectorNeverReceives(t *testing.T) {
+	restore := collectorReadyTimeout
+	collectorReadyTimeout = 600 * time.Millisecond
+	t.Cleanup(func() { collectorReadyTimeout = restore })
+
+	fake := fakeLocalRuntime(t, `
+printf '{"version":"1","api_url":"http://127.0.0.1:45703"}\n' > "$2/runtime.json"
+while :; do sleep 0.05; done
+`)
+	t.Setenv(localRuntimeBinaryEnv, fake)
+	// Live and configured, but no receiver bound: the state that must not be
+	// treated as ready, because the workload's telemetry would go nowhere and
+	// nothing would say so.
+	withFakeCollector(t, "health-only")
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
+	dir := t.TempDir()
+	withDevStdio(t, nil, newTempFile(t, dir, "stdout"), newTempFile(t, dir, "stderr"))
+
+	marker := filepath.Join(dir, "child-ran")
+	var errOut strings.Builder
+	code := runDev(streams{out: io_Discard{}, err: &errOut},
+		[]string{"--", "sh", "-c", "printf ran > " + marker})
+
+	if code != exitDevOperational {
+		t.Fatalf("exit code = %d, want %d\nstderr: %s", code, exitDevOperational, errOut.String())
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the workload was launched even though the collector could not receive")
+	}
+	if !strings.Contains(errOut.String(), "receiver never bound") {
+		t.Errorf("stderr does not name the unbound receiver:\n%s", errOut.String())
 	}
 }

@@ -24,19 +24,26 @@ import (
 
 // superviseChild runs one command to completion and returns its exit code.
 //
-// Nothing about the child's environment, working directory or streams is
-// changed in this slice: it inherits all three. Later slices add the OTLP
-// variables, and they add them by *appending* to this inherited environment
-// rather than by constructing a new one, so that the guarantee tested here
-// keeps holding.
-func superviseChild(s streams, command []string) int {
+// environment is the workload's, already assembled: the inherited environment
+// plus whatever dev added. A nil environment means "inherit exactly", which is
+// what the wrapper tests use to assert that nothing is added when nothing is
+// composed.
+//
+// The working directory and streams are inherited unconditionally and are not
+// parameters: dev has no reason to change either, and a knob that could would
+// be a knob that eventually does.
+func superviseChild(s streams, command []string, environment *devEnvironment) int {
 	stdin, stdout, stderr := devStdio()
 
 	cmd := exec.Command(command[0], command[1:]...)
-	// Inherited, unchanged. Explicit rather than relying on exec's defaults so
-	// that a later slice adding variables cannot accidentally replace the
-	// environment instead of extending it.
-	cmd.Env = os.Environ()
+	// Extended, never replaced. Explicit rather than relying on exec's defaults
+	// so that adding a variable cannot accidentally construct a fresh
+	// environment instead of extending the developer's.
+	if environment != nil {
+		cmd.Env = environment.Environ()
+	} else {
+		cmd.Env = os.Environ()
+	}
 	cmd.Dir = ""
 	cmd.Stdin = stdin
 	cmd.Stdout = stdout

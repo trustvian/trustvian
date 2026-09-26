@@ -45,8 +45,8 @@ Exit status is the command's own, so this wrapper is transparent to scripts.
 Before the command starts, 2 means the invocation was wrong and 3 means this
 wrapper could not start it.
 
-Not yet composed by this build: the OTLP receiver, automatic provisioning and
-instrumentation ownership. See
+Not yet composed by this build: automatic provisioning and instrumentation
+ownership. See
 docs/tasks/v1.0/077-unified-otlp-local-dev-runtime.md.`
 
 // runDev is the `dev` family's entry point.
@@ -159,6 +159,11 @@ func composeAndRun(s streams, config devConfig) int {
 		return exitDevOperational
 	}
 
+	// Snapshotted before anything is set, so slice 4's instrumentation evidence
+	// is read from what the developer provided rather than from what dev
+	// provided a moment earlier.
+	environment := captureEnvironment()
+
 	apiURL := config.apiURL
 	if apiURL == "" {
 		binary, err := helper{
@@ -186,9 +191,37 @@ func composeAndRun(s streams, config devConfig) int {
 		apiURL = runtime.APIURL()
 	}
 
-	printDevBanner(s, stateDir, apiURL, config)
+	// The Collector comes after the control plane and before the workload. After,
+	// because slice 3 points it at a run that must already exist and be running;
+	// before, because a workload that started with nowhere to send telemetry
+	// would produce no evidence and look like it had.
+	collectorBin, err := helper{
+		name:      collectorBinary,
+		role:      "the OTLP receiver",
+		flagValue: config.collectorBin,
+		flagName:  "--collector-bin",
+		envVar:    collectorBinaryEnv,
+	}.resolve()
+	if err != nil {
+		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+		return exitDevOperational
+	}
 
-	return superviseChild(s, config.command)
+	otlp, err := startCollector(collectorBin, stateDir)
+	if err != nil {
+		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+		return exitDevOperational
+	}
+	// Stopped before the control plane, which is the reverse of the order they
+	// started in: the Collector posts evidence to the control plane, so the
+	// thing that writes must stop before the thing written to.
+	defer otlp.stop()
+
+	environment.routeOTLP(otlp.OTLPEndpoint(), otlp.OTLPGRPCEndpoint())
+
+	printDevBanner(s, stateDir, apiURL, otlp, environment, config)
+
+	return superviseChild(s, config.command, environment)
 }
 
 // printDevBanner says what was composed and where to look.
@@ -197,10 +230,13 @@ func composeAndRun(s streams, config devConfig) int {
 // interleaving is expected and is not the guarantee the child-process discipline
 // makes: what must not happen is dev *reformatting or buffering* the workload's
 // own streams, and it does neither.
-func printDevBanner(s streams, stateDir, apiURL string, config devConfig) {
+func printDevBanner(s streams, stateDir, apiURL string, otlp *collector,
+	environment *devEnvironment, config devConfig) {
 	fmt.Fprintf(s.out, "Trustvian dev\n\n")
 	fmt.Fprintf(s.out, "  State    %s\n", stateDir)
 	fmt.Fprintf(s.out, "  API      %s\n", apiURL)
+	fmt.Fprintf(s.out, "  OTLP     %s  (gRPC %s)\n",
+		otlp.OTLPEndpoint(), otlp.OTLPGRPCEndpoint())
 	// The browser URL is its own line rather than left to be inferred from the
 	// API endpoint: a developer looking for somewhere to click should not have
 	// to work out that one is also the other.
@@ -208,8 +244,12 @@ func printDevBanner(s streams, stateDir, apiURL string, config devConfig) {
 	if config.apiURL != "" {
 		fmt.Fprintf(s.out, "  Attached to a control plane this command did not start.\n")
 	}
-	fmt.Fprintf(s.out, "\n  Not yet composed: OTLP receiver, provisioning, "+
-		"instrumentation ownership.\n")
+	// The variables the workload gained are named, not summarized. A developer
+	// debugging why their agent emitted nothing needs to know exactly what was
+	// set, and a wrapper that changes an environment silently is one they cannot
+	// reason about.
+	fmt.Fprintf(s.out, "  Set      %s\n", strings.Join(environment.Added(), " "))
+	fmt.Fprintf(s.out, "\n  Not yet composed: provisioning, instrumentation ownership.\n")
 	fmt.Fprintf(s.out, "\nRunning %s\n\n", devCommandName(config.command))
 }
 
