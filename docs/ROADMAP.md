@@ -403,7 +403,9 @@ which is why they sit outside the reserved 049–072 block alongside 073.
   card with nothing typed, and draws one selected run's behavior flow. Four
   bounded collection routes make the durable hierarchy discoverable after a
   reload with no traffic — the capability tasks 063 and 058 deferred until a
-  consumer existed for it. Startup costs exactly one collection request and
+  consumer existed for it. The browser surface is an observability cockpit —
+  Live, Investigate, Compare, Promotions, Manage — rather than the ID-driven
+  console it replaced. Startup costs exactly one collection request and
   follows no continuation automatically, because a bounded route is not a
   bounded workflow. It shared the schema chain with 066 — 066 owned 3 → 4 and
   074 owned 4 → 5 — so it landed after it, and schema version is now **5**.

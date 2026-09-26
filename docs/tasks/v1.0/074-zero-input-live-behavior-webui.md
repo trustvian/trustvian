@@ -811,14 +811,17 @@ and no past flow is reconstructed from aggregates.
 
 ## Information architecture
 
+As implemented:
+
 ```text
-Live          ← default
-Evaluations
-Compare
-Manage        ← Project · Agent · Candidate · Evaluation · Environment · Open by ID
+Live          ← default; the observability cockpit
+Investigate   ← bounded durable discovery and one run's authoritative detail
+Compare       ← reference against candidate
+Promotions    ← decisions and history
+Manage        ← Open by ID · Projects · Agents · Candidates · Evaluations
 ```
 
-Exact labels are observational and may be refined during implementation. The
+Exact labels are observational and were refined during implementation. The
 requirement is not the labels:
 
 > A developer must not need the Manage surface in order to watch an
@@ -828,6 +831,14 @@ Nothing is removed. Every current capability — create project, create agent,
 create candidate, drive a run's lifecycle, open by ID, compare — stays
 reachable, because they remain the right tools for debugging and for advanced
 use. They stop being the front door.
+
+**What the implementation added beyond the minimum.** The specification asked
+for a default Live view; what shipped is a four-region cockpit — active-scope
+rail, behavior canvas, inspector, timeline — with a follow-versus-pinned
+selection model, an inspector over the existing allowlist, authoritative
+counters in the header, and inline help on every caller-owned identifier in
+Manage. The bounds, the privacy surface, the startup budget and the run-scoped
+graph model are exactly as specified; the surface built on them is richer.
 
 ## The companion demo
 

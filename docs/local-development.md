@@ -55,11 +55,12 @@ make local                  # terminal A — prints the URL
 <run your instrumented agent>   # terminal B
 ```
 
-Then open the `Web:` URL. The page lands on **Live**, subscribes to all local
-activity, and shows each active run as a card as telemetry arrives. Select one
-and its behavior flow draws itself — source agent, operation, target, and the
-decision, risk, trust and anomaly the server computed for each observation. A
-behavior the reference never showed is marked `NEW`.
+Then open the `Web:` URL. The page lands on the **Live Observatory**, already
+connected, and each active agent appears as a card the moment telemetry for it
+arrives. The newest is selected and its behavior flow animates — one pulse per
+observation, along the edge that observation describes. Click a behavior and
+the inspector shows what Trustvian decided about it: decision, risk, trust,
+anomaly and confidence, exactly as the server reported them.
 
 ```text
                  POST
@@ -71,14 +72,21 @@ support-agent ───────────▶ ollama.localhost
 ```
 
 You do not need a Project, Agent, Candidate or EvaluationRun identifier to see
-this. **A producer still has to create them** — the Collector's `evaluation:`
-block names a run that must already exist and be running, and nothing here
-creates a durable entity because telemetry arrived. What changed is that a
-person no longer retypes those identifiers into a browser to see the result.
+this, and there is no form to fill in first. **A producer still has to create
+them** — the Collector's `evaluation:` block names a run that must already
+exist and be running, and nothing here creates a durable entity because
+telemetry arrived. What changed is that a person no longer retypes those
+identifiers into a browser to see the result.
 
-If nothing is running, the same page browses what exists: one bounded page of
+A behavior the run had not shown before is marked `NEW` on the edge, on its
+target, in the timeline, and in the inspector. It is never labelled dangerous
+or unsafe — `NEW` means new, and any stronger reading would be a judgement the
+platform did not make.
+
+If nothing is running, **Investigate** browses what exists: one bounded page of
 projects at startup, then Projects → Agents → Candidates → Runs a page at a
-time, when you ask. See [the WebUI guide](webui.md).
+time, when you ask. The control-plane forms live under **Manage** and are not
+needed to watch anything. See [the web interface guide](webui.md).
 
 The reference end-to-end workflow is the companion repository
 `trustvian/trustvian-python-agent-demo`: a Python agent driven by Ollama,
