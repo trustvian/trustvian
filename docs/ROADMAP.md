@@ -24,10 +24,12 @@ Status vocabulary:
 | **PLANNED** | Approved and decomposed into tasks, not implemented |
 | **FUTURE** | A direction, not scoped, designed, committed, or dated |
 
-`v1.0` is NEXT. Track B is **partly implemented**: its evaluation foundation,
-local persistence, the local control-plane API and realtime (tasks 051–059)
-exist, while the developer CLI, the UI, promotion and the remaining numbered
-work are still PLANNED.
+`v0.10.0` — the [developer preview](#v0100--developer-preview) — is NEXT, and
+`v1.0` is the release gate beyond it. Track B is **partly implemented**: the
+evaluation foundation, local persistence, the local control-plane API and
+realtime, the developer CLI, the TUI, the WebUI, the PostgreSQL backend, the
+environment model and promotion (tasks 051–066, 073 and 074) exist, while
+075–078 are specified and 067–072 are still PLANNED.
 What exists is not usable end to end on its own. Everything under
 [Beyond v1.0](#beyond-v10) is FUTURE.
 
@@ -221,6 +223,93 @@ specifications behind each are in [`archive/tasks/`](archive/tasks/README.md).
 | `v0.7.0` | AI-agent behavioral security: session, delegation, and approval context, and approval-aware policy |
 | `v0.8.0` | Production runtime and storage: PostgreSQL persistence, reference deployment, durability hardening |
 | `v0.9.0` | Operational readiness: CI quality gates, release artifacts, supply-chain signing, health endpoints, self-observability, backup and restore |
+
+## v0.10.0 — Developer Preview
+
+**NEXT.** The first release a developer outside this project can pick up and
+use for the thing the product is for.
+
+It exists because of a sequencing problem, not a scope disagreement. The whole
+Track B journey currently reaches users at exactly one moment — the `v1.0` tag —
+and that moment is gated on event history (067), multi-node and load validation
+(069), platform security hardening (070), platform backup and restore (071),
+the behavioral evidence explorer (076), sandbox sharing and promotion. A
+developer who wants to run their own agent locally and catch a behavioral change
+in CI needs none of those, and today waits for all of them. Shipping nothing
+until everything is ready means the feedback that would improve the rest arrives
+after it is built.
+
+A minor release is the right shape. Pre-`v1.0`, `MINOR` is where
+backward-compatible capability lands
+([Branching Strategy § Semantic Versioning](governance/branching.md#semantic-versioning)),
+the current stable line is `v0.9.x`, and `v0.10.0` is the next minor. The exact
+number stays a maintainer's decision at release time —
+[the commit convention](COMMIT_CONVENTION.md) is explicit that the prefix
+convention derives no version — and nothing here creates a `v1` compatibility
+promise:
+[the compatibility contract](compatibility.md) describes the surface from
+`v1.0.0` onward, and
+[pre-`v1.0` discipline](governance/branching.md#pre-v10-discipline) governs
+until then.
+
+### Contents
+
+| Task | Milestone |
+|---|---|
+| 075 | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) |
+| 077 | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) |
+| 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
+| 079 | CI integration — a GitHub Action over the 078 command |
+
+074 is already implemented and is a prerequisite rather than contents: without
+it, opening the browser asks for an identifier the developer does not have.
+
+### Exit criterion
+
+The [Track B journey](#v10-exit-criteria), truncated at the step a scenario
+suite reaches, and usable in CI:
+
+```text
+run an existing instrumented agent locally, with one Trustvian command
+    ↓
+open the WebUI without entering an internal identifier
+    ↓
+watch the actor's current behavior live
+    ↓
+see agent, model, tool and service flow at the fidelity the telemetry carries
+    ↓
+evaluate a candidate
+    ↓
+inspect the behavioral diff
+    ↓
+receive a scorecard and a hard-gate decision
+    ↓
+run the same behavioral scenario again
+```
+
+**Usable in CI** is part of the criterion, not a nice-to-have on top of it: a
+scenario runs in a pull request, the gate's exit code decides the job, and the
+result is legible on the pull request itself rather than in a log a reviewer has
+to open. That last part is what task 079 adds.
+
+### What it does not require
+
+Explicitly **not** gated on 067 (event history), 068–071, 076 (the behavioral
+evidence explorer), sandbox sharing, or promotion.
+
+Those remain `v1.0` requirements and lose none of their force. **The `v1.0` gate
+keeps every criterion it has**, this milestone removes nothing from it, and a
+capability shipping in a preview does not count as gate-verified — see
+[Track A's release principle](#release-principle), which applies here too: the
+gate is verified against the release candidate rather than trusted from a prior
+release.
+
+The two journey steps this preview drops are the ones that genuinely need
+what it omits: *inspect why a behavior was familiar, new or anomalous* needs
+durable history (067, then 076), and *share, then promote on the evidence*
+needs a deployment more than one person uses. Neither is needed to answer
+"did my agent's behavior change, and does that change pass my limits", which
+is the question a developer preview has to answer.
 
 ## v1.0 — Local-First Behavioral Security Platform
 
@@ -786,8 +875,10 @@ Conceptually:
 074  zero-input live WebUI ──┬──▶ 077  unified local dev runtime
                              │             ↓
                              │    078  behavioral scenario suites
+                             │             ↓
+075  AI semantic telemetry ──┤    079  CI integration (GitHub Action)
                              │
-075  AI semantic telemetry ──┤    (parallel to 077; enriches, never blocks)
+     ═══════════ v0.10.0 developer preview ships here ═══════════
                              ↓
                      067  event history
                              ↓
@@ -802,7 +893,7 @@ Conceptually:
 068  ClickHouse — only if measured volume justifies it
 ```
 
-Four things this diagram says, and one it does not:
+Five things this diagram says, and one it does not:
 
 - **074 and 075 are independent of each other** and can proceed in parallel.
   076 needs both, plus whatever history 067 makes durable.
@@ -810,8 +901,13 @@ Four things this diagram says, and one it does not:
   telemetry the workload emits; 075 decides how richly it is read.
   `trustvian dev` is useful at today's HTTP, DB and RPC fidelity and becomes
   better when 075 lands. The two are parallel capabilities.
-- **077 and 078 are a second thread**, needing 074's discovery but not the
-  explorer. 078 needs 077's repeatable invocation.
+- **077, 078 and 079 are a second thread**, needing 074's discovery but not the
+  explorer. 078 needs 077's repeatable invocation, and 079 needs 078's
+  machine-readable result and exit codes — it renders them and computes nothing.
+- **The `v0.10.0` line is a release boundary, not a dependency edge.** It marks
+  where the [developer preview](#v0100--developer-preview) ships. Nothing above
+  it depends on anything below it, which is the property that makes the preview
+  possible at all; nothing below it is dropped or weakened by shipping early.
 - **068 remains conditional**, exactly as its row says: an analytical backend
   arrives if measured volume justifies one, and not otherwise. It is not a
   release-gate prerequisite, and this restructuring does not make it one.
@@ -943,14 +1039,41 @@ Concretely:
 20. The platform imports no `internal/*` package from the core, proven by
     test rather than by review.
 21. The engine contains no platform-aware branch, type, or configuration.
+22. **At least five developers outside this project have completed the journey
+    above on their own agents**, and the friction they hit is recorded — as
+    linked issues, or as a written report naming where each of them got stuck.
 
 Criteria 20 and 21 are the architectural invariants this whole direction rests
 on, which is why they are release gates rather than guidelines.
+
+Criterion 22 is the only one no amount of internal work can satisfy, and it is
+here because every other criterion is technical. The journey above opens with
+*"by a developer who has not read the source"* — and until developers who have
+not read the source have actually walked it, that phrase describes an intention
+rather than a measurement. This document's own principle is **verified, not
+assumed**; a usability claim verified only by the people who built the thing is
+assumed.
+
+Five is a deliberately small number. It is not a market test and not an adoption
+target — it is the smallest sample that reliably surfaces the friction one
+developer's particular setup would hide. *Their own agents* is the load-bearing
+half: the repository's demo workload is the one instrumented agent this project
+is guaranteed to get right.
+
+And the friction being **recorded** is half the criterion. Five developers who
+succeed and say nothing leave the project exactly where it started; five who get
+stuck in five places named in five issues are what makes the next milestone
+obvious. A criterion satisfied by silence would be satisfied by not asking.
 
 Criteria 9 through 15 are the gap-closing milestones 074–078, which is why
 tasks numbered above the release gate nonetheless block it. Task 068 is
 **not** among them: it stays conditional on measured volume and is not a
 prerequisite for `v1.0`.
+
+Criteria 9 through 15 and criterion 22 are also where the
+[developer preview](#v0100--developer-preview) earns its place: 9 through 13 and
+15 ship there, so criterion 22's developers have something to use well before
+the tag that depends on their having used it.
 
 ## v1.0 non-goals
 
@@ -1070,6 +1193,27 @@ Additional inbound and outbound surfaces, each following the adapter shape
 [ADR 0003](adr/0003-opentelemetry-adapter-single-module.md) established:
 framework middleware, additional alert sinks, policy-engine interoperability.
 The core stays unaware of every adapter.
+
+**Policy-engine interoperability is the first integration candidate after the
+[developer preview](#v0100--developer-preview).** It means one thing
+specifically: exporting Trustvian's behavioral evidence as an *input* to
+external policy and enforcement points — Microsoft's Agent Governance Toolkit,
+agentgateway, and Open Policy Agent are the three concrete shapes to evaluate —
+rather than Trustvian acquiring an enforcement point of its own.
+
+It fits the existing rules rather than bending them. A gate result and a
+behavioral diff are already fixed-shape, metadata-only values, so an exporter
+publishing them reaches into nothing and adds no content surface. And the
+direction is the one this document has taken throughout: *evidence, not
+verdicts* — Trustvian quantifies and explains, and something else decides what
+to enforce. An integration that asked Trustvian to make the enforcement decision
+would be the opposite of this candidate, not a larger version of it.
+
+It stays **FUTURE and unscoped**: no task file, no design, no committed release,
+no chosen target among the three. "First candidate" orders a queue; it does not
+approve work. The opening sentence of
+[Beyond v1.0](#beyond-v10) governs this paragraph exactly as it governs the
+rest of the section.
 
 ### Trustvian MCP
 
