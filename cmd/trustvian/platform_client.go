@@ -403,11 +403,76 @@ func resolveAPIURL(explicit string, explicitSet bool, timeout time.Duration) (*p
 		return newPlatformClient(explicit, timeout)
 	}
 
-	discovered, err := readLocalDiscovery(filepath.Join(localStateDir, localDiscoveryFile))
+	discovered, err := resolveLocalDiscovery()
 	if err != nil {
 		return nil, err
 	}
 	return newPlatformClient(discovered, timeout)
+}
+
+// resolveLocalDiscovery finds a local runtime's endpoint, in two places.
+//
+// The project-local file first, unchanged: that is what `make local` and
+// trustvian-local publish, and it stays the answer whenever it exists.
+//
+// Then dev's state directory. `trustvian dev` keeps its state outside the
+// workload's repository so that repository is byte-identical afterwards (task
+// 077 acceptance criterion 2), which means its discovery file is not where
+// task 062 put one. Without this second location, running `trustvian eval
+// compare` in a directory dev is serving would report "no runtime" while a
+// runtime was serving it — a regression against task 062's promise that clients
+// in this directory need no --api-url.
+//
+// Order, not merge: a project-local runtime wins, because it is the more
+// explicit thing for a developer to have started.
+//
+// This does not touch ADR 0035 §10a. Presence on the command line still
+// decides: an explicitly supplied --api-url never reaches this function, and
+// --api-url "" is still a usage error that reads no file.
+func resolveLocalDiscovery() (string, error) {
+	projectLocal := filepath.Join(localStateDir, localDiscoveryFile)
+	discovered, projectErr := readLocalDiscovery(projectLocal)
+	if projectErr == nil {
+		return discovered, nil
+	}
+
+	devPath, devErr := devDiscoveryPath()
+	if devErr != nil {
+		// No home directory, or no working directory: nowhere else to look, so
+		// the project-local failure is the whole story.
+		return "", projectErr
+	}
+	if devPath == projectLocal {
+		return "", projectErr
+	}
+	discovered, devErrRead := readLocalDiscovery(devPath)
+	if devErrRead == nil {
+		return discovered, nil
+	}
+
+	// Both named, so a reader can see that two places were tried rather than
+	// guessing which one this build uses.
+	return "", fmt.Errorf(
+		"no local runtime was found.\n  %s: %v\n  %s: %v\n"+
+			"Start one with 'make local' or 'trustvian dev', or pass --api-url",
+		projectLocal, projectErr, devPath, devErrRead)
+}
+
+// devDiscoveryPath is where `trustvian dev` publishes for this directory.
+//
+// Derived the same way dev derives it, from the same inputs, rather than being
+// read from anywhere: two implementations of one path is how they drift.
+func devDiscoveryPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	workloadDir, err := resolveWorkloadDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, devStateRoot, devStateSubdir,
+		devStateKey(workloadDir), localDiscoveryFile), nil
 }
 
 // readLocalDiscovery reads and validates the runtime file.

@@ -28,17 +28,25 @@ const devUsage = `usage:
 Runs a command under Trustvian. The command is not modified and gains no
 Trustvian dependency: everything is composed around it.
 
-  --                  required separator; everything after it is the command
+  --                     required separator; everything after it is the command
 
 Options:
-  -h, --help          print this message
+  --api-url <url>        attach to a control plane already running, instead of
+                         starting one
+  --local-bin <path>     path to trustvian-local
+  --collector-bin <path> path to trustvian-collector
+  -h, --help             print this message
+
+State lives outside your repository, under ~/.trustvian/dev/, keyed by this
+directory. dev prints the path on every start. Your repository is never
+written to.
 
 Exit status is the command's own, so this wrapper is transparent to scripts.
 Before the command starts, 2 means the invocation was wrong and 3 means this
 wrapper could not start it.
 
-Not yet composed by this build: the local control plane, the OTLP receiver,
-automatic provisioning and instrumentation ownership. See
+Not yet composed by this build: the OTLP receiver, automatic provisioning and
+instrumentation ownership. See
 docs/tasks/v1.0/077-unified-otlp-local-dev-runtime.md.`
 
 // runDev is the `dev` family's entry point.
@@ -74,6 +82,10 @@ func runDev(s streams, args []string) int {
 	}
 
 	fs := newFlagSet("dev")
+	apiURL := fs.String("api-url", "",
+		"attach to a control plane already running instead of starting one")
+	localBin := fs.String("local-bin", "", "path to "+localRuntimeBinary)
+	collectorBin := fs.String("collector-bin", "", "path to "+collectorBinary)
 	if err := fs.Parse(before); err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n\n%s\n", err, devUsage)
 		return exitDevUsage
@@ -95,7 +107,110 @@ func runDev(s streams, args []string) int {
 		return exitDevUsage
 	}
 
-	return superviseChild(s, command)
+	return composeAndRun(s, devConfig{
+		command:      command,
+		apiURL:       *apiURL,
+		localBin:     *localBin,
+		collectorBin: *collectorBin,
+	})
+}
+
+// devConfig is one invocation's resolved inputs.
+//
+// A struct rather than a long parameter list, because later slices add
+// identity, instrumentation mode and gate limits to it and a growing signature
+// is how a supervisor acquires arguments nobody can order correctly.
+type devConfig struct {
+	command      []string
+	apiURL       string
+	localBin     string
+	collectorBin string
+}
+
+// composeAndRun brings up what the workload needs, runs it, and tears down.
+//
+// The order is the contract, and it is the order scripts/tv-dev.sh in the demo
+// repository arrived at by running into each failure:
+//
+//	state directory -> control plane -> (OTLP path, slice 2b)
+//	  -> workload -> teardown in reverse
+//
+// Teardown is deferred immediately after each successful start, so a failure
+// half-way leaves nothing running. That is what "nothing it started is left"
+// means when there is more than one thing to start.
+func composeAndRun(s streams, config devConfig) int {
+	workloadDir, err := resolveWorkloadDir()
+	if err != nil {
+		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+		return exitDevOperational
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(s.err,
+			"trustvian dev: cannot determine your home directory, so there is "+
+				"nowhere outside your repository to keep state: %v\n", err)
+		return exitDevOperational
+	}
+
+	stateDir, err := devStateDir(home, workloadDir)
+	if err != nil {
+		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+		return exitDevOperational
+	}
+
+	apiURL := config.apiURL
+	if apiURL == "" {
+		binary, err := helper{
+			name:      localRuntimeBinary,
+			role:      "the local control plane",
+			flagValue: config.localBin,
+			flagName:  "--local-bin",
+			envVar:    localRuntimeBinaryEnv,
+		}.resolve()
+		if err != nil {
+			fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+			return exitDevOperational
+		}
+
+		// The control plane starts before the workload, and a failure here must
+		// happen before the workload is launched: a workload with nowhere to
+		// report its behavior has produced nothing, and starting it anyway would
+		// waste a developer's run and look like a Trustvian success.
+		runtime, err := startLocalRuntime(binary, stateDir)
+		if err != nil {
+			fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+			return exitDevOperational
+		}
+		defer runtime.stop()
+		apiURL = runtime.APIURL()
+	}
+
+	printDevBanner(s, stateDir, apiURL, config)
+
+	return superviseChild(s, config.command)
+}
+
+// printDevBanner says what was composed and where to look.
+//
+// On dev's own stdout, which is the terminal the workload also writes to. That
+// interleaving is expected and is not the guarantee the child-process discipline
+// makes: what must not happen is dev *reformatting or buffering* the workload's
+// own streams, and it does neither.
+func printDevBanner(s streams, stateDir, apiURL string, config devConfig) {
+	fmt.Fprintf(s.out, "Trustvian dev\n\n")
+	fmt.Fprintf(s.out, "  State    %s\n", stateDir)
+	fmt.Fprintf(s.out, "  API      %s\n", apiURL)
+	// The browser URL is its own line rather than left to be inferred from the
+	// API endpoint: a developer looking for somewhere to click should not have
+	// to work out that one is also the other.
+	fmt.Fprintf(s.out, "  Web      %s/\n", apiURL)
+	if config.apiURL != "" {
+		fmt.Fprintf(s.out, "  Attached to a control plane this command did not start.\n")
+	}
+	fmt.Fprintf(s.out, "\n  Not yet composed: OTLP receiver, provisioning, "+
+		"instrumentation ownership.\n")
+	fmt.Fprintf(s.out, "\nRunning %s\n\n", devCommandName(config.command))
 }
 
 // splitDevArgs divides this command's own arguments from the workload's.

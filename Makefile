@@ -23,6 +23,16 @@ local: build ## Run the integrated local control plane (see docs/local-developme
 	@echo "Starting the local Trustvian runtime. Clients in this directory can omit --api-url."
 	cd platform && GOWORK=off $(GO) run ./cmd/trustvian-local --state-dir "$(CURDIR)/.trustvian"
 
+dev: build dev-binaries ## Run a workload under trustvian dev, e.g. make dev ARGS='-- python agent.py'
+	@TRUSTVIAN_LOCAL_BIN="$(CURDIR)/$(BIN_DIR)/trustvian-local" \
+	 TRUSTVIAN_COLLECTOR_BIN="$(CURDIR)/$(BIN_DIR)/trustvian-collector" \
+	 ./$(BIN_DIR)/$(BINARY) dev $(ARGS)
+
+dev-binaries: ## Build the helper binaries trustvian dev supervises
+	@mkdir -p $(BIN_DIR)
+	cd platform && GOWORK=off $(GO) build -o "$(CURDIR)/$(BIN_DIR)/trustvian-local" ./cmd/trustvian-local
+	cd processor && GOWORK=off $(GO) build -o "$(CURDIR)/$(BIN_DIR)/trustvian-collector" ./cmd/trustvian-collector
+
 run: build ## Build and run the CLI, e.g. make run ARGS="analyze events.json"
 	./$(BIN_DIR)/$(BINARY) $(ARGS)
 

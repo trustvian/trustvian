@@ -62,20 +62,21 @@ func TestDevReportsSignalDeathAs128PlusSignal(t *testing.T) {
 func TestDevReportsAMissingCommandAsOperational(t *testing.T) {
 	requireUnix(t)
 
-	_, errOut, code := runDevCapturing(t,
-		[]string{"--", "trustvian-dev-no-such-command-exists"})
+	var errOut strings.Builder
+	code := superviseChild(streams{out: io_Discard{}, err: &errOut},
+		[]string{"trustvian-dev-no-such-command-exists"})
 
 	// 3, not 127: the child never started, so there is no child status to
 	// report and this is the wrapper's own failure.
 	if code != exitDevOperational {
-		t.Fatalf("exit code = %d, want %d\nstderr: %s", code, exitDevOperational, errOut)
+		t.Fatalf("exit code = %d, want %d\nstderr: %s", code, exitDevOperational, errOut.String())
 	}
-	if !strings.Contains(errOut, "cannot run") {
-		t.Errorf("stderr does not say the command could not be run:\n%s", errOut)
+	if !strings.Contains(errOut.String(), "cannot run") {
+		t.Errorf("stderr does not say the command could not be run:\n%s", errOut.String())
 	}
 	// The diagnostic names the command but not its arguments.
-	if !strings.Contains(errOut, "trustvian-dev-no-such-command-exists") {
-		t.Errorf("stderr does not name the command:\n%s", errOut)
+	if !strings.Contains(errOut.String(), "trustvian-dev-no-such-command-exists") {
+		t.Errorf("stderr does not name the command:\n%s", errOut.String())
 	}
 }
 
@@ -153,8 +154,8 @@ func TestDevPassesStdinThrough(t *testing.T) {
 	stderr := newTempFile(t, dir, "stderr")
 	withDevStdio(t, stdin, stdout, stderr)
 
-	if code := runDev(streams{out: io_Discard{}, err: io_Discard{}},
-		[]string{"--", "cat"}); code != 0 {
+	if code := superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
+		[]string{"cat"}); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
 
@@ -173,8 +174,8 @@ func TestDevDoesNotReformatChildOutput(t *testing.T) {
 
 	// No trailing newline, and a partial line on each stream: a wrapper that
 	// relayed output through a line-buffered pipe would add one or reorder them.
-	if code := runDev(streams{out: io_Discard{}, err: io_Discard{}},
-		[]string{"--", "sh", "-c", `printf 'out-no-newline'; printf 'err-no-newline' >&2`},
+	if code := superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
+		[]string{"sh", "-c", `printf 'out-no-newline'; printf 'err-no-newline' >&2`},
 	); code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -318,11 +319,31 @@ func requireUnix(t *testing.T) {
 	}
 }
 
-// io_Discard is a writer that drops everything.
+// commandAfterSeparator strips the leading -- these helpers are called with.
 //
-// Named with an underscore to stay obviously local: `streams` takes io.Writer,
-// and io.Discard would do — this exists only so the tests read as "output is
-// not the subject here".
+// The wrapper tests drive superviseChild, which is the unit whose contract the
+// discipline table describes. They went through runDev while it did nothing
+// else; once runDev composes a control plane, routing a wrapper assertion
+// through it would make every one of these tests depend on a helper binary and
+// on a server starting — and would report a composition failure as a wrapper
+// failure.
+//
+// runDev's composed path has its own test:
+// TestDevComposesTheRuntimeBeforeLaunchingTheChild.
+func commandAfterSeparator(t *testing.T, args []string) []string {
+	t.Helper()
+	_, command, ok := splitDevArgs(args)
+	if !ok || len(command) == 0 {
+		t.Fatalf("these helpers take -- followed by a command; got %v", args)
+	}
+	return command
+}
+
+// runDevCapturingStdout runs a child and returns what it wrote to stdout.
+//
+// Real files rather than pipes, because the child inherits the descriptor
+// directly and a pipe would need a reader draining it to avoid a deadlock —
+// which is the buffering this command must not introduce.
 func runDevCapturingStdout(t *testing.T, args []string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -330,7 +351,9 @@ func runDevCapturingStdout(t *testing.T, args []string) string {
 	stderr := newTempFile(t, dir, "stderr")
 	withDevStdio(t, nil, stdout, stderr)
 
-	if code := runDev(streams{out: io_Discard{}, err: io_Discard{}}, args); code != 0 {
+	code := superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
+		commandAfterSeparator(t, args))
+	if code != 0 {
 		t.Fatalf("exit code = %d, want 0\nstderr: %s", code, readFile(t, stderr))
 	}
 	return readFile(t, stdout)
@@ -342,7 +365,8 @@ func runDevWithFiles(t *testing.T, args []string) int {
 	dir := t.TempDir()
 	withDevStdio(t, nil,
 		newTempFile(t, dir, "stdout"), newTempFile(t, dir, "stderr"))
-	return runDev(streams{out: io_Discard{}, err: io_Discard{}}, args)
+	return superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
+		commandAfterSeparator(t, args))
 }
 
 // runDevWithSignal starts dev, waits for the child to say it is ready, sends a
@@ -364,8 +388,9 @@ func runDevWithSignal(t *testing.T, args []string, readyPath string,
 	}
 	done := make(chan result, 1)
 	started := time.Now()
+	command := commandAfterSeparator(t, args)
 	go func() {
-		code := runDev(streams{out: io_Discard{}, err: io_Discard{}}, args)
+		code := superviseChild(streams{out: io_Discard{}, err: io_Discard{}}, command)
 		done <- result{code: code, elapsed: time.Since(started)}
 	}()
 
