@@ -531,14 +531,18 @@ exit criterion.
 - **[079 — CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md).**
   A gate nobody reads is a gate nobody acts on. 078 makes the verdict
   scriptable; 079 makes it legible where the change is reviewed — a pull request
-  comment rendered from the machine-readable result and nothing else, with the
-  exit codes passed through untouched so an unreachable control plane is never
-  reported as a policy violation. It computes nothing and carries metadata
-  only. Its security posture is the specification's centre of gravity: running
-  the pull request's own workload and holding a token that can write to the
-  repository are never combined, so `pull_request_target` with an untrusted
-  checkout is refused outright, and a fork pull request loses the comment rather
-  than gaining a privileged checkout. Part of the
+  comment rendered from 078's result document and nothing else, with the exit
+  codes passed through untouched so an unreachable control plane is never
+  reported as a policy violation. It computes nothing and carries metadata only,
+  and it treats every string it renders as author-controlled, because behavior
+  descriptors come from the workload's own telemetry. Its security posture is
+  the specification's centre of gravity: **running the workload and holding a
+  token that can write to the pull request are placed in two different jobs** of
+  the same `pull_request` event, since `actions/checkout` persists credentials
+  by default and a compromised dependency in a same-repository pull request
+  would otherwise reach a write-scoped token. `pull_request_target` is refused
+  as a trigger outright, and a fork pull request loses only the comment. Part of
+  the
   [developer preview](#v0100--developer-preview), not a release gate.
 - **[080 — metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md).**
   *Behavioral observability does not require content observability* is this

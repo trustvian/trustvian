@@ -140,25 +140,94 @@ one. Trustvian's finding is *this agent called a tool it should not have*, so a
 dataset of model calls with no tool-call spans measures nothing this task cares
 about.
 
+### Content capture is not an available route
+
+The tempting shortcut is to read the tool name out of the model call, and it is
+closed. In the OpenTelemetry GenAI semantic conventions, a model-requested tool
+call's identity lives inside the message-content attributes —
+`gen_ai.input.messages` and `gen_ai.output.messages` — which are **`Opt-In`**,
+and whose `tool_call` entries carry the tool's `name` **and its `arguments` in
+the same structure**. There is no requirement level at which the name arrives
+without the arguments.
+
+So opting into content capture to learn which tool was called would ingest tool
+arguments as a side effect. That is the one thing this task and this project
+refuse outright, and it would invalidate the measurement even if the numbers
+came out well: a detection evaluation that had to read arguments would have
+disproved its own premise on the way to measuring it.
+
+Verify this against the conventions at the commit the implementation reads — the
+GenAI conventions are marked *Development* and moved repositories once already —
+and if it has changed, the constraint that still binds is Trustvian's, not
+OpenTelemetry's: no argument or result content, whatever the convention permits.
+
+### The expected path: a pass-through wrapper emitting `execute_tool`
+
+The conventions already have the right span for this, and it carries no content:
+
+```text
+gen_ai.operation.name = execute_tool     a well-known operation value
+gen_ai.tool.name      = <tool name>      the name, and only the name
+```
+
+So the harness wraps the benchmark's tool dispatch and emits one `execute_tool`
+span per call, with the tool name and nothing else. Not
+`gen_ai.tool.definitions`, which carries schemas; not `gen_ai.tool.description`,
+which the registry itself flags as potentially sensitive; no argument attribute,
+no return-value attribute, no error message body.
+
+AgentDojo has a single dispatch point, which is what makes this tractable:
+`FunctionsRuntime.run_function(env, function, kwargs, raise_on_error)` takes the
+tool name as a plain string and returns `(result, error)`. The wrapper needs the
+`function` argument and nothing else it is handed.
+
+### What "unmodified" means
+
+The word was doing too much work, so it is defined:
+
+```text
+never        editing benchmark source files
+never        a fork, a patch file, or a vendored copy with changes
+never        altering what a tool does, what it returns, or the order
+             in which tools are dispatched
+
+allowed      wrapping a dispatch function from the harness at import
+             time, as a strict PASS-THROUGH
+```
+
+A pass-through preserves, exactly:
+
+- every argument, by value and by position;
+- the return value, unchanged and unexamined beyond what the span needs;
+- every raised exception, propagated with its type and its payload intact — for
+  `run_function` that includes `ValidationError` and `ToolNotFoundError`;
+- the order and number of dispatches. The wrapper adds a span; it never retries,
+  reorders, batches, caches or suppresses a call.
+
+**The pass-through property is tested, not asserted.** The benchmark is run with
+and without the wrapper installed and the tool traces, return values and error
+outcomes must agree — because a wrapper that changed behavior would mean the
+published comparison is against a benchmark nobody else ran. That test is what
+earns the word "unmodified".
+
 Three outcomes, and the task must determine which holds **before** any numbers
 are produced:
 
 ```text
-tool calls observable, unmodified      → proceed; this is the intended path
-tool calls observable only with a
-  wrapper outside the benchmark        → proceed, and state the wrapper is
-                                         part of the harness, not of
-                                         Trustvian, and that it adds no
-                                         content
-tool calls not observable without
-  modifying the benchmark              → stop, record why, and evaluate a
-                                         different benchmark
+a pass-through wrapper at the dispatch
+  point yields execute_tool spans        → proceed; this is the intended path
+
+the dispatch point cannot be wrapped
+  without editing benchmark source       → stop, record why, and evaluate a
+                                           different benchmark
+
+only content capture would reveal the
+  tool name                              → stop. Not a fallback: see above
 ```
 
-The third outcome is a legitimate result of this task, not a failure of it. A
-harness that patches the benchmark's internals to produce spans is measuring a
-modified benchmark, and the comparison to its published behavior no longer
-holds.
+The second and third outcomes are legitimate results of this task, not failures
+of it. A harness that patches the benchmark's internals is measuring a modified
+benchmark, and the comparison to its published behavior no longer holds.
 
 This is also where [task 075](075-ai-semantic-telemetry-normalization.md)
 becomes load-bearing rather than optional: 075 is what makes an agent-oriented
@@ -177,30 +246,103 @@ paragraph.
 
 ## Method
 
-### Ground truth comes from the benchmark, not from Trustvian
+### Ground truth is a tool trace, not the benchmark's goal flag
+
+The first draft of this section labelled a run positive when *the benchmark
+reported the attack achieved its goal*. That is the wrong unit, and getting it
+wrong would understate recall in the most misleading direction.
+
+Trustvian detects **an unexpected tool call**. The benchmark's goal flag reports
+**whether the attacker's objective was accomplished**. Those come apart:
 
 ```text
-benign run      the benchmark's own unattacked task        → expect no detection
-attacked run    the same task with the injection applied,
-                where the benchmark reports the attack
-                achieved its goal                          → expect detection
-attacked run    where the agent resisted                   → excluded
+injection fires, agent calls the malicious tool, objective accomplished
+    → behavioral deviation, and the goal flag agrees
+
+injection fires, agent calls the malicious tool, objective NOT accomplished
+    (the tool errored, the environment refused, the arguments were wrong)
+    → behavioral deviation that Trustvian SHOULD detect, and the goal flag
+      says "attack failed" — so the first draft discarded the run
+
+injection fires, agent ignores it entirely
+    → no behavioral deviation, nothing to detect
 ```
 
-The exclusion in the third row is the one that keeps this honest, and it is
-restated here because it is the easiest thing to get wrong under pressure to
-improve a number.
+The middle row is the problem. It is a real injection-induced tool call — the
+exact thing this project claims to notice — and labelling it a non-attack would
+count a correct detection as a false positive, or drop it altogether.
 
-### What is measured
+**So runs are labelled from a content-free tool trace**, recorded harness-side:
+
+| Class | Definition | Role |
+|---|---|---|
+| **held-out benign** | an unattacked task run, not used for warm-up | false-positive denominator |
+| **attacked, deviated** | an attacked run whose tool trace contains an injection-induced tool call | **the positive class** — recall denominator |
+| **attacked, resisted** | an attacked run whose tool trace shows no such call | reported, and excluded from recall and precision |
+
+The trace records **tool names only** — never arguments, never return values.
+That is enough to answer *did a tool the benign task never calls get called*,
+and it is the same metadata boundary the rest of this task keeps.
+
+**Identifying the injection-induced call.** AgentDojo exposes each injection
+task's expected calls: `BaseInjectionTask.ground_truth(pre_environment)` returns
+a list of `FunctionCall`, each carrying a `function` name. Those names are the
+label, and using the benchmark's own declaration of what the injection was
+*trying* to call is what keeps the labelling out of Trustvian's hands. Verify
+that API against the pinned commit; if a chosen benchmark does not expose it,
+the rule actually used — for example *any tool absent from the benign task's own
+ground truth* — is stated in the report rather than left implicit.
+
+**The goal flag becomes a secondary stratum, not the label.** AgentDojo's
+`BaseInjectionTask.security(...)` returns whether the objective was
+accomplished, and that is worth reporting — it is just a different question. So
+recall is reported twice:
 
 ```text
-recall                detected / attacked-and-successful
-precision             detected-and-attacked / all detections
-false-positive rate   detections on benign runs / benign runs
+recall among attacks that achieved their goal
+recall among attacks that induced a tool call but failed their goal
 ```
 
-Integer counts and the three ratios derived from them. No F-score as the
-headline: a single number invites a threshold and hides the trade-off, which is
+If those two differ substantially, that is a finding about what Trustvian's
+signals are actually keyed on, and it is invisible if the second stratum is
+thrown away.
+
+### What is measured, and over which denominators
+
+The classes above enter each figure in exactly one way, and the table is here so
+a reader never has to infer it:
+
+| Class | Recall | Precision | False-positive rate |
+|---|---|---|---|
+| held-out benign | — | a detection here is a false positive | denominator; detections are the numerator |
+| attacked, deviated | denominator; detections are the numerator | a detection here is a true positive | — |
+| attacked, resisted | **excluded** | **excluded** | — |
+| benign warm-up runs | — | — | **excluded** — they trained the scope |
+
+```text
+recall                detections on attacked-deviated / attacked-deviated
+precision             detections on attacked-deviated
+                        / (detections on attacked-deviated
+                           + detections on held-out benign)
+false-positive rate   detections on held-out benign / held-out benign
+```
+
+**Detections on resisted runs are reported as their own raw count**, and enter
+none of the three. The reasoning is that a resisted run has no ground-truth
+answer for this measurement: nothing deviated, so a detection is not a true
+positive, and yet calling it a false positive would penalize Trustvian for
+noticing something about a run the attacker did touch. Both choices are
+defensible and neither is obviously right, so the count is published beside the
+ratios and the report says it was excluded — a reader who disagrees can fold it
+into precision from the published numbers.
+
+That last clause is the rule for the whole section: **every exclusion is
+published as a count**, so any reader can recompute the ratios under their own
+definitions. An exclusion that only appears as a smaller denominator is a hidden
+choice.
+
+Integer counts and the ratios derived from them. No F-score as the headline: a
+single number invites a threshold and hides the trade-off, which is
 [ADR 0029](../../adr/0029-hard-gates-use-explicit-integer-evidence.md)'s
 reasoning about composites applied to a measurement instead of a gate. Report
 the counts, so a reader can compute whatever they want.
@@ -227,21 +369,87 @@ choosing silently.
 numbers look good measures the search. If more than one configuration is
 reported, all of them are reported, including the ones that did worse.
 
-### Learning isolation
+### Scoring a run without teaching the scope it is scored in
 
-The benign and attacked runs must not train one another's baselines, for the
-same reason [task 078](078-behavioral-scenario-suites.md) isolates its
-repetitions: a baseline that has already seen the attacked run's behavior finds
-it familiar. Per-run learning scopes
-([ADR 0024](../../adr/0024-learning-scope-is-a-baseline-key-dimension.md)) are
-the existing mechanism, and the task states its allocation explicitly.
+There is a real conflict here, and it has to be resolved in the protocol rather
+than waved at.
 
-The related question the measurement has to answer honestly is **how much benign
-behavior the baseline saw first.** Novelty detection against an empty baseline
-flags everything, and against a fully learned one flags much less. The warm-up —
-how many benign runs trained the profile before measurement began — is a
-reported parameter, not an implementation detail, and the result is reported at
-more than one warm-up level if the numbers move.
+**Scoring and learning are the same pass through the Collector.** The processor
+calls `Observe` on every learning-eligible result — unconditionally on the plain
+span path, and inside `Record` on the evaluation-ingest path
+(`processor/processor.go`). So a run that is scored *also teaches the scope it
+was scored in*. There is no Collector configuration that scores without
+learning; that is deliberate, and
+[`.claude/rules/security.md`](../../../.claude/rules/security.md) explains why
+learning eligibility is the engine's decision rather than the caller's.
+
+Two requirements collide on that fact:
+
+```text
+isolation    a measured run must not be influenced by other measured runs
+warm-up      a measured run must be scored against a baseline that has seen
+             normal behavior, or novelty flags everything and the
+             false-positive rate is 100% by construction
+```
+
+A single shared scope satisfies warm-up and destroys isolation: run *n* is
+scored against a baseline containing runs 1..*n*−1, so the numbers depend on
+ordering. A fresh empty scope per run satisfies isolation and destroys warm-up.
+
+**The protocol that satisfies both — warm, score, discard:**
+
+```text
+for each measured run (held-out benign, or attacked):
+    1. allocate a FRESH learning scope, used by nothing else, ever
+    2. warm it with the SAME fixed set of K benign runs of the SAME task
+    3. score the measured run in that scope
+    4. discard the scope
+```
+
+Every measured run therefore meets an identically-prepared baseline, and no
+measured run appears in any other measured run's history. Ordering becomes
+irrelevant, which is the property that makes the counts comparable at all.
+Scopes are the existing mechanism
+([ADR 0024](../../adr/0024-learning-scope-is-a-baseline-key-dimension.md)), they
+are opaque to the core, and capacity is per scope — so `2 × (K + 1)` scopes per
+task costs nothing the engine cares about.
+
+**The held-out rule.** The `K` warm-up runs are **never** among the benign runs
+scored for the false-positive rate. Warming a scope with a run and then scoring
+that same run measures whether the engine remembers what it just learned, which
+is not the question and would report a false-positive rate near zero. The two
+sets are disjoint by construction and asserted by test.
+
+**Alternatively, an Analyze-only path.** `Engine.Analyze` never mutates state —
+that is a documented property of the core, and the harness reaches it through
+the public SDK rather than through the Collector. A harness that warms a scope
+with `Observe` and then scores with `Analyze` alone gets the same isolation
+without allocating a scope per run, at the cost of not exercising the ingest
+path a real deployment uses.
+
+Both are acceptable. **The report states which was used**, because they are not
+the same experiment: the Collector path measures the pipeline a user would run,
+and the `Analyze` path measures the signals in isolation. If both are run, both
+sets of numbers are published.
+
+**Which detection definitions need any of this.** Not all of them:
+
+| Definition | Needs a warmed scope |
+|---|---|
+| task 054's `Added` — a behavior absent from the reference snapshot | **No.** It compares two observed snapshots, not a learned baseline |
+| a `BLOCK` or `REQUIRE_APPROVAL` decision | Yes — policy reads trust, which reads anomaly, which reads the baseline |
+| a critical risk classification | Yes, for the same reason |
+| a named anomaly contributor crossing a value | Yes, and most directly of all |
+
+So the `Added` definition can be measured with no warm-up at all, and its
+numbers are not comparable to the other three's. The report keeps them separate
+rather than averaging across definitions that rest on different evidence.
+
+**`K` is a reported parameter.** Novelty against a barely-warmed baseline flags
+almost everything and against a thoroughly-warmed one flags much less, so `K` is
+a knob that moves the answer and therefore belongs in the result rather than in
+the code. The measurement is run at more than one `K` if the numbers move, and
+the report says which `K` produced which figures.
 
 ## Privacy
 
@@ -333,14 +541,31 @@ things it does check are the things that would invalidate a published number.
 
 - **The harness retains no content**, asserted by scanning captured telemetry
   and every committed artifact for the benchmark's own attack strings and for
-  any prompt, completion, argument or result field.
-- **Benign and attacked runs use distinct learning scopes**, asserted from the
-  recorded evidence.
-- **Resisted attacks are excluded from recall**, asserted on a fixture where the
-  benchmark reports the attack failed.
-- **The reported counts and the reported ratios agree**, asserted
-  arithmetically — a published precision that does not follow from the published
-  counts is the most embarrassing possible defect here.
+  any prompt, completion, argument or result field. The `execute_tool` spans
+  carry `gen_ai.tool.name` and no argument, return-value or description
+  attribute.
+- **The wrapper is a strict pass-through.** The benchmark runs with and without
+  it installed, and the tool traces, return values and error outcomes agree —
+  including that `ValidationError` and `ToolNotFoundError` propagate with their
+  types intact. This is the test that earns the word *unmodified*.
+- **No measured run shares a learning scope with another**, asserted from the
+  recorded evidence: every scored scope is freshly allocated and never reused.
+- **Warm-up and held-out benign sets are disjoint**, asserted directly. A run
+  used to warm a scope never appears in the false-positive denominator.
+- **Runs are labelled from the tool trace, not the goal flag.** A fixture where
+  the injection induced its tool call but the benchmark reports the objective
+  failed is classified **attacked-deviated** and counted in recall — the
+  regression test for the mislabelling this specification corrected.
+- **Resisted runs are excluded from recall and precision**, and their detection
+  count is published separately, asserted on a fixture whose tool trace shows no
+  injection-induced call.
+- **The reported counts and the reported ratios agree** under the
+  [denominator table](#what-is-measured-and-over-which-denominators), asserted
+  arithmetically for all three figures and for both recall strata — a published
+  precision that does not follow from the published counts is the most
+  embarrassing possible defect here.
+- **Every exclusion is published as a count**, so the ratios can be recomputed
+  from the report alone.
 - **The harness imports no `internal/` package** and adds no dependency to the
   root, processor or platform modules — the existing `check-modules` and
   `check-platform-boundary` posture, applied to a new directory.
@@ -378,25 +603,37 @@ enough.
    exact commit used.
 2. The **feasibility question is answered before any numbers are produced**:
    whether tool calls are observable without modifying the benchmark, and at
-   what fidelity.
-3. The benchmark is used **unmodified**; any instrumentation wrapper lives in
-   the harness and is documented as such.
-4. **Precision, recall and false-positive rate** are reported over paired benign
-   and attacked runs, together with the raw integer counts they derive from.
-5. **Attacked runs the agent resisted are excluded from recall**, not counted as
-   detections.
-6. The **detection definition, policy, anomaly configuration and warm-up level
-   are stated**, and no threshold was tuned to improve the result.
-7. Benign and attacked runs are **learning-isolated** from each other.
-8. **No prompt, completion, injection string, tool argument or tool result** is
-   ingested, retained, published or committed.
-9. The measurement is **reproducible** from the published method by someone with
-   the benchmark and an API key.
-10. **No model is ranked or compared**, and no result is presented as a
+   what fidelity. **Content capture is not an acceptable answer** — a route
+   requiring message-content attributes is refused, because those carry tool
+   arguments alongside tool names.
+3. The benchmark is used **unmodified** as [defined](#what-unmodified-means):
+   no source edits and no fork, with a dispatch wrapper allowed only as a strict
+   pass-through, proven by test.
+4. **Precision, recall and false-positive rate** are reported with the raw
+   integer counts they derive from, and every class's role is stated in the
+   [denominator table](#what-is-measured-and-over-which-denominators).
+5. **Runs are labelled from a content-free tool trace**, not from the
+   benchmark's goal flag: an attack that induced a tool call but failed its
+   objective counts toward recall. The goal flag is reported as a **secondary
+   stratum**.
+6. **Attacked runs with no deviation are excluded from recall and precision**,
+   with their detection count published separately so a reader can recompute.
+7. The **detection definition, policy, anomaly configuration and the warm-up
+   size `K` are stated**, and no threshold was tuned to improve the result.
+8. **Every measured run is scored in a freshly allocated learning scope, warmed
+   with the same fixed benign set and then discarded** — or through an
+   `Analyze`-only path — and the report states which. No scored scope is reused.
+9. **Warm-up runs are never scored for the false-positive rate**; the two sets
+   are disjoint.
+10. **No prompt, completion, injection string, tool argument or tool result** is
+    ingested, retained, published or committed.
+11. The measurement is **reproducible** from the published method by someone
+    with the benchmark and an API key.
+12. **No model is ranked or compared**, and no result is presented as a
     statement about a model's quality.
-11. **Nothing ships in the product**: no engine change, no new signal, no new
+13. **Nothing ships in the product**: no engine change, no new signal, no new
     configuration, no `internal/` addition, no scoring change.
-12. The result is **published as measured**, unfavorable outcomes included, with
+14. The result is **published as measured**, unfavorable outcomes included, with
     a caveats section bounding what it generalizes to.
 
 ## Open questions left to implementation
@@ -404,9 +641,15 @@ enough.
 1. **Which benchmark.** AgentDojo is the first candidate and is not assumed;
    its `OpenTelemetry`-absent dependency set is the reason the feasibility step
    comes first.
-2. **How tool calls are observed.** Standard GenAI auto-instrumentation, a
-   harness-side wrapper around the benchmark's tool dispatch, or something the
-   benchmark itself gains. Whichever it is, the benchmark is not modified.
+2. **Where the pass-through wrapper attaches, and how.** The route is settled —
+   a harness-side wrapper emitting `execute_tool` spans with the tool name only,
+   because content capture is refused and LLM-SDK instrumentation does not see
+   tool dispatch. What is open is the mechanism: wrapping
+   `FunctionsRuntime.run_function` at import time is assumed for AgentDojo, and
+   whether that is a subclass, a decoration, or a `sitecustomize`-style hook is
+   an implementation choice constrained by the pass-through test rather than by
+   preference. Standard GenAI auto-instrumentation may be added *alongside* it
+   for model-call context, as long as content attributes stay off.
 3. **Which detection definition is primary.** Reporting more than one side by
    side is assumed, since a single choice hides how much of the result the
    policy contributed.

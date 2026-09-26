@@ -454,8 +454,10 @@ Gate
 ```
 
 Every behavior carries its two counts, on both sides, whether or not it was
-classified as added. A reader has to be able to see *why* something did or did
-not cross the threshold, which a bare list of added behaviors does not show.
+classified as added or removed. A reader has to be able to see *why* something
+did or did not cross the threshold, which a bare list of added behaviors does
+not show. The machine-readable form of all of this is the
+[result document](#result-document).
 
 The counts are what distinguish the finding from the noise this task exists to
 absorb:
@@ -529,6 +531,101 @@ of *presence per run*, so they are a repeated presence question, not an ordering
 one. A scenario still asserts no sequence, and the engine's learned sequence
 evidence still reaches the verdict through checks 5 and 6 of the repeated gate,
 exactly as it reached task 056's checks 4 and 5.
+
+### Repeatedly removed is a classification, not a gate
+
+The gate above names only *repeatedly added* behaviors, and that leaves a hole a
+consumer would otherwise fill for itself: a behavior the candidate stopped
+producing is a finding too, and task 054 has classified `Removed` since it was
+written. So this task defines the mirror explicitly, and stops there.
+
+A behavior is **repeatedly removed** when, and only when:
+
+```text
+reference_runs_present >= k    and    candidate_runs_present <= j
+```
+
+The same `k` and `j` the added rule uses, reflected. No second pair of
+thresholds: one `k` states how many runs make a behavior's presence real for
+this scenario, and that judgement does not change direction with the comparison.
+
+**There is no removed gate, and that is deliberate.** No maximum, no limit, no
+contribution to the verdict. Task 056 gates added behaviors and not removed
+ones, and inventing a limit here would be a new acceptance rule this task has no
+evidence contract for — exactly what
+[ADR 0029 § 7](../../adr/0029-hard-gates-use-explicit-integer-evidence.md)
+requires be added as new named gates with their own review rather than slipped
+in beside an existing one. A candidate that legitimately dropped a behavior
+would then fail a gate nobody chose.
+
+So the classification exists to be *reported*, and the six checks stay six. What
+this buys is that no consumer has to derive it: a behavior is labelled added,
+removed, or neither, by the control plane, and
+[task 079](079-ci-integration-github-action.md) renders the label it was given.
+
+## Result document
+
+The machine-readable result is a consumed contract, not an output format, so its
+required content is stated here rather than discovered by whoever parses it
+first. [Task 079](079-ci-integration-github-action.md) renders it into a pull
+request comment and
+[task 080](080-metadata-only-detection-evaluation.md) may read it as
+measurement input — two consumers, which is the point at which "whatever the
+implementation emits" stops being good enough.
+
+**Exact JSON field names are the implementation's**, and are published in
+`docs/compatibility.md` when they exist. What is fixed is that each of the
+following is present and machine-readable:
+
+```text
+scenario        name · runs (N) · k · j
+                the thresholds, because a reader cannot check a k/N count
+                against a rule the document does not carry
+
+per behavior    behavioral identity · its descriptor
+                reference_runs_present  [0, N]
+                candidate_runs_present  [0, N]
+                classification — repeatedly added, repeatedly removed, or
+                neither, as classified above and never by a consumer
+
+gate            the six checks, in the stable order this task defines,
+                each with its actual value, its limit or rule, and its
+                own pass/fail outcome — all six, including the ones
+                that passed
+
+verdict         pass | fail — the closed vocabulary, nothing else
+
+producers       the CLI version and the control-plane version that
+                produced the result
+
+identity        the scenario execution, and the reference and candidate
+                evaluation run identifiers
+```
+
+Four properties of that list are load-bearing rather than incidental.
+
+**Every behavior appears, not only the classified ones.** The counts are what
+distinguish a finding from the nondeterminism this task exists to absorb, and a
+document listing only added behaviors cannot show a reader why something did
+*not* cross the threshold.
+
+**All six checks appear with their outcomes.** Task 056 evaluates every gate on
+every call with no short-circuit so an auditor sees everything measured; a
+document that dropped the passing checks would undo that at the serialization
+boundary, and would leave a consumer unable to tell a check that passed from one
+that did not run.
+
+**The producer versions are in the document.** A gate result whose producer is
+unknown is not evidence, and a consumer must not have to make a second call to
+find out what produced the first.
+
+**Nothing in it is content.** Behavioral identities, descriptors, counts,
+thresholds, verdicts and identifiers — no prompt, completion, tool argument,
+tool result or body, exactly as the rest of this chain already guarantees.
+Note for consumers that behavioral descriptors are *producer-supplied strings*:
+they come from the workload's own telemetry, so a consumer rendering them
+anywhere treats them as untrusted input — see
+[task 079](079-ci-integration-github-action.md).
 
 ## Architecture
 
@@ -754,6 +851,16 @@ Additive for the repeated evidence too, and this matters because
   the same scan style that already keeps the CLI from reimplementing the gate.
 - The runner imports no platform package, per ADR 0033.
 - Machine-readable output is valid, complete, and emitted exactly once.
+- **The result document carries every field
+  [it is required to](#result-document)**, including `N`, `k`, `j`, all six
+  checks with their outcomes, and both producer versions — asserted field by
+  field, because two other tasks consume it.
+- **Every observed behavior appears in the document**, not only the classified
+  ones, with both counts.
+- **A repeatedly removed behavior is classified by the control plane** and
+  labelled as such in the document: present in `>= k` reference runs and
+  `<= j` candidate runs. And it contributes to **no** check — asserted by
+  showing that adding one does not change the verdict.
 
 ## Documentation
 
@@ -813,7 +920,10 @@ a future reader will ask "why not the obvious thing":
 6. No answer-quality, judge, rubric, hallucination, relevance or benchmark
    concept exists anywhere in the feature.
 7. No dataset, prompt-registry or model-comparison entity is introduced.
-8. Results are machine-readable and usable in CI without parsing human output.
+8. Results are machine-readable and usable in CI without parsing human output,
+   and the [result document](#result-document) carries every field listed there
+   — `N`, `k` and `j`, every behavior with both counts and its classification,
+   all six checks with their outcomes, the verdict, and both producer versions.
 9. A scenario asserts no action ordering of its own, **and** does not suppress
    the engine's sequence-aware evidence: a reorder that produces gated
    evidence fails, and one that does not, passes. The runner decides neither.
@@ -841,6 +951,9 @@ a future reader will ask "why not the obvious thing":
     been performed and recorded** in this task and its ADR, and the documented
     `N` and `k` guidance cites it. This criterion is not satisfied by a
     plausible number.
+18. **Repeatedly removed behaviors are classified by the control plane** under
+    the mirrored rule, reported in the result document, and gate nothing. No
+    consumer derives the classification for itself.
 
 ## Open questions left to implementation
 

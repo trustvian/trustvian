@@ -53,8 +53,11 @@ token section before it has a rendering section.
 - A **GitHub Action** that invokes task 078's scenario command in a workflow.
 - **Exit-code passthrough**: `0`, `1`, `2`, `3` reach the job unchanged.
 - A **pull request comment**, rendered from the machine-readable result only.
-- A documented workflow example with the minimum token permissions it needs,
-  and a documented fork-pull-request path that does not escalate.
+- A **two-job workflow shape** that separates running the workload from holding
+  a token that can write to the pull request — see
+  [the job split](#the-job-split-running-the-workload-never-holds-the-write-token).
+- A documented workflow example with the minimum permissions **per job**, and a
+  documented fork-pull-request path that does not escalate.
 
 ## Non-goals
 
@@ -104,25 +107,47 @@ on:
   pull_request:
     branches: [main]
 
-permissions:
-  contents: read
-  pull-requests: write
+# No workflow-level grant. Each job states its own, so the job that runs
+# the workload cannot inherit one it does not need.
 
 jobs:
-  behavior:
+  run:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@<pinned sha>
+        with:
+          persist-credentials: false
 
+      # Runs the scenario, uploads the result document, exits with the
+      # scenario's own code — so this job is the gate.
       - uses: trustvian/<action>@<pinned sha>
         with:
           scenario: scenarios/support-login.yaml
-          comment: true
+
+  comment:
+    runs-on: ubuntu-latest
+    needs: run
+    if: always()
+    permissions:
+      pull-requests: write
+    steps:
+      # Downloads the artifact and renders it. No checkout, so no
+      # pull request code exists in this job to execute.
+      - uses: trustvian/<action>@<pinned sha>
+        with:
+          mode: comment
 ```
 
-Four things and nothing more: check out the code, run the scenario, comment,
-let the exit code stand. The exact input names and the action's location are
-implementation decisions — see
+Two jobs, and the split is the security property rather than a structural
+preference — see
+[the job split](#the-job-split-running-the-workload-never-holds-the-write-token).
+The `run` job is the gate: its exit code is the check a reviewer sees. The
+`comment` job renders and can fail without changing that.
+
+The exact input names, whether this ships as one action with two modes, and the
+action's location are implementation decisions — see
 [Open questions](#open-questions-left-to-implementation).
 
 ## Exit codes are passed through, not interpreted
@@ -173,6 +198,8 @@ Trustvian behavioral gate — FAIL
     send_email                    5/5         5/5
     export_customer               0/5         5/5   + added
 
+  Added when present in >= 4 of 5 candidate runs and <= 0 of 5 reference runs
+
   Gate
     repeatedly added behaviors     1 / max 0        FAIL
     worst block decisions per run  0 / max 0        pass
@@ -180,17 +207,31 @@ Trustvian behavioral gate — FAIL
     reference repetitions          5 / 5            pass
     candidate repetitions          5 / 5            pass
     repetitions lacking evidence   0 / max 0        pass
+
+  trustvian <version> · control plane <version>
 ```
 
-Every number above is a field in task 078's result document. The action's whole
-job is transcription and layout.
+Every number above is a field of task 078's
+[result document](078-behavioral-scenario-suites.md#result-document). The
+action's whole job is transcription and layout.
 
-Four properties this has to hold:
+Five properties this has to hold:
+
+**The `k` and `j` thresholds appear.** A reader shown `0/5 → 5/5   + added`
+cannot check the label without the rule that produced it, and task 078's own
+output carries the thresholds for exactly that reason. They are fields of the
+document, so showing them is transcription and not an inference.
 
 **Added and removed behaviors both appear, with their `k/N` counts on both
-sides.** A removed behavior is a finding too — a candidate that stopped calling
-`audit_log` is exactly as interesting as one that started calling
-`export_customer`, and task 054 has reported `Removed` since it was written.
+sides — carrying the label task 078 assigned.** A removed behavior is a finding
+too: a candidate that stopped calling `audit_log` is as interesting as one that
+started calling `export_customer`. Task 078 defines
+[repeatedly removed](078-behavioral-scenario-suites.md#repeatedly-removed-is-a-classification-not-a-gate)
+as the mirrored rule and classifies it in the control plane, so the action
+renders a classification rather than deriving one — and it renders every
+behavior's counts whether or not either label applies. An action that decided
+for itself what "removed" means at `N > 1` would be the second implementation
+this whole specification exists to avoid.
 
 **Every check appears, passing ones included.** Task 056 evaluates every gate on
 every call with no short-circuit, precisely so an auditor sees everything
@@ -220,27 +261,214 @@ A reviewer reading a pull request with nine stale gate comments cannot tell
 which one is current, which is a worse outcome than no comment. The marker is
 also what makes the behavior testable rather than incidental.
 
+### Consumed fields
+
+The action reads task 078's
+[result document](078-behavioral-scenario-suites.md#result-document) and nothing
+else. That section is the contract; this one records what consuming it means.
+
+```text
+scenario name · N · k · j          the header and the threshold line
+per behavior: identity, both
+  counts, and 078's classification  the behavior table
+the six checks, with actual,
+  limit or rule, and outcome        the gate block, all six
+verdict                             the headline
+producer versions                   the footer
+```
+
+Two consequences:
+
+**A missing required field is uninterpretable.** Not a blank cell, not a dash,
+not a best-effort comment with a gap in it — no comment at all, and a reported
+reason. The action has no way to distinguish "the field is absent because the
+producer is older" from "the field is absent because something truncated the
+document", and a comment that silently omits a failing check is worse than
+silence.
+
+**The version in the footer comes from the document, not from a separate
+call.** Asking the binary its version, or reading an action input, would report
+what is installed rather than what produced this result — and those differ
+exactly when it matters, such as a cached binary or a retried job. The document
+knows what wrote it.
+
+### Every rendered string is untrusted
+
+This is the subtlety in *rendered, never computed*: rendering faithfully is not
+the same as rendering raw.
+
+Behavioral identities are descriptors built from telemetry — host names, service
+names, tool names, operation names — and that telemetry is emitted by **the pull
+request's own workload**. Scenario names come from a file in the pull request.
+So an author controls, near enough exactly, the strings this action writes into
+a comment on their own pull request:
+
+```text
+a tool named  [click here](http://evil.example)   becomes a link
+a tool named  <img src=x onerror=...>             becomes HTML
+a tool named  @org/security-team                  notifies a team
+a tool named  Fixes #1234                         cross-references an issue
+a tool named  | 0/5 | 5/5 | pass |                forges a table row
+```
+
+The last one is the interesting one. The others are nuisances; a forged table
+row can make a FAIL look like a PASS to a reviewer skimming the comment, which
+turns a rendering bug into a bypass of the thing the gate exists to report.
+
+So every string sourced from the document is rendered **inert**:
+
+| Requirement | Why |
+|---|---|
+| escaped, or wrapped in a code span with backticks in the value handled | markdown and HTML both stop being active |
+| `@mentions` neutralized | a comment must not notify people the author chose |
+| control characters and newlines stripped | a newline is how a forged table row or a fake section gets in |
+| a per-string length cap, truncation marked | one 10 KB tool name must not push the gate block out of view |
+| a total-size cap below GitHub's comment limit, with truncation stated visibly in the comment | a comment silently cut off at the API's limit can lose the verdict; a reader must be told the body was shortened |
+
+**Escaping is layout, not computation.** It changes how a value is displayed,
+never what the value is, and it derives no number — so it does not weaken the
+*renders only* rule, it is part of rendering correctly. The same treatment
+applies to the job summary, which is markdown rendered in the same way and is
+the *fallback* path, so it is the one most likely to be forgotten.
+
 ## Token permissions and fork pull requests
 
 This is the section the task exists to get right.
 
-### The minimum
+### The job split: running the workload never holds the write token
+
+The obvious shape — one job that runs the scenario and then comments — is
+wrong, and it is wrong on a **same-repository** pull request, where the token is
+not read-only.
+
+```text
+one job, contents: read + pull-requests: write
+    ↓
+actions/checkout        persist-credentials defaults to true, so the token
+                        is written into .git/config
+    ↓
+the scenario runs       the pull request's own code, and its whole
+                        dependency tree
+    ↓
+that code can read a token that can write to the pull request
+```
+
+Nothing exotic is required to exploit it. A compromised transitive dependency in
+the workload reads the credential out of the local git config, or out of the
+environment, and it now holds write scope in the base repository. The pull
+request that introduced it looks like a dependency bump.
+
+**So the two capabilities are placed in two jobs of the same `pull_request`
+workflow**, and neither job holds both:
+
+| | `run` job | `comment` job |
+|---|---|---|
+| Grants | `contents: read` | `pull-requests: write` |
+| Checks out PR code | yes, `persist-credentials: false` | **never** |
+| Executes PR code | yes — this is the scenario | **never** |
+| Produces | the result document, as an artifact | the comment |
+| Exit code | the scenario's, unchanged — **this job is the gate** | cannot change the gate |
+
+Four properties make that split real rather than cosmetic:
+
+**Permissions are scoped per job, never at workflow level.** GitHub's
+documentation is explicit that a job-level `permissions` key overrides a
+workflow-level one, and that once any scope is named every unnamed scope becomes
+`none`. A workflow-level grant would hand `pull-requests: write` to the job
+running the workload, which is the whole thing being avoided — so the example
+declares no workflow-level `permissions` block at all.
+
+**`persist-credentials: false` on the checkout.** `actions/checkout` defaults
+`persist-credentials` to `true` and writes the token into the local git config
+for later git commands to use. The scenario needs the source, not the ability to
+push it, and the default is the reason this has to be stated rather than
+assumed.
+
+**The comment job never checks out.** Not with `persist-credentials: false`,
+not sparsely, not the base ref. It downloads an artifact and renders it; there
+is no pull request code in that job for a compromised dependency to live in,
+because there is no pull request code in it at all.
+
+**The gate is the run job.** The comment job is `needs: run` with `if:
+always()`, so a FAIL still gets commented — but the check a reviewer sees is
+the run job's, and a comment job that fails, is skipped, or is never granted its
+permission cannot turn a FAIL into a pass. This is the same rule as
+[a comment failure never changing the exit code](#exit-codes-are-passed-through-not-interpreted),
+enforced structurally by putting the verdict in a different job from the
+rendering.
+
+### Why this is not the rejected `workflow_run` handoff
+
+It resembles it — an artifact crosses from the job that ran untrusted code to
+the job that comments — so the difference has to be stated rather than left to
+the reader.
+
+```text
+workflow_run handoff        a SECOND workflow, triggered after the first,
+                            running in the BASE repository's context with a
+                            write-scoped token and access to secrets, even
+                            for a fork pull request
+
+this job split              ONE workflow, the same pull_request event, the
+                            same token GitHub already decided to issue for
+                            that event
+```
+
+Three differences, each load-bearing:
+
+- **Same event, one workflow.** There is no second trigger and no privileged
+  re-entry. Both jobs run under the `pull_request` event the contributor's
+  push already caused.
+- **No base-repository privilege is acquired.** `workflow_run` escalates: it
+  gets a write token *because* it runs in the base context. Nothing here
+  escalates — the `comment` job asks for a scope of the token this event
+  already carries.
+- **On a fork pull request the comment job's token is still read-only.**
+  GitHub issues a read-only `GITHUB_TOKEN` for a fork `pull_request` event, and
+  declaring `pull-requests: write` in a job does not manufacture write access
+  it was never granted. The fork path below is therefore the same whether the
+  work is in one job or two.
+
+That last point is the one that matters most: the split solves the
+*same-repository* exposure, and changes nothing about forks. Both problems are
+real and they are not the same problem.
+
+### The minimum, per job
 
 ```yaml
+# run job
 permissions:
   contents: read
+
+# comment job
+permissions:
   pull-requests: write
 ```
 
-Nothing else. Not `write-all`, not `issues: write` unless the chosen comment
-API requires it, not `actions: write`, not `id-token`. The action documents the
-minimum it needs and the documentation states why each one is there.
+Nothing else in either. Not `write-all`, not `actions: write`, not `id-token`,
+and not `contents: read` in the comment job — it checks nothing out.
+
+Two things the implementation must confirm rather than inherit from this
+paragraph:
+
+- **Whether a same-run artifact download needs any `GITHUB_TOKEN` scope.**
+  `actions/download-artifact` documents a token as required for a *different*
+  workflow run or repository, and `actions: read` is the scope named there.
+  Within one run it uses the run's own artifact service, so the expectation is
+  **no `GITHUB_TOKEN` scope at all** — which is why `actions: read` is absent
+  from the comment job above. Confirm it against the pinned action version, and
+  if a scope turns out to be required, document it and say why.
+- **Whether the chosen comment API needs `issues: write` instead of
+  `pull-requests: write`.** The issue-comment endpoint on a pull request is
+  reached through the issues API, and the two scopes are not interchangeable in
+  every case. Whichever one is required is the one documented, and only that
+  one.
 
 Note what this repository's own CI does for comparison: `ci.yml` runs with
 `contents: read` and nothing more, and says so in a comment — *"a fork pull
 request therefore cannot obtain credentials, because the job has none to
-obtain."* A behavioral gate that comments cannot be quite that austere, which is
-exactly why its token story has to be deliberate.
+obtain."* The `run` job matches that austerity exactly. The `comment` job is
+the only place a write scope exists, and it is the only place that runs nothing.
 
 ### `pull_request_target` is refused
 
@@ -248,8 +476,26 @@ exactly why its token story has to be deliberate.
 ✗  on: pull_request_target  +  actions/checkout with the PR head
 ```
 
-This is the canonical GitHub Actions privilege escalation, and this task must
-never document, example, or implement it.
+This is the canonical GitHub Actions privilege escalation, and no workflow this
+task ships or documents may be triggered by it.
+
+**Stated precisely, because the check has to be mechanical.** What is refused is
+the *trigger*, not the string:
+
+```text
+refused     any `on:` trigger — in the action, in a shipped example
+            workflow, or in any YAML code block in its documentation —
+            that names `pull_request_target`
+
+required    prose explaining the refusal and its reason, wherever a
+            reader copying a workflow will meet it
+```
+
+An earlier draft of this specification asked for both "the string appears
+nowhere" and "the documentation explains the refusal", which cannot both hold: a
+document that explains why `pull_request_target` is refused necessarily contains
+the word. The refusal is about what a workflow is *triggered by*, so that is
+what the scan checks, and the explanation is not collateral damage.
 
 `pull_request_target` runs in the **base** repository's context: the workflow
 file comes from the base branch, the `GITHUB_TOKEN` carries write scope, and
@@ -272,26 +518,33 @@ On a `pull_request` event from a fork, GitHub issues a **read-only**
 `GITHUB_TOKEN` and withholds secrets. That is the correct posture, and the
 action works within it rather than around it:
 
-| Situation | Behaviour |
-|---|---|
-| same-repository pull request, `pull-requests: write` granted | scenario runs, comment posted or updated, exit code stands |
-| fork pull request, read-only token | scenario runs, **comment skipped with a warning**, result written to the job summary, exit code stands |
-| `comment: false` | scenario runs, job summary only, exit code stands |
-| token lacks the permission for another reason | same as the fork path: warn, summarize, preserve the exit code |
+| Situation | `run` job | `comment` job |
+|---|---|---|
+| same-repository pull request | scenario runs, artifact uploaded, exit code stands | comment posted or updated |
+| fork pull request, read-only token | unchanged — scenario runs, artifact uploaded, exit code stands | **comment skipped with a warning**; result written to the job summary |
+| the comment job is not run at all | unchanged | nothing; the gate is unaffected |
+| token lacks the permission for another reason | unchanged | same as the fork path: warn, summarize |
 
 The degradation is **loud and downward**: the gate still runs, the verdict still
-decides the job, and the only thing lost is the rendering. The job summary
+decides the check, and the only thing lost is the rendering. The job summary
 (`GITHUB_STEP_SUMMARY`) needs no token at all, which is why it is the fallback
 rather than an alternative rendering.
 
+Note that the `run` job column is identical on every row. That is the point of
+the split: fork or not, the job that executes the workload behaves the same way
+and holds the same read-only scope, so a fork pull request is not a different
+security posture — it is the same posture with the rendering unavailable.
+
 **Two things this explicitly does not do.** It does not detect a fork and switch
-event types. It does not stash the result as an artifact for a second,
-privileged workflow to pick up and comment with — the `workflow_run` pattern.
-That pattern is a legitimate technique, and it is also a privileged workflow
-consuming an artifact produced by untrusted code, which needs its own threat
-model and its own review. It is named here as deliberately out of scope rather
-than overlooked; if it is ever wanted, it is a separate task with a separate
-ADR.
+event types. And it does not reach for the `workflow_run` pattern to comment on
+fork pull requests — a second, privileged workflow that picks up the artifact
+and posts with a base-context token. That pattern is a legitimate technique, and
+it is also a privileged workflow consuming an artifact produced by untrusted
+code, which needs its own threat model and its own review. It is named here as
+deliberately out of scope rather than overlooked; if it is ever wanted, it is a
+separate task with a separate ADR. It is **not** what
+[the job split](#why-this-is-not-the-rejected-workflow_run-handoff) does, and
+that section says why in detail, because the two look alike from a distance.
 
 ### The workload runs untrusted code, and the specification says so
 
@@ -300,26 +553,56 @@ action does not pretend to sandbox it, exactly as task 078 does not pretend to
 sandbox a scenario file. What the action guarantees is narrower and honest:
 
 > The action never combines running the workload with holding a token that can
-> write to the repository on a fork pull request.
+> write to the repository — on any pull request, fork or not.
 
-That is testable. "The workload is safe" is not, and is not claimed.
+The earlier form of that sentence ended at *"on a fork pull request"*, which was
+too weak: forks get a read-only token from GitHub anyway, so the fork case was
+never the exposure. The same-repository case was, and
+[the job split](#the-job-split-running-the-workload-never-holds-the-write-token)
+is what makes the stronger sentence true.
+
+It is testable, and the test is structural rather than behavioral: the job that
+executes the workload holds no write-scoped permission, and the job that holds
+one executes nothing. "The workload is safe" is not testable, and is not
+claimed.
 
 ## Architecture
 
 ```text
-workflow YAML
-    ↓
-action            ← this task: invocation, rendering, comment lifecycle
-    ↓
-trustvian eval    ← task 078's scenario command
-    ↓
-control plane     ← diff · scorecard · gate · repeated gate, all server-owned
+                      pull_request event
+                              │
+         ┌────────────────────┴────────────────────┐
+         │ run job                                 │ comment job
+         │   contents: read                        │   pull-requests: write
+         │   checkout, persist-credentials: false  │   no checkout
+         │        ↓                                │        ↓
+         │   action (run mode)                     │   action (comment mode)
+         │        ↓                                │        ↑
+         │   trustvian eval  ← task 078's command  │        │
+         │        ↓                                │        │
+         │   control plane   ← diff · scorecard ·  │        │
+         │                     gate · repeated     │        │
+         │                     gate, server-owned  │        │
+         │        ↓                                │        │
+         │   result document ──── artifact ────────┼────────┘
+         │        ↓                                │
+         │   exit code = the gate                  │   renders · comments
+         └─────────────────────────────────────────┴─────────────────────────
 ```
 
 Three layers of adapter, and the authority is at the bottom of the stack in all
 three. The action's source contains no threshold, no comparison against a limit,
 and no verdict composition — asserted by the same structural scan style task 078
 applies to its runner and task 060 applies to the CLI.
+
+**The artifact is a trust boundary, not just a transport.** The comment job
+receives a document produced by a job that executed the pull request's code, so
+it parses it strictly rather than trustingly: a size bound before parsing, a
+schema-shaped decode rather than free-form traversal, the closed verdict
+vocabulary, and no execution of anything the document contains. An
+uninterpretable artifact produces no comment, exactly as a missing one does. The
+document is data in both directions — this is the same posture task 078 takes
+toward `DecisionRecord` at its own ingest boundary.
 
 The action needs a `trustvian` binary. How it gets one — a released artifact, a
 container image, a build from the checkout, or a separate setup action — is an
@@ -370,17 +653,42 @@ cannot be faked.
 - **The action computes nothing** — a structural scan of its sources for a
   threshold comparison, a verdict composition, or an arithmetic operation over
   gate counts.
-- **No `pull_request_target` anywhere.** A scan of the action, its documentation
-  and every example workflow it ships. This is the security test that must fail
-  loudly if anyone adds the convenient thing.
-- **The documented permissions are the minimum.** A run with
-  `pull-requests: write` removed still runs the scenario, still exits correctly,
-  and takes the summary path.
-- **Fork behavior** exercised against a read-only token: the scenario runs, no
-  comment is attempted or the attempt is handled, the summary is written, the
+- **No workflow trigger names `pull_request_target`.** A scan of every `on:`
+  block in the action, in every example workflow it ships, and in every YAML
+  code block in its documentation. Prose mentioning it is expected and must not
+  fail the scan — the check is on triggers, not on the string.
+- **The job that runs the workload holds no write-scoped permission**, and **the
+  job that holds one executes no pull request code** — asserted against the
+  shipped example workflows by parsing their `permissions` and their steps. This
+  pair is the structural form of the guarantee, and it is the test that fails if
+  anyone collapses the two jobs back into one.
+- **No shipped example grants workflow-level `permissions`**, since a
+  workflow-level grant would reach the run job.
+- **Every shipped checkout sets `persist-credentials: false`.**
+- **The comment job's example declares no `contents` scope** — it checks nothing
+  out, so it needs none.
+- **The comment job treats the artifact as untrusted**: an oversized artifact is
+  refused before parsing; a structurally invalid one produces no comment; a
+  verdict outside the closed vocabulary produces no comment.
+- **Rendered strings are inert.** A result document whose behavior names contain
+  a markdown link, `@org/team`, raw HTML, backticks, a newline, and a
+  10,000-character string renders inert in **both** the comment and the job
+  summary: no link, no mention, no HTML, no broken code span, no extra table row
+  or line, and the oversized name truncated with the truncation marked.
+- **A forged table row cannot alter the gate block.** The specific regression
+  test for the case that matters: a behavior name containing pipe characters and
+  a newline does not produce a row that reads as a passing check.
+- **Total size is capped below the comment limit**, and a body that had to be
+  shortened says so visibly.
+- **A missing required document field produces no comment** and names the field,
+  rather than rendering a gap.
+- **The version in the comment comes from the document**, asserted by rendering
+  a document whose recorded version differs from the binary's.
+- **Fork behavior** exercised against a read-only token: the run job is
+  unaffected, the comment is skipped with a warning, the summary is written, the
   exit code stands.
-- **The `trustvian` version used is recorded in the comment**, asserted on a
-  rendered body.
+- **A failed, skipped, or never-run comment job does not change the check** —
+  asserted on the run job's conclusion.
 
 The one path that cannot be faked is a real pull request comment against a real
 API. The task should carry a minimal end-to-end job — this repository's own pull
@@ -403,24 +711,44 @@ preview does not make it gate-verified; Track A's release principle applies.
 ## Documentation
 
 Written by the implementation PR: a CI guide (or a section of
-`docs/platform-cli.md`) with a complete working workflow, the minimum
-permissions and the fork path; `docs/compatibility.md` (the action's inputs, and
-the comment body's OBSERVATIONAL class); `docs/ROADMAP.md`; this task's status;
-the task index; and `CHANGELOG.md`.
+`docs/platform-cli.md`) with the complete **two-job** workflow, the per-job
+permissions and why each is where it is, and the fork path;
+`docs/compatibility.md` (the action's inputs, and the comment body's
+OBSERVATIONAL class); `docs/ROADMAP.md`; this task's status; the task index; and
+`CHANGELOG.md`.
 
-The security posture is documentation, not just implementation. The `docs/`
-material must state the `pull_request_target` refusal and its reason where a
-reader copying a workflow will see it — a warning in a spec nobody copies from
-prevents nothing.
+The security posture is documentation, not just implementation, and it is the
+part most likely to be lost in transit — people copy workflows.
+
+- The published workflow **is** the two-job shape. A one-job convenience variant
+  must not appear anywhere, because that is the version that gets copied.
+- The `pull_request_target` refusal and its reason are stated in prose where a
+  reader copying a workflow will meet them. That prose is required, and the
+  trigger scan above is written so that requiring it does not break the scan.
+- `persist-credentials: false` is explained rather than just present, since a
+  reader who does not know the default is `true` will delete it as noise.
 
 ## ADR
 
-Warranted for one decision, and it is the security one: **why the action refuses
-`pull_request_target` and degrades on fork pull requests instead.** The
-alternatives are real and each was rejected for a stated reason — the privileged
-`workflow_run` handoff, a bot token with its own credentials, requiring
-maintainer approval before the gate runs — and a future reader who wants
-comments on fork pull requests will reach for one of them.
+Warranted for one decision with two halves, and both are security:
+
+**Why the action splits running the workload from holding the write token**, and
+why that split is two jobs of one `pull_request` workflow rather than the
+`workflow_run` handoff it resembles. A future maintainer will look at two jobs
+passing an artifact and try to simplify them into one; the ADR is what tells
+them that the second job's whole purpose is to hold a permission the first must
+not have, and that `actions/checkout` persisting credentials by default is why
+the exposure is real rather than theoretical.
+
+**Why it refuses `pull_request_target` and degrades on fork pull requests
+instead.** The alternatives are real and each was rejected for a stated reason —
+the privileged `workflow_run` handoff, a bot token with its own credentials,
+requiring maintainer approval before the gate runs — and a future reader who
+wants comments on fork pull requests will reach for one of them.
+
+The two halves belong in one record because they answer the same question at two
+distances: a fork pull request and a same-repository pull request are different
+exposures, and the mitigation for one is not the mitigation for the other.
 
 Whether the exit-code passthrough needs its own ADR is doubtful: it inherits
 ADR 0033 § 9 and § 10 rather than deciding anything new, and the ADR should say
@@ -433,23 +761,35 @@ so rather than restating them.
 2. Exit codes `0`, `1`, `2` and `3` reach the job unchanged. `3` is never
    reported as `1`.
 3. The action suppresses no exit code and hard-codes no `continue-on-error`.
-4. The comment is rendered from the machine-readable result alone; no number in
-   it is computed by the action.
+4. The comment is rendered from task 078's
+   [result document](078-behavioral-scenario-suites.md#result-document) alone;
+   no number in it is computed by the action, and a missing required field
+   produces no comment.
 5. Added and removed behaviors both appear with their `k/N` counts on both
-   sides, and every gate check appears including passing ones.
+   sides, carrying the classification task 078 assigned rather than one the
+   action derived; the `k` and `j` thresholds appear; and every gate check
+   appears including passing ones.
 6. An uninterpretable result posts no comment and reports why.
 7. A comment failure never changes the exit code, and is never silent.
 8. One comment per scenario per pull request, edited in place.
-9. The documented workflow grants `contents: read` and `pull-requests: write`
-   and nothing else.
-10. **No `pull_request_target` appears in the action, its documentation, or any
-    example it ships**, and running the workload is never combined with a
-    repository-write token on a fork pull request.
-11. A fork pull request still runs the gate and still fails the job on a FAIL;
-    only the comment degrades, loudly.
+9. **The job that runs the workload holds no write-scoped permission, and the
+   job that holds one executes no pull request code.** Permissions are granted
+   per job; no shipped example grants them at workflow level; every shipped
+   checkout sets `persist-credentials: false`.
+10. **No workflow trigger — in the action, in any shipped example, or in any
+    YAML block in its documentation — names `pull_request_target`**, while the
+    documentation still explains the refusal in prose.
+11. A fork pull request still runs the gate and still fails the check on a FAIL;
+    only the comment degrades, loudly. A failed, skipped or absent comment job
+    never changes the check.
 12. The action contains no threshold, comparison or verdict composition,
     asserted structurally.
-13. The `trustvian` version that produced the result is recorded in the comment.
+13. The `trustvian` version that produced the result is recorded in the comment,
+    read from the document rather than from the environment.
+14. **Every document-sourced string is rendered inert** in both the comment and
+    the job summary — escaped or code-spanned, mentions neutralized, control
+    characters and newlines stripped, per-string and total size capped, and any
+    truncation stated visibly.
 
 ## Open questions left to implementation
 
@@ -459,17 +799,27 @@ so rather than restating them.
    conventions expect, and it keeps a workflow-shaped release cadence out of the
    engine's release pipeline. Neither is assumed, and the decision should be
    recorded wherever it lands.
-2. **Composite, Docker, or JavaScript action.** A composite action shipping no
-   runtime of its own is assumed, since the work is "run a binary and call one
-   API" and a Docker action would pull an image on every job.
-3. **How the `trustvian` binary is obtained** — released artifact, container
+2. **Whether the two jobs are one action with two modes, two separate actions,
+   or a reusable workflow.** Open. One action with a `mode` input keeps a single
+   pinned reference and one version to reason about; two actions make the
+   privilege difference obvious at the call site; a reusable workflow ships the
+   job split itself, so a caller cannot accidentally collapse it — which is the
+   strongest argument for it and also the least flexible. The *split* is
+   settled; its packaging is not.
+3. **Composite, Docker, or JavaScript action.** A composite action shipping no
+   runtime of its own is assumed for the run side, since the work is "run a
+   binary" and a Docker action would pull an image on every job. The comment
+   side calls one API and renders markdown, which may want a different answer.
+4. **How the `trustvian` binary is obtained** — released artifact, container
    image, or a separate setup action. Whichever it is, the version is explicit
-   and appears in the comment.
-4. **Which comment API** — the issue-comment endpoint on the pull request, or a
-   pull request review comment. The issue-comment endpoint is assumed: it needs
-   no file or line anchor, and the finding is about the run rather than about a
-   line of code.
-5. **Whether a suite of scenarios produces one comment or several.** One comment
+   and appears in the comment, read from the result document.
+5. **Which comment API**, and therefore which scope — the issue-comment endpoint
+   on the pull request (reached through the issues API) or a pull request review
+   comment. The issue-comment endpoint is assumed: it needs no file or line
+   anchor, and the finding is about the run rather than about a line of code.
+   Whichever it is, only the scope it actually requires is documented and
+   granted.
+6. **Whether a suite of scenarios produces one comment or several.** One comment
    summarizing the suite, with per-scenario sections, is assumed — the
    one-comment-per-pull-request property matters more than per-scenario
    isolation.

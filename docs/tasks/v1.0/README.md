@@ -141,15 +141,18 @@ one whose results reach a reviewer and whose central claim carries a number:
   team to re-run CI. `N = 1` reproduces the single-pair semantics exactly.
 - **079 — CI Integration: A GitHub Action.** A gate nobody reads is a gate
   nobody acts on. 078 makes the verdict scriptable; 079 makes it legible where
-  the change is reviewed — a pull request comment rendered from the
-  machine-readable result and nothing else, with the exit codes passed through
-  untouched so an unreachable control plane is never reported as a policy
-  violation. Its security posture is the specification's centre of gravity
-  rather than a footnote: running the pull request's own workload and holding a
-  token that can write to the repository are never combined, so
-  `pull_request_target` with an untrusted checkout is refused outright and a
-  fork pull request loses the comment rather than gaining a privileged
-  checkout.
+  the change is reviewed — a pull request comment rendered from 078's result
+  document and nothing else, with the exit codes passed through untouched so an
+  unreachable control plane is never reported as a policy violation. Behavior
+  descriptors come from the workload's own telemetry, so every rendered string
+  is treated as author-controlled and made inert. Its security posture is the
+  specification's centre of gravity rather than a footnote: **running the
+  workload and holding a token that can write to the pull request live in two
+  different jobs** of the same `pull_request` event, because
+  `actions/checkout` persists credentials by default and a compromised
+  dependency in a same-repository pull request would otherwise reach a
+  write-scoped token. `pull_request_target` is refused as a trigger, and a fork
+  pull request loses only the comment.
 - **080 — Metadata-Only Detection Evaluation.** *Behavioral observability does
   not require content observability* is this project's central claim, reasoned
   about carefully throughout `docs/` and measured nowhere. This measures it:
