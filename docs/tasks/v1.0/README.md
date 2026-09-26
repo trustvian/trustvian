@@ -29,6 +29,8 @@ Tasks for the `v1.0` milestone.
 | [076 — Behavioral Trace & Session Evidence Explorer](076-behavioral-evidence-explorer.md) | Specified; not implemented |
 | [077 — Unified OTLP Local Dev Runtime](077-unified-otlp-local-dev-runtime.md) | Specified; not implemented |
 | [078 — Behavioral Scenario Suites](078-behavioral-scenario-suites.md) | Specified; not implemented |
+| [079 — CI Integration: A GitHub Action](079-ci-integration-github-action.md) | Specified; not implemented |
+| [080 — Metadata-Only Detection Evaluation](080-metadata-only-detection-evaluation.md) | Specified; not implemented |
 
 The numbers 067–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
@@ -60,25 +62,34 @@ would fabricate decisions nobody made.
 [ADR 0040](../../adr/0040-promotions-are-immutable-evidence-backed-platform-decisions.md)
 records the reasoning.
 
-Tasks 073–078 sit **after** that reserved block rather than inside it. None
-was in the approved sequence; each closes a gap the sequence did not
+Tasks 073–080 sit **after** that reserved block rather than inside it. None
+was in the approved sequence. 073–078 each close a gap the sequence did not
 anticipate, found by running the product end to end — an instrumented agent, a
-browser, and a developer who has not read the source.
+browser, and a developer who has not read the source. 079 and 080 come from two
+different questions: *what actually reaches a user*, and *what is the detection
+claim measured against*.
 
 **Numbering is identity, not execution order.** 067–072 keep their original
-identity and scope; 073–078 close concrete gaps; and 072 remains the release
+identity and scope; 073–080 close concrete gaps; and 072 remains the release
 gate while now depending on several tasks numbered above it. That is correct
 rather than untidy: a number records when a milestone entered the plan, and
 renumbering one would break every specification, ADR, commit message and
 document already citing it. `ROADMAP.md` carries the dependency order.
 
+**Not every task here is a release gate.** 079 belongs to the
+[developer preview](../../ROADMAP.md#v0100--developer-preview), and 080 is a
+measurement rather than a feature; neither blocks `v1.0`. They live in this
+directory because that is where active specifications live, the same way 068
+sits in the sequence while staying conditional on measured volume.
+
 Task 073 is **implemented**: the Collector produced a `Result` and the control
 plane accepted a `DecisionRecord`, and nothing joined them, so a workload
 observable only through OpenTelemetry could not be evaluated at all.
 
-**Task 074 is implemented; 075–078 are specified and not implemented.**
+**Task 074 is implemented; 075–080 are specified and not implemented.**
 Together they are the difference between a platform that works and one a
-developer can pick up:
+developer can pick up — and, in 079 and 080, between a platform that works and
+one whose results reach a reviewer and whose central claim carries a number:
 
 - **074 — Zero-Input Live Behavior WebUI** is **implemented**. Opening the
   WebUI used to show a form asking for an identifier the developer did not
@@ -124,7 +135,35 @@ developer can pick up:
   the control plane for every verdict, and evaluating no answer quality. The
   runner scripts no ordering of its own and overrides none of the engine's
   learned sequence evidence: a reorder that drives the engine to a block
-  decision or critical risk fails the gate, exactly as it should.
+  decision or critical risk fails the gate, exactly as it should. Each scenario
+  runs N times per side, because an LLM-driven agent may call a tool in one
+  execution and not the next, and a gate that FAILs on unchanged code teaches a
+  team to re-run CI. `N = 1` reproduces the single-pair semantics exactly.
+- **079 — CI Integration: A GitHub Action.** A gate nobody reads is a gate
+  nobody acts on. 078 makes the verdict scriptable; 079 makes it legible where
+  the change is reviewed — a pull request comment rendered from 078's result
+  document and nothing else, with the exit codes passed through untouched so an
+  unreachable control plane is never reported as a policy violation. Behavior
+  descriptors come from the workload's own telemetry, so every rendered string
+  is treated as author-controlled and made inert. Its security posture is the
+  specification's centre of gravity rather than a footnote: **running the
+  workload and holding a token that can write to the pull request live in two
+  different jobs** of the same `pull_request` event, because
+  `actions/checkout` persists credentials by default and a compromised
+  dependency in a same-repository pull request would otherwise reach a
+  write-scoped token. `pull_request_target` is refused as a trigger, and a fork
+  pull request loses only the comment.
+- **080 — Metadata-Only Detection Evaluation.** *Behavioral observability does
+  not require content observability* is this project's central claim, reasoned
+  about carefully throughout `docs/` and measured nowhere. This measures it:
+  precision, recall and false-positive rate for the **existing** signals
+  against a public agent prompt-injection benchmark's paired benign and
+  attacked runs. It evaluates Trustvian's detection, never a model's quality —
+  an attack the agent resisted is excluded rather than counted as a catch,
+  which is the rule that keeps the two apart. AgentDojo is the first candidate;
+  its license is MIT and it emits no OpenTelemetry today, so whether its *tool
+  calls* are observable without modifying it is the feasibility question that
+  comes before any number. Not a feature and published as measured.
 
 Taking a number inside 049–072 for any of them would have renamed a milestone
 whose scope is already decided.

@@ -29,7 +29,7 @@ Status vocabulary:
 evaluation foundation, local persistence, the local control-plane API and
 realtime, the developer CLI, the TUI, the WebUI, the PostgreSQL backend, the
 environment model and promotion (tasks 051–066, 073 and 074) exist, while
-075–078 are specified and 067–072 are still PLANNED.
+075–080 are specified and 067–072 are still PLANNED.
 What exists is not usable end to end on its own. Everything under
 [Beyond v1.0](#beyond-v10) is FUTURE.
 
@@ -259,7 +259,7 @@ until then.
 | 075 | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) |
 | 077 | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) |
 | 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
-| 079 | CI integration — a GitHub Action over the 078 command |
+| 079 | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
 
 074 is already implemented and is a prerequisite rather than contents: without
 it, opening the browser asks for an identifier the developer does not have.
@@ -479,11 +479,14 @@ gate result the decision consumed is snapshotted field for field rather than
 re-derived on read, and the write commits only against the environment state it
 was decided against. Schema version is now **4** on both backends.
 
-**Four gap-closing milestones remain specified and not implemented: 075–078.
+**Six gap-closing milestones remain specified and not implemented: 075–080.
 074 is implemented.**
-Each was found by running the product end to end — an instrumented agent, a
-browser, and a developer who has not read the source — rather than by planning,
-which is why they sit outside the reserved 049–072 block alongside 073.
+075–078 were each found by running the product end to end — an instrumented
+agent, a browser, and a developer who has not read the source — rather than by
+planning, which is why they sit outside the reserved 049–072 block alongside
+073. 079 and 080 come from two different questions: *what actually reaches a
+user*, and *what is the detection claim measured against*. Neither is a `v1.0`
+exit criterion.
 
 - **[074 — zero-input live behavior WebUI](tasks/v1.0/074-zero-input-live-behavior-webui.md)
   is implemented.** Opening the browser used to show a form asking for an
@@ -521,7 +524,39 @@ which is why they sit outside the reserved 049–072 block alongside 073.
   the diff, scorecard and gate the platform already owns, and evaluating no
   answer quality. The runner scripts no action ordering of its own, and does
   not suppress the engine's learned sequence signals: a reorder that produces
-  gated evidence fails, and the verdict stays the control plane's.
+  gated evidence fails, and the verdict stays the control plane's. Each
+  scenario runs N times per side, because an LLM-driven agent may call a tool
+  in one execution and not the next, and a gate that FAILs on unchanged code
+  teaches a team to re-run CI. `N = 1` reproduces today's semantics exactly.
+- **[079 — CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md).**
+  A gate nobody reads is a gate nobody acts on. 078 makes the verdict
+  scriptable; 079 makes it legible where the change is reviewed — a pull request
+  comment rendered from 078's result document and nothing else, with the exit
+  codes passed through untouched so an unreachable control plane is never
+  reported as a policy violation. It computes nothing and carries metadata only,
+  and it treats every string it renders as author-controlled, because behavior
+  descriptors come from the workload's own telemetry. Its security posture is
+  the specification's centre of gravity: **running the workload and holding a
+  token that can write to the pull request are placed in two different jobs** of
+  the same `pull_request` event, since `actions/checkout` persists credentials
+  by default and a compromised dependency in a same-repository pull request
+  would otherwise reach a write-scoped token. `pull_request_target` is refused
+  as a trigger outright, and a fork pull request loses only the comment. Part of
+  the
+  [developer preview](#v0100--developer-preview), not a release gate.
+- **[080 — metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md).**
+  *Behavioral observability does not require content observability* is this
+  document's central claim, reasoned about throughout and measured nowhere. 080
+  measures it: precision, recall and false-positive rate for the **existing**
+  signals against a public agent prompt-injection benchmark's paired benign and
+  attacked runs, reproducible and published under `examples/` or `docs/`. It
+  evaluates Trustvian's detection rather than any model's quality — an attack
+  the agent resisted is excluded rather than counted as a catch, which is the
+  rule that keeps the two apart — and it retains no prompt or completion
+  content. See
+  [What Trustvian is not becoming](#what-trustvian-is-not-becoming), whose
+  no-model-benchmarking line this does not cross. Not a feature and not a gate
+  item.
 
 Still planned: everything from 067 onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
@@ -785,13 +820,14 @@ decision that needs a measurement behind it.
 
 Small, independently shippable tasks continuing this repository's numbering.
 **Partly implemented:** tasks 049–066 are done; 067–072 remain PLANNED.
-Outside that reserved sequence, 073 and 074 are done and 075–078 are
+Outside that reserved sequence, 073 and 074 are done and 075–080 are
 specified — see the gap-closing table below.
 
 **Numbering is identity, not order.** A task's number records when it was
 added to the plan, never when it is built. Tasks 073–078 were discovered by
 using the product end to end, after 049–072 was already reserved, so several
-of them carry numbers *higher* than the release gate they block. That is
+of them carry numbers *higher* than the release gate they block; 079 and 080
+were added later still, and neither blocks the gate at all. That is
 correct and deliberate: renumbering a milestone would break every
 specification, ADR, commit message and document that already cites it. Read
 [the execution order](#execution-order-rather-than-numeric-order) for what
@@ -841,17 +877,21 @@ lost.
 | 066 | Promotion workflow |
 
 **Closing unplanned gaps.** None of these was in the reserved 049–072
-sequence. Each closes a concrete gap found by running the product end to end —
-an instrumented agent, a browser, and a developer who has not read the source.
+sequence. 073–078 each close a concrete gap found by running the product end to
+end — an instrumented agent, a browser, and a developer who has not read the
+source. 079 and 080 close two gaps of a different kind, and the **Gate** column
+says which rows the release actually depends on.
 
-| Task | Milestone | Status |
-|---|---|---|
-| 073 | OTel Collector evaluation ingest — the Collector produces a `Result`, the control plane accepts a `DecisionRecord`, and nothing joined them | **Implemented** |
-| 074 | [Zero-input live behavior WebUI](tasks/v1.0/074-zero-input-live-behavior-webui.md) — automatic active-scope discovery, a bounded live behavior graph, and a browseable hierarchy without entering an identifier | Implemented |
-| 075 | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) — read agent-oriented OpenTelemetry where a producer emits it, so a tool call is a tool call rather than an HTTP POST | Specified |
-| 076 | [Behavioral trace and session evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md) — see *why* behavior was familiar, new or anomalous, from metadata alone | Specified |
-| 077 | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — one command wraps an existing agent, composes the runtime, and needs no change to the application | Specified |
-| 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) — run the same scenario again, diff the behavior, gate the difference | Specified |
+| Task | Milestone | Status | Gate |
+|---|---|---|---|
+| 073 | OTel Collector evaluation ingest — the Collector produces a `Result`, the control plane accepts a `DecisionRecord`, and nothing joined them | **Implemented** | `v1.0` |
+| 074 | [Zero-input live behavior WebUI](tasks/v1.0/074-zero-input-live-behavior-webui.md) — automatic active-scope discovery, a bounded live behavior graph, and a browseable hierarchy without entering an identifier | Implemented | `v1.0` |
+| 075 | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) — read agent-oriented OpenTelemetry where a producer emits it, so a tool call is a tool call rather than an HTTP POST | Specified | `v1.0` |
+| 076 | [Behavioral trace and session evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md) — see *why* behavior was familiar, new or anomalous, from metadata alone | Specified | `v1.0` |
+| 077 | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — one command wraps an existing agent, composes the runtime, and needs no change to the application | Specified | `v1.0` |
+| 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) — run the same scenario N times per side, diff the behavior, gate the difference over k-of-N evidence | Specified | `v1.0` |
+| 079 | [CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md) — the 078 verdict rendered on the pull request, exit codes passed through, no `pull_request_target` with an untrusted checkout | Specified | preview only |
+| 080 | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md) — precision, recall and false-positive rate for the existing signals against a public agent prompt-injection benchmark | Specified | neither |
 
 **Production history and scale:**
 
@@ -877,7 +917,9 @@ Conceptually:
                              │    078  behavioral scenario suites
                              │             ↓
 075  AI semantic telemetry ──┤    079  CI integration (GitHub Action)
-                             │
+       │                     │
+       └──────────▶ 080  detection evaluation
+                             │        (measurement; gates nothing)
      ═══════════ v0.10.0 developer preview ships here ═══════════
                              ↓
                      067  event history
@@ -893,7 +935,7 @@ Conceptually:
 068  ClickHouse — only if measured volume justifies it
 ```
 
-Five things this diagram says, and one it does not:
+Six things this diagram says, and one it does not:
 
 - **074 and 075 are independent of each other** and can proceed in parallel.
   076 needs both, plus whatever history 067 makes durable.
@@ -908,6 +950,11 @@ Five things this diagram says, and one it does not:
   where the [developer preview](#v0100--developer-preview) ships. Nothing above
   it depends on anything below it, which is the property that makes the preview
   possible at all; nothing below it is dropped or weakened by shipping early.
+- **080 sits beside the thread rather than in it.** It needs 075 for tool-level
+  fidelity, and reuses 078 if the harness would otherwise reimplement repeated
+  isolated execution — but nothing waits for it and no release gates on it. It
+  measures the signals that already exist, so it could in principle run today
+  at transport fidelity, and would answer a weaker question.
 - **068 remains conditional**, exactly as its row says: an analytical backend
   arrives if measured volume justifies one, and not otherwise. It is not a
   release-gate prerequisite, and this restructuring does not make it one.
@@ -1097,11 +1144,11 @@ this model any good", which is a different question from "did this agent do
 something it should not have", and answering both would blur the one the
 detection engine is built for.
 
-**Tasks 074–078 do not move that line, and it is worth saying why.** Adding AI
-semantic spans, a session view, trace correlation, behavior visualization and
-scenario suites makes Trustvian *better at reading observability evidence*. It
-does not make Trustvian an observability product, because the question it asks
-of that evidence is unchanged:
+**Tasks 074–080 do not move that line, and it is worth saying why.** Adding AI
+semantic spans, a session view, trace correlation, behavior visualization,
+scenario suites and a CI comment makes Trustvian *better at reading
+observability evidence*. It does not make Trustvian an observability product,
+because the question it asks of that evidence is unchanged:
 
 ```text
 an observability tool asks     what happened inside this trace?
@@ -1117,6 +1164,32 @@ observability does not require content observability* is a principle and not a
 limitation. Trustvian consumes observability evidence to answer a behavioral
 trust question, and sits beside a trace backend rather than replacing one —
 the Collector fan-out that makes that possible is deliberate and stays.
+
+**Task 080 is the one that looks like it crosses the line, and does not.** It
+runs a public agent prompt-injection benchmark, which is a thing model
+evaluations also do, so the distinction is stated rather than assumed:
+
+```text
+model benchmarking asks    which model or defense resists injection best?
+
+task 080 asks              do Trustvian's existing signals notice the
+                           resulting tool misuse, from metadata alone, and
+                           at what false-positive cost?
+```
+
+The measured subject is **Trustvian**, not the agent. No model is ranked, no
+model is compared with another, and a model that resists the injection entirely
+is not recorded as a Trustvian success — that run is *excluded*, because
+counting it would make Trustvian's score a function of the model's robustness,
+which is the confusion this paragraph exists to prevent. No prompt or completion
+content is retained, in the pipeline or in the published result. And nothing
+ships: 080 adds no signal, no scoring change and no product surface. It measures
+what already exists, which is the opposite of a new evaluation capability.
+
+It is there for a reason worth stating plainly: *behavioral observability does
+not require content observability* is the claim this whole direction rests on,
+and it is currently argued rather than measured. A principle nobody has tried to
+falsify is a preference.
 
 Still outside the product, and not made less so by any of this: prompt
 management and playgrounds, LLM-as-a-judge, hallucination and groundedness
