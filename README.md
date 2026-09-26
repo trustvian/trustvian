@@ -1,19 +1,36 @@
 # Trustvian
 
-**Behavioral Security & Trust Engine** — *Trust the Behavior.*
+**Behavioral security and evaluation for AI agents** — *Trust the Behavior.*
 
 > OpenTelemetry observes behavior. Trustvian evaluates whether that
 > behavior should be trusted.
 
-Trustvian is an open-source Go engine that turns runtime behavior — API
-calls, service-to-service traffic, database access, AI-agent tool calls —
-into an explainable trust score and a security decision. It learns each
-actor's normal behavior, measures how far a new action deviates from it,
-and evaluates that evidence against policy you control.
+Trustvian is an open-source, local-first behavioral security and evaluation
+platform for AI agents and agentic applications, built on a behavioral trust
+engine that is equally usable on its own.
+
+The **engine** turns runtime behavior — API calls, service-to-service traffic,
+database access, AI-agent tool calls — into an explainable trust score and a
+security decision. It learns each actor's normal behavior, measures how far a
+new action deviates from it, and evaluates that evidence against policy you
+control.
+
+The **platform** asks the next question: *did this version of this agent behave
+differently from the last one, and does that difference pass the gates your
+team set?* It runs on a laptop, with no account and loopback binding by
+default, and consumes the engine as an ordinary dependency — neither layer
+absorbs the other, and the direction of that dependency never reverses
+([ADR 0022](docs/adr/0022-core-platform-boundary.md)).
 
 Decisions are deterministic and explainable: every score carries the
 signals that produced it, and every decision carries the rule that made
 it. There is no model to retrain and no opaque verdict.
+
+Behavioral observability does not require content observability. Trustvian
+answers *what did this actor do, and is that normal* from metadata — actor,
+operation, target, tool and model identity, sequence, timing, status and
+correlation — and does not need, retain, fingerprint or display prompt text,
+completions, reasoning, tool arguments, tool results, request bodies or SQL.
 
 [![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](go.mod)
 [![CI](https://github.com/trustvian/trustvian/actions/workflows/ci.yml/badge.svg)](https://github.com/trustvian/trustvian/actions/workflows/ci.yml)
@@ -326,6 +343,70 @@ Two boundaries stated plainly:
 See [use cases](docs/use-cases.md) and
 [sequence analysis](docs/sequence-analysis.md).
 
+## Local-First Platform
+
+Everything above is the engine. The platform is the layer that turns it into a
+workflow rather than a library:
+
+> Develop locally. Evaluate in sandbox. Promote with evidence. Monitor in
+> production.
+
+```text
+telemetry → live behavior → behavioral evidence
+          → reference versus candidate → gate → promotion
+```
+
+One command starts all of it — SQLite, the control plane, the realtime bus,
+and a loopback HTTP listener serving both the `/v1` API and the browser:
+
+```bash
+make local
+```
+
+```text
+Trustvian local runtime
+API:   http://127.0.0.1:54321
+Web:   http://127.0.0.1:54321/
+State: .trustvian/platform.db
+```
+
+Clients started in the same directory discover that endpoint themselves, so
+there is no `--api-url` to pass and no account to create.
+
+| Capability | What it does |
+|---|---|
+| **Evaluation run** | A bounded execution assessing one candidate, grouping its records, results and behavioral evidence |
+| **Behavioral diff** | Which behavioral shapes a candidate gained, lost, or shares with a reference run — keyed by fingerprint, never by commit or artifact digest |
+| **Scorecard** | A fixed-shape comparison of the two runs' decision, risk, approval and numeric evidence. Deliberately no composite score |
+| **Hard gates** | Five deterministic integer checks returning PASS or FAIL against limits you own. A favorable average cannot override a failed check, because no weighting path exists |
+| **Environments and promotion** | A project owns environments; a promotion is an append-only record of a *decision* and the gate evidence it rested on — never a deployment, and never a claim about where a candidate now runs |
+| **Three interfaces** | CLI for CI, TUI for the inner loop, browser for management and investigation — each an adapter over the same control-plane services, none carrying its own copy of a gate |
+
+Metadata only throughout: a diff, a scorecard, a gate result and a promotion
+record contain no prompt, completion, tool argument, tool result or body.
+
+**This layer lives on `main` and is not in a release yet.** The current stable
+line is `v0.9.x`, which ships the engine, `analyze`/`baseline`/`version`, and
+the Collector processor — so `go install ...@latest` does *not* include the
+platform commands. Build from a clone to use them.
+
+Four milestones are **specified and not implemented**, and the platform is not
+usable end to end without them. [docs/ROADMAP.md](docs/ROADMAP.md) is
+authoritative for their status:
+
+| Task | What it adds |
+|---|---|
+| [075](docs/tasks/v1.0/075-ai-semantic-telemetry-normalization.md) | Agent-oriented OpenTelemetry read at the fidelity it carries, so a tool call is a tool call rather than an HTTP POST |
+| [076](docs/tasks/v1.0/076-behavioral-evidence-explorer.md) | *Why* a behavior was familiar, new or anomalous — sessions, traces and behavioral sequence, from metadata alone |
+| [077](docs/tasks/v1.0/077-unified-otlp-local-dev-runtime.md) | One command that wraps an existing agent and composes the runtime around it, with no source modification |
+| [078](docs/tasks/v1.0/078-behavioral-scenario-suites.md) | The same behavioral scenario run again, diffed and gated — repeatably, in CI |
+
+- [Local development](docs/local-development.md) — what `make local` starts,
+  and how discovery works
+- [Platform CLI](docs/platform-cli.md) — `project`, `agent`, `candidate`,
+  `eval`, and the CI exit-code contract
+- [Terminal dashboard](docs/tui.md) · [Web interface](docs/webui.md)
+
 ## Reference Deployment
 
 A runnable Compose stack demonstrating the full production path:
@@ -375,6 +456,11 @@ around a pure function, and storage sits behind a two-method port. The core
 carries no database, OpenTelemetry, or transport dependency — adapters
 depend on the core, never the reverse.
 
+The platform is a separate Go module that depends on the core's public API and
+imports nothing under `internal/`, and the core does not depend on the platform
+at all. `make check-platform-boundary` asks the module graph rather than
+trusting review, and CI runs it on every pull request.
+
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the
 [decision records](docs/adr/).
 
@@ -407,6 +493,8 @@ Found a vulnerability? Report it privately, not in a public issue — see
 | Architecture · Domain model | [ARCHITECTURE.md](docs/ARCHITECTURE.md) · [DOMAIN.md](docs/DOMAIN.md) |
 | Go SDK · CLI | [sdk-guide.md](docs/sdk-guide.md) · [cli-guide.md](docs/cli-guide.md) |
 | Storage and persistence | [storage-guide.md](docs/storage-guide.md) |
+| Local platform: the one-command runtime | [local-development.md](docs/local-development.md) |
+| Platform CLI · Terminal dashboard · Web interface | [platform-cli.md](docs/platform-cli.md) · [tui.md](docs/tui.md) · [webui.md](docs/webui.md) |
 | Operations: backup, restore, upgrade | [operations.md](docs/operations.md) |
 | Policy · Behavioral signals | [policy-guide.md](docs/policy-guide.md) · [anomaly-config-guide.md](docs/anomaly-config-guide.md) |
 | Sequence analysis | [sequence-analysis.md](docs/sequence-analysis.md) |
@@ -459,7 +547,9 @@ make integration-postgres
 
 ## Project Status & Releases
 
-Trustvian is under active development.
+Trustvian is under active development. The engine is released and stable at
+`v0.9.x`. The local-first platform described above is on `main`, is not in any
+release yet, and is gated on `v1.0` — which also needs 075–078 above.
 
 - **Release history** — [CHANGELOG.md](CHANGELOG.md)
 - **Milestone status and planned work** — [docs/ROADMAP.md](docs/ROADMAP.md)
