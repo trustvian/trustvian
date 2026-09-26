@@ -129,7 +129,9 @@ jobs:
   comment:
     runs-on: ubuntu-latest
     needs: run
-    if: always()
+    # Runs when the gate failed, and when it errored — but not when a human
+    # cancelled the workflow. `always()` would comment on a cancellation too.
+    if: ${{ !cancelled() }}
     permissions:
       pull-requests: write
     steps:
@@ -175,20 +177,29 @@ to survive a FAIL sets `continue-on-error` themselves, in their own workflow,
 where it is visible in review. An action that decided that for them would turn
 a gate off in a place nobody looks.
 
-**A failure to comment never changes the code.** If the API call that posts the
-comment fails — revoked permission, rate limit, fork restriction — the step
-still exits with the code the scenario produced. The comment is a rendering of
-the verdict; losing the rendering must not lose the verdict, and it must not
-invent one either.
+**The comment cannot change the code, because it is not in that job.** In the
+[two-job shape](#the-job-split-running-the-workload-never-holds-the-write-token)
+the `run` job's exit code *is* the gate, and the `comment` job runs afterwards
+with no way to alter it. So this is structural rather than a rule the
+implementation has to remember: a revoked permission, a rate limit, a fork
+restriction, or a comment job that fails outright leaves the check exactly as
+the scenario left it.
 
-The last rule has a corollary worth stating: a comment failure is reported as a
-warning in the job log and in the job summary, never silently swallowed. "The
-gate passed and I could not tell you why" is information.
+What the implementation does still owe is the converse — **the comment job must
+not exit `0` while quietly having published nothing.** A comment failure is
+reported as a warning in its own job log and written to the job summary, never
+swallowed. "The gate passed and I could not tell you why" is information; "the
+gate ran and this job says nothing happened" is a lie.
+
+And the comment must never *be* stale — see
+[a run with no verdict](#a-run-with-no-verdict-still-updates-the-comment). An
+older verdict left standing is worse than a failed comment, because it looks
+current.
 
 ## The comment is rendered, never computed
 
 ```text
-Trustvian behavioral gate — FAIL
+Trustvian behavioral gate — FAIL   ·   commit 43af19c
 
   support-login   runs 5
 
@@ -243,13 +254,18 @@ reviewer unable to tell a check that passed from a check that did not run.
 decide that one added behavior is why the gate failed; the result says which
 checks failed and the comment shows them.
 
-**An uninterpretable result produces no comment.** If the document is missing,
+**An uninterpretable result publishes no verdict.** If the document is missing,
 is not valid JSON, or carries a verdict outside the closed vocabulary, the
-action says so and posts nothing — the same classification-before-output rule
+action renders no numbers and no gate block — the same
+classification-before-output rule
 [ADR 0033 § 9](../../adr/0033-developer-cli-is-a-thin-http-adapter.md)
 established, for the same reason: published CI evidence must not be retracted
 after the fact, and a pull request comment is the least retractable output this
 project has.
+
+Publishing no *verdict* is not the same as writing nothing at all, and the
+difference is
+[the next section](#a-run-with-no-verdict-still-updates-the-comment).
 
 ### One comment, updated
 
@@ -260,6 +276,68 @@ identified by a stable marker it writes into the body, and edits it in place.
 A reviewer reading a pull request with nine stale gate comments cannot tell
 which one is current, which is a worse outcome than no comment. The marker is
 also what makes the behavior testable rather than incidental.
+
+### Every comment names the commit it describes
+
+Each comment states the **head commit** of the pull request it was produced
+from.
+
+```text
+Trustvian behavioral gate — FAIL   ·   <head sha>
+```
+
+A pull request is a moving target. Between the run that produced a comment and
+the moment somebody reads it, the author may have pushed twice. Without the
+commit, a reviewer cannot tell whether the verdict they are looking at describes
+the code in front of them, and a gate that might be describing an older revision
+is a gate they will learn to ignore.
+
+The SHA comes from the **event context** — for a `pull_request` event, the pull
+request's head SHA, not `github.sha`, which on that event is the ephemeral merge
+commit and names nothing the author can check out. **This is identity, not a
+computed value**: the action transcribes what the event already says, exactly as
+it transcribes the result document, and it derives nothing from it. That matters
+because the *renders only* rule is otherwise easy to erode one convenience at a
+time.
+
+### A run with no verdict still updates the comment
+
+The rule that a missing or uninterpretable result publishes no verdict has a
+consequence the first draft got wrong: combined with
+one-comment-edited-in-place, "post nothing" leaves the **previous** comment
+standing. So a pull request whose latest run could not produce a verdict shows a
+reviewer an older verdict, with numbers, formatted exactly like a current one.
+
+That is the worst failure mode in this task. A missing comment is visibly
+missing. A stale verdict is invisibly wrong, and it is wrong in the direction
+that matters: the previous run may well have been a PASS.
+
+So the comment job **always brings the marker comment into line with the latest
+run**:
+
+| Latest run | Comment becomes |
+|---|---|
+| a verdict was produced | the verdict, its counts, its checks, and the head SHA |
+| the artifact is missing | **no verdict for `<head sha>`** — no numbers, the reason, and a pointer to the run |
+| the run job exited `3` — operational | same no-verdict state, naming it operational |
+| the run job exited `2` — usage | same no-verdict state, naming the scenario or configuration fault |
+| a required document field is absent | same no-verdict state, naming the field |
+| the workflow was cancelled | **nothing.** The job does not run, by `!cancelled()`, and no statement is made |
+
+The no-verdict state carries **no numbers at all** — not the previous run's, not
+zeros, not a partially parsed subset. Zeros would read as a clean result, and a
+partial render is how a failing check goes missing. It says which commit it
+describes, that no verdict exists for it, and why.
+
+If no marker comment exists yet, the no-verdict state is **created** rather than
+skipped. A reviewer who sees nothing cannot distinguish *the gate did not run*
+from *the gate ran and could not answer*, and the second is something they
+should know.
+
+Cancellation is the one case that writes nothing, and that is deliberate: a
+cancelled workflow made no attempt and no claim, so overwriting a real previous
+result with the consequences of someone pressing a button would destroy
+information rather than correct it.
 
 ### Consumed fields
 
@@ -389,10 +467,16 @@ not sparsely, not the base ref. It downloads an artifact and renders it; there
 is no pull request code in that job for a compromised dependency to live in,
 because there is no pull request code in it at all.
 
-**The gate is the run job.** The comment job is `needs: run` with `if:
-always()`, so a FAIL still gets commented — but the check a reviewer sees is
-the run job's, and a comment job that fails, is skipped, or is never granted its
-permission cannot turn a FAIL into a pass. This is the same rule as
+**The gate is the run job.** The comment job is `needs: run` with
+`if: ${{ !cancelled() }}`, so a FAIL and an operational failure both still get
+commented — but the check a reviewer sees is the run job's, and a comment job
+that fails, is skipped, or is never granted its permission cannot turn a FAIL
+into a pass. `!cancelled()` rather than `always()`, because a workflow somebody
+cancelled produced no verdict and no statement about one: commenting there
+would overwrite a real previous result with the consequences of pressing a
+button.
+
+This is the same rule as
 [a comment failure never changing the exit code](#exit-codes-are-passed-through-not-interpreted),
 enforced structurally by putting the verdict in a different job from the
 rendering.
@@ -680,8 +764,23 @@ cannot be faked.
   a newline does not produce a row that reads as a passing check.
 - **Total size is capped below the comment limit**, and a body that had to be
   shortened says so visibly.
-- **A missing required document field produces no comment** and names the field,
-  rather than rendering a gap.
+- **A missing required document field publishes no verdict** and names the
+  field, rather than rendering a gap.
+- **A run with no verdict overwrites a previous verdict.** With a marker comment
+  already holding a PASS, a subsequent run whose artifact is missing leaves the
+  comment in the no-verdict state for the new head SHA — **not** the old PASS.
+  This is the regression test for the worst failure mode in the task, and it is
+  asserted for each cause: missing artifact, exit `3`, exit `2`, and a missing
+  required field.
+- **The no-verdict state carries no numbers** — no counts, no checks, no zeros,
+  no partially parsed subset — asserted on the rendered body.
+- **A no-verdict state is created when no marker comment exists**, rather than
+  skipped.
+- **Every comment names the head SHA**, taken from the event context and not
+  from `github.sha`; asserted for both the verdict and the no-verdict bodies.
+- **A cancelled workflow writes nothing.** The comment job does not run under
+  `!cancelled()`, and an existing comment is left exactly as it was — asserted
+  by showing the body unchanged.
 - **The version in the comment comes from the document**, asserted by rendering
   a document whose recorded version differs from the binary's.
 - **Fork behavior** exercised against a read-only token: the run job is
@@ -764,29 +863,36 @@ so rather than restating them.
 4. The comment is rendered from task 078's
    [result document](078-behavioral-scenario-suites.md#result-document) alone;
    no number in it is computed by the action, and a missing required field
-   produces no comment.
+   publishes no verdict.
 5. Added and removed behaviors both appear with their `k/N` counts on both
    sides, carrying the classification task 078 assigned rather than one the
    action derived; the `k` and `j` thresholds appear; and every gate check
    appears including passing ones.
-6. An uninterpretable result posts no comment and reports why.
-7. A comment failure never changes the exit code, and is never silent.
+6. An uninterpretable result publishes **no verdict** and reports why.
+7. A comment failure never changes the check — structurally, since the verdict
+   is a different job — and is never silent.
 8. One comment per scenario per pull request, edited in place.
-9. **The job that runs the workload holds no write-scoped permission, and the
-   job that holds one executes no pull request code.** Permissions are granted
-   per job; no shipped example grants them at workflow level; every shipped
-   checkout sets `persist-credentials: false`.
-10. **No workflow trigger — in the action, in any shipped example, or in any
+9. **A run that produced no verdict updates the comment to a no-verdict state
+   for the new head commit, carrying no numbers**, rather than leaving an older
+   verdict standing. It is created if no comment exists. A cancelled workflow
+   writes nothing.
+10. **Every comment names the head commit it describes**, read from the event
+    context as identity rather than computed.
+11. **The job that runs the workload holds no write-scoped permission, and the
+    job that holds one executes no pull request code.** Permissions are granted
+    per job; no shipped example grants them at workflow level; every shipped
+    checkout sets `persist-credentials: false`.
+12. **No workflow trigger — in the action, in any shipped example, or in any
     YAML block in its documentation — names `pull_request_target`**, while the
     documentation still explains the refusal in prose.
-11. A fork pull request still runs the gate and still fails the check on a FAIL;
+13. A fork pull request still runs the gate and still fails the check on a FAIL;
     only the comment degrades, loudly. A failed, skipped or absent comment job
     never changes the check.
-12. The action contains no threshold, comparison or verdict composition,
+14. The action contains no threshold, comparison or verdict composition,
     asserted structurally.
-13. The `trustvian` version that produced the result is recorded in the comment,
+15. The `trustvian` version that produced the result is recorded in the comment,
     read from the document rather than from the environment.
-14. **Every document-sourced string is rendered inert** in both the comment and
+16. **Every document-sourced string is rendered inert** in both the comment and
     the job summary — escaped or code-spanned, mentions neutralized, control
     characters and newlines stripped, per-string and total size capped, and any
     truncation stated visibly.
