@@ -54,6 +54,7 @@ reconstructed later. Everything else in this table is already released.
 | Configuration schema (`policy`, `alerts`, `anomaly`, `storage`) | STABLE | A valid `v1` document keeps loading across `v1.x` | New optional fields; a new schema version alongside `v1` | Major, or a new schema version |
 | Configuration defaults | STABLE WITH DEPRECATION | A default is not changed silently | Documented default changes in a minor, called out in CHANGELOG | See [behavioral compatibility](#behavioral-compatibility) |
 | CLI commands and flags | OPERATIONALLY STABLE | `analyze`, `baseline`, `version`, `--config`, `--anomaly-config`, `--storage-config` keep working | New commands and flags | Major to remove or repurpose |
+| `dev --instrumentation` values | OPERATIONALLY STABLE | `existing`, `none` and `auto` keep their meaning; `auto` never injects on absence of evidence | New modes — `python-zero-code` is reserved and currently refused | Major to remove or repurpose a value |
 | CLI exit codes | OPERATIONALLY STABLE | Scoped by command family; `1` means gate failure only for `eval compare` — see [CLI](#cli) | Adding a code, or a new family with its own scoped contract | Major |
 | CLI human-readable output | OBSERVATIONAL | Not a machine interface — no wording, spacing, or ordering promise | Any change | None |
 | Environment variables read by shipped binaries | OPERATIONALLY STABLE | See [environment variables](#environment-variables) | New variables | Major to remove or rename |

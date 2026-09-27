@@ -340,7 +340,7 @@ func startTerminalSession(t *testing.T, workloadBody string) *terminalSession {
 	}
 	resultPath := filepath.Join(dir, "result.json")
 
-	args := append(explicitIdentityFlags(), "--api-url", api.URL, "--", "sh", script)
+	args := append(explicitDevFlags(), "--api-url", api.URL, "--", "sh", script)
 	encodedArgs, err := json.Marshal(args)
 	if err != nil {
 		t.Fatalf("encoding the arguments: %v", err)

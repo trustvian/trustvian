@@ -528,7 +528,7 @@ func TestDevComposesTheRuntimeBeforeLaunchingTheChild(t *testing.T) {
 
 	var out, errOut strings.Builder
 	code := runDev(streams{out: &out, err: &errOut},
-		append(explicitIdentityFlags(), "--", "sh", "-c", "exit 6"))
+		append(explicitDevFlags(), "--", "sh", "-c", "exit 6"))
 
 	if code != 6 {
 		t.Fatalf("exit code = %d, want the child's 6\nstderr: %s", code, errOut.String())
@@ -577,7 +577,7 @@ func TestDevAttachesToAnExistingRuntimeWithoutStartingOne(t *testing.T) {
 
 	var out, errOut strings.Builder
 	code := runDev(streams{out: &out, err: &errOut},
-		append(explicitIdentityFlags(), "--api-url", api.URL,
+		append(explicitDevFlags(), "--api-url", api.URL,
 			"--", "sh", "-c", "exit 0"))
 
 	if code != 0 {
@@ -607,7 +607,7 @@ exit 3
 	marker := filepath.Join(dir, "child-ran")
 	var errOut strings.Builder
 	code := runDev(streams{out: io_Discard{}, err: &errOut},
-		append(explicitIdentityFlags(), "--", "sh", "-c", "printf ran > "+marker))
+		append(explicitDevFlags(), "--", "sh", "-c", "printf ran > "+marker))
 
 	if code != exitDevOperational {
 		t.Fatalf("exit code = %d, want %d", code, exitDevOperational)
@@ -633,7 +633,7 @@ func TestDevReportsAMissingHelperAsOperational(t *testing.T) {
 
 	var errOut strings.Builder
 	code := runDev(streams{out: io_Discard{}, err: &errOut},
-		append(explicitIdentityFlags(), "--", "true"))
+		append(explicitDevFlags(), "--", "true"))
 
 	if code != exitDevOperational {
 		t.Fatalf("exit code = %d, want %d\nstderr: %s", code, exitDevOperational, errOut.String())
@@ -666,7 +666,7 @@ func TestDevFailsBeforeTheChildWhenTheCollectorNeverReceives(t *testing.T) {
 	marker := filepath.Join(dir, "child-ran")
 	var errOut strings.Builder
 	code := runDev(streams{out: io_Discard{}, err: &errOut},
-		append(explicitIdentityFlags(), "--", "sh", "-c", "printf ran > "+marker))
+		append(explicitDevFlags(), "--", "sh", "-c", "printf ran > "+marker))
 
 	if code != exitDevOperational {
 		t.Fatalf("exit code = %d, want %d\nstderr: %s", code, exitDevOperational, errOut.String())
@@ -679,18 +679,20 @@ func TestDevFailsBeforeTheChildWhenTheCollectorNeverReceives(t *testing.T) {
 	}
 }
 
-// explicitIdentityFlags names identity so a test does not depend on the
-// directory being a git repository.
+// explicitDevFlags states identity and instrumentation ownership, so a test about
+// composition is not also a test of derivation or of evidence.
 //
-// Identity resolves before any process starts — a run that cannot be named
-// deterministically should fail before a control plane, a Collector or a workload
-// has been launched — so a test about composition has to get past it first.
-// Derivation itself is covered in dev_identity_test.go.
-func explicitIdentityFlags() []string {
+// Both resolve before any process starts — a run that cannot be named, or whose
+// ownership cannot be established, should fail before a control plane, a Collector
+// or a workload has been launched — so a composition test has to get past both.
+// Derivation is covered in dev_identity_test.go and ownership in
+// dev_instrumentation_test.go.
+func explicitDevFlags() []string {
 	return []string{
 		"--project", "test-project",
 		"--agent", "test-agent",
 		"--candidate", "test-candidate",
+		"--instrumentation", "existing",
 	}
 }
 

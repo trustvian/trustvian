@@ -47,6 +47,17 @@ func agentSourceNote(identity devIdentity) string {
 	return "   (exported as OTEL_SERVICE_NAME)"
 }
 
+// ownerEvidenceNote says why auto chose a mode.
+//
+// Only for auto: an explicit mode needs no justification, and printing one would
+// imply dev had a choice it did not have.
+func ownerEvidenceNote(owner ownership) string {
+	if owner.evidence == "" {
+		return ""
+	}
+	return "   (auto: " + owner.evidence + ")"
+}
+
 func dirtyNote(identity devIdentity) string {
 	if identity.Dirty {
 		return "   uncommitted changes"
@@ -81,6 +92,14 @@ Identity, each derived when not given:
   --environment <ref>    default: local
   --run-id <id>          default: generated per invocation
 
+Instrumentation ownership:
+  --instrumentation <mode>
+                         existing   your workload already sends OpenTelemetry;
+                                    dev configures OTLP and injects nothing
+                         none       dev manages no instrumentation at all
+                         auto       (default) resolve from positive evidence,
+                                    or stop rather than guess
+
 State lives outside your repository, under ~/.trustvian/dev/, keyed by this
 directory. dev prints the path on every start. Your repository is never
 written to.
@@ -89,8 +108,9 @@ Exit status is the command's own, so this wrapper is transparent to scripts.
 Before the command starts, 2 means the invocation was wrong and 3 means this
 wrapper could not start it.
 
-Not yet composed by this build: instrumentation ownership. See
-docs/tasks/v1.0/077-unified-otlp-local-dev-runtime.md.`
+Absence of detectable instrumentation never selects injection: a workload that
+initializes OpenTelemetry a moment after it starts cannot be detected
+beforehand, and attaching a second stack would report every action twice.`
 
 // runDev is the `dev` family's entry point.
 //
@@ -137,6 +157,8 @@ func runDev(s streams, args []string) int {
 	environment := fs.String("environment", "",
 		"environment ref (default: "+devEnvironmentDefault+")")
 	runID := fs.String("run-id", "", "evaluation run identifier (default: generated per run)")
+	instrumentation := fs.String("instrumentation", string(modeAuto),
+		"who owns OpenTelemetry setup: existing, none or auto")
 	if err := fs.Parse(before); err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n\n%s\n", err, devUsage)
 		return exitDevUsage
@@ -159,15 +181,16 @@ func runDev(s streams, args []string) int {
 	}
 
 	return composeAndRun(s, devConfig{
-		command:      command,
-		apiURL:       *apiURL,
-		localBin:     *localBin,
-		collectorBin: *collectorBin,
-		project:      *project,
-		agent:        *agent,
-		candidate:    *candidate,
-		environment:  *environment,
-		runID:        *runID,
+		command:         command,
+		apiURL:          *apiURL,
+		localBin:        *localBin,
+		collectorBin:    *collectorBin,
+		project:         *project,
+		agent:           *agent,
+		candidate:       *candidate,
+		environment:     *environment,
+		runID:           *runID,
+		instrumentation: *instrumentation,
 	})
 }
 
@@ -188,6 +211,10 @@ type devConfig struct {
 	candidate   string
 	environment string
 	runID       string
+
+	// instrumentation is the ownership mode, as given. Parsed in composeAndRun so
+	// an unknown value is a usage error before anything starts.
+	instrumentation string
 }
 
 // composeAndRun brings up what the workload needs, runs it, and tears down.
@@ -245,6 +272,21 @@ func composeAndRun(s streams, config devConfig) int {
 	}
 	environment := environmentSnapshot()
 	if err := environment.declareIdentity(identity); err != nil {
+		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+		return exitDevUsage
+	}
+
+	mode, err := parseInstrumentationMode(config.instrumentation)
+	if err != nil {
+		fmt.Fprintf(s.err, "trustvian dev: %v\n\n%s\n", err, devUsage)
+		return exitDevUsage
+	}
+	// Ownership is resolved before *anything* is started or provisioned. A
+	// refusal then leaves nothing to tear down and no run to fail — which is the
+	// difference between "nothing was launched" and a half-composed runtime with
+	// an evaluation run stuck in it.
+	owner, err := resolveOwnership(mode, environment, config.command)
+	if err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
 		return exitDevUsage
 	}
@@ -347,9 +389,14 @@ func composeAndRun(s streams, config devConfig) int {
 		return code
 	}
 
-	environment.routeOTLP(otlp.OTLPEndpoint(), otlp.OTLPGRPCEndpoint())
+	// `none` means dev manages no instrumentation, which includes not routing:
+	// the workload's telemetry reaches the Collector some other way, and dev
+	// setting OTEL_* would be managing the thing it was told not to.
+	if owner.routesOTLP() {
+		environment.routeOTLP(otlp.OTLPEndpoint(), otlp.OTLPGRPCEndpoint())
+	}
 
-	printDevBanner(s, stateDir, apiURL, otlp, environment, identity, baseline, config)
+	printDevBanner(s, stateDir, apiURL, otlp, environment, identity, baseline, owner, config)
 
 	outcome := superviseChild(s, config.command, environment, relay)
 
@@ -530,7 +577,7 @@ func (d *devSession) teardown() {
 // own streams, and it does neither.
 func printDevBanner(s streams, stateDir, apiURL string, otlp *collector,
 	environment *devEnvironment, identity devIdentity, baseline *baselineLock,
-	config devConfig) {
+	owner ownership, config devConfig) {
 	fmt.Fprintf(s.out, "Trustvian dev\n\n")
 	fmt.Fprintf(s.out, "  Project     %s\n", identity.Project)
 	fmt.Fprintf(s.out, "  Agent       %s%s\n", identity.Agent,
@@ -558,8 +605,16 @@ func printDevBanner(s streams, stateDir, apiURL string, otlp *collector,
 	// debugging why their agent emitted nothing needs to know exactly what was
 	// set, and a wrapper that changes an environment silently is one they cannot
 	// reason about.
-	fmt.Fprintf(s.out, "  Set      %s\n", strings.Join(environment.Added(), " "))
-	fmt.Fprintf(s.out, "\n  Not yet composed: instrumentation ownership.\n")
+	fmt.Fprintf(s.out, "  Owner    %s%s\n", owner.mode, ownerEvidenceNote(owner))
+	if owner.routesOTLP() {
+		fmt.Fprintf(s.out, "  Set      %s\n", strings.Join(environment.Added(), " "))
+	} else {
+		// Said plainly rather than left to be inferred from an absent line: a
+		// developer who sees no records needs to know dev deliberately configured
+		// nothing.
+		fmt.Fprintf(s.out, "  Set      nothing — the workload's telemetry must reach\n")
+		fmt.Fprintf(s.out, "           the OTLP endpoint above by its own route\n")
+	}
 	fmt.Fprintf(s.out, "\nRunning %s\n\n", devCommandName(config.command))
 }
 
