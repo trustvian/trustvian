@@ -17,7 +17,27 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// agentSourceNote says where the agent's identity came from.
+//
+// Worth a line because the two cases behave differently: an adopted name means
+// dev left the workload's own declaration alone, and a flagged one means dev
+// exported OTEL_SERVICE_NAME so the two agree.
+func agentSourceNote(identity devIdentity) string {
+	if identity.AgentFromTelemetry {
+		return "   (from the workload's OTEL_SERVICE_NAME)"
+	}
+	return "   (exported as OTEL_SERVICE_NAME)"
+}
+
+func dirtyNote(identity devIdentity) string {
+	if identity.Dirty {
+		return "   uncommitted changes"
+	}
+	return ""
+}
 
 // devUsage is printed on a usage error and by --help.
 //
@@ -37,6 +57,15 @@ Options:
   --collector-bin <path> path to trustvian-collector
   -h, --help             print this message
 
+Identity, each derived when not given:
+  --project <id>         default: the git repository's name
+  --agent <id>           default: the workload's own OTEL_SERVICE_NAME.
+                         Required when it declares none — nothing is invented
+  --candidate <id>       default: git:<short sha>, with +dirty when the
+                         worktree has uncommitted changes
+  --environment <ref>    default: local
+  --run-id <id>          default: generated per invocation
+
 State lives outside your repository, under ~/.trustvian/dev/, keyed by this
 directory. dev prints the path on every start. Your repository is never
 written to.
@@ -45,8 +74,7 @@ Exit status is the command's own, so this wrapper is transparent to scripts.
 Before the command starts, 2 means the invocation was wrong and 3 means this
 wrapper could not start it.
 
-Not yet composed by this build: automatic provisioning and instrumentation
-ownership. See
+Not yet composed by this build: instrumentation ownership. See
 docs/tasks/v1.0/077-unified-otlp-local-dev-runtime.md.`
 
 // runDev is the `dev` family's entry point.
@@ -86,6 +114,14 @@ func runDev(s streams, args []string) int {
 		"attach to a control plane already running instead of starting one")
 	localBin := fs.String("local-bin", "", "path to "+localRuntimeBinary)
 	collectorBin := fs.String("collector-bin", "", "path to "+collectorBinary)
+	project := fs.String("project", "", "project identifier (default: the repository name)")
+	agent := fs.String("agent", "",
+		"agent identifier (default: the workload's own OTEL_SERVICE_NAME)")
+	candidate := fs.String("candidate", "",
+		"candidate identifier (default: git:<short sha>, +dirty when uncommitted)")
+	environment := fs.String("environment", "",
+		"environment ref (default: "+devEnvironmentDefault+")")
+	runID := fs.String("run-id", "", "evaluation run identifier (default: generated per run)")
 	if err := fs.Parse(before); err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n\n%s\n", err, devUsage)
 		return exitDevUsage
@@ -112,6 +148,11 @@ func runDev(s streams, args []string) int {
 		apiURL:       *apiURL,
 		localBin:     *localBin,
 		collectorBin: *collectorBin,
+		project:      *project,
+		agent:        *agent,
+		candidate:    *candidate,
+		environment:  *environment,
+		runID:        *runID,
 	})
 }
 
@@ -125,6 +166,13 @@ type devConfig struct {
 	apiURL       string
 	localBin     string
 	collectorBin string
+
+	// Identity overrides. Empty means "derive it"; see dev_identity.go.
+	project     string
+	agent       string
+	candidate   string
+	environment string
+	runID       string
 }
 
 // composeAndRun brings up what the workload needs, runs it, and tears down.
@@ -163,6 +211,19 @@ func composeAndRun(s streams, config devConfig) int {
 	// is read from what the developer provided rather than from what dev
 	// provided a moment earlier.
 	environment := captureEnvironment()
+
+	// Identity is derived before anything starts. A run that cannot be named
+	// deterministically should fail before a control plane, a Collector or a
+	// workload has been launched — nothing has to be torn down to report it.
+	identity, err := deriveIdentity(config, workloadDir, environment, time.Now())
+	if err != nil {
+		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+		return exitDevUsage
+	}
+	if err := environment.declareIdentity(identity); err != nil {
+		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+		return exitDevUsage
+	}
 
 	apiURL := config.apiURL
 	if apiURL == "" {
@@ -207,21 +268,92 @@ func composeAndRun(s streams, config devConfig) int {
 		return exitDevOperational
 	}
 
-	otlp, err := startCollector(collectorBin, stateDir)
+	// Provisioning happens before the Collector, because the Collector's
+	// configuration names a run that must already exist and be running: ingest is
+	// refused for a pending run, and the processor's sink reads its cursor at
+	// startup.
+	provision, err := newProvisioner(apiURL, identity)
 	if err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
 		return exitDevOperational
 	}
-	// Stopped before the control plane, which is the reverse of the order they
-	// started in: the Collector posts evidence to the control plane, so the
-	// thing that writes must stop before the thing written to.
-	defer otlp.stop()
+
+	provisionCtx, cancelProvision := lifecycleContext()
+	if err := provision.ensureHierarchy(provisionCtx); err != nil {
+		cancelProvision()
+		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+		return exitDevOperational
+	}
+	if err := provision.startRun(provisionCtx); err != nil {
+		cancelProvision()
+		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+		return exitDevOperational
+	}
+	cancelProvision()
+
+	otlp, err := startCollector(collectorBin, stateDir, collectorConfigData{
+		APIURL:           apiURL,
+		RunID:            identity.Run,
+		Profile:          identity.Profile,
+		PendingStatePath: filepath.Join(stateDir, collectorPendingStateFile),
+	})
+	if err != nil {
+		// The run was started and no evidence will reach it. Failed rather than
+		// left running: a run stuck in `running` forever is indistinguishable
+		// from one still in progress.
+		failRunAfter(s, provision, exitDevOperational)
+		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+		return exitDevOperational
+	}
 
 	environment.routeOTLP(otlp.OTLPEndpoint(), otlp.OTLPGRPCEndpoint())
 
-	printDevBanner(s, stateDir, apiURL, otlp, environment, config)
+	printDevBanner(s, stateDir, apiURL, otlp, environment, identity, config)
 
-	return superviseChild(s, config.command, environment)
+	code := superviseChild(s, config.command, environment)
+
+	// The Collector stops *before* the run reaches a terminal state, and the
+	// order is not cosmetic: ingest is refused once a run is terminal, so a span
+	// still in flight would fail the batch rather than be ignored. Stopping it
+	// first also flushes what it holds.
+	otlp.stop()
+
+	lifecycleCtx, cancelLifecycle := lifecycleContext()
+	defer cancelLifecycle()
+
+	if code == exitDevOK {
+		if err := provision.completeRun(lifecycleCtx); err != nil {
+			fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+			// The workload succeeded; the bookkeeping did not. Reported as
+			// operational rather than as the workload's success, because a run
+			// left non-terminal is evidence nobody can read.
+			return exitDevOperational
+		}
+		fmt.Fprintf(s.out, "\nRun %s complete.\n", identity.Run)
+		return code
+	}
+
+	// A workload that failed produced no verdict, so the run is failed, not
+	// completed. Nothing downstream may read it as a finished evaluation.
+	if err := provision.failRun(lifecycleCtx, code); err != nil {
+		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+	}
+	fmt.Fprintf(s.out, "\nRun %s failed: the workload exited %d.\n", identity.Run, code)
+	// The workload's status, unchanged. dev reports what happened to the run and
+	// still exits with the child's code, because that is the contract.
+	return code
+}
+
+// failRunAfter records a failure for a run nothing will report evidence to.
+//
+// Best effort and never fatal: this is already an error path, and a second error
+// here must not replace the first in the message a developer reads.
+func failRunAfter(s streams, provision *provisioner, code int) {
+	ctx, cancel := lifecycleContext()
+	defer cancel()
+	if err := provision.failRun(ctx, code); err != nil {
+		fmt.Fprintf(s.err, "trustvian dev: could not fail the run: %v\n", err)
+	}
 }
 
 // printDevBanner says what was composed and where to look.
@@ -231,8 +363,18 @@ func composeAndRun(s streams, config devConfig) int {
 // makes: what must not happen is dev *reformatting or buffering* the workload's
 // own streams, and it does neither.
 func printDevBanner(s streams, stateDir, apiURL string, otlp *collector,
-	environment *devEnvironment, config devConfig) {
+	environment *devEnvironment, identity devIdentity, config devConfig) {
 	fmt.Fprintf(s.out, "Trustvian dev\n\n")
+	fmt.Fprintf(s.out, "  Project     %s\n", identity.Project)
+	fmt.Fprintf(s.out, "  Agent       %s%s\n", identity.Agent,
+		agentSourceNote(identity))
+	// The dirty marker is on the candidate itself, and said again in words:
+	// evaluating uncommitted work is normal, and a developer should not have to
+	// notice a suffix to know they are doing it.
+	fmt.Fprintf(s.out, "  Candidate   %s%s\n", identity.Candidate,
+		dirtyNote(identity))
+	fmt.Fprintf(s.out, "  Environment %s\n", identity.Environment)
+	fmt.Fprintf(s.out, "  Run         %s\n\n", identity.Run)
 	fmt.Fprintf(s.out, "  State    %s\n", stateDir)
 	fmt.Fprintf(s.out, "  API      %s\n", apiURL)
 	fmt.Fprintf(s.out, "  OTLP     %s  (gRPC %s)\n",
@@ -249,7 +391,7 @@ func printDevBanner(s streams, stateDir, apiURL string, otlp *collector,
 	// set, and a wrapper that changes an environment silently is one they cannot
 	// reason about.
 	fmt.Fprintf(s.out, "  Set      %s\n", strings.Join(environment.Added(), " "))
-	fmt.Fprintf(s.out, "\n  Not yet composed: provisioning, instrumentation ownership.\n")
+	fmt.Fprintf(s.out, "\n  Not yet composed: instrumentation ownership.\n")
 	fmt.Fprintf(s.out, "\nRunning %s\n\n", devCommandName(config.command))
 }
 

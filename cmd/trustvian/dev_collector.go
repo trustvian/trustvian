@@ -42,6 +42,14 @@ const (
 	// streams, for the same reason the runtime's log does.
 	collectorLogFile = "collector.log"
 
+	// collectorPendingStateFile is the processor's crash-recovery note.
+	//
+	// One file per state directory, which is one per workload directory: the sink
+	// refuses to start against a note naming a different run rather than
+	// discarding an unsettled record, so a stale note from a previous run is a
+	// condition the processor reports rather than one dev has to clean up.
+	collectorPendingStateFile = "collector-pending.json"
+
 	// collectorPollInterval is how often readiness is re-checked.
 	collectorPollInterval = 25 * time.Millisecond
 
@@ -112,6 +120,12 @@ processors:
     health:
       endpoint: 127.0.0.1:{{.HealthPort}}
       readiness_timeout: 2s
+    evaluation:
+      api_url: "{{.APIURL}}"
+      run_id: "{{.RunID}}"
+      behavioral_profile: "{{.Profile}}"
+      required: true
+      pending_state_path: "{{.PendingStatePath}}"
 
 exporters:
   debug:
@@ -136,6 +150,43 @@ type collectorConfigData struct {
 	OTLPHTTPPort int
 	OTLPGRPCPort int
 	HealthPort   int
+
+	// APIURL, RunID and Profile point the processor at one evaluation run.
+	//
+	// The run must already exist and be running: nothing in the Collector
+	// creates one, because run lifecycle is the control plane's (ADR 0031). That
+	// is why provisioning happens before this process starts.
+	APIURL  string
+	RunID   string
+	Profile string
+
+	// PendingStatePath holds the single record that may be in flight, so a
+	// Collector that dies between recording evidence and applying that record's
+	// learning can tell on restart which of the two already happened.
+	//
+	// Required, like `required: true` above. An optional mode would have to
+	// answer what happens when evidence cannot be delivered, and both available
+	// answers are wrong — see the processor's own EvaluationConfig.
+	PendingStatePath string
+}
+
+// validate refuses a value that would change the generated document's meaning.
+//
+// Called before rendering rather than trusted from the caller: the run id and
+// profile are derived from a repository and could contain anything a branch name
+// or a flag can.
+func (d collectorConfigData) validate() error {
+	for _, field := range []struct{ name, value string }{
+		{"api_url", d.APIURL},
+		{"run_id", d.RunID},
+		{"behavioral_profile", d.Profile},
+		{"pending_state_path", d.PendingStatePath},
+	} {
+		if err := validateCollectorScalar(field.name, field.value); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // collector is a supervised trustvian-collector process.
@@ -153,7 +204,11 @@ type collector struct {
 
 // startCollector writes a configuration, launches the Collector, and waits
 // until it can actually receive.
-func startCollector(binary, stateDir string) (*collector, error) {
+//
+// evaluation carries the run this Collector feeds. One Collector per run is
+// forced rather than chosen: the processor's evaluation configuration compiles
+// once and is fixed for the process's lifetime.
+func startCollector(binary, stateDir string, evaluation collectorConfigData) (*collector, error) {
 	var lastErr error
 	for attempt := range collectorPortAttempts {
 		ports, err := reservePorts(3)
@@ -161,11 +216,12 @@ func startCollector(binary, stateDir string) (*collector, error) {
 			return nil, fmt.Errorf("choosing loopback ports: %w", err)
 		}
 
-		c, err := launchCollector(binary, stateDir, collectorConfigData{
-			OTLPHTTPPort: ports[0],
-			OTLPGRPCPort: ports[1],
-			HealthPort:   ports[2],
-		})
+		data := evaluation
+		data.OTLPHTTPPort = ports[0]
+		data.OTLPGRPCPort = ports[1]
+		data.HealthPort = ports[2]
+
+		c, err := launchCollector(binary, stateDir, data)
 		if err == nil {
 			return c, nil
 		}
@@ -324,6 +380,10 @@ func (c *collector) stop() {
 
 // writeCollectorConfig renders the document into dev's state directory.
 func writeCollectorConfig(path string, data collectorConfigData) error {
+	if err := data.validate(); err != nil {
+		return fmt.Errorf("the collector configuration would be malformed: %w", err)
+	}
+
 	var rendered strings.Builder
 	if err := collectorTemplate.Execute(&rendered, data); err != nil {
 		return fmt.Errorf("rendering the collector configuration: %w", err)

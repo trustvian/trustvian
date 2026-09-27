@@ -508,10 +508,10 @@ func writeFakeExecutable(t *testing.T, dir, name string) string {
 // ---------------------------------------------------------------------
 
 func TestDevComposesTheRuntimeBeforeLaunchingTheChild(t *testing.T) {
-	fake := fakeLocalRuntime(t, `
-printf '{"version":"1","api_url":"http://127.0.0.1:45701"}\n' > "$2/runtime.json"
-while :; do sleep 0.05; done
-`)
+	api := newFakeDevAPI(t)
+	defer api.Close()
+
+	fake := fakeRuntimeServing(t, api.URL)
 	t.Setenv(localRuntimeBinaryEnv, fake)
 	withFakeCollector(t, "")
 	// HOME decides where state lands, so the test's own home keeps this run out
@@ -526,7 +526,7 @@ while :; do sleep 0.05; done
 
 	var out, errOut strings.Builder
 	code := runDev(streams{out: &out, err: &errOut},
-		[]string{"--", "sh", "-c", "exit 6"})
+		append(explicitIdentityFlags(), "--", "sh", "-c", "exit 6"))
 
 	if code != 6 {
 		t.Fatalf("exit code = %d, want the child's 6\nstderr: %s", code, errOut.String())
@@ -535,8 +535,8 @@ while :; do sleep 0.05; done
 	// The banner reports what was composed and where the state is, because a
 	// hashed state path is unguessable and the endpoint is ephemeral.
 	banner := out.String()
-	for _, want := range []string{"Trustvian dev", "http://127.0.0.1:45701", home,
-		"OTLP", "gRPC"} {
+	for _, want := range []string{"Trustvian dev", api.URL, home, "OTLP", "gRPC",
+		"test-project", "test-agent", "test-candidate"} {
 		if !strings.Contains(banner, want) {
 			t.Errorf("the banner does not mention %q:\n%s", want, banner)
 		}
@@ -562,6 +562,9 @@ func TestDevAttachesToAnExistingRuntimeWithoutStartingOne(t *testing.T) {
 	// --api-url is the CI path task 078 needs: many runs against one control
 	// plane. With it, dev must not start a runtime at all — so a helper that
 	// would fail if executed proves nothing executed it.
+	api := newFakeDevAPI(t)
+	defer api.Close()
+
 	t.Setenv(localRuntimeBinaryEnv, filepath.Join(t.TempDir(), "does-not-exist"))
 	withFakeCollector(t, "")
 	t.Setenv("HOME", t.TempDir())
@@ -572,7 +575,8 @@ func TestDevAttachesToAnExistingRuntimeWithoutStartingOne(t *testing.T) {
 
 	var out, errOut strings.Builder
 	code := runDev(streams{out: &out, err: &errOut},
-		[]string{"--api-url", "http://127.0.0.1:45702", "--", "sh", "-c", "exit 0"})
+		append(explicitIdentityFlags(), "--api-url", api.URL,
+			"--", "sh", "-c", "exit 0"))
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0\nstderr: %s", code, errOut.String())
@@ -601,7 +605,7 @@ exit 3
 	marker := filepath.Join(dir, "child-ran")
 	var errOut strings.Builder
 	code := runDev(streams{out: io_Discard{}, err: &errOut},
-		[]string{"--", "sh", "-c", "printf ran > " + marker})
+		append(explicitIdentityFlags(), "--", "sh", "-c", "printf ran > "+marker))
 
 	if code != exitDevOperational {
 		t.Fatalf("exit code = %d, want %d", code, exitDevOperational)
@@ -626,7 +630,8 @@ func TestDevReportsAMissingHelperAsOperational(t *testing.T) {
 	withDevStdio(t, nil, newTempFile(t, dir, "stdout"), newTempFile(t, dir, "stderr"))
 
 	var errOut strings.Builder
-	code := runDev(streams{out: io_Discard{}, err: &errOut}, []string{"--", "true"})
+	code := runDev(streams{out: io_Discard{}, err: &errOut},
+		append(explicitIdentityFlags(), "--", "true"))
 
 	if code != exitDevOperational {
 		t.Fatalf("exit code = %d, want %d\nstderr: %s", code, exitDevOperational, errOut.String())
@@ -641,10 +646,10 @@ func TestDevFailsBeforeTheChildWhenTheCollectorNeverReceives(t *testing.T) {
 	collectorReadyTimeout = 600 * time.Millisecond
 	t.Cleanup(func() { collectorReadyTimeout = restore })
 
-	fake := fakeLocalRuntime(t, `
-printf '{"version":"1","api_url":"http://127.0.0.1:45703"}\n' > "$2/runtime.json"
-while :; do sleep 0.05; done
-`)
+	api := newFakeDevAPI(t)
+	defer api.Close()
+
+	fake := fakeRuntimeServing(t, api.URL)
 	t.Setenv(localRuntimeBinaryEnv, fake)
 	// Live and configured, but no receiver bound: the state that must not be
 	// treated as ready, because the workload's telemetry would go nowhere and
@@ -659,7 +664,7 @@ while :; do sleep 0.05; done
 	marker := filepath.Join(dir, "child-ran")
 	var errOut strings.Builder
 	code := runDev(streams{out: io_Discard{}, err: &errOut},
-		[]string{"--", "sh", "-c", "printf ran > " + marker})
+		append(explicitIdentityFlags(), "--", "sh", "-c", "printf ran > "+marker))
 
 	if code != exitDevOperational {
 		t.Fatalf("exit code = %d, want %d\nstderr: %s", code, exitDevOperational, errOut.String())
@@ -670,4 +675,39 @@ while :; do sleep 0.05; done
 	if !strings.Contains(errOut.String(), "receiver never bound") {
 		t.Errorf("stderr does not name the unbound receiver:\n%s", errOut.String())
 	}
+}
+
+// explicitIdentityFlags names identity so a test does not depend on the
+// directory being a git repository.
+//
+// Identity resolves before any process starts — a run that cannot be named
+// deterministically should fail before a control plane, a Collector or a workload
+// has been launched — so a test about composition has to get past it first.
+// Derivation itself is covered in dev_identity_test.go.
+func explicitIdentityFlags() []string {
+	return []string{
+		"--project", "test-project",
+		"--agent", "test-agent",
+		"--candidate", "test-candidate",
+	}
+}
+
+// fakeRuntimeServing writes a fake trustvian-local that advertises a real
+// server's endpoint.
+//
+// Needed once dev provisions over /v1: a discovery file naming a port nothing
+// listens on was enough while dev only read the URL, and is not once dev makes
+// requests against it.
+func fakeRuntimeServing(t *testing.T, apiURL string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fake-trustvian-local")
+	script := fmt.Sprintf(`#!/bin/sh
+printf '{"version":"1","api_url":"%s"}\n' > "$2/runtime.json"
+while :; do sleep 0.05; done
+`, apiURL)
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatalf("writing the fake runtime: %v", err)
+	}
+	return path
 }

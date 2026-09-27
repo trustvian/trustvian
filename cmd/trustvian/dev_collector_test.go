@@ -33,6 +33,8 @@ func TestCollectorConfigRendersBothReceiversAndNoTelemetryBlock(t *testing.T) {
 
 	if err := writeCollectorConfig(path, collectorConfigData{
 		OTLPHTTPPort: 4318, OTLPGRPCPort: 4317, HealthPort: 13133,
+		APIURL: "http://127.0.0.1:9", RunID: "r", Profile: "p",
+		PendingStatePath: "/tmp/pending.json",
 	}); err != nil {
 		t.Fatalf("writeCollectorConfig: %v", err)
 	}
@@ -79,7 +81,9 @@ func TestCollectorConfigGoesToTheStateDirectory(t *testing.T) {
 	}
 
 	if err := writeCollectorConfig(filepath.Join(stateDir, collectorConfigFile),
-		collectorConfigData{OTLPHTTPPort: 1, OTLPGRPCPort: 2, HealthPort: 3}); err != nil {
+		collectorConfigData{OTLPHTTPPort: 1, OTLPGRPCPort: 2, HealthPort: 3,
+			APIURL: "http://127.0.0.1:9", RunID: "r", Profile: "p",
+			PendingStatePath: "/tmp/pending.json"}); err != nil {
 		t.Fatalf("writeCollectorConfig: %v", err)
 	}
 

@@ -53,6 +53,9 @@ const (
 	// variable is how such a workload is told where. Nothing is required to read
 	// it; it is there so the answer exists rather than being unobtainable.
 	envGRPCEndpoint = "TRUSTVIAN_DEV_OTLP_GRPC_ENDPOINT"
+
+	// envResourceAttributes carries deployment.environment.name.
+	envResourceAttributes = "OTEL_RESOURCE_ATTRIBUTES"
 )
 
 // otlpProtocol is HTTP rather than gRPC.
@@ -138,6 +141,86 @@ func (e *devEnvironment) routeOTLP(endpoint, grpcEndpoint string) {
 	// a comma-separated opt-in list, and a developer who opted into something
 	// else should keep it.
 	e.additions[envSemconvOptIn] = appendCSV(e.snapshot[envSemconvOptIn], "http")
+}
+
+// declareIdentity makes the workload's telemetry describe the run dev
+// provisioned.
+//
+// Two attributes, and both are load-bearing for reasons that are not obvious.
+//
+// **deployment.environment.name is not optional.** The engine fills
+// Event.Context.Environment from it, and the platform refuses a record whose
+// environment differs from the run's EnvironmentRef
+// (platform/behavior.go, ErrBehaviorEnvironmentMismatch). A run created as
+// "local" plus a workload emitting no such attribute produces *zero usable
+// evidence*: every record is refused, one at a time, while everything else looks
+// healthy. Appended to any inherited value rather than replacing it.
+//
+// **service.name is set only when the workload declares none.** The processor
+// derives Actor.ID from it, so dev overriding a declared value would relabel
+// somebody else's telemetry — and "read what their instrumentation already
+// emits" is the product principle this command exists to honor. When the
+// workload is silent, dev exports the agent it provisioned so the two cannot
+// disagree.
+func (e *devEnvironment) declareIdentity(identity devIdentity) error {
+	if !identity.AgentFromTelemetry {
+		e.additions[envServiceName] = identity.Agent
+	}
+
+	// A conflicting declared environment is refused rather than overridden or
+	// quietly appended. The run's environment and the telemetry's must agree, and
+	// the developer is the one who can decide which is right — appending a second
+	// value would leave the SDK to pick, and overriding would discard a
+	// deliberate choice.
+	if inherited, ok := e.Inherited(envResourceAttributes); ok {
+		if declared, found := resourceAttribute(inherited, deploymentEnvironmentKey); found &&
+			declared != identity.Environment {
+			return fmt.Errorf(
+				"the workload declares %s=%s in %s, but this run is provisioned in "+
+					"environment %q.\n\nThey have to agree: the platform refuses a record "+
+					"whose environment\ndiffers from its run's. Either drop the attribute, or "+
+					"run with\n\n  trustvian dev --environment %s -- <command>",
+				deploymentEnvironmentKey, declared, envResourceAttributes,
+				identity.Environment, declared)
+		}
+	}
+	e.additions[envResourceAttributes] = appendResourceAttribute(
+		e.snapshot[envResourceAttributes],
+		deploymentEnvironmentKey, identity.Environment)
+	return nil
+}
+
+// deploymentEnvironmentKey is the resource attribute the engine reads the
+// environment from.
+const deploymentEnvironmentKey = "deployment.environment.name"
+
+// resourceAttribute reads one key out of an OTEL_RESOURCE_ATTRIBUTES value.
+//
+// The format is comma-separated key=value pairs. Whitespace around either side is
+// tolerated because shells and Makefiles introduce it.
+func resourceAttribute(attributes, key string) (string, bool) {
+	for _, pair := range strings.Split(attributes, ",") {
+		name, value, found := strings.Cut(pair, "=")
+		if !found {
+			continue
+		}
+		if strings.TrimSpace(name) == key {
+			return strings.TrimSpace(value), true
+		}
+	}
+	return "", false
+}
+
+// appendResourceAttribute adds a key=value pair, leaving the rest untouched.
+func appendResourceAttribute(attributes, key, value string) string {
+	pair := key + "=" + value
+	if attributes == "" {
+		return pair
+	}
+	if existing, found := resourceAttribute(attributes, key); found && existing == value {
+		return attributes
+	}
+	return attributes + "," + pair
 }
 
 // Environ renders the environment for exec.
