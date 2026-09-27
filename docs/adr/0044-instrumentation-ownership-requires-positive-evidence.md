@@ -38,7 +38,7 @@ path, and the cause is invisible from inside the data.
 | Mode | Meaning |
 |---|---|
 | `existing` | the workload already sends OpenTelemetry; dev configures OTLP and injects nothing |
-| `none` | dev manages no instrumentation at all, not even routing |
+| `none` | dev manages no instrumentation at all, not even routing — but still declares identity, see §7 |
 | `auto` (default) | resolve from positive evidence, or **stop** |
 
 `auto` has exactly two outcomes: it finds positive evidence and behaves as
@@ -105,6 +105,30 @@ something else, and so a caller who asks for it gets a straight answer instead o
 It waits on a compatibility check: a virtualenv, a different Python version, a
 conda environment and a system interpreter are all normal and all break naive
 injection. Half-attaching is the failure this ADR is about, one layer down.
+
+### 7. `none` means no routing, not no variables
+
+`--instrumentation none` sets no endpoint, no protocol, no exporter selection, no
+batch delay and no semantic-convention opt-in. It does still set two:
+
+```text
+OTEL_RESOURCE_ATTRIBUTES   deployment.environment.name=<environment>, appended
+OTEL_SERVICE_NAME          the Agent, and only when the workload declares none
+```
+
+Those are identity, not instrumentation, and identity is what makes the evidence
+belong to this run rather than to nothing.
+[ADR 0043](0043-dev-provisions-the-local-hierarchy-from-the-repository.md) §1 has
+the mechanism: the platform *refuses* a record whose environment differs from its
+run's, and the processor derives the actor from the arriving `service.name`. A run
+whose telemetry declares neither collects zero usable evidence while every process
+involved reports success — which is the same class of silent wrongness this whole
+record is about, arriving from the other direction.
+
+So `none` is a statement about who configures the exporter, not a request to be
+left entirely alone. The banner prints both names like any other variable, and
+says what they are for; an earlier version printed "Set nothing", which was
+false in exactly the expensive direction.
 
 ## Alternatives considered
 

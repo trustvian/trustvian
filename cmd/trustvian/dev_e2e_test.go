@@ -55,6 +55,23 @@ const e2eSpanCount = 5
 // comparison only for its metric summaries, asks for the widest one there is.
 const e2eUnlimited = "18446744073709551615" // math.MaxUint64
 
+// skipUnlessCI skips for a missing prerequisite, or fails when running in CI.
+//
+// This test is the only one that can fail for the reasons that matter most, so a
+// skip it can reach in CI would make it decorative: the run would stay green while
+// nothing was actually composed. On a developer's machine a missing prerequisite
+// is a fair reason not to run; in CI every prerequisite is guaranteed by the
+// workflow, so its absence is a broken workflow rather than an absent tool.
+//
+// GITHUB_ACTIONS is set to "true" by every GitHub-hosted runner.
+func skipUnlessCI(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("GITHUB_ACTIONS") != "" {
+		t.Fatalf("this test must not skip in CI — "+format, args...)
+	}
+	t.Skipf(format, args...)
+}
+
 // realBinaries are the three executables the journey needs.
 type realBinaries struct {
 	local     string
@@ -118,10 +135,11 @@ func buildRealBinaries(t *testing.T) realBinaries {
 	})
 
 	if buildErr != nil {
-		// Skipped rather than failed only when the toolchain cannot build them at
-		// all. A compile error in the helpers is a real failure and says so.
+		// A compile error in the helpers is always a real failure. A missing
+		// toolchain is a missing prerequisite — which is a skip on a developer's
+		// machine and a failure in CI, where the prerequisite is guaranteed.
 		if strings.Contains(buildErr.Error(), "no Go toolchain") {
-			t.Skipf("cannot build the real binaries: %v", buildErr)
+			skipUnlessCI(t, "cannot build the real binaries: %v", buildErr)
 		}
 		t.Fatalf("cannot build the real binaries: %v", buildErr)
 	}
@@ -535,7 +553,7 @@ type e2eFixture struct {
 func newE2EFixture(t *testing.T) *e2eFixture {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
-		t.Skipf("git is not installed: %v", err)
+		skipUnlessCI(t, "git is not installed: %v", err)
 	}
 
 	dir := t.TempDir()

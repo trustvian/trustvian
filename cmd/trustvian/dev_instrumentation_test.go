@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -345,6 +346,145 @@ func TestNoneRoutesNothing(t *testing.T) {
 	owner = ownership{mode: modeExisting}
 	if !owner.routesOTLP() {
 		t.Fatal("existing does not route OTLP, which is the one thing it does")
+	}
+}
+
+// TestNoneStillDeclaresIdentityAndNothingElse pins the delta `none` produces.
+//
+// "dev manages no instrumentation" is a statement about routing, not about
+// variables: identity is still declared, because the platform refuses a record
+// whose environment differs from its run's and the processor derives the actor
+// from service.name. A run whose telemetry declares neither collects zero usable
+// evidence while every process reports success.
+//
+// Asserted as an exact set rather than an allowlist. An allowlist would pass if a
+// future change added routing back under `none` and forgot to widen it; an exact
+// set fails either way it drifts, which is the property worth having here.
+func TestNoneStillDeclaresIdentityAndNothingElse(t *testing.T) {
+	identity := devIdentity{
+		Project: "p", Agent: "a", AgentName: "a", Candidate: "c",
+		Environment: "local", Run: "r", Profile: "c",
+	}
+
+	tests := []struct {
+		name      string
+		inherited map[string]string
+		// agentFromTelemetry mirrors what deriveIdentity concluded.
+		agentFromTelemetry bool
+		want               []string
+	}{
+		{
+			name:      "the workload declares no service name",
+			inherited: map[string]string{},
+			want:      []string{envResourceAttributes, envServiceName},
+		},
+		{
+			name: "the workload declares its own service name",
+			// dev leaves a declared name alone, so there is nothing to add: the
+			// value the child needs is already inherited and already correct.
+			inherited:          map[string]string{envServiceName: "a"},
+			agentFromTelemetry: true,
+			want:               []string{envResourceAttributes},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			environment := environmentWith(t, tt.inherited)
+			declared := identity
+			declared.AgentFromTelemetry = tt.agentFromTelemetry
+			if err := environment.declareIdentity(declared); err != nil {
+				t.Fatalf("declareIdentity: %v", err)
+			}
+
+			// And this is the whole point of the mode: routeOTLP is never called.
+			owner := ownership{mode: modeNone}
+			if owner.routesOTLP() {
+				t.Fatal("none routes OTLP")
+			}
+
+			got := environment.Added()
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("none set %v, want exactly %v", got, tt.want)
+			}
+
+			// The environment attribute is the one whose absence is silent, so its
+			// value is checked and not only its presence.
+			value := environment.additions[envResourceAttributes]
+			if declaredEnv, found := resourceAttribute(value, deploymentEnvironmentKey); !found ||
+				declaredEnv != identity.Environment {
+				t.Errorf("%s = %q, want it to carry %s=%s",
+					envResourceAttributes, value,
+					deploymentEnvironmentKey, identity.Environment)
+			}
+		})
+	}
+}
+
+// TestNoneBannerSaysWhatItStillSets runs the real command with `none`.
+//
+// The unit test above pins the delta; this one pins what the developer is *told*
+// about it. Worth its own test because the banner said "Set nothing" while two
+// variables were being set, and a wrapper that misreports its own environment is
+// unreasonable to debug against.
+func TestNoneBannerSaysWhatItStillSets(t *testing.T) {
+	api := newFakeDevAPI(t)
+	defer api.Close()
+
+	withFakeCollector(t, "")
+	t.Setenv(localRuntimeBinaryEnv, filepath.Join(t.TempDir(), "does-not-exist"))
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
+	dir := t.TempDir()
+	withDevStdio(t, nil, newTempFile(t, dir, "stdout"), newTempFile(t, dir, "stderr"))
+
+	// The child writes its own environment out, so the assertion is about what the
+	// workload actually received and not only about what dev printed.
+	childEnv := filepath.Join(dir, "child-env")
+	var out, errOut strings.Builder
+	code := runDev(streams{out: &out, err: &errOut},
+		[]string{"--project", "p", "--agent", "a", "--candidate", "c",
+			"--instrumentation", "none", "--api-url", api.URL,
+			"--", "sh", "-c", "env > " + childEnv})
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0\nstderr: %s", code, errOut.String())
+	}
+
+	banner := out.String()
+	if strings.Contains(banner, "Set      nothing") {
+		t.Errorf("the banner claims none sets nothing, but it declares identity:\n%s",
+			banner)
+	}
+	for _, want := range []string{
+		envResourceAttributes, envServiceName,
+		"identity only", deploymentEnvironmentKey, serviceNameKey,
+	} {
+		if !strings.Contains(banner, want) {
+			t.Errorf("the banner does not mention %q:\n%s", want, banner)
+		}
+	}
+
+	raw, err := os.ReadFile(childEnv)
+	if err != nil {
+		t.Fatalf("reading the child's environment: %v", err)
+	}
+	child := string(raw)
+	for _, want := range []string{
+		envServiceName + "=a",
+		deploymentEnvironmentKey + "=" + devEnvironmentDefault,
+	} {
+		if !strings.Contains(child, want) {
+			t.Errorf("the child did not receive %q", want)
+		}
+	}
+	// And no routing reached it, which is what the mode is for.
+	for _, forbidden := range []string{
+		envOTLPTracesEndpoint, envOTLPEndpoint, envTracesExport, envSemconvOptIn,
+	} {
+		if strings.Contains(child, forbidden+"=") {
+			t.Errorf("none routed telemetry: the child received %s", forbidden)
+		}
 	}
 }
 

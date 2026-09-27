@@ -75,7 +75,10 @@ actually depend on.
   engine would faithfully report as an anomaly. `OTEL_SDK_DISABLED=true` is
   refused for every mode that would route, because it is the opposite of
   evidence. `python-zero-code` is named, reserved and refused pending an
-  interpreter compatibility check.
+  interpreter compatibility check. `none` means no *routing*, not no variables:
+  it still declares `deployment.environment.name` and, when the workload declares
+  none itself, `OTEL_SERVICE_NAME` — without those the platform refuses every
+  record and the run collects nothing while every process reports success.
   [ADR 0044](docs/adr/0044-instrumentation-ownership-requires-positive-evidence.md).
 
   **It is transparent to scripts.** The exit status is the command's own,

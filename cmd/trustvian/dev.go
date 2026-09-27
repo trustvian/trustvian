@@ -606,14 +606,24 @@ func printDevBanner(s streams, stateDir, apiURL string, otlp *collector,
 	// set, and a wrapper that changes an environment silently is one they cannot
 	// reason about.
 	fmt.Fprintf(s.out, "  Owner    %s%s\n", owner.mode, ownerEvidenceNote(owner))
-	if owner.routesOTLP() {
-		fmt.Fprintf(s.out, "  Set      %s\n", strings.Join(environment.Added(), " "))
-	} else {
-		// Said plainly rather than left to be inferred from an absent line: a
-		// developer who sees no records needs to know dev deliberately configured
-		// nothing.
-		fmt.Fprintf(s.out, "  Set      nothing — the workload's telemetry must reach\n")
-		fmt.Fprintf(s.out, "           the OTLP endpoint above by its own route\n")
+	fmt.Fprintf(s.out, "  Set      %s\n", strings.Join(environment.Added(), " "))
+	if !owner.routesOTLP() {
+		// "dev manages no instrumentation" means no *routing*. It does not mean no
+		// variables: identity is still declared, because identity is what makes the
+		// evidence belong to this run rather than to nothing.
+		//
+		// An earlier version of this line said "nothing", which was simply false —
+		// and false in the direction that costs a developer an afternoon, since a
+		// workload whose records are all refused looks like a workload emitting
+		// none. So the two names are printed above like any other, and what they
+		// are for is said here.
+		fmt.Fprintf(s.out, "           identity only — no OTLP routing.\n")
+		fmt.Fprintf(s.out, "           %s must match this run or the platform\n",
+			deploymentEnvironmentKey)
+		fmt.Fprintf(s.out, "           refuses every record; %s is the actor the run\n",
+			serviceNameKey)
+		fmt.Fprintf(s.out, "           is about. Your telemetry must reach the OTLP endpoint\n")
+		fmt.Fprintf(s.out, "           above by its own route.\n")
 	}
 	fmt.Fprintf(s.out, "\nRunning %s\n\n", devCommandName(config.command))
 }

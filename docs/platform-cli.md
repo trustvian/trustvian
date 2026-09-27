@@ -261,8 +261,8 @@ build.
 
 ### What it sets, and what it does not touch
 
-With ownership `existing`, exactly three variables are added to the workload's
-environment, and all three are printed:
+Every variable `dev` adds to the workload's environment is printed on the banner,
+by name. With ownership `existing` the three that matter are:
 
 ```text
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT   the composed receiver
@@ -272,7 +272,29 @@ OTEL_RESOURCE_ATTRIBUTES             deployment.environment.name=<environment>
 
 `TRUSTVIAN_DEV_OTLP_ENDPOINT` and `TRUSTVIAN_DEV_OTLP_GRPC_ENDPOINT` are also
 exported, for a workload that builds its exporter in code and chooses its own
-transport.
+transport, alongside the protocol, exporter-selection and semantic-convention
+variables the banner lists.
+
+**`--instrumentation none` still declares identity.** It means `dev` routes no
+telemetry — it does not mean `dev` sets nothing. Two variables remain, for
+reasons that are not cosmetic:
+
+```text
+OTEL_RESOURCE_ATTRIBUTES   deployment.environment.name=<environment>, appended
+OTEL_SERVICE_NAME          the Agent, and only when the workload declares none
+```
+
+`deployment.environment.name` is how the engine fills a record's environment, and
+the platform **refuses** a record whose environment differs from its run's — so
+without it a run collects zero usable evidence while everything else looks
+healthy. `service.name` is the actor the run is about: the processor derives it
+from the arriving spans, so a run provisioned for one agent and telemetry
+declaring another cannot be attributed. `OTEL_SERVICE_NAME` is left alone when the
+workload already declares its own, because relabelling somebody else's telemetry
+is not `dev`'s to do.
+
+Everything else — the endpoint, the protocol, the exporter selections, the batch
+delay, the semantic-convention opt-in — is routing, and `none` sets none of it.
 
 Your repository is never written to — not its files, not its dependency
 manifests, not its git state. `dev`'s own state lives under
