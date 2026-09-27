@@ -426,10 +426,15 @@ func (d *devSession) finish(outcome childOutcome) int {
 		d.failRunWith(ctx, "the workload could not be started under trustvian dev")
 		return outcome.code
 
-	case outcome.signaled && d.relay.Forwarded():
+	case outcome.stoppedByDeveloper(d.relay.Forwarded()):
 		// The developer stopped it. A run ended by Ctrl-C is not a behavioral
 		// finding and not a crash: the evidence collected up to that point is
 		// real, so the run is completed and the banner says who ended it.
+		//
+		// Forwarded() alone was not enough. With the terminal handed over, the
+		// terminal delivers SIGINT to the workload's group and dev never sees it —
+		// so an interactive workload the developer stopped was being recorded as
+		// failed. stoppedByDeveloper knows about both routes.
 		if err := d.completeRun(ctx); err != nil {
 			return outcome.code
 		}

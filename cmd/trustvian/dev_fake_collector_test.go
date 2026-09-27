@@ -36,6 +36,12 @@ const fakeCollectorEnv = "TRUSTVIAN_DEV_FAKE_COLLECTOR"
 const fakeCollectorModeEnv = "TRUSTVIAN_DEV_FAKE_COLLECTOR_MODE"
 
 func TestMain(m *testing.M) {
+	// The terminal harness is checked first: it re-execs this binary with the
+	// collector variables still set, because the dev it runs needs a Collector of
+	// its own.
+	if os.Getenv(terminalHarnessEnv) != "" {
+		os.Exit(runTerminalHarness())
+	}
 	if os.Getenv(fakeCollectorEnv) != "" {
 		os.Exit(runFakeCollector())
 	}

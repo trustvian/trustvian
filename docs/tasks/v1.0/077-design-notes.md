@@ -503,6 +503,23 @@ Slice 2 is the largest and is where the two-step readiness and the resolver
 fallback land. If it grows past reviewable size I will split the Collector out
 of it and report that rather than landing one unreviewable commit.
 
+### Slice 5's end-to-end test, stated so it cannot be softened
+
+Three requirements, each of which exists because something regressed silently
+without it:
+
+- It runs the **real** `trustvian-local` and `trustvian-collector`, not the
+  fakes the unit tests use. The fakes prove dev's supervision; only the real
+  binaries prove the composition.
+- It proves a span exported **just before the workload exits** lands in the
+  run. That is the case the whole shutdown ordering exists for — SDK flush,
+  then Collector post, then the run going terminal — and the one a naive
+  teardown loses without saying so.
+- It asserts the **second** sequential run of one candidate reports **non-zero
+  anomaly confidence**. That is the only assertion that fails if the engine
+  store regresses to the in-memory default, which would quietly leave the two
+  engine-evidence gates unable to fire.
+
 ### Deferred with python-zero-code, and why
 
 The spec's tests and acceptance criteria are satisfied in these slices except:

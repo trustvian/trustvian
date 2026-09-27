@@ -314,15 +314,41 @@ part of the interface:
 | the workload exited `0` | `0` | **completed** |
 | the workload exited non-zero | its own status | **failed**, reason naming the status |
 | the workload died from a signal `dev` forwarded | `128 + signal` | **completed** |
-| the workload died from a signal nobody forwarded | `128 + signal` | **failed** |
+| Ctrl-C or a hangup reached the workload through the terminal | `128 + signal` | **completed** |
+| the workload died from any other signal nobody forwarded | `128 + signal` | **failed** |
 | the workload could not be started | `3` | **failed**, reason saying it could not be started |
 | a signal arrived during composition | `128 + signal` | **failed** if a run had been started |
 
-The third row is the one worth stating. A developer pressing Ctrl-C has not
-produced a behavioral regression and has not crashed anything: they stopped
-watching. The evidence collected up to that point is real, so the run is
-completed and the banner says who ended it. A signal dev did *not* forward is
-different — something else killed the workload — and that is a failure.
+The two middle rows are the same event seen from two sides, and they exist
+separately because *who receives Ctrl-C depends on whether stdin is a
+terminal*.
+
+With no terminal, `dev` is signalled and forwards, and the forwarding is the
+record of it. With a terminal, `dev` places the workload's process group in
+the foreground — so a workload that prompts can actually read input — and the
+terminal then delivers `SIGINT` to the **workload**, not to `dev`. `dev` sees
+nothing at all. So the evidence there is the handover plus the signal:
+`SIGINT` is Ctrl-C and `SIGHUP` is the terminal going away, and neither is a
+workload failing.
+
+Either way a developer pressing Ctrl-C has not produced a behavioral
+regression and has not crashed anything: they stopped watching. The evidence
+collected up to that point is real, so the run is completed and the banner
+says who ended it. Any other signal nobody forwarded means something else
+killed the workload, and that is a failure.
+
+`SIGQUIT` — Ctrl-\ — is deliberately **not** treated as stopping: its
+convention is "stop and dump state because something is wrong", which is a
+different statement from "I have seen enough".
+
+**One consequence of the terminal handover is worth knowing.** While the
+workload runs with the terminal, `dev` is in a background process group, so a
+*second* Ctrl-C during teardown is delivered to the workload's group and not
+to `dev`. Teardown therefore always runs to completion once the workload has
+exited; it cannot be interrupted from the keyboard. It is bounded rather than
+unbounded — each helper gets a grace period and is then killed — so this is a
+short wait, not a hang. Without a terminal, a second Ctrl-C does reach `dev`
+and is forwarded.
 
 `dev` is **not supported on Windows** and refuses with exit `2`. It forwards
 `SIGINT` and `SIGTERM` to the child and Windows has no equivalent delivery, so a

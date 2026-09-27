@@ -36,6 +36,19 @@ type childOutcome struct {
 	// returning a status.
 	signaled bool
 
+	// signal is the signal that killed it, when signaled.
+	signal syscall.Signal
+
+	// terminalHandover reports that the workload's process group was the
+	// terminal's foreground group.
+	//
+	// This decides what a signal death means. With the handover in effect the
+	// terminal delivers Ctrl-C to the *workload's* group and dev — now in a
+	// background group — never sees it. So a developer's interrupt arrives as a
+	// SIGINT death with nothing forwarded, which without this flag is
+	// indistinguishable from the workload being killed by something else.
+	terminalHandover bool
+
 	// startFailed reports that the command could not be executed at all — not
 	// found, not executable, a bad interpreter. No workload ran, so there is no
 	// workload status, and the run's failure reason must not claim one.
@@ -44,6 +57,35 @@ type childOutcome struct {
 
 // ok reports a clean exit.
 func (o childOutcome) ok() bool { return o.code == exitDevOK && !o.startFailed }
+
+// stoppedByDeveloper reports that the workload ended because the developer said
+// so, rather than because anything went wrong.
+//
+// Two routes reach this, and both are the same event seen from different sides.
+//
+// Without the terminal handover, dev is in the foreground group: the terminal
+// signals dev, dev forwards, and forwarded is the record of it.
+//
+// With the handover, the workload's group is the foreground group: the terminal
+// signals the workload directly and dev never sees it. So the evidence is the
+// handover plus the signal itself — SIGINT is Ctrl-C and SIGHUP is the terminal
+// going away, and neither is a workload failing.
+//
+// SIGQUIT is deliberately not in that set even though Ctrl-\ produces it. Its
+// convention is "stop and dump state because something is wrong", which is a
+// different statement from "I have seen enough".
+func (o childOutcome) stoppedByDeveloper(forwarded bool) bool {
+	if !o.signaled {
+		return false
+	}
+	if forwarded {
+		return true
+	}
+	if !o.terminalHandover {
+		return false
+	}
+	return o.signal == syscall.SIGINT || o.signal == syscall.SIGHUP
+}
 
 // superviseChild runs one command to completion and reports what happened.
 //
@@ -59,21 +101,22 @@ func superviseChild(s streams, command []string, environment *devEnvironment,
 	relay *signalRelay) childOutcome {
 	stdin, stdout, stderr := devStdio()
 
-	cmd := exec.Command(command[0], command[1:]...)
 	// Extended, never replaced. Explicit rather than relying on exec's defaults
 	// so that adding a variable cannot accidentally construct a fresh
 	// environment instead of extending the developer's.
+	env := os.Environ()
 	if environment != nil {
-		cmd.Env = environment.Environ()
-	} else {
-		cmd.Env = os.Environ()
+		env = environment.Environ()
 	}
-	cmd.Dir = ""
-	cmd.Stdin = stdin
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
 
-	if err := startWithTerminalHandover(cmd, stdin); err != nil {
+	cmd, handover, err := startChild(childSpec{
+		command: command,
+		env:     env,
+		stdin:   stdin,
+		stdout:  stdout,
+		stderr:  stderr,
+	})
+	if err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: cannot run %s: %v\n",
 			devCommandName(command), err)
 		return childOutcome{code: exitDevOperational, startFailed: true}
@@ -87,7 +130,9 @@ func superviseChild(s streams, command []string, environment *devEnvironment,
 		defer relay.clearTarget()
 	}
 
-	return childExitOutcome(s, command, cmd.Wait())
+	outcome := childExitOutcome(s, command, cmd.Wait())
+	outcome.terminalHandover = handover
+	return outcome
 }
 
 // signalQueueDepth buffers signals so none is dropped while one is forwarded.
@@ -122,7 +167,11 @@ func childExitOutcome(s streams, command []string, err error) childOutcome {
 	// or collapsing it to 1, would make "the workload was killed"
 	// indistinguishable from "the workload failed".
 	if status, ok := exitErr.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-		return childOutcome{code: signalExitCode(status.Signal()), signaled: true}
+		return childOutcome{
+			code:     signalExitCode(status.Signal()),
+			signaled: true,
+			signal:   status.Signal(),
+		}
 	}
 
 	code := exitErr.ExitCode()

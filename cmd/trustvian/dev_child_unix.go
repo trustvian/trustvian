@@ -20,19 +20,51 @@ import (
 // here, so there is nothing to refuse.
 func devPlatformSupported() error { return nil }
 
-// startWithTerminalHandover starts the child, giving it the terminal when there
-// is one.
+// childSpec is everything needed to build the workload's command.
 //
-// This is the correction to a real defect in the first version. Setpgid alone puts
-// the child in a *background* process group, and a background process that reads
-// the terminal receives SIGTTIN and stops. So `trustvian dev -- python -i`, or any
-// workload that prompts, hung forever with no output and no explanation.
+// A spec rather than a pre-built exec.Cmd, because the terminal path may have to
+// start a *second* command when the first attempt fails — and an exec.Cmd cannot
+// be started twice, nor copied once started. An earlier version did
+// `*cmd = *retry`, which duplicates a struct holding a live Process, an internal
+// context, goroutine bookkeeping and parent-side pipe descriptors. It appeared to
+// work and had no right to.
+type childSpec struct {
+	command               []string
+	env                   []string
+	stdin, stdout, stderr *os.File
+}
+
+// newCmd builds a fresh, unstarted command from the spec.
+func (spec childSpec) newCmd() *exec.Cmd {
+	cmd := exec.Command(spec.command[0], spec.command[1:]...)
+	cmd.Env = spec.env
+	cmd.Dir = ""
+	cmd.Stdin = spec.stdin
+	cmd.Stdout = spec.stdout
+	cmd.Stderr = spec.stderr
+	return cmd
+}
+
+// startChild starts the workload, giving it the terminal when there is one.
+//
+// Returns the command that actually started, and whether the terminal was handed
+// over. The second value is not a detail: it changes what a signal death means.
+//
+// This is the correction to a real defect. Setpgid alone puts the child in a
+// *background* process group, and a background process that reads the terminal
+// receives SIGTTIN and stops. So `trustvian dev -- python -i`, or any workload
+// that prompts, hung forever with no output and no explanation.
 //
 // Foreground fixes it: it places the child's group in the foreground of the
 // controlling terminal, so reads succeed. It implies Setpgid, so everything the
-// group-based signal forwarding and cleanup depend on still holds — the child is
-// still in its own group, dev still forwards deliberately, and a group kill still
-// reaches descendants.
+// group-based signal forwarding and cleanup depend on still holds.
+//
+// **And it moves where the terminal sends Ctrl-C.** Once the child's group is the
+// foreground group, SIGINT goes to the child and not to dev — dev is in a
+// background group and sees nothing. That is why the handover is reported back:
+// without it the session would record a developer's Ctrl-C as "died from a signal
+// nobody forwarded", which is a failed run for a workload the developer simply
+// stopped watching.
 //
 // The terminal is not handed back explicitly when the child exits. dev's own
 // writes afterwards are unaffected: SIGTTOU is only sent for terminal *control*
@@ -42,14 +74,15 @@ func devPlatformSupported() error { return nil }
 //
 // stdin deciding this is deliberate: it is the descriptor a workload would read a
 // prompt from, so it is the one whose terminal matters.
-func startWithTerminalHandover(cmd *exec.Cmd, stdin *os.File) error {
-	if stdin != nil && looksLikeTerminal(stdin) {
+func startChild(spec childSpec) (*exec.Cmd, bool, error) {
+	if spec.stdin != nil && looksLikeTerminal(spec.stdin) {
+		cmd := spec.newCmd()
 		attrs := childProcessAttributes(cmd)
 		attrs.Foreground = true
-		attrs.Ctty = int(stdin.Fd())
+		attrs.Ctty = int(spec.stdin.Fd())
 
 		if err := cmd.Start(); err == nil {
-			return nil
+			return cmd, true, nil
 		}
 
 		// The handover failed. The likely cause is that the character device was
@@ -61,31 +94,29 @@ func startWithTerminalHandover(cmd *exec.Cmd, stdin *os.File) error {
 		// enumeration would be wrong on the first platform that picks a different
 		// one, and the cost of retrying is nil: a command that genuinely cannot be
 		// executed fails the second attempt too, and it is the second attempt's
-		// error that the caller sees — which is the accurate one, because it was
-		// made without the handover that might have been to blame.
-		//
-		// A fresh Cmd, because exec refuses to start one twice.
-		retry := exec.Command(cmd.Path, cmd.Args[1:]...)
-		retry.Env, retry.Dir = cmd.Env, cmd.Dir
-		retry.Stdin, retry.Stdout, retry.Stderr = cmd.Stdin, cmd.Stdout, cmd.Stderr
+		// error the caller sees — which is the accurate one, because it was made
+		// without the handover that might have been to blame.
+		retry := spec.newCmd()
 		applyChildProcessAttributes(retry)
 		if err := retry.Start(); err != nil {
-			return err
+			return nil, false, err
 		}
-		// The caller reaps through cmd, so it has to be the one that started.
-		*cmd = *retry
-		return nil
+		return retry, false, nil
 	}
 
+	cmd := spec.newCmd()
 	applyChildProcessAttributes(cmd)
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return nil, false, err
+	}
+	return cmd, false, nil
 }
 
 // looksLikeTerminal reports whether a file is a character device.
 //
 // A mode check rather than an ioctl, so this file needs no unsafe pointer
 // arithmetic and no per-OS ioctl numbers. It is not exact — /dev/null is a
-// character device and not a terminal — which is why the caller retries instead of
+// character device and not a terminal — which is why startChild retries instead of
 // trusting it.
 func looksLikeTerminal(file *os.File) bool {
 	info, err := file.Stat()

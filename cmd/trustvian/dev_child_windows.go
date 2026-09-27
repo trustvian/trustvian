@@ -55,8 +55,24 @@ func applyChildProcessAttributes(*exec.Cmd) {}
 // forwardSignal is unreachable on Windows, for the same reason.
 func forwardSignal(*os.Process, os.Signal) {}
 
-// startWithTerminalHandover is unreachable on Windows, for the same reason.
-func startWithTerminalHandover(cmd *exec.Cmd, _ *os.File) error { return cmd.Start() }
+// childSpec mirrors the Unix shape so the portable supervisor compiles here.
+type childSpec struct {
+	command               []string
+	env                   []string
+	stdin, stdout, stderr *os.File
+}
+
+// startChild is unreachable on Windows: runDev refuses before a child is created.
+// Present so the package compiles for this platform.
+func startChild(spec childSpec) (*exec.Cmd, bool, error) {
+	cmd := exec.Command(spec.command[0], spec.command[1:]...)
+	cmd.Env = spec.env
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = spec.stdin, spec.stdout, spec.stderr
+	if err := cmd.Start(); err != nil {
+		return nil, false, err
+	}
+	return cmd, false, nil
+}
 
 // processAliveForBaseline is unreachable on Windows: dev refuses before it would
 // claim a baseline. Present so the package compiles for this platform.
