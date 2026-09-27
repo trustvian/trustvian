@@ -42,3 +42,10 @@ dist/
 # discovery file naming the running endpoint. Project-local and disposable —
 # `rm -rf .trustvian` ends the environment.
 .trustvian/
+
+# The root-level CLI binary, if you build it with `go build` rather than
+# `make build` (which writes to /bin/). Anchored with a leading slash, like
+# /bin/ above: an unanchored `trustvian` matches every path component with that
+# name — including cmd/trustvian/ — which silently ignores new source files
+# there. scripts/gitignore_test.go fails if that regresses.
+/trustvian

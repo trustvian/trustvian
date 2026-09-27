@@ -54,6 +54,7 @@ reconstructed later. Everything else in this table is already released.
 | Configuration schema (`policy`, `alerts`, `anomaly`, `storage`) | STABLE | A valid `v1` document keeps loading across `v1.x` | New optional fields; a new schema version alongside `v1` | Major, or a new schema version |
 | Configuration defaults | STABLE WITH DEPRECATION | A default is not changed silently | Documented default changes in a minor, called out in CHANGELOG | See [behavioral compatibility](#behavioral-compatibility) |
 | CLI commands and flags | OPERATIONALLY STABLE | `analyze`, `baseline`, `version`, `--config`, `--anomaly-config`, `--storage-config` keep working | New commands and flags | Major to remove or repurpose |
+| `dev --instrumentation` values | OPERATIONALLY STABLE | `existing`, `none` and `auto` keep their meaning; `auto` never injects on absence of evidence | New modes — `python-zero-code` is reserved and currently refused | Major to remove or repurpose a value |
 | CLI exit codes | OPERATIONALLY STABLE | Scoped by command family; `1` means gate failure only for `eval compare` — see [CLI](#cli) | Adding a code, or a new family with its own scoped contract | Major |
 | CLI human-readable output | OBSERVATIONAL | Not a machine interface — no wording, spacing, or ordering promise | Any change | None |
 | Environment variables read by shipped binaries | OPERATIONALLY STABLE | See [environment variables](#environment-variables) | New variables | Major to remove or rename |
@@ -252,6 +253,7 @@ meaning for every code, and assuming one will be wrong:
 | `project`, `agent`, `candidate`, `env`, `promotion`, `eval` except `compare` | success | *unused* | usage | API, network, or server failure |
 | `tui` | you quit | *unused* | usage | startup, HTTP, SSE, protocol, or terminal failure |
 | `eval compare` | gate **PASS** | gate **FAIL** | usage | API, network, or server failure |
+| `dev` | **the child's exit status**, whatever it is — see below | | | |
 
 **Exit code `1` means gate failure only for `trustvian eval compare`; it
 does not change the established meaning of code `1` for legacy
@@ -267,6 +269,103 @@ to that vocabulary is a minor change; changing what `1` means is major. [Task 06
 conflict by scoping rather than renumbering, so no released automation
 changed meaning. See
 [ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md).
+
+### `dev` propagates its child's status
+
+`trustvian dev` is a **documented exception** to the table above: it exits with
+the status of the command it ran, whatever that status is. A wrapper that
+rewrote its child's exit code would be unusable in a script, which is the only
+place a wrapper is used.
+
+```text
+before the child starts    2  the invocation was wrong
+                           3  dev could not start the child at all
+                     128+N  a signal arrived during composition
+after the child starts     the child's status, unmodified
+```
+
+So `2` and `3` carry dev's own meaning only up to the moment the child is
+running. After that they mean whatever the workload means by them, and dev
+cannot tell the difference — the same ambiguity `env`, `nice` and `timeout`
+carry, accepted for the same reason: discarding the child's status is worse.
+
+**The status is the child's even when dev's own bookkeeping fails.** If the
+workload succeeds and the run cannot be completed, dev prints a warning naming
+the run it left non-terminal and still exits `0`. Returning `3` there would make
+a successful workload look like a failed one, and a script cannot act on a
+distinction dev invented after the fact.
+
+A child killed by a signal exits **`128 + signal`**, the convention every shell
+uses. Go reports a signal death as exit code `-1`, which no script can branch
+on, and collapsing it to `1` would make "the workload was killed" look identical
+to "the workload failed".
+
+A signal that arrives *before* the child starts uses the same encoding, so a
+script sees one meaning for "stopped by a signal" whichever phase it
+interrupted.
+
+### What `dev` records about the run
+
+The exit status is a script's contract; the evaluation run's terminal state is
+the platform's. They are related and they are not the same, and the mapping is
+part of the interface:
+
+| What happened | Exit status | Run state |
+|---|---|---|
+| the workload exited `0` | `0` | **completed** |
+| the workload exited non-zero | its own status | **failed**, reason naming the status |
+| the workload died from a signal `dev` forwarded | `128 + signal` | **completed** |
+| Ctrl-C or a hangup reached the workload through the terminal | `128 + signal` | **completed** |
+| the workload died from any other signal nobody forwarded | `128 + signal` | **failed** |
+| the workload could not be started | `3` | **failed**, reason saying it could not be started |
+| a signal arrived during composition | `128 + signal` | **failed** if a run had been started |
+
+The two middle rows are the same event seen from two sides, and they exist
+separately because *who receives Ctrl-C depends on whether stdin is a
+terminal*.
+
+With no terminal, `dev` is signalled and forwards, and the forwarding is the
+record of it. With a terminal, `dev` places the workload's process group in
+the foreground — so a workload that prompts can actually read input — and the
+terminal then delivers `SIGINT` to the **workload**, not to `dev`. `dev` sees
+nothing at all. So the evidence there is the handover plus the signal:
+`SIGINT` is Ctrl-C and `SIGHUP` is the terminal going away, and neither is a
+workload failing.
+
+Either way a developer pressing Ctrl-C has not produced a behavioral
+regression and has not crashed anything: they stopped watching. The evidence
+collected up to that point is real, so the run is completed and the banner
+says who ended it. Any other signal nobody forwarded means something else
+killed the workload, and that is a failure.
+
+`SIGQUIT` — Ctrl-\ — is deliberately **not** treated as stopping: its
+convention is "stop and dump state because something is wrong", which is a
+different statement from "I have seen enough".
+
+**One consequence of the terminal handover is worth knowing.** While the
+workload runs with the terminal, `dev` is in a background process group, so a
+*second* Ctrl-C during teardown is delivered to the workload's group and not
+to `dev`. Teardown therefore always runs to completion once the workload has
+exited; it cannot be interrupted from the keyboard. It is bounded rather than
+unbounded — each helper gets a grace period and is then killed — so this is a
+short wait, not a hang. Without a terminal, a second Ctrl-C does reach `dev`
+and is forwarded.
+
+`dev` is **not supported on Windows** and refuses with exit `2`. It forwards
+`SIGINT` and `SIGTERM` to the child and Windows has no equivalent delivery, so a
+partial implementation would leave orphaned processes; see
+[task 077](tasks/v1.0/077-unified-otlp-local-dev-runtime.md). The refusal names
+WSL2 and
+[Local development § Running the parts separately](local-development.md#running-the-parts-separately),
+which is the supported path there and everywhere else `dev` is not wanted.
+
+`dev` also refuses, before starting anything, when it cannot establish who owns
+the workload's instrumentation. Absence of detectable instrumentation never
+selects injection, and that is a stability promise rather than a current
+limitation: a future release may add evidence to the list or implement
+`python-zero-code`, and neither may turn a refusal into an injected second
+instrumentation stack. See
+[ADR 0044](adr/0044-instrumentation-ownership-requires-positive-evidence.md).
 
 For the control-plane families, an API failure is always `3` and never
 `1`. A 409, a 404, a 500, a timeout, a refused redirect and a malformed

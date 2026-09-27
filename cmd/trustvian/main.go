@@ -85,6 +85,12 @@ func runPlatform(s streams, args []string, timeout time.Duration) (int, bool) {
 		return runEval(s, args[1:], timeout), true
 	case "tui":
 		return runTUI(s, args[1:], timeout), true
+	case "dev":
+		// No timeout: dev supervises a child process for as long as the
+		// developer runs it, and a request timeout is meaningless for a
+		// lifetime. Its own HTTP calls, added in a later slice, take the
+		// same timeout the other families use.
+		return runDev(s, args[1:]), true
 	}
 	return 0, false
 }
@@ -117,11 +123,16 @@ Control-plane commands (see docs/platform-cli.md):
       Watch one evaluation run live in the terminal. Read-only; requires
       an already-running control plane.
 
+  trustvian dev        -- <command> [args...]
+      Run a command under Trustvian. The command is not modified and gains
+      no Trustvian dependency. Unix only.
+
 Exit codes differ by command family. analyze, baseline and version keep
 0 success / 1 failure / 2 usage. The control-plane commands and tui use
 0 success / 2 usage / 3 API or network failure, and 'eval compare'
-additionally uses 1 for a gate FAIL — only there. See
-docs/compatibility.md.
+additionally uses 1 for a gate FAIL — only there. 'dev' exits with its
+child's status, so 2 and 3 mean its own usage and startup failures only
+before the child starts. See docs/compatibility.md.
 
 --config <path> loads a schema-v1 YAML policy config (see config.LoadFile)
 and uses it instead of the CLI's built-in default policy. Without it,

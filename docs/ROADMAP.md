@@ -254,15 +254,24 @@ until then.
 
 ### Contents
 
-| Task | Milestone |
-|---|---|
-| 075 | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) |
-| 077 | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) |
-| 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
-| 079 | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
+| Task | Status | Milestone |
+|---|---|---|
+| 075 | Specified | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) |
+| 077 | **Implemented** | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) |
+| 078 | Specified | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
+| 079 | Specified | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
 
 074 is already implemented and is a prerequisite rather than contents: without
 it, opening the browser asks for an identifier the developer does not have.
+
+With 077 implemented, the first line of the exit criterion below — *run an
+existing instrumented agent locally, with one Trustvian command* — is satisfied
+by `trustvian dev -- <command>` from a repository checkout. One limitation is
+worth naming here rather than at release time: `dev` supervises two helper
+executables that the release archive does not contain, so it is a
+checkout-and-`make` capability until shipping them is decided as its own task
+([ADR 0043](adr/0043-dev-provisions-the-local-hierarchy-from-the-repository.md),
+open consequence).
 
 ### Exit criterion
 
@@ -512,13 +521,19 @@ exit criterion.
   A verdict without its evidence is not explainable. Sessions, traces and
   behavioral sequence, from metadata alone, over whatever history 067 makes
   durable.
-- **[077 — unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md).**
-  One command wraps an existing agent and composes the runtime around it, with
-  no source modification and no Trustvian dependency in the application.
-  Instrumentation ownership is explicit and positive-evidence-only: absence of
-  detectable instrumentation never selects injection, because a child that
-  instruments itself a moment later would then be observed twice. Independent
-  of 075, and implementable in parallel with it.
+- **[077 — unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md)
+  is implemented.** `trustvian dev -- <command>` composes the runtime around an
+  existing agent, with no source modification and no Trustvian dependency in the
+  application, and exits with the workload's own status. Instrumentation
+  ownership is explicit and positive-evidence-only: absence of detectable
+  instrumentation never selects injection, because a child that instruments
+  itself a moment later would then be observed twice. Three decisions are
+  recorded — [0042](adr/0042-dev-composes-the-collector-rather-than-owning-a-receiver.md)
+  (supervise `trustvian-collector`, do not own a receiver),
+  [0043](adr/0043-dev-provisions-the-local-hierarchy-from-the-repository.md)
+  (derive identity from the repository, keep state outside it) and
+  [0044](adr/0044-instrumentation-ownership-requires-positive-evidence.md)
+  (refuse rather than guess). Independent of 075, and implemented ahead of it.
 - **[078 — behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md).**
   Run the same scenario again, diff the behavior, gate the difference — reusing
   the diff, scorecard and gate the platform already owns, and evaluating no
@@ -888,7 +903,7 @@ says which rows the release actually depends on.
 | 074 | [Zero-input live behavior WebUI](tasks/v1.0/074-zero-input-live-behavior-webui.md) — automatic active-scope discovery, a bounded live behavior graph, and a browseable hierarchy without entering an identifier | Implemented | `v1.0` |
 | 075 | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) — read agent-oriented OpenTelemetry where a producer emits it, so a tool call is a tool call rather than an HTTP POST | Specified | `v1.0` |
 | 076 | [Behavioral trace and session evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md) — see *why* behavior was familiar, new or anomalous, from metadata alone | Specified | `v1.0` |
-| 077 | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — one command wraps an existing agent, composes the runtime, and needs no change to the application | Specified | `v1.0` |
+| 077 | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — one command wraps an existing agent, composes the runtime, and needs no change to the application | **Implemented** | `v1.0` |
 | 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) — run the same scenario N times per side, diff the behavior, gate the difference over k-of-N evidence | Specified | `v1.0` |
 | 079 | [CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md) — the 078 verdict rendered on the pull request, exit codes passed through, no `pull_request_target` with an untrusted checkout | Specified | preview only |
 | 080 | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md) — precision, recall and false-positive rate for the existing signals against a public agent prompt-injection benchmark | Specified | neither |

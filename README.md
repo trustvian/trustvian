@@ -373,6 +373,20 @@ State: .trustvian/platform.db
 Clients started in the same directory discover that endpoint themselves, so
 there is no `--api-url` to pass and no account to create.
 
+Or skip the setup entirely and run your own agent under it — one command
+composes the runtime, the receiver and the evaluation run around a command it
+does not modify:
+
+```bash
+make dev ARGS='-- python agent.py'
+```
+
+Your repository is never written to, the exit status is your command's own, and
+the application gains no Trustvian dependency. Your workload does have to emit
+OpenTelemetry already: `dev` configures an exporter and never attaches an SDK,
+because a workload that instruments itself a moment later would then be observed
+twice. See [Local development](docs/local-development.md).
+
 | Capability | What it does |
 |---|---|
 | **Evaluation run** | A bounded execution assessing one candidate, grouping its records, results and behavioral evidence |
@@ -390,7 +404,7 @@ line is `v0.9.x`, which ships the engine, `analyze`/`baseline`/`version`, and
 the Collector processor — so `go install ...@latest` does *not* include the
 platform commands. Build from a clone to use them.
 
-Four milestones are **specified and not implemented**, and the platform is not
+Three milestones are **specified and not implemented**, and the platform is not
 usable end to end without them. [docs/ROADMAP.md](docs/ROADMAP.md) is
 authoritative for their status:
 
@@ -398,11 +412,14 @@ authoritative for their status:
 |---|---|
 | [075](docs/tasks/v1.0/075-ai-semantic-telemetry-normalization.md) | Agent-oriented OpenTelemetry read at the fidelity it carries, so a tool call is a tool call rather than an HTTP POST |
 | [076](docs/tasks/v1.0/076-behavioral-evidence-explorer.md) | *Why* a behavior was familiar, new or anomalous — sessions, traces and behavioral sequence, from metadata alone |
-| [077](docs/tasks/v1.0/077-unified-otlp-local-dev-runtime.md) | One command that wraps an existing agent and composes the runtime around it, with no source modification |
 | [078](docs/tasks/v1.0/078-behavioral-scenario-suites.md) | The same behavioral scenario run again, diffed and gated — repeatably, in CI |
 
-- [Local development](docs/local-development.md) — what `make local` starts,
-  and how discovery works
+[077](docs/tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — the one command
+above — **is implemented**, and supervises two helper executables the release
+archive does not yet contain, so it is a checkout-and-`make` capability for now.
+
+- [Local development](docs/local-development.md) — `trustvian dev`, what
+  `make local` starts, and how discovery works
 - [Platform CLI](docs/platform-cli.md) — `project`, `agent`, `candidate`,
   `eval`, and the CI exit-code contract
 - [Terminal dashboard](docs/tui.md) · [Web interface](docs/webui.md)
