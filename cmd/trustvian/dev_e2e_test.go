@@ -572,6 +572,24 @@ func newE2EFixture(t *testing.T) *e2eFixture {
 		}
 	}
 	run("init", "--quiet")
+
+	// Background maintenance is disabled in the repository's own config, before
+	// the first commit, and this is load-bearing for the byte-identical assertion.
+	//
+	// `git commit` triggers `git maintenance run --auto`, which takes
+	// .git/objects/maintenance.lock in a *background* process. On a fast machine
+	// that process outlives the commit, so the lock exists when the before-hash is
+	// taken and is gone by the after-hash — and the test reports that dev removed
+	// a file from the repository. It did not; git did. CI found this, which is the
+	// whole reason this test may not skip there.
+	//
+	// Written into .git/config rather than passed with -c on each invocation, so it
+	// also governs the git commands *dev* runs against this repository. Together
+	// with dev's own --no-optional-locks, nothing touching this fixture schedules
+	// maintenance.
+	run("config", "gc.auto", "0")
+	run("config", "maintenance.auto", "false")
+
 	run("add", "-A")
 	run("commit", "--quiet", "-m", "fixture")
 
