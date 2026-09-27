@@ -17,11 +17,13 @@ package main
 // assertions need signals and process inspection.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -240,7 +242,7 @@ while :; do sleep 0.05; done
 `)
 	t.Setenv("TV_FAKE_PORT", "45671")
 
-	runtime, err := startLocalRuntime(fake, stateDir)
+	runtime, err := startLocalRuntime(context.Background(), fake, stateDir)
 	if err != nil {
 		t.Fatalf("startLocalRuntime: %v", err)
 	}
@@ -263,7 +265,7 @@ echo "trustvian-local: binding 127.0.0.1:0: address already in use" >&2
 exit 3
 `)
 
-	_, err := startLocalRuntime(fake, stateDir)
+	_, err := startLocalRuntime(context.Background(), fake, stateDir)
 	if err == nil {
 		t.Fatal("a runtime that exited immediately was reported as started")
 	}
@@ -287,7 +289,7 @@ echo "started but publishing nothing"
 while :; do sleep 0.05; done
 `)
 
-	_, err := startLocalRuntime(fake, stateDir)
+	_, err := startLocalRuntime(context.Background(), fake, stateDir)
 	if err == nil {
 		t.Fatal("a runtime that never published an endpoint was reported as started")
 	}
@@ -308,7 +310,7 @@ printf $$ > "$2/fake.pid"
 while :; do sleep 0.05; done
 `)
 
-	if _, err := startLocalRuntime(fake, stateDir); err == nil {
+	if _, err := startLocalRuntime(context.Background(), fake, stateDir); err == nil {
 		t.Fatal("expected a timeout")
 	}
 
@@ -336,7 +338,7 @@ printf '{"version":"1","api_url":"http://127.0.0.1:45672"}\n' > "$2/runtime.json
 while :; do sleep 0.05; done
 `)
 
-	runtime, err := startLocalRuntime(fake, stateDir)
+	runtime, err := startLocalRuntime(context.Background(), fake, stateDir)
 	if err != nil {
 		t.Fatalf("startLocalRuntime: %v", err)
 	}
@@ -407,7 +409,7 @@ printf '{"version":"1","api_url":"http://127.0.0.1:45691"}\n' > "$2/runtime.json
 while :; do sleep 0.05; done
 `)
 
-	runtime, err := startLocalRuntime(fake, stateDir)
+	runtime, err := startLocalRuntime(context.Background(), fake, stateDir)
 	if err != nil {
 		t.Fatalf("startLocalRuntime: %v", err)
 	}
@@ -482,7 +484,7 @@ func startLocalRuntimeWithPort(binary, stateDir, port string) (*localRuntime, er
 		}
 		os.Unsetenv("TV_FAKE_PORT")
 	}()
-	return startLocalRuntime(binary, stateDir)
+	return startLocalRuntime(context.Background(), binary, stateDir)
 }
 
 func writeDiscoveryFixture(t *testing.T, stateDir, apiURL string) {
@@ -710,4 +712,222 @@ while :; do sleep 0.05; done
 		t.Fatalf("writing the fake runtime: %v", err)
 	}
 	return path
+}
+
+// ---------------------------------------------------------------------
+// Signals during composition
+// ---------------------------------------------------------------------
+
+func TestAnInterruptDuringCompositionLeavesNoHelperRunning(t *testing.T) {
+	// The bug this replaces: the signal handler was installed inside
+	// superviseChild, after the control plane and the Collector had started. A
+	// Ctrl-C during composition killed dev with the default disposition and left
+	// both helpers running — and because each is in its own process group, the
+	// terminal's own SIGINT never reached them. Two orphans holding ports.
+	restore := runtimeReadyTimeout
+	runtimeReadyTimeout = 30 * time.Second
+	t.Cleanup(func() { runtimeReadyTimeout = restore })
+
+	stateDir := t.TempDir()
+	pidFile := filepath.Join(stateDir, "helper.pid")
+	// Records its pid, publishes nothing, and waits — so dev is still inside
+	// composition when the signal arrives.
+	fake := fakeLocalRuntime(t, `
+printf $$ > "$2/helper.pid"
+while :; do sleep 0.05; done
+`)
+
+	relay := newSignalRelay()
+	defer relay.Stop()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := startLocalRuntime(relay.Context(), fake, stateDir)
+		done <- err
+	}()
+
+	waitForFile(t, pidFile)
+	pid := readPID(t, pidFile)
+
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGINT); err != nil {
+		t.Fatalf("signalling this process: %v", err)
+	}
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("startup succeeded despite an interrupt")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the interrupt did not stop the wait; the context is not threaded through")
+	}
+
+	// And the helper it started is gone.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !processAlive(pid) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	t.Fatalf("the control plane (pid %d) survived an interrupt during composition", pid)
+}
+
+func TestSignalRelayForwardsToTheWorkloadAndRemembersIt(t *testing.T) {
+	relay := newSignalRelay()
+	defer relay.Stop()
+
+	if relay.Interrupted() {
+		t.Fatal("a fresh relay reports an interrupt")
+	}
+	if relay.Forwarded() {
+		t.Fatal("a fresh relay reports a forwarded signal")
+	}
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "child.sh")
+	marker := filepath.Join(dir, "caught")
+	writeScript(t, script, `
+trap 'printf caught > "$1"; exit 0' TERM
+printf ready > "$2"
+i=0
+while [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done
+exit 99
+`)
+	ready := filepath.Join(dir, "ready")
+
+	withDevStdio(t, nil, newTempFile(t, dir, "stdout"), newTempFile(t, dir, "stderr"))
+
+	done := make(chan childOutcome, 1)
+	go func() {
+		done <- superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
+			[]string{"sh", script, marker, ready}, nil, relay)
+	}()
+
+	waitForFile(t, ready)
+	time.Sleep(50 * time.Millisecond)
+	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatalf("signalling this process: %v", err)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the workload never saw the forwarded signal")
+	}
+
+	if got := readPath(t, marker); got != "caught" {
+		t.Errorf("the workload did not receive the signal (marker %q)", got)
+	}
+	// Forwarded is what lets the session tell Ctrl-C from a crash.
+	if !relay.Forwarded() {
+		t.Error("the relay did not record that it forwarded a signal")
+	}
+}
+
+// ---------------------------------------------------------------------
+// The baseline file and its single writer
+// ---------------------------------------------------------------------
+
+func TestBaselineIsAFilePerProfile(t *testing.T) {
+	stateDir := t.TempDir()
+
+	first, err := acquireBaseline(stateDir, "git:abc1234")
+	if err != nil {
+		t.Fatalf("acquireBaseline: %v", err)
+	}
+	defer first.release()
+
+	// Distinct profiles get distinct files, so two candidates never share a
+	// learned baseline.
+	second, err := acquireBaseline(stateDir, "git:def5678")
+	if err != nil {
+		t.Fatalf("a second profile was refused: %v", err)
+	}
+	defer second.release()
+
+	if first.path == second.path {
+		t.Fatalf("two profiles share one baseline file: %s", first.path)
+	}
+	// And the file lives in dev's state directory, never in the repository.
+	if filepath.Dir(first.path) != stateDir {
+		t.Errorf("baseline path %q is not in the state directory %q", first.path, stateDir)
+	}
+}
+
+func TestBaselineFileSegmentIsInjective(t *testing.T) {
+	// Two profiles that differ only in a character the filename cannot hold must
+	// not collapse into one file, or they would share a baseline.
+	if a, b := baselineFileSegment("git:abc"), baselineFileSegment("git+abc"); a == b {
+		t.Fatalf("two profiles produced one segment: %q", a)
+	}
+	if got := baselineFileSegment("git:abc1234+dirty"); strings.ContainsAny(got, ":+/\\") {
+		t.Errorf("segment %q still contains a character a filename cannot hold", got)
+	}
+}
+
+func TestASecondRunAgainstOneProfileIsRefused(t *testing.T) {
+	// The file store has no cross-process locking, so two writers would discard
+	// each other's learning and leave a file belonging to neither.
+	stateDir := t.TempDir()
+
+	held, err := acquireBaseline(stateDir, "git:abc1234")
+	if err != nil {
+		t.Fatalf("acquireBaseline: %v", err)
+	}
+	defer held.release()
+
+	_, err = acquireBaseline(stateDir, "git:abc1234")
+	if err == nil {
+		t.Fatal("a second run against one profile was allowed")
+	}
+	for _, want := range []string{"already learning", "--candidate"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the message does not mention %q:\n%v", want, err)
+		}
+	}
+}
+
+func TestAStaleBaselineLockIsReclaimed(t *testing.T) {
+	// A crashed run leaves a lock behind. Refusing forever would make the
+	// developer delete a file they were never told about.
+	stateDir := t.TempDir()
+	first, err := acquireBaseline(stateDir, "git:abc1234")
+	if err != nil {
+		t.Fatalf("acquireBaseline: %v", err)
+	}
+	lockPath := first.lockPath
+
+	// A pid that cannot be alive.
+	if err := os.WriteFile(lockPath, []byte("999999999\n"), 0o600); err != nil {
+		t.Fatalf("writing a stale lock: %v", err)
+	}
+
+	second, err := acquireBaseline(stateDir, "git:abc1234")
+	if err != nil {
+		t.Fatalf("a stale lock was not reclaimed: %v", err)
+	}
+	second.release()
+}
+
+func TestReleasingALockThisProcessDoesNotHoldLeavesItAlone(t *testing.T) {
+	stateDir := t.TempDir()
+	held, err := acquireBaseline(stateDir, "p")
+	if err != nil {
+		t.Fatalf("acquireBaseline: %v", err)
+	}
+	defer held.release()
+
+	refused, err := acquireBaseline(stateDir, "p")
+	if err == nil {
+		t.Fatal("a second claim succeeded")
+	}
+	// The refused claim must not delete the holder's lock on its way out.
+	if refused != nil {
+		refused.release()
+	}
+	if _, err := os.Stat(held.lockPath); err != nil {
+		t.Fatalf("the holder's lock was removed by a refused claim: %v", err)
+	}
 }

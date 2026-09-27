@@ -177,18 +177,22 @@ func TestDevPlatformSupportMatchesGOOS(t *testing.T) {
 // Exit-code mapping, without a process
 // ---------------------------------------------------------------------
 
-func TestChildExitCodeClassification(t *testing.T) {
+func TestChildExitOutcomeClassification(t *testing.T) {
 	s := streams{out: io_Discard{}, err: io_Discard{}}
 
-	if got := childExitCode(s, []string{"true"}, nil); got != exitDevOK {
-		t.Errorf("nil error mapped to %d, want %d", got, exitDevOK)
+	if got := childExitOutcome(s, []string{"true"}, nil); got.code != exitDevOK {
+		t.Errorf("nil error mapped to %d, want %d", got.code, exitDevOK)
 	}
 
 	// A wait failure is not a child status: nothing was observed, so it must
 	// not be reported as a code the child could have produced.
-	got := childExitCode(s, []string{"true"}, errors.New("wait failed"))
-	if got != exitDevOperational {
-		t.Errorf("a wait failure mapped to %d, want %d", got, exitDevOperational)
+	got := childExitOutcome(s, []string{"true"}, errors.New("wait failed"))
+	if got.code != exitDevOperational {
+		t.Errorf("a wait failure mapped to %d, want %d", got.code, exitDevOperational)
+	}
+	// And it is not a start failure: the command ran, the wait did not.
+	if got.startFailed {
+		t.Error("a wait failure was reported as a start failure")
 	}
 }
 

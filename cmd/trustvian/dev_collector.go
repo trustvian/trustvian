@@ -19,6 +19,7 @@ package main
 // attached.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -117,6 +118,11 @@ receivers:
 
 processors:
   trustvian:
+    storage:
+      version: v1
+      type: file
+      file:
+        path: "{{.BaselinePath}}"
     health:
       endpoint: 127.0.0.1:{{.HealthPort}}
       readiness_timeout: 2s
@@ -160,6 +166,15 @@ type collectorConfigData struct {
 	RunID   string
 	Profile string
 
+	// BaselinePath is where the engine's learned baseline is kept.
+	//
+	// A file store rather than the in-memory default, because one Collector per
+	// run means an in-memory baseline is discarded at every run's end — which
+	// would make "two runs of one candidate share a learned baseline" false and
+	// leave the two engine-evidence gates unable to ever read non-zero. See
+	// dev_baseline.go for the single-writer rule that comes with it.
+	BaselinePath string
+
 	// PendingStatePath holds the single record that may be in flight, so a
 	// Collector that dies between recording evidence and applying that record's
 	// learning can tell on restart which of the two already happened.
@@ -181,6 +196,7 @@ func (d collectorConfigData) validate() error {
 		{"run_id", d.RunID},
 		{"behavioral_profile", d.Profile},
 		{"pending_state_path", d.PendingStatePath},
+		{"baseline path", d.BaselinePath},
 	} {
 		if err := validateCollectorScalar(field.name, field.value); err != nil {
 			return err
@@ -208,7 +224,8 @@ type collector struct {
 // evaluation carries the run this Collector feeds. One Collector per run is
 // forced rather than chosen: the processor's evaluation configuration compiles
 // once and is fixed for the process's lifetime.
-func startCollector(binary, stateDir string, evaluation collectorConfigData) (*collector, error) {
+func startCollector(ctx context.Context, binary, stateDir string,
+	evaluation collectorConfigData) (*collector, error) {
 	var lastErr error
 	for attempt := range collectorPortAttempts {
 		ports, err := reservePorts(3)
@@ -221,12 +238,17 @@ func startCollector(binary, stateDir string, evaluation collectorConfigData) (*c
 		data.OTLPGRPCPort = ports[1]
 		data.HealthPort = ports[2]
 
-		c, err := launchCollector(binary, stateDir, data)
+		c, err := launchCollector(ctx, binary, stateDir, data)
 		if err == nil {
 			return c, nil
 		}
 		lastErr = err
 		if !errors.Is(err, errCollectorPortTaken) {
+			return nil, err
+		}
+		if ctx.Err() != nil {
+			// Cancelled. Retrying would spend two more attempts ignoring the
+			// developer.
 			return nil, err
 		}
 		// A port was taken between reserving and binding. Try again with fresh
@@ -240,7 +262,8 @@ func startCollector(binary, stateDir string, evaluation collectorConfigData) (*c
 // errCollectorPortTaken marks the one failure worth retrying.
 var errCollectorPortTaken = errors.New("a chosen loopback port was taken")
 
-func launchCollector(binary, stateDir string, data collectorConfigData) (*collector, error) {
+func launchCollector(ctx context.Context, binary, stateDir string,
+	data collectorConfigData) (*collector, error) {
 	configPath := filepath.Join(stateDir, collectorConfigFile)
 	if err := writeCollectorConfig(configPath, data); err != nil {
 		return nil, err
@@ -273,7 +296,7 @@ func launchCollector(binary, stateDir string, data collectorConfigData) (*collec
 	}
 	go func() { c.waited <- cmd.Wait() }()
 
-	if err := c.awaitReady(data.HealthPort); err != nil {
+	if err := c.awaitReady(ctx, data.HealthPort); err != nil {
 		c.stop()
 		return nil, err
 	}
@@ -291,10 +314,10 @@ func launchCollector(binary, stateDir string, data collectorConfigData) (*collec
 // This is the demo prototype's hard-won ordering, adopted rather than
 // rediscovered: scripts/tv-dev.sh carries the same two steps with the same
 // comment about why one is not enough.
-func (c *collector) awaitReady(healthPort int) error {
+func (c *collector) awaitReady(ctx context.Context, healthPort int) error {
 	deadline := time.Now().Add(collectorReadyTimeout)
 
-	if err := c.pollUntil(deadline, func() bool {
+	if err := c.pollUntil(ctx, deadline, func() bool {
 		return probeHealth(healthPort)
 	}); err != nil {
 		return fmt.Errorf("the OTLP collector never became live: %w\n%s",
@@ -305,7 +328,7 @@ func (c *collector) awaitReady(healthPort int) error {
 	// that chose gRPC in code would otherwise start against a port that had lost
 	// its race, and the spans would go nowhere with nothing reporting it.
 	for _, port := range []int{c.httpPort, c.grpcPort} {
-		if err := c.pollUntil(deadline, func() bool { return portAccepts(port) }); err != nil {
+		if err := c.pollUntil(ctx, deadline, func() bool { return portAccepts(port) }); err != nil {
 			// Distinguished from the first step, because this is the case a bare
 			// timeout would hide: live, configured, and not listening for spans.
 			return fmt.Errorf("%w: the collector is live but a receiver never "+
@@ -317,10 +340,16 @@ func (c *collector) awaitReady(healthPort int) error {
 }
 
 // pollUntil waits for a condition, failing early if the process dies.
-func (c *collector) pollUntil(deadline time.Time, ready func() bool) error {
+func (c *collector) pollUntil(ctx context.Context, deadline time.Time,
+	ready func() bool) error {
 	for {
 		if ready() {
 			return nil
+		}
+		// A signal cancels this context, so waiting for readiness stops when the
+		// developer asks rather than when the timeout expires.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("stopped while waiting: %w", err)
 		}
 		select {
 		case err := <-c.waited:

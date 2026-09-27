@@ -63,8 +63,12 @@ func TestDevReportsAMissingCommandAsOperational(t *testing.T) {
 	requireUnix(t)
 
 	var errOut strings.Builder
-	code := superviseChild(streams{out: io_Discard{}, err: &errOut},
-		[]string{"trustvian-dev-no-such-command-exists"}, nil)
+	outcome := superviseChild(streams{out: io_Discard{}, err: &errOut},
+		[]string{"trustvian-dev-no-such-command-exists"}, nil, nil)
+	code := outcome.code
+	if !outcome.startFailed {
+		t.Error("a command that could not be executed was not reported as a start failure")
+	}
 
 	// 3, not 127: the child never started, so there is no child status to
 	// report and this is the wrapper's own failure.
@@ -154,9 +158,9 @@ func TestDevPassesStdinThrough(t *testing.T) {
 	stderr := newTempFile(t, dir, "stderr")
 	withDevStdio(t, stdin, stdout, stderr)
 
-	if code := superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
-		[]string{"cat"}, nil); code != 0 {
-		t.Fatalf("exit code = %d, want 0", code)
+	if outcome := superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
+		[]string{"cat"}, nil, nil); outcome.code != 0 {
+		t.Fatalf("exit code = %d, want 0", outcome.code)
 	}
 
 	if got := readFile(t, stdout); got != "hello from stdin\n" {
@@ -174,10 +178,10 @@ func TestDevDoesNotReformatChildOutput(t *testing.T) {
 
 	// No trailing newline, and a partial line on each stream: a wrapper that
 	// relayed output through a line-buffered pipe would add one or reorder them.
-	if code := superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
+	if outcome := superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
 		[]string{"sh", "-c", `printf 'out-no-newline'; printf 'err-no-newline' >&2`},
-		nil); code != 0 {
-		t.Fatalf("exit code = %d, want 0", code)
+		nil, nil); outcome.code != 0 {
+		t.Fatalf("exit code = %d, want 0", outcome.code)
 	}
 
 	if got := readFile(t, stdout); got != "out-no-newline" {
@@ -351,9 +355,9 @@ func runDevCapturingStdout(t *testing.T, args []string) string {
 	stderr := newTempFile(t, dir, "stderr")
 	withDevStdio(t, nil, stdout, stderr)
 
-	code := superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
-		commandAfterSeparator(t, args), nil)
-	if code != 0 {
+	outcome := superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
+		commandAfterSeparator(t, args), nil, nil)
+	if code := outcome.code; code != 0 {
 		t.Fatalf("exit code = %d, want 0\nstderr: %s", code, readFile(t, stderr))
 	}
 	return readFile(t, stdout)
@@ -366,7 +370,7 @@ func runDevWithFiles(t *testing.T, args []string) int {
 	withDevStdio(t, nil,
 		newTempFile(t, dir, "stdout"), newTempFile(t, dir, "stderr"))
 	return superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
-		commandAfterSeparator(t, args), nil)
+		commandAfterSeparator(t, args), nil, nil).code
 }
 
 // runDevWithSignal starts dev, waits for the child to say it is ready, sends a
@@ -389,8 +393,11 @@ func runDevWithSignal(t *testing.T, args []string, readyPath string,
 	done := make(chan result, 1)
 	started := time.Now()
 	command := commandAfterSeparator(t, args)
+	relay := newSignalRelay()
+	t.Cleanup(relay.Stop)
 	go func() {
-		code := superviseChild(streams{out: io_Discard{}, err: io_Discard{}}, command, nil)
+		code := superviseChild(streams{out: io_Discard{}, err: io_Discard{}},
+			command, nil, relay).code
 		done <- result{code: code, elapsed: time.Since(started)}
 	}()
 

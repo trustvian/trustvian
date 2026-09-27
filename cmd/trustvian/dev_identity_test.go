@@ -523,8 +523,9 @@ func TestCollectorConfigCarriesTheEvaluationRun(t *testing.T) {
 		APIURL:  "http://127.0.0.1:9999",
 		RunID:   "dev-git-abc1234-20260927T000000Z",
 		Profile: "git:abc1234+dirty",
-		// A path, which is the value most likely to contain something awkward.
+		// Paths, which are the values most likely to contain something awkward.
 		PendingStatePath: filepath.Join(t.TempDir(), collectorPendingStateFile),
+		BaselinePath:     filepath.Join(t.TempDir(), "baseline-git_3aabc1234.json"),
 	}); err != nil {
 		t.Fatalf("writeCollectorConfig: %v", err)
 	}
@@ -540,6 +541,10 @@ func TestCollectorConfigCarriesTheEvaluationRun(t *testing.T) {
 		`behavioral_profile: "git:abc1234+dirty"`,
 		`api_url: "http://127.0.0.1:9999"`,
 		"required: true",
+		// A file store, not the in-memory default. Without it the baseline is
+		// discarded at every run's end, so two runs of one candidate never share
+		// one — and the two engine-evidence gates can only ever read zero.
+		"type: file",
 	} {
 		if !strings.Contains(config, want) {
 			t.Errorf("the config does not contain %s:\n%s", want, config)

@@ -52,10 +52,15 @@ type devIdentity struct {
 	// inherits.
 	Profile string
 
-	// AgentFromTelemetry records that the agent name came from an inherited
-	// OTEL_SERVICE_NAME rather than from a flag, so dev knows not to override
-	// what the workload already declares.
+	// AgentFromTelemetry records that the agent name came from the workload's own
+	// declaration rather than from a flag, so dev knows not to override what the
+	// workload already declares.
 	AgentFromTelemetry bool
+
+	// AgentOverrode carries the declaration --agent replaced, when it replaced
+	// one. Empty otherwise. The banner says so: dev relabelling a workload's own
+	// identity is a thing to be told about, not to discover from a diff.
+	AgentOverrode string
 
 	// Dirty records an uncommitted worktree, for the banner.
 	Dirty bool
@@ -98,13 +103,22 @@ func deriveIdentity(config devConfig, workloadDir string,
 	// so an Agent that does not match it describes an agent no telemetry ever
 	// mentions. When the workload declares one, dev adopts it rather than
 	// relabelling somebody else's telemetry.
-	if serviceName, ok := environment.Inherited(envServiceName); ok && serviceName != "" {
+	// Both declaration forms, because either is legitimate: OTEL_SERVICE_NAME, or
+	// service.name inside OTEL_RESOURCE_ATTRIBUTES. Reading only the first would
+	// miss a workload that declares the other way, and dev would provision an
+	// agent no telemetry ever mentions.
+	if serviceName, ok := environment.declaredServiceName(); ok {
 		identity.Agent = serviceName
 		identity.AgentFromTelemetry = true
 	}
 	if config.agent != "" {
 		// An explicit flag wins over the inherited value, and dev then exports
-		// it so the two cannot disagree.
+		// it so the two cannot disagree. Recorded so the banner can say that an
+		// override happened: silently relabelling a workload's declared identity
+		// is the kind of thing a developer should be told about.
+		if identity.AgentFromTelemetry && identity.Agent != config.agent {
+			identity.AgentOverrode = identity.Agent
+		}
 		identity.Agent = config.agent
 		identity.AgentFromTelemetry = false
 	}
@@ -152,8 +166,14 @@ func deriveIdentity(config devConfig, workloadDir string,
 	// identity.
 	identity.Run = config.runID
 	if identity.Run == "" {
+		// Milliseconds, not seconds. Two runs inside one second are ordinary —
+		// a scenario sweep, a shell loop, a retried CI step — and a
+		// second-granularity id would collide, which the control plane answers
+		// with 409 already_exists and dev reports as an operational failure the
+		// developer cannot act on.
 		identity.Run = fmt.Sprintf("dev-%s-%s",
-			sanitizeRunSegment(identity.Candidate), now.UTC().Format("20060102T150405Z"))
+			sanitizeRunSegment(identity.Candidate),
+			now.UTC().Format("20060102T150405.000Z"))
 	}
 
 	return identity, validateIdentity(identity)

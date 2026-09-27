@@ -10,6 +10,7 @@ package main
 // listener is the only honest way to produce that state.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -34,7 +35,7 @@ func TestCollectorConfigRendersBothReceiversAndNoTelemetryBlock(t *testing.T) {
 	if err := writeCollectorConfig(path, collectorConfigData{
 		OTLPHTTPPort: 4318, OTLPGRPCPort: 4317, HealthPort: 13133,
 		APIURL: "http://127.0.0.1:9", RunID: "r", Profile: "p",
-		PendingStatePath: "/tmp/pending.json",
+		PendingStatePath: "/tmp/pending.json", BaselinePath: "/tmp/baseline.json",
 	}); err != nil {
 		t.Fatalf("writeCollectorConfig: %v", err)
 	}
@@ -83,7 +84,7 @@ func TestCollectorConfigGoesToTheStateDirectory(t *testing.T) {
 	if err := writeCollectorConfig(filepath.Join(stateDir, collectorConfigFile),
 		collectorConfigData{OTLPHTTPPort: 1, OTLPGRPCPort: 2, HealthPort: 3,
 			APIURL: "http://127.0.0.1:9", RunID: "r", Profile: "p",
-			PendingStatePath: "/tmp/pending.json"}); err != nil {
+			PendingStatePath: "/tmp/pending.json", BaselinePath: "/tmp/baseline.json"}); err != nil {
 		t.Fatalf("writeCollectorConfig: %v", err)
 	}
 
@@ -183,7 +184,7 @@ func TestAwaitReadySucceedsWhenHealthAndBothReceiversAreUp(t *testing.T) {
 	c := &collector{httpPort: httpPort, grpcPort: grpcPort,
 		logPath: writeLogFixture(t, "ready"), waited: make(chan error, 1)}
 
-	if err := c.awaitReady(portOf(t, health.URL)); err != nil {
+	if err := c.awaitReady(context.Background(), portOf(t, health.URL)); err != nil {
 		t.Fatalf("awaitReady: %v", err)
 	}
 }
@@ -209,7 +210,7 @@ func TestAwaitReadyFailsWhenAReceiverPortNeverBinds(t *testing.T) {
 	c := &collector{httpPort: unbound, grpcPort: grpcPort,
 		logPath: writeLogFixture(t, "live but not receiving"), waited: make(chan error, 1)}
 
-	err := c.awaitReady(portOf(t, health.URL))
+	err := c.awaitReady(context.Background(), portOf(t, health.URL))
 	if err == nil {
 		t.Fatal("awaitReady succeeded while a receiver port was unbound")
 	}
@@ -239,7 +240,7 @@ func TestAwaitReadyFailsFastWhenTheCollectorExits(t *testing.T) {
 	c.waited <- errors.New("exit status 1")
 
 	started := time.Now()
-	err := c.awaitReady(freePortNumber(t))
+	err := c.awaitReady(context.Background(), freePortNumber(t))
 	if err == nil {
 		t.Fatal("awaitReady succeeded for a collector that had exited")
 	}
@@ -291,6 +292,12 @@ func TestRouteOTLPAddsExactlyTheDocumentedVariables(t *testing.T) {
 	want := []string{
 		envBatchDelay, envOTLPEndpoint, envOTLPProtocol, envLogsExport,
 		envMetricsExport, envSemconvOptIn, envTracesExport, envGRPCEndpoint,
+		// The signal-specific pair, which takes precedence over the generic one
+		// wherever it is set — so dev sets it rather than hoping it is absent.
+		envOTLPTracesEndpoint, envOTLPTracesProtocol,
+		// Cleared, not inherited: dev's receiver is unauthenticated loopback and
+		// forwarding a developer's backend credential to it is pointless.
+		envOTLPHeaders, envOTLPTracesHeaders,
 	}
 	got := environment.Added()
 	if len(got) != len(want) {
@@ -434,4 +441,52 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestSignalSpecificEndpointOverridesTheInheritedOne(t *testing.T) {
+	// An SDK that finds OTEL_EXPORTER_OTLP_TRACES_ENDPOINT uses it and ignores the
+	// generic one entirely. A developer who had one set for their own collector
+	// would otherwise have dev's routing silently bypassed, and the run would end
+	// with no evidence while everything looked healthy.
+	t.Setenv(envOTLPTracesEndpoint, "http://collector.example.invalid:4318/v1/traces")
+	t.Setenv(envOTLPTracesProtocol, "grpc")
+
+	environment := captureEnvironment()
+	environment.routeOTLP("http://127.0.0.1:4318", "127.0.0.1:4317")
+
+	if got := environment.additions[envOTLPTracesEndpoint]; got != "http://127.0.0.1:4318/v1/traces" {
+		t.Errorf("%s = %q; dev's routing was not applied to the signal-specific variable",
+			envOTLPTracesEndpoint, got)
+	}
+	// The signal-specific endpoint is used as given, so the signal path has to be
+	// there: without it every export would POST to the receiver's root.
+	if !strings.HasSuffix(environment.additions[envOTLPTracesEndpoint], tracesPath) {
+		t.Errorf("%s = %q, want the %s path appended",
+			envOTLPTracesEndpoint, environment.additions[envOTLPTracesEndpoint], tracesPath)
+	}
+	if got := environment.additions[envOTLPTracesProtocol]; got != otlpProtocol {
+		t.Errorf("%s = %q, want %q", envOTLPTracesProtocol, got, otlpProtocol)
+	}
+}
+
+func TestInheritedOTLPHeadersAreCleared(t *testing.T) {
+	// A credential configured for the developer's own backend has no business
+	// being sent to an unauthenticated local receiver.
+	t.Setenv(envOTLPHeaders, "authorization=Bearer secret-token")
+	t.Setenv(envOTLPTracesHeaders, "x-api-key=another-secret")
+
+	environment := captureEnvironment()
+	environment.routeOTLP("http://127.0.0.1:4318", "127.0.0.1:4317")
+
+	for _, name := range []string{envOTLPHeaders, envOTLPTracesHeaders} {
+		if got := environment.additions[name]; got != "" {
+			t.Errorf("%s = %q, want it cleared", name, got)
+		}
+	}
+	// And the secret does not survive into what the child receives.
+	for _, entry := range environment.Environ() {
+		if strings.Contains(entry, "secret-token") || strings.Contains(entry, "another-secret") {
+			t.Errorf("a credential reached the child's environment: %q", entry)
+		}
+	}
 }

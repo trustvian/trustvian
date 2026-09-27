@@ -54,3 +54,10 @@ func applyChildProcessAttributes(*exec.Cmd) {}
 
 // forwardSignal is unreachable on Windows, for the same reason.
 func forwardSignal(*os.Process, os.Signal) {}
+
+// startWithTerminalHandover is unreachable on Windows, for the same reason.
+func startWithTerminalHandover(cmd *exec.Cmd, _ *os.File) error { return cmd.Start() }
+
+// processAliveForBaseline is unreachable on Windows: dev refuses before it would
+// claim a baseline. Present so the package compiles for this platform.
+func processAliveForBaseline(int) bool { return false }

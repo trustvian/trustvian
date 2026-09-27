@@ -279,6 +279,7 @@ place a wrapper is used.
 ```text
 before the child starts    2  the invocation was wrong
                            3  dev could not start the child at all
+                     128+N  a signal arrived during composition
 after the child starts     the child's status, unmodified
 ```
 
@@ -287,10 +288,41 @@ running. After that they mean whatever the workload means by them, and dev
 cannot tell the difference — the same ambiguity `env`, `nice` and `timeout`
 carry, accepted for the same reason: discarding the child's status is worse.
 
+**The status is the child's even when dev's own bookkeeping fails.** If the
+workload succeeds and the run cannot be completed, dev prints a warning naming
+the run it left non-terminal and still exits `0`. Returning `3` there would make
+a successful workload look like a failed one, and a script cannot act on a
+distinction dev invented after the fact.
+
 A child killed by a signal exits **`128 + signal`**, the convention every shell
 uses. Go reports a signal death as exit code `-1`, which no script can branch
 on, and collapsing it to `1` would make "the workload was killed" look identical
 to "the workload failed".
+
+A signal that arrives *before* the child starts uses the same encoding, so a
+script sees one meaning for "stopped by a signal" whichever phase it
+interrupted.
+
+### What `dev` records about the run
+
+The exit status is a script's contract; the evaluation run's terminal state is
+the platform's. They are related and they are not the same, and the mapping is
+part of the interface:
+
+| What happened | Exit status | Run state |
+|---|---|---|
+| the workload exited `0` | `0` | **completed** |
+| the workload exited non-zero | its own status | **failed**, reason naming the status |
+| the workload died from a signal `dev` forwarded | `128 + signal` | **completed** |
+| the workload died from a signal nobody forwarded | `128 + signal` | **failed** |
+| the workload could not be started | `3` | **failed**, reason saying it could not be started |
+| a signal arrived during composition | `128 + signal` | **failed** if a run had been started |
+
+The third row is the one worth stating. A developer pressing Ctrl-C has not
+produced a behavioral regression and has not crashed anything: they stopped
+watching. The evidence collected up to that point is real, so the run is
+completed and the banner says who ended it. A signal dev did *not* forward is
+different — something else killed the workload — and that is a failure.
 
 `dev` is **not supported on Windows** and refuses with exit `2`. It forwards
 `SIGINT` and `SIGTERM` to the child and Windows has no equivalent delivery, so a

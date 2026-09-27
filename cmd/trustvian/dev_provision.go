@@ -192,7 +192,16 @@ func (p *provisioner) completeRun(ctx context.Context) error {
 // The reason is bounded and carries only the exit status: a workload's own output
 // is not summarized into platform state.
 func (p *provisioner) failRun(ctx context.Context, exitCode int) error {
-	reason := fmt.Sprintf("the workload exited %d under trustvian dev", exitCode)
+	return p.failRunReason(ctx,
+		fmt.Sprintf("the workload exited %d under trustvian dev", exitCode))
+}
+
+// failRunReason ends a run with a caller-supplied reason.
+//
+// Separate from failRun because not every failure is a workload status: a run
+// interrupted before the workload finished, or one whose workload could not be
+// started at all, must not record an exit code nothing produced.
+func (p *provisioner) failRunReason(ctx context.Context, reason string) error {
 	result, err := p.client.post(ctx, map[string]any{"reason": reason},
 		"evaluation-runs", p.identity.Run, "fail")
 	if err != nil {

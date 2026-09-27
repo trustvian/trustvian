@@ -56,13 +56,43 @@ const (
 
 	// envResourceAttributes carries deployment.environment.name.
 	envResourceAttributes = "OTEL_RESOURCE_ATTRIBUTES"
+
+	// Signal-specific variables, which take precedence over the generic ones.
+	//
+	// These exist because the generic endpoint is not the last word. An SDK that
+	// finds OTEL_EXPORTER_OTLP_TRACES_ENDPOINT uses it and ignores
+	// OTEL_EXPORTER_OTLP_ENDPOINT entirely — so a developer who had one set for
+	// their own collector would have dev's routing silently bypassed, and the run
+	// would end with no evidence while everything looked healthy. dev sets them
+	// too, rather than hoping they are absent.
+	envOTLPTracesEndpoint = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+	envOTLPTracesProtocol = "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"
+
+	// Headers are cleared rather than overridden or left alone.
+	//
+	// dev's receiver is unauthenticated loopback: it needs no credential, and
+	// forwarding whatever a developer had configured for their own backend would
+	// send an API key to a local process for no reason. Cleared for the traces
+	// signal only; nothing else dev routes reads these.
+	envOTLPHeaders       = "OTEL_EXPORTER_OTLP_HEADERS"
+	envOTLPTracesHeaders = "OTEL_EXPORTER_OTLP_TRACES_HEADERS"
 )
+
+// tracesPath is the OTLP/HTTP path for the traces signal.
+//
+// The signal-specific endpoint is used *as given* by the SDK — unlike the
+// generic one, which has the signal path appended. So dev has to append it
+// itself, or every export would POST to the receiver's root and be refused.
+const tracesPath = "/v1/traces"
 
 // otlpProtocol is HTTP rather than gRPC.
 //
-// The generated Collector configuration enables the HTTP receiver only, so this
-// has to agree with it. HTTP because it is the smaller surface to expose on
-// loopback and because it needs no h2c negotiation to debug when it goes wrong.
+// The generated Collector configuration enables both receivers, so either would
+// work. HTTP is chosen for the *environment* because it is what Python zero-code
+// instrumentation uses, it needs no h2c negotiation to debug, and it is the
+// protocol the signal-specific override below can express a path for. A workload
+// that builds a gRPC exporter in code reads TRUSTVIAN_DEV_OTLP_GRPC_ENDPOINT
+// instead.
 const otlpProtocol = "http/protobuf"
 
 // batchScheduleDelayMillis shortens the SDK's batch flush interval.
@@ -119,6 +149,15 @@ func (e *devEnvironment) routeOTLP(endpoint, grpcEndpoint string) {
 	e.additions[envOTLPEndpoint] = endpoint
 	e.additions[envOTLPProtocol] = otlpProtocol
 	e.additions[envGRPCEndpoint] = grpcEndpoint
+
+	// The signal-specific pair, which wins wherever it is set. Written
+	// unconditionally rather than only when inherited: leaving them unset would
+	// mean dev's routing holds only as long as nobody ever sets them, which is
+	// not a property worth depending on.
+	e.additions[envOTLPTracesEndpoint] = endpoint + tracesPath
+	e.additions[envOTLPTracesProtocol] = otlpProtocol
+	e.additions[envOTLPHeaders] = ""
+	e.additions[envOTLPTracesHeaders] = ""
 
 	// Traces only. Metrics and logs exporters are switched off rather than left
 	// at their defaults: an SDK that defaults to exporting them would send them
@@ -193,6 +232,33 @@ func (e *devEnvironment) declareIdentity(identity devIdentity) error {
 // deploymentEnvironmentKey is the resource attribute the engine reads the
 // environment from.
 const deploymentEnvironmentKey = "deployment.environment.name"
+
+// serviceNameKey is the resource attribute the processor derives the actor from.
+//
+// The same value OTEL_SERVICE_NAME carries. Both are legitimate ways to declare
+// it and the specification makes OTEL_SERVICE_NAME take precedence, so dev reads
+// both and prefers the same one.
+const serviceNameKey = "service.name"
+
+// declaredServiceName reports the service name the workload already declares.
+//
+// OTEL_SERVICE_NAME first, then service.name inside OTEL_RESOURCE_ATTRIBUTES.
+// Reading only the first would miss a workload that declares its identity the
+// other way — and dev would then provision an agent that never matches the actor
+// the processor derives, which is worse than provisioning none.
+func (e *devEnvironment) declaredServiceName() (string, bool) {
+	if name, ok := e.Inherited(envServiceName); ok && name != "" {
+		return name, true
+	}
+	attributes, ok := e.Inherited(envResourceAttributes)
+	if !ok {
+		return "", false
+	}
+	if name, found := resourceAttribute(attributes, serviceNameKey); found && name != "" {
+		return name, true
+	}
+	return "", false
+}
 
 // resourceAttribute reads one key out of an OTEL_RESOURCE_ATTRIBUTES value.
 //

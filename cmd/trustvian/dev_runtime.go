@@ -22,6 +22,7 @@ package main
 //     not hold a developer's shell open.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -101,7 +102,7 @@ type localRuntime struct {
 // after the listener is bound (ADR 0035), so the presence of a usable discovery
 // file is proof the API exists. Returning earlier would hand the caller a URL
 // that nothing is listening on.
-func startLocalRuntime(binary, stateDir string) (*localRuntime, error) {
+func startLocalRuntime(ctx context.Context, binary, stateDir string) (*localRuntime, error) {
 	discoveryPath := filepath.Join(stateDir, localDiscoveryFile)
 	// A stale file from a previous crashed run would be read as this run's
 	// endpoint. Removed before starting, so what is found afterwards was
@@ -144,7 +145,7 @@ func startLocalRuntime(binary, stateDir string) (*localRuntime, error) {
 	runtime := &localRuntime{cmd: cmd, logPath: logPath, waited: make(chan error, 1)}
 	go func() { runtime.waited <- cmd.Wait() }()
 
-	apiURL, err := runtime.awaitDiscovery(discoveryPath)
+	apiURL, err := runtime.awaitDiscovery(ctx, discoveryPath)
 	if err != nil {
 		// Nothing half-started is left behind: the process is stopped before
 		// the error reaches the caller.
@@ -161,12 +162,17 @@ func startLocalRuntime(binary, stateDir string) (*localRuntime, error) {
 // runtime that died in the first 50ms — the common case when a port is taken or
 // a database is unreadable — and report a timeout instead of the reason, which
 // is in the log this function quotes.
-func (r *localRuntime) awaitDiscovery(discoveryPath string) (string, error) {
+func (r *localRuntime) awaitDiscovery(ctx context.Context, discoveryPath string) (string, error) {
 	deadline := time.Now().Add(runtimeReadyTimeout)
 
 	for {
 		if url, err := readLocalDiscovery(discoveryPath); err == nil {
 			return url, nil
+		}
+		// A signal cancels this context, so a Ctrl-C during startup stops the
+		// wait rather than being noticed after it.
+		if err := ctx.Err(); err != nil {
+			return "", fmt.Errorf("stopped while waiting for the control plane: %w", err)
 		}
 
 		select {

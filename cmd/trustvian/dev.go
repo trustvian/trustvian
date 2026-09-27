@@ -13,12 +13,21 @@ package main
 // or orphans a process is not repairable by adding features to it.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+// environmentSnapshot captures the inherited environment.
+//
+// A function rather than one shared value because deriveIdentity must see only
+// what the developer provided: dev sets OTEL_* variables, and reading them back as
+// evidence would make identity and instrumentation ownership a function of dev
+// rather than of the workload.
+func environmentSnapshot() *devEnvironment { return captureEnvironment() }
 
 // agentSourceNote says where the agent's identity came from.
 //
@@ -27,7 +36,13 @@ import (
 // exported OTEL_SERVICE_NAME so the two agree.
 func agentSourceNote(identity devIdentity) string {
 	if identity.AgentFromTelemetry {
-		return "   (from the workload's OTEL_SERVICE_NAME)"
+		return "   (declared by the workload)"
+	}
+	if identity.AgentOverrode != "" {
+		// dev relabelling a workload's own declared identity is a thing to be
+		// told about, not to discover from a diff.
+		return fmt.Sprintf("   (--agent overrides the workload's %q)",
+			identity.AgentOverrode)
 	}
 	return "   (exported as OTEL_SERVICE_NAME)"
 }
@@ -187,6 +202,19 @@ type devConfig struct {
 // half-way leaves nothing running. That is what "nothing it started is left"
 // means when there is more than one thing to start.
 func composeAndRun(s streams, config devConfig) int {
+	// Signals first, before anything exists to orphan.
+	//
+	// The first version installed the handler inside superviseChild, which is
+	// after the control plane and the Collector have started — so a Ctrl-C during
+	// composition killed dev with the default disposition and left two helpers
+	// running. Each is in its own process group, so the terminal's own SIGINT
+	// never reached them: the developer got their shell back and two orphans
+	// holding ports.
+	relay := newSignalRelay()
+	// Stopped after teardown, not before: shutting down still has work to do, and
+	// a second Ctrl-C during it should reach the helpers rather than killing dev.
+	defer relay.Stop()
+
 	workloadDir, err := resolveWorkloadDir()
 	if err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
@@ -207,22 +235,35 @@ func composeAndRun(s streams, config devConfig) int {
 		return exitDevOperational
 	}
 
-	// Snapshotted before anything is set, so slice 4's instrumentation evidence
-	// is read from what the developer provided rather than from what dev
-	// provided a moment earlier.
-	environment := captureEnvironment()
-
-	// Identity is derived before anything starts. A run that cannot be named
+	// Identity before any process starts. A run that cannot be named
 	// deterministically should fail before a control plane, a Collector or a
 	// workload has been launched — nothing has to be torn down to report it.
-	identity, err := deriveIdentity(config, workloadDir, environment, time.Now())
+	identity, err := deriveIdentity(config, workloadDir, environmentSnapshot(), time.Now())
 	if err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
 		return exitDevUsage
 	}
+	environment := environmentSnapshot()
 	if err := environment.declareIdentity(identity); err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
 		return exitDevUsage
+	}
+
+	// The engine's learned baseline is a file, and a file store has no
+	// cross-process locking — so two runs writing one baseline would corrupt it.
+	// Taken before anything starts, released on the way out.
+	baseline, err := acquireBaseline(stateDir, identity.Profile)
+	if err != nil {
+		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
+		return exitDevOperational
+	}
+	defer baseline.release()
+
+	session := &devSession{s: s, relay: relay, identity: identity, config: config}
+	defer session.teardown()
+
+	if code, done := session.interrupted(); done {
+		return code
 	}
 
 	apiURL := config.apiURL
@@ -243,29 +284,16 @@ func composeAndRun(s streams, config devConfig) int {
 		// happen before the workload is launched: a workload with nowhere to
 		// report its behavior has produced nothing, and starting it anyway would
 		// waste a developer's run and look like a Trustvian success.
-		runtime, err := startLocalRuntime(binary, stateDir)
+		runtime, err := startLocalRuntime(relay.Context(), binary, stateDir)
 		if err != nil {
-			fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-			return exitDevOperational
+			return session.fail(err)
 		}
-		defer runtime.stop()
+		session.runtime = runtime
 		apiURL = runtime.APIURL()
 	}
 
-	// The Collector comes after the control plane and before the workload. After,
-	// because slice 3 points it at a run that must already exist and be running;
-	// before, because a workload that started with nowhere to send telemetry
-	// would produce no evidence and look like it had.
-	collectorBin, err := helper{
-		name:      collectorBinary,
-		role:      "the OTLP receiver",
-		flagValue: config.collectorBin,
-		flagName:  "--collector-bin",
-		envVar:    collectorBinaryEnv,
-	}.resolve()
-	if err != nil {
-		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-		return exitDevOperational
+	if code, done := session.interrupted(); done {
+		return code
 	}
 
 	// Provisioning happens before the Collector, because the Collector's
@@ -274,85 +302,218 @@ func composeAndRun(s streams, config devConfig) int {
 	// startup.
 	provision, err := newProvisioner(apiURL, identity)
 	if err != nil {
-		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-		return exitDevOperational
+		return session.fail(err)
+	}
+	session.provision = provision
+
+	if err := provision.ensureHierarchy(relay.Context()); err != nil {
+		return session.fail(err)
+	}
+	if err := provision.startRun(relay.Context()); err != nil {
+		return session.fail(err)
+	}
+	// From here on a failure has to leave the run terminal: one stuck in
+	// `running` forever is indistinguishable from one still in progress.
+	session.runStarted = true
+
+	if code, done := session.interrupted(); done {
+		return code
 	}
 
-	provisionCtx, cancelProvision := lifecycleContext()
-	if err := provision.ensureHierarchy(provisionCtx); err != nil {
-		cancelProvision()
-		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-		return exitDevOperational
+	collectorBin, err := helper{
+		name:      collectorBinary,
+		role:      "the OTLP receiver",
+		flagValue: config.collectorBin,
+		flagName:  "--collector-bin",
+		envVar:    collectorBinaryEnv,
+	}.resolve()
+	if err != nil {
+		return session.fail(err)
 	}
-	if err := provision.startRun(provisionCtx); err != nil {
-		cancelProvision()
-		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-		return exitDevOperational
-	}
-	cancelProvision()
 
-	otlp, err := startCollector(collectorBin, stateDir, collectorConfigData{
+	otlp, err := startCollector(relay.Context(), collectorBin, stateDir, collectorConfigData{
 		APIURL:           apiURL,
 		RunID:            identity.Run,
 		Profile:          identity.Profile,
 		PendingStatePath: filepath.Join(stateDir, collectorPendingStateFile),
+		BaselinePath:     baseline.path,
 	})
 	if err != nil {
-		// The run was started and no evidence will reach it. Failed rather than
-		// left running: a run stuck in `running` forever is indistinguishable
-		// from one still in progress.
-		failRunAfter(s, provision, exitDevOperational)
-		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-		return exitDevOperational
+		return session.fail(err)
+	}
+	session.collector = otlp
+
+	if code, done := session.interrupted(); done {
+		return code
 	}
 
 	environment.routeOTLP(otlp.OTLPEndpoint(), otlp.OTLPGRPCEndpoint())
 
-	printDevBanner(s, stateDir, apiURL, otlp, environment, identity, config)
+	printDevBanner(s, stateDir, apiURL, otlp, environment, identity, baseline, config)
 
-	code := superviseChild(s, config.command, environment)
+	outcome := superviseChild(s, config.command, environment, relay)
 
 	// The Collector stops *before* the run reaches a terminal state, and the
 	// order is not cosmetic: ingest is refused once a run is terminal, so a span
 	// still in flight would fail the batch rather than be ignored. Stopping it
 	// first also flushes what it holds.
 	otlp.stop()
+	session.collector = nil
 
-	lifecycleCtx, cancelLifecycle := lifecycleContext()
-	defer cancelLifecycle()
-
-	if code == exitDevOK {
-		if err := provision.completeRun(lifecycleCtx); err != nil {
-			fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-			// The workload succeeded; the bookkeeping did not. Reported as
-			// operational rather than as the workload's success, because a run
-			// left non-terminal is evidence nobody can read.
-			return exitDevOperational
-		}
-		fmt.Fprintf(s.out, "\nRun %s complete.\n", identity.Run)
-		return code
-	}
-
-	// A workload that failed produced no verdict, so the run is failed, not
-	// completed. Nothing downstream may read it as a finished evaluation.
-	if err := provision.failRun(lifecycleCtx, code); err != nil {
-		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-	}
-	fmt.Fprintf(s.out, "\nRun %s failed: the workload exited %d.\n", identity.Run, code)
-	// The workload's status, unchanged. dev reports what happened to the run and
-	// still exits with the child's code, because that is the contract.
-	return code
+	return session.finish(outcome)
 }
 
-// failRunAfter records a failure for a run nothing will report evidence to.
+// devSession owns what one invocation started, and how it ends.
 //
-// Best effort and never fatal: this is already an error path, and a second error
-// here must not replace the first in the message a developer reads.
-func failRunAfter(s streams, provision *provisioner, code int) {
+// Teardown is the reason it exists. Four things can be running by the time the
+// workload does, and every failure path after the first of them has to stop them
+// all, in the reverse order, and leave the run in a terminal state. Doing that
+// with deferred closures at each site produced the orphan bug this type replaces.
+type devSession struct {
+	s        streams
+	relay    *signalRelay
+	identity devIdentity
+	config   devConfig
+
+	runtime    *localRuntime
+	collector  *collector
+	provision  *provisioner
+	runStarted bool
+}
+
+// interrupted reports whether a signal arrived, and what to exit with.
+//
+// Checked between composition steps. Each step's own wait is already cancelled by
+// the relay's context, so this catches the gap between them — where a signal would
+// otherwise be noticed only after the next thing had been started.
+func (d *devSession) interrupted() (int, bool) {
+	sig := d.relay.Received()
+	if sig == 0 {
+		return 0, false
+	}
+	fmt.Fprintf(d.s.out, "\nInterrupted.\n")
+	d.failRunIfStarted("interrupted by the developer before the workload finished")
+	return signalExitStatus(sig), true
+}
+
+// fail reports a composition failure and exits operationally.
+//
+// A signal that arrived during the failing step is reported as an interruption
+// rather than as the failure it caused, because that is what happened: cancelling
+// a wait makes it fail, and calling that an error would blame dev for doing what
+// it was asked.
+func (d *devSession) fail(err error) int {
+	if sig := d.relay.Received(); sig != 0 {
+		fmt.Fprintf(d.s.out, "\nInterrupted.\n")
+		d.failRunIfStarted("interrupted by the developer before the workload finished")
+		return signalExitStatus(sig)
+	}
+	fmt.Fprintf(d.s.err, "trustvian dev: %v\n", err)
+	d.failRunIfStarted("trustvian dev could not finish composing the runtime")
+	return exitDevOperational
+}
+
+// finish ends the run according to what the workload did, and returns its status.
+func (d *devSession) finish(outcome childOutcome) int {
 	ctx, cancel := lifecycleContext()
 	defer cancel()
-	if err := provision.failRun(ctx, code); err != nil {
-		fmt.Fprintf(s.err, "trustvian dev: could not fail the run: %v\n", err)
+
+	switch {
+	case outcome.startFailed:
+		// No workload ran, so the reason must not claim a workload status. An
+		// earlier version recorded "the workload exited 3", which is the code dev
+		// chose for its own failure and not anything the workload did.
+		d.failRunWith(ctx, "the workload could not be started under trustvian dev")
+		return outcome.code
+
+	case outcome.signaled && d.relay.Forwarded():
+		// The developer stopped it. A run ended by Ctrl-C is not a behavioral
+		// finding and not a crash: the evidence collected up to that point is
+		// real, so the run is completed and the banner says who ended it.
+		if err := d.completeRun(ctx); err != nil {
+			return outcome.code
+		}
+		fmt.Fprintf(d.s.out, "\nRun %s completed: stopped by the developer.\n",
+			d.identity.Run)
+		return outcome.code
+
+	case outcome.ok():
+		if err := d.completeRun(ctx); err != nil {
+			return outcome.code
+		}
+		fmt.Fprintf(d.s.out, "\nRun %s complete.\n", d.identity.Run)
+		return outcome.code
+
+	default:
+		// A workload that failed produced no verdict, so the run is failed, not
+		// completed. Nothing downstream may read it as a finished evaluation.
+		d.failRunWith(ctx,
+			fmt.Sprintf("the workload exited %d under trustvian dev", outcome.code))
+		fmt.Fprintf(d.s.out, "\nRun %s failed: the workload exited %d.\n",
+			d.identity.Run, outcome.code)
+		return outcome.code
+	}
+}
+
+// completeRun records success, and never changes the workload's status.
+//
+// docs/compatibility.md says dev's exit status is the workload's, unmodified,
+// once the workload has started. An earlier version returned 3 here when the
+// bookkeeping failed after a successful workload, which contradicted that. So the
+// failure is reported loudly and named — a run left non-terminal is evidence
+// nobody can read — and the status stays the workload's.
+func (d *devSession) completeRun(ctx context.Context) error {
+	if d.provision == nil {
+		return nil
+	}
+	err := d.provision.completeRun(ctx)
+	if err != nil {
+		fmt.Fprintf(d.s.err,
+			"trustvian dev: WARNING: the workload succeeded but run %s could not be "+
+				"completed: %v\n"+
+				"  The run is left non-terminal and nothing downstream can read it as "+
+				"evidence.\n"+
+				"  Complete it by hand with: trustvian eval complete --id %s\n",
+			d.identity.Run, err, d.identity.Run)
+	}
+	d.runStarted = false
+	return err
+}
+
+// failRunIfStarted fails the run when one was started, and says nothing otherwise.
+func (d *devSession) failRunIfStarted(reason string) {
+	if !d.runStarted {
+		return
+	}
+	ctx, cancel := lifecycleContext()
+	defer cancel()
+	d.failRunWith(ctx, reason)
+}
+
+func (d *devSession) failRunWith(ctx context.Context, reason string) {
+	if d.provision == nil || !d.runStarted {
+		return
+	}
+	if err := d.provision.failRunReason(ctx, reason); err != nil {
+		fmt.Fprintf(d.s.err, "trustvian dev: could not fail run %s: %v\n",
+			d.identity.Run, err)
+	}
+	d.runStarted = false
+}
+
+// teardown stops what this session started, in reverse order.
+//
+// The Collector before the control plane: the Collector posts evidence to it, so
+// the thing that writes stops before the thing written to. Idempotent, because the
+// normal path stops the Collector itself and this still runs.
+func (d *devSession) teardown() {
+	if d.collector != nil {
+		d.collector.stop()
+		d.collector = nil
+	}
+	if d.runtime != nil {
+		d.runtime.stop()
+		d.runtime = nil
 	}
 }
 
@@ -363,7 +524,8 @@ func failRunAfter(s streams, provision *provisioner, code int) {
 // makes: what must not happen is dev *reformatting or buffering* the workload's
 // own streams, and it does neither.
 func printDevBanner(s streams, stateDir, apiURL string, otlp *collector,
-	environment *devEnvironment, identity devIdentity, config devConfig) {
+	environment *devEnvironment, identity devIdentity, baseline *baselineLock,
+	config devConfig) {
 	fmt.Fprintf(s.out, "Trustvian dev\n\n")
 	fmt.Fprintf(s.out, "  Project     %s\n", identity.Project)
 	fmt.Fprintf(s.out, "  Agent       %s%s\n", identity.Agent,
@@ -376,6 +538,7 @@ func printDevBanner(s streams, stateDir, apiURL string, otlp *collector,
 	fmt.Fprintf(s.out, "  Environment %s\n", identity.Environment)
 	fmt.Fprintf(s.out, "  Run         %s\n\n", identity.Run)
 	fmt.Fprintf(s.out, "  State    %s\n", stateDir)
+	fmt.Fprintf(s.out, "  Baseline %s\n", baseline.path)
 	fmt.Fprintf(s.out, "  API      %s\n", apiURL)
 	fmt.Fprintf(s.out, "  OTLP     %s  (gRPC %s)\n",
 		otlp.OTLPEndpoint(), otlp.OTLPGRPCEndpoint())
