@@ -354,7 +354,18 @@ and is forwarded.
 `dev` is **not supported on Windows** and refuses with exit `2`. It forwards
 `SIGINT` and `SIGTERM` to the child and Windows has no equivalent delivery, so a
 partial implementation would leave orphaned processes; see
-[task 077](tasks/v1.0/077-unified-otlp-local-dev-runtime.md).
+[task 077](tasks/v1.0/077-unified-otlp-local-dev-runtime.md). The refusal names
+WSL2 and
+[Local development § Running the parts separately](local-development.md#running-the-parts-separately),
+which is the supported path there and everywhere else `dev` is not wanted.
+
+`dev` also refuses, before starting anything, when it cannot establish who owns
+the workload's instrumentation. Absence of detectable instrumentation never
+selects injection, and that is a stability promise rather than a current
+limitation: a future release may add evidence to the list or implement
+`python-zero-code`, and neither may turn a refusal into an injected second
+instrumentation stack. See
+[ADR 0044](adr/0044-instrumentation-ownership-requires-positive-evidence.md).
 
 For the control-plane families, an API failure is always `3` and never
 `1`. A 409, a 404, a 500, a timeout, a refused redirect and a malformed

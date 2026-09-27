@@ -27,7 +27,7 @@ Tasks for the `v1.0` milestone.
 | [074 — Zero-Input Live Behavior WebUI](074-zero-input-live-behavior-webui.md) | Specified and implemented |
 | [075 — AI Semantic Telemetry Normalization](075-ai-semantic-telemetry-normalization.md) | Specified; not implemented |
 | [076 — Behavioral Trace & Session Evidence Explorer](076-behavioral-evidence-explorer.md) | Specified; not implemented |
-| [077 — Unified OTLP Local Dev Runtime](077-unified-otlp-local-dev-runtime.md) | Specified; not implemented |
+| [077 — Unified OTLP Local Dev Runtime](077-unified-otlp-local-dev-runtime.md) | Specified and implemented |
 | [078 — Behavioral Scenario Suites](078-behavioral-scenario-suites.md) | Specified; not implemented |
 | [079 — CI Integration: A GitHub Action](079-ci-integration-github-action.md) | Specified; not implemented |
 | [080 — Metadata-Only Detection Evaluation](080-metadata-only-detection-evaluation.md) | Specified; not implemented |
@@ -120,15 +120,22 @@ one whose results reach a reviewer and whose central claim carries a number:
   span and session correlation that the platform receives and does not retain.
   The explorer presents sessions, traces and behavioral sequence over whatever
   history **067** makes durable — 067 keeps ownership of the storage contract.
-- **077 — Unified OTLP Local Dev Runtime.** Watching an agent today means a
-  control plane, a Collector, a processor config, a manually created
-  hierarchy and the right OTLP environment. One command should wrap an
-  existing agent and compose the rest, with no source modification and no
-  Trustvian dependency in the application. Instrumentation ownership is an
-  explicit, positive-evidence-only mode: a child may initialize OpenTelemetry
-  after it starts, so absence of detectable instrumentation never selects
-  injection. **Independent of 075** — it transports whatever telemetry exists,
-  and 075 decides how richly that telemetry is read.
+- **077 — Unified OTLP Local Dev Runtime** is **implemented**. Watching an agent
+  used to mean a control plane, a Collector, a processor config, a manually
+  created hierarchy and the right OTLP environment. `trustvian dev -- <command>`
+  now composes all of it: it supervises `trustvian-local` and
+  `trustvian-collector` rather than opening its own receiver
+  ([ADR 0042](../../adr/0042-dev-composes-the-collector-rather-than-owning-a-receiver.md)),
+  derives the hierarchy from the git repository and keeps its state outside it
+  ([ADR 0043](../../adr/0043-dev-provisions-the-local-hierarchy-from-the-repository.md)),
+  and its exit status is the workload's own. The application is not modified and
+  gains no Trustvian dependency. Instrumentation ownership is an explicit,
+  positive-evidence-only mode: a child may initialize OpenTelemetry after it
+  starts, so absence of detectable instrumentation never selects injection
+  ([ADR 0044](../../adr/0044-instrumentation-ownership-requires-positive-evidence.md)),
+  which is why `python-zero-code` is named, reserved and refused rather than
+  half-attached. **Independent of 075** — it transports whatever telemetry
+  exists, and 075 decides how richly that telemetry is read.
 - **078 — Behavioral Scenario Suites.** Diff, scorecard and gate all exist;
   what is missing is repeatability. A scenario runs the same workload again,
   compares the behavioral surface and applies deterministic limits — reusing

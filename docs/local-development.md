@@ -1,9 +1,141 @@
 # Local development
 
-One command starts the whole local platform; everything else finds it on its
-own.
+One command runs your agent under Trustvian. Everything it needs is composed
+around it, and your repository is never written to.
 
 ## Quick start
+
+```bash
+make dev ARGS='-- python agent.py'
+```
+
+That is the whole loop. `trustvian dev` starts a local control plane and an OTLP
+receiver, provisions the project / agent / candidate / run hierarchy from your
+git repository, points your workload's OpenTelemetry exporter at the receiver,
+runs your command unchanged, and prints a URL to watch it:
+
+```text
+Trustvian dev
+
+  Project     checkout-agent
+  Agent       checkout-agent   (declared by the workload)
+  Candidate   git:43af19c+dirty   uncommitted changes
+  Environment local
+  Run         dev-git-43af19c-dirty-20260927T101500.000Z
+
+  State    ~/.trustvian/dev/9f2c1ab04e7d/
+  Baseline ~/.trustvian/dev/9f2c1ab04e7d/baseline-git_3a43af19c_2bdirty.json
+  API      http://127.0.0.1:54321
+  OTLP     http://127.0.0.1:54322  (gRPC 127.0.0.1:54323)
+  Web      http://127.0.0.1:54321/
+  Owner    existing   (auto: $OTEL_SERVICE_NAME is set)
+  Set      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_SERVICE_NAME OTEL_RESOURCE_ATTRIBUTES
+
+Running python agent.py
+```
+
+Your command's exit status is `dev`'s own, so the wrapper is transparent to
+scripts. `Ctrl-C` goes to your workload; the run is completed either way.
+
+The full command surface — every flag, the identity derivations, the exit codes —
+is in [Platform CLI § `trustvian dev`](platform-cli.md#trustvian-dev).
+
+### Your workload must already emit OpenTelemetry
+
+`dev` configures an exporter; it does not attach an SDK. A workload with no
+instrumentation stops with a message rather than being injected into, because a
+workload that initializes the SDK a moment after it starts cannot be detected
+beforehand, and attaching a second stack would report every action twice. See
+[ADR 0044](adr/0044-instrumentation-ownership-requires-positive-evidence.md).
+
+### What `dev` needs on disk
+
+`dev` supervises two helper executables that are **not** part of the released
+`trustvian` binary:
+
+```text
+trustvian-local      the local control plane
+trustvian-collector  the OTLP receiver and the Trustvian processor
+```
+
+`make dev` builds both and points `dev` at them. From a bare `go install` they
+do not exist, and `dev` says so and names `make dev` rather than downloading
+anything — it makes no network call at all. Each can also be given explicitly
+(`--local-bin`, `--collector-bin`, or `$TRUSTVIAN_LOCAL_BIN` /
+`$TRUSTVIAN_COLLECTOR_BIN`).
+
+### Where `dev` keeps its state
+
+Outside your repository, under `~/.trustvian/dev/<hash of this directory>/`,
+printed on every start. It holds the generated Collector configuration, both
+helper logs, and the learned baseline. `rm -rf` that directory to start over.
+
+One consequence worth knowing: two runs of one commit share a learned baseline,
+which is the point — the second run's anomaly *confidence* is non-zero, so the
+engine-evidence gates can actually fire. It also means two concurrent `dev` runs
+of the same candidate are refused, because the baseline file has one writer.
+
+## Running the parts separately
+
+`trustvian dev` is a convenience over two processes you can always run yourself.
+Do that when you want a control plane that outlives several runs, when you are on
+Windows (where `dev` refuses — see
+[compatibility](compatibility.md)), or when you are debugging the composition
+itself.
+
+```bash
+make dev-binaries          # builds bin/trustvian-local and bin/trustvian-collector
+```
+
+**Terminal A — the control plane.** Publishes its endpoint into `.trustvian/`,
+so clients in that directory need no `--api-url`:
+
+```bash
+./bin/trustvian-local
+```
+
+**Create the hierarchy and start a run.** `dev` does this for you; by hand it is
+the five commands below. The candidate id is the learning scope, so use the same
+one for runs you want compared:
+
+```bash
+./bin/trustvian project create --id proj-1 --name Checkout
+./bin/trustvian agent create --id agent-1 --project-id proj-1 --name "Checkout agent"
+./bin/trustvian candidate create --id cand-1 --agent-id agent-1
+./bin/trustvian eval create --id run-1 --candidate-id cand-1 \
+    --environment local --behavioral-profile checkout
+./bin/trustvian eval start --id run-1
+```
+
+**Terminal B — the receiver.** `trustvian-collector` needs a configuration
+naming the run; `processor/config.yaml` is a working example, and
+[OpenTelemetry](OPENTELEMETRY.md) documents the keys:
+
+```bash
+./bin/trustvian-collector --config processor/config.yaml
+```
+
+**Terminal C — your workload**, pointed at the receiver:
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces \
+OTEL_SERVICE_NAME=checkout-agent \
+OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=local \
+  python agent.py
+```
+
+All three variables matter. Without `deployment.environment.name` the engine
+cannot fill the record's environment, and `platform/behavior.go` refuses a record
+whose environment differs from the run's — producing a run with no usable
+evidence rather than an error naming the cause.
+
+**Complete the run** when the workload is done:
+
+```bash
+./bin/trustvian eval complete --id run-1
+```
+
+## Starting the platform without a workload
 
 ```bash
 make local
@@ -51,9 +183,11 @@ The engine stays outside it. Your application analyzes events, serializes a
 The shortest useful loop, with nothing typed into the browser:
 
 ```bash
-make local                  # terminal A — prints the URL
-<run your instrumented agent>   # terminal B
+make dev ARGS='-- python agent.py'    # prints the URL
 ```
+
+Or, with the parts running separately, `make local` in terminal A and your
+instrumented agent in terminal B.
 
 Then open the `Web:` URL. The page lands on the **Live Observatory**, already
 connected, and each active agent appears as a card the moment telemetry for it
@@ -72,11 +206,11 @@ support-agent ───────────▶ ollama.localhost
 ```
 
 You do not need a Project, Agent, Candidate or EvaluationRun identifier to see
-this, and there is no form to fill in first. **A producer still has to create
-them** — the Collector's `evaluation:` block names a run that must already
-exist and be running, and nothing here creates a durable entity because
-telemetry arrived. What changed is that a person no longer retypes those
-identifiers into a browser to see the result.
+this, and there is no form to fill in first. **They still have to exist** — the
+Collector's `evaluation:` block names a run that must already be running, and
+nothing here creates a durable entity because telemetry arrived. What changed is
+that `trustvian dev` creates them from your repository, and a person no longer
+retypes those identifiers into a browser to see the result.
 
 A behavior the run had not shown before is marked `NEW` on the edge, on its
 target, in the timeline, and in the inspector. It is never labelled dangerous
@@ -103,6 +237,15 @@ demo — two demos of the same thing drift.
 
 Project-local, so two checkouts are two independent environments and
 `rm -rf .trustvian` ends one completely. `.trustvian/` is gitignored.
+
+`trustvian dev` writes neither of these into your repository. Its state lives
+under `~/.trustvian/dev/<hash of the workload directory>/`, holding the same
+database plus the generated Collector configuration, both helper logs, and the
+learned baseline and its lock. A `workload-path` file records which directory the
+hash came from, so a directory you find later is identifiable.
+
+Clients in a directory `dev` has run in still need no `--api-url`: discovery
+looks in `./.trustvian/` first and then in that directory's `dev` state.
 
 The database survives restarts; the realtime stream does not, by design —
 reconnecting resynchronizes from durable state rather than replaying history.
@@ -221,3 +364,9 @@ artifact — `trustvian` is the shipped binary.
 - [Terminal dashboard](tui.md) — watching a run live
 - [ADR 0035](adr/0035-local-runtime-composes-platform-without-reversing-modules.md)
   — why the runtime lives in the platform module
+- [ADR 0042](adr/0042-dev-composes-the-collector-rather-than-owning-a-receiver.md)
+  — why `dev` supervises `trustvian-collector` instead of opening its own receiver
+- [ADR 0043](adr/0043-dev-provisions-the-local-hierarchy-from-the-repository.md)
+  — where `dev`'s identifiers come from, and why its state is outside your repository
+- [ADR 0044](adr/0044-instrumentation-ownership-requires-positive-evidence.md)
+  — why `dev` refuses rather than injecting instrumentation

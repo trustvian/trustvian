@@ -10,6 +10,10 @@ nothing on this page changes them.
 its `/v1` HTTP API. They are what this page is about: one request per command,
 machine-readable output, and exit codes a CI job can branch on.
 
+`dev` is neither: it is a process supervisor that composes the other two for one
+run of your workload. It is documented [below](#trustvian-dev), and
+[Local development](local-development.md) is the guide.
+
 The CLI is a client. It computes no diff, no scorecard and no gate — those are
 the control plane's, and the CLI reports what it returned. See
 [ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md).
@@ -195,6 +199,114 @@ The record file is sent **exactly as written**. The CLI validates that it is
 well-formed JSON and nothing else — it never decodes it into its own struct,
 so a record from a newer producer keeps every field on its way to the server.
 
+## `trustvian dev`
+
+```text
+trustvian dev [options] -- <command> [args...]
+```
+
+Runs your command under Trustvian. The command is not modified and gains no
+Trustvian dependency: a local control plane, an OTLP receiver and an evaluation
+run are composed around it. `--` is required, and everything after it is the
+command.
+
+```text
+--api-url <url>          attach to a control plane already running, instead of
+                         starting one
+--local-bin <path>       path to trustvian-local      ($TRUSTVIAN_LOCAL_BIN)
+--collector-bin <path>   path to trustvian-collector  ($TRUSTVIAN_COLLECTOR_BIN)
+--instrumentation <mode> existing | none | auto   (default: auto)
+-h, --help               print the usage message
+```
+
+Identity, each derived when not given:
+
+| Flag | Default |
+|---|---|
+| `--project <id>` | the git repository's name |
+| `--agent <id>` | the workload's own `OTEL_SERVICE_NAME`, or `service.name` in `OTEL_RESOURCE_ATTRIBUTES` — **required** when it declares neither |
+| `--candidate <id>` | `git:<short sha>`, plus `+dirty` when the worktree has uncommitted changes |
+| `--environment <ref>` | `local` |
+| `--run-id <id>` | `dev-<candidate>-<UTC timestamp to milliseconds>` |
+
+The candidate is also the behavioral profile, which is the learning scope — so
+two runs of one commit meet one baseline. `--agent` is the one derivation that
+refuses rather than guessing: the processor derives the actor from the arriving
+`service.name`, and an invented Agent id would produce a run whose evidence
+cannot be attributed to it.
+
+### Instrumentation ownership
+
+`dev` configures an exporter; it does not attach an SDK.
+
+| Mode | Behavior |
+|---|---|
+| `existing` | your workload already sends OpenTelemetry; `dev` sets the OTLP variables and injects nothing |
+| `none` | `dev` manages no instrumentation at all, not even routing |
+| `auto` (default) | resolve from positive evidence, or **stop** |
+
+`auto` never falls through to injection. Absence of detectable instrumentation
+is not evidence of absence — a workload that initializes the SDK a moment after
+it starts cannot be detected beforehand, and a second stack attached to one that
+exists reports every action twice, which reads as an actor behaving strangely.
+So `auto` either finds positive evidence (an `OTEL_*` variable that an
+auto-configuring SDK reads, `opentelemetry-instrument` in `argv[0]`, an
+OpenTelemetry `-javaagent:`, or `NODE_OPTIONS` requiring an `@opentelemetry`
+package) and behaves as `existing`, or it stops with a message naming the
+choices. `OTEL_SDK_DISABLED=true` is refused for every mode that would route.
+See [ADR 0044](adr/0044-instrumentation-ownership-requires-positive-evidence.md).
+
+`--instrumentation python-zero-code` is named and reserved, and refused by this
+build.
+
+### What it sets, and what it does not touch
+
+With ownership `existing`, exactly three variables are added to the workload's
+environment, and all three are printed:
+
+```text
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT   the composed receiver
+OTEL_SERVICE_NAME                    the Agent identity dev resolved
+OTEL_RESOURCE_ATTRIBUTES             deployment.environment.name=<environment>
+```
+
+`TRUSTVIAN_DEV_OTLP_ENDPOINT` and `TRUSTVIAN_DEV_OTLP_GRPC_ENDPOINT` are also
+exported, for a workload that builds its exporter in code and chooses its own
+transport.
+
+Your repository is never written to — not its files, not its dependency
+manifests, not its git state. `dev`'s own state lives under
+`~/.trustvian/dev/<hash of the workload directory>/` and the path is printed on
+every start.
+
+### Signals and exit status
+
+`dev` is transparent: its exit status is your command's own, including
+`128+signal` when the command was killed by one. `SIGINT` and `SIGTERM` are
+forwarded to the command's process group, and the evaluation run is **completed**
+rather than failed when the developer stopped it — a developer pressing `Ctrl-C`
+has not observed a failing agent.
+
+If your command's stdin is a terminal, `dev` hands the terminal to it, so an
+interactive workload can read input. `Ctrl-C` is then delivered by the kernel to
+the whole foreground group, which includes `dev`. A second `Ctrl-C` during
+teardown is not delivered to `dev`, because the terminal is already back — see
+[compatibility](compatibility.md).
+
+Windows is refused rather than partially supported: there is no `SIGTERM`
+delivery, no `os.Interrupt` for another process, and no `Setpgid`, so a wrapper
+could not stop what it started. Use WSL2, or run the parts separately.
+
+### Exit codes, before the command starts
+
+| Code | Meaning |
+|---|---|
+| `2` | the invocation was wrong (unknown flag, no `--`, unknown mode) |
+| `3` | this wrapper could not start (no helper binary, ownership unresolved, another run holds the baseline) |
+
+Once the command starts, the exit status is entirely the command's. That is why
+`dev` is the one exception in the table below.
+
 ## Exit codes
 
 Exit codes are **scoped by command family**. This matters, so it is worth
@@ -205,9 +317,14 @@ reading once rather than assuming.
 | `analyze`, `baseline`, `version` | success | command failed | top-level usage | — |
 | `project`, `agent`, `candidate`, most of `eval` | success | *unused* | usage | API or network failure |
 | `eval compare` | gate **PASS** | gate **FAIL** | usage | API or network failure |
+| `dev` | the command’s own | the command’s own | usage | could not start |
 
 **Exit 1 means gate failure only for `eval compare`.** It does not change what
 `1` has always meant for `analyze` and `baseline`.
+
+`dev` is the exception to the whole table: once the command it wraps has started,
+`dev`'s exit status is that command's own, whatever it is. `2` and `3` can only
+be reported *before* the command starts.
 
 The distinction that matters for CI: an HTTP 409, a 404, a 500, a timeout, a
 refused redirect and a malformed response are all **3**, never 1. A script
@@ -291,3 +408,6 @@ is a decision for your script, which knows what it was doing.
 - [Task 060](tasks/v1.0/060-developer-cli.md) — the specification
 - [ADR 0040](adr/0040-promotions-are-immutable-evidence-backed-platform-decisions.md)
   — why a promotion records a decision and never a deployment
+- [Local development](local-development.md) — the `trustvian dev` guide
+- [Task 077](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — the `dev`
+  specification

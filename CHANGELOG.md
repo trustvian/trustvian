@@ -10,6 +10,90 @@ actually depend on.
 
 ### Added
 
+- **`trustvian dev` — one command runs an agent under Trustvian** (task 077).
+  Watching an agent behave used to mean a control plane, a Collector, a
+  hand-written processor configuration, four `create` commands and the right OTLP
+  environment. Now:
+
+  ```bash
+  make dev ARGS='-- python agent.py'
+  ```
+
+  `dev` starts `trustvian-local` and `trustvian-collector`, generates the
+  Collector configuration, provisions the project / agent / candidate / run
+  hierarchy, points the workload's exporter at the receiver, runs the command
+  unchanged, and prints the URL to watch it. The application is not modified and
+  gains no Trustvian dependency.
+
+  **It supervises the Collector; it does not own a receiver.** An OTLP receiver
+  is a protocol stack, `trustvian-collector` already carries it, and putting one
+  in `cmd/trustvian` is the dependency leak `.claude/rules/architecture.md`
+  forbids. The generated configuration is `text/template` output rather than a
+  YAML library, so the root module gains no dependency, and every substituted
+  scalar is *refused* rather than rewritten when it would need quoting. Both OTLP
+  protocols are enabled, because a workload that builds its exporter in code
+  chooses its own transport — an HTTP-only receiver would have observed nothing
+  from this repository's own gRPC demo producer, silently.
+  [ADR 0042](docs/adr/0042-dev-composes-the-collector-rather-than-owning-a-receiver.md).
+
+  **Identity comes from the repository, and nothing is invented.** Project from
+  the repository name, candidate from `git:<short sha>` plus `+dirty`,
+  environment `local`, run id generated per invocation with millisecond
+  precision. The Agent is the workload's own `OTEL_SERVICE_NAME` (or
+  `service.name` in `OTEL_RESOURCE_ATTRIBUTES`) and is **required** when the
+  workload declares neither: the processor derives the actor from the arriving
+  `service.name`, so an invented Agent id would produce a run whose evidence
+  cannot be attributed to it. The hierarchy is *ensured*, not created, so a
+  second run of one commit meets the first run's baseline.
+  [ADR 0043](docs/adr/0043-dev-provisions-the-local-hierarchy-from-the-repository.md).
+
+  **The workload's repository is never written to** — not its files, not its
+  dependency manifests, not its git state. `dev`'s state lives under
+  `~/.trustvian/dev/<hash of the workload directory>/` and the path is printed on
+  every start. Discovery gained a second location so `trustvian eval compare` in
+  that directory still needs no `--api-url`. The end-to-end test hashes every
+  file including `.git` before and after two real runs and compares the trees;
+  `git status` runs with `--no-optional-locks` so even reading the state cannot
+  write it.
+
+  **The engine's baseline is file-backed**, one file per behavioral profile.
+  With the in-memory default the learned baseline was discarded at every run's
+  end, which made both engine-evidence gates unfireable — with an empty baseline
+  every behavior is novel, anomaly confidence is zero, no `BLOCK` is ever
+  decided, and `max_block_decisions` and `max_critical_risk_observations` could
+  only ever read zero. Since the file store has no cross-process locking, a
+  second concurrent run of the same candidate is refused with a message naming
+  the run that holds it.
+
+  **Instrumentation ownership is positive-evidence-only.**
+  `--instrumentation existing | none | auto`, defaulting to `auto`, which either
+  finds positive evidence that the workload initializes OpenTelemetry or **stops**
+  — it never falls through to injection. A program can initialize the SDK after
+  it starts, which is after the only moment `dev` could inspect it, so "detected
+  nothing" is not "there is nothing"; attaching a second stack to one that exists
+  would report every action twice, and duplicate spans are a behavioral lie the
+  engine would faithfully report as an anomaly. `OTEL_SDK_DISABLED=true` is
+  refused for every mode that would route, because it is the opposite of
+  evidence. `python-zero-code` is named, reserved and refused pending an
+  interpreter compatibility check.
+  [ADR 0044](docs/adr/0044-instrumentation-ownership-requires-positive-evidence.md).
+
+  **It is transparent to scripts.** The exit status is the command's own,
+  including `128 + signal`; `2` and `3` can only be reported before the command
+  starts. `SIGINT` and `SIGTERM` are forwarded to the command's process group,
+  and the run is **completed** rather than failed when the developer stopped it.
+  If stdin is a terminal, `dev` hands the terminal over so an interactive
+  workload can read input; `Ctrl-C` then reaches the whole foreground group and
+  the run is still completed. Windows is refused with a reason rather than
+  partially supported — no `SIGTERM` delivery, no `os.Interrupt` for another
+  process, no `Setpgid`.
+
+  **No new third-party dependency**, in any module. `docs/local-development.md`
+  now leads with `trustvian dev` and documents running the parts separately;
+  `docs/platform-cli.md` documents the command surface; `docs/compatibility.md`
+  records the exit-status exception, the run-state mapping and the terminal
+  Ctrl-C rows.
+
 - **The web interface is now a live observability cockpit** (task 074). The
   primary surface stopped being a CRUD console organized around
   `Open by ID` and became a window into what an agent is doing.

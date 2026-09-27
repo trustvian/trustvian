@@ -65,6 +65,9 @@ as long as its own decision holds.
 | [0039](0039-environments-are-project-owned-ranked-references.md) | Environments are project-owned ranked references | Accepted |
 | [0040](0040-promotions-are-immutable-evidence-backed-platform-decisions.md) | Promotions are immutable evidence-backed platform decisions | Accepted |
 | [0041](0041-bounded-hierarchy-collections-and-run-scoped-live-view.md) | Bounded hierarchy collections and a run-scoped live view | Accepted |
+| [0042](0042-dev-composes-the-collector-rather-than-owning-a-receiver.md) | `trustvian dev` composes the Collector rather than owning a receiver | Accepted |
+| [0043](0043-dev-provisions-the-local-hierarchy-from-the-repository.md) | `trustvian dev` provisions the local hierarchy from the repository | Accepted |
+| [0044](0044-instrumentation-ownership-requires-positive-evidence.md) | Instrumentation ownership requires positive evidence | Accepted |
 
 No ADR is currently Superseded or Deprecated. Several later ADRs build on
 earlier ones — 0006 and 0018 on 0004's narrow port, 0007/0008/0017 on 0002's
@@ -73,8 +76,11 @@ mandate 0010/0011/0012/0016 established, 0024 on the mechanism 0022 deliberately
 left open, 0039 on the opaque reference 0025 and 0027 both leaned on, 0040 on
 the ordering primitive 0039 established and the caller-owned identity 0025
 requires, 0041 on the collection semantics 0039 designed and the ephemeral
-realtime model 0032 pinned — and each cites the earlier decision as still
-governing rather than replacing it.
+realtime model 0032 pinned, 0042 on the module separation 0022 and 0023
+established and the text contract 0035 chose, 0043 on the caller-owned identity
+0025 requires and the learning scope 0024 defined, 0044 on the endpoint 0042
+composes — and each cites the earlier decision as still governing rather than
+replacing it.
 
 ## Writing one
 

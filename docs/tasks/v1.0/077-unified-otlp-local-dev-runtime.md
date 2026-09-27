@@ -1,6 +1,6 @@
 # 077 — Unified OTLP Local Dev Runtime
 
-Status: specified; not implemented
+Status: specified and implemented
 Milestone: `v1.0`
 Depends on: [062](062-integrated-local-developer-workflow.md),
 [073](073-otel-collector-evaluation-ingest.md),

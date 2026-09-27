@@ -318,9 +318,17 @@ func runGit(workloadDir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
 	defer cancel()
 
+	// --no-optional-locks is not optional here, despite the name.
+	//
+	// `git status` may refresh the index to update its stat cache, which *writes
+	// to .git*. Task 077 acceptance criterion 2 says the workload's repository is
+	// byte-identical afterwards, and a wrapper that quietly rewrote someone's
+	// index would break that for a reason nobody would look for. The flag tells
+	// git to skip any lock it does not strictly need, so status becomes read-only.
+	//
 	// -C rather than cmd.Dir, so the command line says which repository it asked
 	// about and a failure is readable in a diagnostic.
-	full := append([]string{"-C", workloadDir}, args...)
+	full := append([]string{"--no-optional-locks", "-C", workloadDir}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
 	// git reads configuration from the environment; inheriting it is correct.
 	// Nothing here passes a caller-supplied value as an argument: every element

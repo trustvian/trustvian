@@ -218,6 +218,41 @@ no platform package — see
 The output attributes and the posted record are two projections of one
 `Result`, not two computations: `Analyze` still runs exactly once per span.
 
+### `trustvian dev` composes this processor for you
+
+Since core task 077, `trustvian dev -- <command>` generates a Collector
+configuration, starts `trustvian-collector` with it, and sets the workload's
+exporter variables — so a locally-instrumented workload is evaluated without
+anyone writing that configuration by hand. The generated document is
+traces-only, enables **both** OTLP protocols, terminates in the `debug` exporter
+at `basic` verbosity (so span attributes are never printed), and configures a
+**file** engine store so that two runs of one candidate share a learned
+baseline.
+
+The variables `dev` sets in the workload's environment are the ordinary
+specification ones, and all three matter:
+
+```text
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT   the composed receiver, signal-specific
+OTEL_SERVICE_NAME                    becomes the resource service.name
+OTEL_RESOURCE_ATTRIBUTES             deployment.environment.name=<environment>
+```
+
+The endpoint variable is the **signal-specific** one rather than
+`OTEL_EXPORTER_OTLP_ENDPOINT`, so a workload that also exports metrics or logs
+somewhere keeps doing so. `deployment.environment.name` is not optional in
+practice: without it the engine cannot fill the record's environment, and the
+platform refuses a record whose environment differs from the run's — which
+surfaces as a run with no usable evidence rather than as an error naming the
+cause.
+
+`dev` never *attaches* an SDK. It configures one that already exists, or it
+stops — see
+[ADR 0044](adr/0044-instrumentation-ownership-requires-positive-evidence.md) for
+why absence of detectable instrumentation must not select injection, and
+[ADR 0042](adr/0042-dev-composes-the-collector-rather-than-owning-a-receiver.md)
+for why the CLI supervises this processor instead of opening its own receiver.
+
 ## Potential AI-agent (GenAI) mappings — documented, not implemented
 
 `v0.7` ([task 014](archive/tasks/v0.7/014-ai-agent.md)) added `event.Context.SessionID`/
