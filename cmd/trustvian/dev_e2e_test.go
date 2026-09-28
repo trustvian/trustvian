@@ -77,6 +77,9 @@ type realBinaries struct {
 	local     string
 	collector string
 	producer  string
+
+	// agentProducer emits GenAI or plain-HTTP spans on demand. Task 075.
+	agentProducer string
 }
 
 var (
@@ -114,6 +117,9 @@ func buildRealBinaries(t *testing.T) realBinaries {
 			{"platform", "./cmd/trustvian-local", "trustvian-local"},
 			{"processor", "./cmd/trustvian-collector", "trustvian-collector"},
 			{"processor", "./cmd/demo-producer", "demo-producer"},
+			// Task 075's fixture: the only producer that emits agent-oriented
+			// conventions, in either of the two shapes the task has to compare.
+			{"processor", "./cmd/agent-producer", "agent-producer"},
 		}
 		for _, target := range targets {
 			output := filepath.Join(outputDir, target.name)
@@ -128,9 +134,10 @@ func buildRealBinaries(t *testing.T) realBinaries {
 			}
 		}
 		built = realBinaries{
-			local:     filepath.Join(outputDir, "trustvian-local"),
-			collector: filepath.Join(outputDir, "trustvian-collector"),
-			producer:  filepath.Join(outputDir, "demo-producer"),
+			local:         filepath.Join(outputDir, "trustvian-local"),
+			collector:     filepath.Join(outputDir, "trustvian-collector"),
+			producer:      filepath.Join(outputDir, "demo-producer"),
+			agentProducer: filepath.Join(outputDir, "agent-producer"),
 		}
 	})
 

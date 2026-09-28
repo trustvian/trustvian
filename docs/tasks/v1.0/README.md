@@ -25,7 +25,7 @@ Tasks for the `v1.0` milestone.
 | 067–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
 | [073 — OTel Collector Evaluation Ingest](073-otel-collector-evaluation-ingest.md) | Specified and implemented |
 | [074 — Zero-Input Live Behavior WebUI](074-zero-input-live-behavior-webui.md) | Specified and implemented |
-| [075 — AI Semantic Telemetry Normalization](075-ai-semantic-telemetry-normalization.md) | Specified; not implemented |
+| [075 — AI Semantic Telemetry Normalization](075-ai-semantic-telemetry-normalization.md) | Specified and implemented |
 | [076 — Behavioral Trace & Session Evidence Explorer](076-behavioral-evidence-explorer.md) | Specified; not implemented |
 | [077 — Unified OTLP Local Dev Runtime](077-unified-otlp-local-dev-runtime.md) | Specified and implemented |
 | [078 — Behavioral Scenario Suites](078-behavioral-scenario-suites.md) | Specified; not implemented — sequenced after 075, and its k-of-N thresholds await a measurement that can fail |
@@ -105,12 +105,26 @@ one whose results reach a reviewer and whose central claim carries a number:
   it landed after 066 as the chain required.
   [ADR 0041](../../adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md)
   records the reasoning.
-- **075 — AI Semantic Telemetry Normalization.** Zero-code instrumentation
-  reduces an agent's tool call to an HTTP POST against a hostname, so the
-  baseline learns transport shapes rather than behavior. Where a producer
-  emits agent-oriented OpenTelemetry, Trustvian reads it — same pipeline, no
-  AI-specific engine and no framework dependency. Its privacy guarantee is
-  stated where it actually binds: prompts, completions and arguments never
+- **075 — AI Semantic Telemetry Normalization** is **implemented**. Zero-code
+  instrumentation flattens an agent into its transport: five distinct services
+  become `POST` and `GET` against hostnames. Trustvian now reads OpenTelemetry
+  GenAI and OpenInference where a producer emits them, so a behavior reads
+  `tool · export_customer → export.localhost` instead of `http · POST /v1/export`.
+  One table in `internal/semconv`, imported by both adapters, importing no
+  OpenTelemetry package itself — which cost nothing to arrange, because the GenAI
+  keys appeared in Go's `semconv` around v1.39.0 and were **gone by v1.42.0**, the
+  version both adapters pin. Identity attributes are read and all twenty-two
+  content attributes are refused; the privacy claim is a durable-evidence boundary
+  rather than a claim about the transient attribute map, asserted at every
+  enforcing layer and verified to catch a planted leak.
+  [ADR 0045](../../adr/0045-conventions-are-read-frameworks-are-not.md) records
+  why conventions are read and frameworks never named. One piece is deferred as
+  its own task: fidelity is not persisted per behavior, so comparison deltas do
+  not carry it.
+
+  The rest of what the specification asked for holds as written: the same
+  pipeline, no AI-specific engine, no framework dependency, and a privacy
+  guarantee stated where it actually binds — prompts, completions and arguments never
   become behavioral identity, a `DecisionRecord` field, a realtime field, a
   persisted row or a published payload. The adapters' documented
   preserve-every-span-attribute behavior is unchanged, and the specification

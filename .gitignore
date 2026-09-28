@@ -49,3 +49,11 @@ dist/
 # name — including cmd/trustvian/ — which silently ignores new source files
 # there. scripts/gitignore_test.go fails if that regresses.
 /trustvian
+
+# The processor module's fixture binaries, if you build them with `go build`
+# without -o. Anchored for the same reason /trustvian is: `agent-producer`
+# unanchored would also match processor/cmd/agent-producer/, silently ignoring
+# new source files in it.
+/processor/agent-producer
+/processor/demo-producer
+/processor/trustvian-collector

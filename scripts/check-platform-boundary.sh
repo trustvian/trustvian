@@ -214,6 +214,83 @@ else
     problem "platform does not build with GOWORK=off"
 fi
 
+# ---------------------------------------------------------------------
+# 6. The core must not depend on OpenTelemetry.
+#
+# ADR 0003's invariant, and .claude/rules/go.md's confinement table:
+# go.opentelemetry.io/otel* is importable from internal/otel and nowhere else.
+# Task 075 made this worth enforcing mechanically rather than by convention,
+# because it added a package (internal/semconv) whose whole value is that it
+# reads OpenTelemetry conventions *without* importing OpenTelemetry — a property
+# one careless import would silently destroy.
+#
+# Asked of the module graph, like check 3, and for the same reason: a transitive
+# arrival is exactly what a grep for an import line would miss. internal/otel is
+# deliberately absent from the list — it is the one package allowed to import.
+# ---------------------------------------------------------------------
+core_packages="
+./event/...
+./internal/semconv/...
+./internal/features/...
+./internal/fingerprint/...
+./internal/baseline/...
+./internal/anomaly/...
+./internal/trust/...
+./internal/policy/...
+./internal/store/...
+.
+"
+# shellcheck disable=SC2086
+otel_in_core="$(GOWORK=off go list -deps $core_packages 2>/dev/null | grep '^go\.opentelemetry\.io/' || true)"
+if [ -n "$otel_in_core" ]; then
+    problem "the core's build graph contains OpenTelemetry packages:
+$(printf '%s\n' "$otel_in_core" | sed 's/^/      /')"
+else
+    ok "the core's build graph contains no OpenTelemetry package"
+fi
+
+# And the one package that may import it still does — otherwise the check above
+# passes for the wrong reason, because somebody moved the adapter rather than
+# keeping the core clean.
+if GOWORK=off go list -deps ./internal/otel/ 2>/dev/null | grep -q '^go\.opentelemetry\.io/'; then
+    ok "internal/otel is still the adapter that imports OpenTelemetry"
+else
+    problem "internal/otel imports no OpenTelemetry package; the check above may be passing vacuously"
+fi
+
+# ---------------------------------------------------------------------
+# 7. No agent framework is named in non-test source.
+#
+# Task 075's non-goal, stated as "no framework name must appear in any Trustvian
+# type, field or branch". Trustvian reads *conventions* — OpenTelemetry GenAI and
+# OpenInference — and a convention is a published attribute contract. A framework
+# is a product, and naming one in a branch would mean maintaining a special case
+# per vendor forever.
+#
+# Non-test source only. A test may legitimately name a framework to record which
+# producer a fixture imitates, and a comment may explain the distinction — that is
+# documentation, not coupling.
+#
+# `openinference` is deliberately NOT on this list: it is the convention's own
+# name, published as a span attribute (openinference.span.kind), and reading it is
+# the task.
+# ---------------------------------------------------------------------
+frameworks='langchain|langgraph|crewai|autogen|llamaindex|llama_index|semantic-kernel|semantic_kernel|pydantic-ai|pydantic_ai|haystack|autogpt'
+framework_hits="$(
+    find . platform processor -name '*.go' -not -name '*_test.go' 2>/dev/null \
+        | grep -v '/vendor/' \
+        | sort -u \
+        | xargs grep -ilE "$frameworks" 2>/dev/null || true
+)"
+if [ -n "$framework_hits" ]; then
+    problem "an agent framework is named in non-test source:
+$(printf '%s\n' "$framework_hits" | sed 's/^/      /')
+      Trustvian reads conventions, not frameworks. A framework name in a type,
+      field or branch is a per-vendor special case to maintain forever."
+else
+    ok "no agent framework is named in non-test source"
+fi
+
 echo
 if [ "$fail" -ne 0 ]; then
     echo "Core/platform boundary: FAILED" >&2

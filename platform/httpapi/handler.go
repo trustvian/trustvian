@@ -24,6 +24,7 @@ import (
 	"time"
 
 	trustvian "github.com/trustvian/trustvian"
+	"github.com/trustvian/trustvian/event"
 	platform "trustvian-platform"
 )
 
@@ -812,10 +813,23 @@ func (h *Handler) ingestRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fidelity is a closed vocabulary Trustvian owns, unlike the external
+	// conventions it describes — so an unrecognized value is a client bug and is
+	// refused rather than degraded. Absent is different and legitimate: it means
+	// "not stated", reads as transport, and is what a producer built before task
+	// 075 sends.
+	fidelity := event.Fidelity(envelope.Fidelity)
+	if envelope.Fidelity != "" && !fidelity.Valid() {
+		h.writeError(w, apiError{status: http.StatusBadRequest, code: codeInvalidRequest,
+			message: "fidelity must be \"transport\" or \"semantic\""})
+		return
+	}
+
 	result, err := h.controlPlane.IngestDecisionRecord(r.Context(), platform.IngestRequest{
 		RunID:             platform.EvaluationRunID(r.PathValue("run_id")),
 		Sequence:          sequence,
 		BehavioralProfile: platform.BehavioralProfileRef(envelope.BehavioralProfile),
+		Fidelity:          fidelity,
 		Record:            record,
 	})
 	if err != nil {

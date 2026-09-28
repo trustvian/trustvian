@@ -2,6 +2,7 @@ package trustvianprocessor_test
 
 import (
 	"context"
+	"sort"
 	"testing"
 	"time"
 
@@ -50,6 +51,10 @@ func TestSetAttributesFromResult(t *testing.T) {
 		{"trustvian.risk.level", string(result.Trust.Risk)},
 		{"trustvian.decision", string(result.Decision)},
 		{"trustvian.fingerprint.id", result.Fingerprint.ID},
+		// Task 075. This Result's Event never passed through EventFromSpan, so
+		// nothing recorded a fidelity on it and it gets "transport" — the honest
+		// answer rather than a default, since nothing proved a semantic identity.
+		{"trustvian.fidelity", string(event.FidelityTransport)},
 	}
 	for _, c := range checks {
 		v, ok := attrs.Get(c.key)
@@ -68,8 +73,19 @@ func TestSetAttributesFromResult(t *testing.T) {
 			}
 		}
 	}
+	// Exact, not a minimum. This guard exists to stop undocumented attributes
+	// accumulating — trustvian.behavior.id is the one it was written against — so a
+	// new attribute belongs in `checks` above with its reason, which is what makes
+	// adding one deliberate rather than silent.
 	if attrs.Len() != len(checks) {
-		t.Errorf("attrs.Len() = %d, want exactly %d (no trustvian.behavior.id, no extras)", attrs.Len(), len(checks))
+		var got []string
+		for k := range attrs.All() {
+			got = append(got, k)
+		}
+		sort.Strings(got)
+		t.Errorf("attrs.Len() = %d, want exactly %d.\n  got: %v\nA new attribute "+
+			"must be listed in this test's `checks` with its reason; an unlisted "+
+			"one is the drift this assertion prevents.", attrs.Len(), len(checks), got)
 	}
 	if _, ok := attrs.Get("trustvian.behavior.id"); ok {
 		t.Error("trustvian.behavior.id must not be set — see this module's README for why it's deliberately omitted")

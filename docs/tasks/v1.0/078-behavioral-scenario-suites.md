@@ -326,10 +326,16 @@ GET /v1/evaluation-runs/{run_id}/behaviors
 ```
 
 The behavior set of **one** run: for each behavioral identity the run observed,
-its `FingerprintID`, its descriptor, and how many observations carried it. Once
-[075](075-ai-semantic-telemetry-normalization.md) exists, the fidelity the
-descriptor was read at as well, so a consumer can tell a tool name from a
-transport target rather than guessing from its shape.
+its `FingerprintID`, its descriptor, and how many observations carried it.
+
+**And the fidelity the descriptor was read at — but that part waits on task 081,
+not on 075.** 075 has landed, so a descriptor may now name a tool rather than a
+transport; what it did not do is persist fidelity *per behavior*, which needs a
+forward-only schema step in both backends. Until 081 lands, this route can return
+the descriptor but not the fidelity qualifying it — and a consumer would then be
+back to guessing a tool name from its shape, which is the guess the indicator
+exists to remove. So the route's fidelity field ships with 081 or after it, and
+this specification should not imply otherwise.
 
 Bounded and paged exactly as [task 065](065-environment-model.md)'s collections
 are, reused rather than redesigned:
@@ -718,8 +724,13 @@ needs at least one of:
    fidelity.** At that fidelity a behavior is `export_customer` rather than
    `POST → export.localhost`, so the behavioral surface grows to the size of the
    toolset and stops being saturated by a three-step workflow. **This is the
-   decisive one**, and it is why [sequencing](#sequencing-078-follows-075) now
-   places this task after 075.
+   decisive one**, and it is why [sequencing](#sequencing-078-follows-075) placed
+   this task after 075.
+
+   **It is now available.** 075 is implemented, so this condition is satisfied as
+   soon as somebody re-runs the sweep against a workload emitting an
+   agent-oriented convention. That is the cheapest remaining path to the number
+   this section needs, and it does not require condition 1.
 
 Raising the temperature is *not* one of the conditions, and that is a measured
 result rather than an assumption: `T = 1.3` nearly doubled the turn-count spread
@@ -735,7 +746,14 @@ guessed.
 **This task's implementation follows
 [075](075-ai-semantic-telemetry-normalization.md), and 079 follows this one.**
 
-That is a change. The dependency list at the top of this file names 054, 055, 056,
+**075 has since landed, so the edge is satisfied.** What this task still waits on
+is its own measurement re-run at the fidelity 075 now delivers — see
+[the two re-run conditions](#the-section-stays-with-two-re-run-conditions) — rather
+than on another task. The reasoning below is kept because it is why the edge was
+added, and because a reader who finds a zero false-FAIL rate in the results will
+otherwise ask why the k-of-N design survived it.
+
+That was a change when it was made. The dependency list at the top of this file names 054, 055, 056,
 062 and 077, and `docs/ROADMAP.md` previously placed 075 beside this thread rather
 than before it, on the grounds that repetition transports whatever telemetry
 exists and 075 only decides how richly it is read. That reasoning is still true

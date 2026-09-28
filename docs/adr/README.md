@@ -68,6 +68,7 @@ as long as its own decision holds.
 | [0042](0042-dev-composes-the-collector-rather-than-owning-a-receiver.md) | `trustvian dev` composes the Collector rather than owning a receiver | Accepted |
 | [0043](0043-dev-provisions-the-local-hierarchy-from-the-repository.md) | `trustvian dev` provisions the local hierarchy from the repository | Accepted |
 | [0044](0044-instrumentation-ownership-requires-positive-evidence.md) | Instrumentation ownership requires positive evidence | Accepted |
+| [0045](0045-conventions-are-read-frameworks-are-not.md) | Conventions are read, frameworks are not | Accepted |
 
 No ADR is currently Superseded or Deprecated. Several later ADRs build on
 earlier ones — 0006 and 0018 on 0004's narrow port, 0007/0008/0017 on 0002's
@@ -79,7 +80,8 @@ requires, 0041 on the collection semantics 0039 designed and the ephemeral
 realtime model 0032 pinned, 0042 on the module separation 0022 and 0023
 established and the text contract 0035 chose, 0043 on the caller-owned identity
 0025 requires and the learning scope 0024 defined, 0044 on the endpoint 0042
-composes — and each cites the earlier decision as still governing rather than
+composes, 0045 on the adapter boundary 0003 drew and the public surface 0002
+bounded — and each cites the earlier decision as still governing rather than
 replacing it.
 
 ## Writing one

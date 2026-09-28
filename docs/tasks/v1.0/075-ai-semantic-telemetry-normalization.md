@@ -1,6 +1,6 @@
 # 075 — AI Semantic Telemetry Normalization
 
-Status: specified; not implemented
+Status: specified and implemented
 Milestone: `v1.0`
 Depends on: [051](051-behavioral-profile-learning-scope-isolation.md),
 [073](073-otel-collector-evaluation-ingest.md)
@@ -125,12 +125,23 @@ Illustrative rather than final — the implementation must check each against th
 convention as it stands when the work begins, and must tolerate both the
 presence and the absence of every one:
 
+> **Checked, and one line here was stale.** The implementation verified both
+> conventions live: `semantic-conventions-genai` at `e57c543b4889` and
+> `Arize-ai/openinference` at `300bba9191bf`. `gen_ai.system` — which this table
+> originally named as the provider signal — appears **nowhere** in the current
+> convention, not even in a deprecated registry, because that repository has none.
+> The provider attribute is `gen_ai.provider.name`, corrected above.
+> `gen_ai.system` is still read, but only as a legacy alias because producers lag
+> the specification. It must not be confused with `gen_ai.system_instructions`,
+> which is a different attribute carrying the system prompt and is on the content
+> deny-list. The shipped table is in `docs/OPENTELEMETRY.md`.
+
 ```text
 span kind / operation      AGENT · LLM · TOOL · CHAIN · RETRIEVER · GUARDRAIL
 agent identity             agent.name
 tool identity              tool.name, gen_ai.tool.name
 model identity             llm.model_name, gen_ai.request.model
-provider                   gen_ai.system
+provider                   gen_ai.provider.name
 operation                  gen_ai.operation.name
 conversation               gen_ai.conversation.id
 ```
@@ -419,15 +430,25 @@ change it would be.
 
 ## Open questions left to implementation
 
-1. **Which adapter surface carries the mapping** — `internal/otel`, the
-   processor, or both. Both is assumed, sharing one mapping table.
-2. **Where fidelity is carried**, and whether it reaches `/v1`. Assumed yes,
-   as an optional additive field.
-3. **The exact attribute set**, which must be checked against each convention's
-   state when work begins rather than frozen here.
-4. **Whether `Actor.Type` may be upgraded to `ai_agent` from telemetry alone**,
-   or requires the producer to establish identity explicitly. The conservative
-   reading — require it — is assumed.
+1. ~~**Which adapter surface carries the mapping**~~ — **Resolved: both**,
+   sharing one table in `internal/semconv`, re-exported through `event` so the
+   processor's separate module can reach it. The traversal stays duplicated
+   because the span types are unrelated; the table does not.
+2. ~~**Where fidelity is carried**~~ — **Resolved**: the outbound span attribute
+   `trustvian.fidelity`, the ingest envelope beside the record, the realtime
+   observation, and the WebUI. Never `StableFeatures`. It reaches `/v1` on the
+   realtime path; the comparison response's behavior deltas do **not** carry it
+   yet, because that needs per-behavior persistence and a schema step, deferred as
+   its own task — see [ADR 0045](../../adr/0045-conventions-are-read-frameworks-are-not.md)'s
+   consequences.
+3. ~~**The exact attribute set**~~ — **Resolved and recorded** in
+   `internal/semconv`, with the commit each convention was verified against in the
+   source, and published in `docs/OPENTELEMETRY.md`.
+4. ~~**Whether `Actor.Type` may be upgraded to `ai_agent` from telemetry
+   alone**~~ — **Resolved: the conservative reading.** Only `gen_ai.agent.id`,
+   `gen_ai.agent.name` or `agent.name` establishes it. Not the presence of a GenAI
+   operation: `ActorType` is a `StableFeatures` dimension, so a wrong upgrade
+   discards that actor's learned baseline.
 5. **Whether a later task should sanitize `Event.Attributes` at the adapter.**
    Out of scope here, and noted so it is proposed deliberately rather than
    arrived at by drift.

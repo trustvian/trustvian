@@ -248,6 +248,20 @@ toolchain — so that dependency tree never touches the core engine's;
 `go list -deps` on this module's own root confirms `processor/`'s
 existence changes nothing here.
 
+**Since task 075 that claim is checked rather than asserted.**
+`scripts/check-platform-boundary.sh` runs `go list -deps` over `event`,
+`internal/semconv`, `internal/features` through `internal/policy`,
+`internal/store` and the root package, and fails the build if any
+`go.opentelemetry.io/` package appears — paired with a check that
+`internal/otel` *does* still import one, so the first cannot pass
+vacuously because somebody moved the adapter.
+
+That task is also why the check earns its keep. It added
+`internal/semconv`, a package whose entire value is that it reads
+OpenTelemetry *conventions* without importing OpenTelemetry — a property
+one careless import would silently destroy. See
+[ADR 0045](adr/0045-conventions-are-read-frameworks-are-not.md).
+
 ## Dependency direction
 
 Verified directly, not asserted — `go list -deps` on every package:
@@ -261,7 +275,8 @@ internal/store       → internal/baseline, internal/features, internal/fingerpr
 internal/anomaly     → internal/baseline, internal/features, internal/fingerprint
 internal/trust       → internal/anomaly
 internal/policy      → event, internal/features, internal/trust
-internal/otel        → event, internal/features   (+ go.opentelemetry.io/otel*)
+internal/semconv     → (stdlib only)   ← the convention table; no OTel import
+internal/otel        → event, internal/features, internal/semconv   (+ go.opentelemetry.io/otel*)
 trustvian (root)     → event, internal/{anomaly,baseline,features,fingerprint,policy,store,trust}
 cmd/trustvian        → trustvian (root), event, internal/policy, internal/trust
 ```
@@ -271,6 +286,12 @@ Every edge points strictly toward an earlier pipeline stage or a leaf
 `cmd/`, so there is no cycle: `internal/otel` is the only package with
 an external (non-stdlib) import, and the root package + `cmd/trustvian`
 are the only ones that assemble the pipeline stages together.
+
+`internal/semconv` is a leaf like `event`: it holds the agent-oriented
+convention table and imports nothing at all. `event` re-exports it as
+`event.NormalizeSpan` so the Collector processor — a separate module,
+which cannot reach `internal/` — calls the same table rather than
+carrying a second copy of it.
 
 ## Storage boundary
 

@@ -4,6 +4,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	trustvian "github.com/trustvian/trustvian"
+	trustviansemconv "github.com/trustvian/trustvian/internal/semconv"
 )
 
 // Trustvian output attributes: the outbound half of this adapter's
@@ -20,6 +21,16 @@ const (
 	AttrRiskLevel     = "trustvian.risk.level"
 	AttrDecision      = "trustvian.decision"
 	AttrFingerprintID = "trustvian.fingerprint.id"
+
+	// AttrFidelity says where the Event's operation identity came from:
+	// "semantic" when an agent-oriented convention supplied it, "transport" when
+	// only protocol and target were available.
+	//
+	// Outbound only. There is deliberately no inbound override of the same name —
+	// a producer able to *claim* semantic fidelity would defeat the one guarantee
+	// the indicator makes, which is that a semantic name came from telemetry
+	// rather than from Trustvian. See internal/semconv.Fidelity.
+	AttrFidelity = trustviansemconv.AttrFidelity
 )
 
 // AttributesFromResult derives the outbound trustvian.* attributes from
@@ -62,5 +73,21 @@ func AttributesFromResult(result trustvian.Result) []attribute.KeyValue {
 		attribute.String(AttrRiskLevel, string(result.Trust.Risk)),
 		attribute.String(AttrDecision, string(result.Decision)),
 		attribute.String(AttrFingerprintID, result.Fingerprint.ID),
+		attribute.String(AttrFidelity, string(fidelityOf(result))),
 	}
+}
+
+// fidelityOf reads back what the inbound mapping recorded.
+//
+// It comes from result.Event.Attributes rather than from a Result field because
+// fidelity is a property of how the Event was *derived*, and Result already
+// retains its Event for exactly this kind of traceability. Adding a Result field
+// would be a core change task 075 must not make.
+//
+// A Result whose Event never passed through this adapter — one built by hand, or
+// by a caller using the SDK directly — carries no such attribute, and gets
+// "transport". That is the honest answer: nothing proved a semantic identity.
+func fidelityOf(result trustvian.Result) trustviansemconv.Fidelity {
+	raw, _ := result.Event.Attributes[AttrFidelity].(string)
+	return trustviansemconv.Fidelity(raw).OrTransport()
 }
