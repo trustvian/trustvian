@@ -740,3 +740,107 @@ func assertBefore(t *testing.T, order []string, first, second string) {
 		t.Errorf("%s came after %s; order was %v", first, second, order)
 	}
 }
+
+// ---------------------------------------------------------------------
+// --behavioral-profile (task 078)
+// ---------------------------------------------------------------------
+
+// TestBehavioralProfileDefaultsToTheCandidate is the additive half of the
+// contract: omitted, dev behaves exactly as it did before the flag existed, so
+// no existing invocation changes meaning.
+func TestBehavioralProfileDefaultsToTheCandidate(t *testing.T) {
+	repo := newGitFixture(t)
+	environment := environmentWith(t, map[string]string{envServiceName: "support-agent"})
+
+	identity, err := deriveIdentity(devConfig{}, repo, environment, fixedTime)
+	if err != nil {
+		t.Fatalf("deriveIdentity: %v", err)
+	}
+	if identity.Profile != identity.Candidate {
+		t.Errorf("profile = %q, want the candidate %q",
+			identity.Profile, identity.Candidate)
+	}
+}
+
+// TestBehavioralProfileOverridesWithoutTouchingTheCandidate is the property
+// task 078 needs: a runner can isolate repetitions without allocating a
+// candidate per repetition, which would change the identity of the thing under
+// test to obtain an isolation property unrelated to identity.
+func TestBehavioralProfileOverridesWithoutTouchingTheCandidate(t *testing.T) {
+	repo := newGitFixture(t)
+	environment := environmentWith(t, map[string]string{envServiceName: "support-agent"})
+
+	base, err := deriveIdentity(devConfig{}, repo, environment, fixedTime)
+	if err != nil {
+		t.Fatalf("baseline derivation: %v", err)
+	}
+
+	scoped, err := deriveIdentity(
+		devConfig{behavioralProfile: "rep-3"}, repo, environment, fixedTime)
+	if err != nil {
+		t.Fatalf("deriveIdentity: %v", err)
+	}
+
+	if scoped.Profile != "rep-3" {
+		t.Errorf("profile = %q, want %q", scoped.Profile, "rep-3")
+	}
+	if scoped.Candidate != base.Candidate {
+		t.Errorf("the candidate moved with the profile: %q, want %q",
+			scoped.Candidate, base.Candidate)
+	}
+	// Everything else the baseline keys on must be untouched too, or the flag
+	// would be isolating more than the learning scope.
+	if scoped.Project != base.Project || scoped.Agent != base.Agent ||
+		scoped.Environment != base.Environment {
+		t.Errorf("the profile flag moved another identity field:\n got  %+v\n want %+v",
+			scoped, base)
+	}
+}
+
+// TestBehavioralProfileIsValidatedLikeEveryOtherIdentity proves the new flag
+// does not open a hole around validateIdentity — a ref with a path separator
+// would change the shape of a /v1 route rather than name a resource.
+func TestBehavioralProfileIsValidatedLikeEveryOtherIdentity(t *testing.T) {
+	for _, ref := range []string{"rep/3", `rep\3`} {
+		t.Run(ref, func(t *testing.T) {
+			err := validateIdentity(devIdentity{
+				Project: "p", Agent: "a", Candidate: "c",
+				Environment: "local", Run: "r", Profile: ref,
+			})
+			if err == nil {
+				t.Fatalf("profile %q was accepted", ref)
+			}
+			if !strings.Contains(err.Error(), "behavioral profile") {
+				t.Errorf("the error does not name the field: %v", err)
+			}
+		})
+	}
+}
+
+// TestBaselineLockFollowsTheProfile is why slice 2 needed no change to the
+// locking mechanism: dev already keeps one baseline file per profile, so N
+// sequential repetitions under N refs produce N files and no contention.
+//
+// Asserted rather than assumed, because the whole isolation property task 078
+// depends on rests on it.
+func TestBaselineLockFollowsTheProfile(t *testing.T) {
+	stateDir := t.TempDir()
+
+	first, err := acquireBaseline(stateDir, "rep-1")
+	if err != nil {
+		t.Fatalf("acquire rep-1: %v", err)
+	}
+	defer first.release()
+
+	// A different profile is a different file, so this must not contend.
+	second, err := acquireBaseline(stateDir, "rep-2")
+	if err != nil {
+		t.Fatalf("acquire rep-2 while rep-1 is held: %v — the lock is not "+
+			"per profile, so repetitions cannot be isolated", err)
+	}
+	defer second.release()
+
+	if first.path == second.path {
+		t.Fatalf("both profiles resolved to one baseline file %q", first.path)
+	}
+}

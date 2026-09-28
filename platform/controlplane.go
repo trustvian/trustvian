@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	trustvian "github.com/trustvian/trustvian"
@@ -1097,6 +1098,89 @@ func (c *ControlPlane) currentEvidence(
 // ---------------------------------------------------------------------
 // Progress
 // ---------------------------------------------------------------------
+
+// EvaluationRunBehaviorPage is one bounded page of a run's behavior set.
+//
+// Complete travels with the page rather than being inferred from its length: a
+// saturated collector holds a *prefix* of what the run did, and a page of 64
+// entries drawn from a truncated 512 looks exactly like a page drawn from a
+// complete one. Task 054 named a confident count derived from truncated
+// evidence as the worst thing its type could get wrong, and a read route that
+// omitted this would reintroduce it one layer up — quietly, because nothing
+// would look unusual.
+//
+// There is deliberately no fidelity field. Task 075 shipped the indicator but
+// did not persist it per behavior, which needs a forward-only schema step in
+// both backends; that is task 081. Publishing a guess — inferring "this
+// descriptor names a tool because it looks like one" — is precisely the guess
+// the indicator exists to remove, so the field ships with 081 or after it.
+type EvaluationRunBehaviorPage struct {
+	Entries  []BehaviorEntry
+	Complete bool
+}
+
+// EvaluationRunBehaviors returns one bounded page of the behaviors a run
+// observed: for each behavioral identity, its fingerprint, its descriptor, and
+// how many observations carried it.
+//
+// New surface over evidence that already exists, not a new computation. It
+// publishes what a self-compare of the same run already returns, minus the
+// scorecard and the gate — and replacing that self-compare is the point. A
+// consumer reading a run's behavior set by comparing it against itself works
+// only because nothing forbids it: the same-run refusal exists for promotions
+// and not for comparisons, so a guard added for any reason would break it
+// silently, and it costs a full diff, scorecard and gate that nobody reads.
+//
+// Any existing run, not only a completed one. CompareEvaluations requires
+// completion because a comparison of mutable evidence describes a moment that
+// has already passed; this route makes no comparison and draws no conclusion,
+// and tasks 079 and 080 both want a run's behavior set while it is still
+// accumulating. A run with no evidence is an empty page, never an error — the
+// distinction ADR 0029 § 2 insists on one layer down, which is that "nothing
+// happened" and "no such thing" are different answers.
+func (c *ControlPlane) EvaluationRunBehaviors(
+	ctx context.Context, runID EvaluationRunID, after string, limit int,
+) (EvaluationRunBehaviorPage, error) {
+	if err := validateID("evaluation run behavior run id", string(runID)); err != nil {
+		return EvaluationRunBehaviorPage{}, err
+	}
+	if err := validateListPage("evaluation run behavior", after, limit); err != nil {
+		return EvaluationRunBehaviorPage{}, err
+	}
+
+	// Loaded first so a missing run is ErrStoreNotFound — a 404 — rather than
+	// an empty page, which would make "no such run" indistinguishable from
+	// "that run observed nothing".
+	run, err := c.evaluations.EvaluationRun(ctx, runID)
+	if err != nil {
+		return EvaluationRunBehaviorPage{}, err
+	}
+
+	_, snapshot, err := c.comparisonEvidence(ctx, run)
+	if err != nil {
+		return EvaluationRunBehaviorPage{}, err
+	}
+
+	// Entries() is sorted by FingerprintID and defensively copied, which is
+	// what makes `after` a stable cursor: the same page boundary every time,
+	// independent of map iteration order and of arrival order.
+	entries := snapshot.Entries()
+	start := 0
+	if after != "" {
+		// Exclusive, and by byte order rather than by position — a cursor
+		// naming an entry that has since been admitted ahead of others still
+		// resumes at the right place instead of skipping rows.
+		start = sort.Search(len(entries), func(i int) bool {
+			return entries[i].FingerprintID > after
+		})
+	}
+	end := min(start+limit, len(entries))
+
+	return EvaluationRunBehaviorPage{
+		Entries:  entries[start:end],
+		Complete: snapshot.Complete(),
+	}, nil
+}
 
 // EvaluationProgressReport is what an evaluation has observed so far.
 //

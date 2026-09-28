@@ -785,3 +785,56 @@ func newEvaluationRunListResponse(
 		NextAfter:   nextAfter,
 	}
 }
+
+// ---------------------------------------------------------------------
+// Run-scoped behaviors (task 078)
+// ---------------------------------------------------------------------
+
+// runBehaviorDTO is one behavioral identity a run observed.
+//
+// Observations is a decimal string, like every other uint64 counter on this
+// surface: a JSON number is a float64 to most parsers, and a count is not a
+// float. See the ingest and progress DTOs above, which made the same choice.
+//
+// There is deliberately no fidelity field — see
+// platform.EvaluationRunBehaviorPage for why it waits for task 081 rather than
+// being inferred from the descriptor's shape.
+type runBehaviorDTO struct {
+	FingerprintID string                `json:"fingerprint_id"`
+	Behavior      behaviorDescriptorDTO `json:"behavior"`
+	Observations  string                `json:"observations"`
+}
+
+// runBehaviorListResponse is one bounded page of a run's behavior set.
+//
+// Complete is not omitempty: false is the value that matters most, and a field
+// that vanishes when it is false would be absent exactly when a consumer needed
+// to see it.
+type runBehaviorListResponse struct {
+	Version   string           `json:"version"`
+	RunID     string           `json:"run_id"`
+	Complete  bool             `json:"complete"`
+	Behaviors []runBehaviorDTO `json:"behaviors"`
+
+	NextAfter string `json:"next_after,omitempty"`
+}
+
+func newRunBehaviorListResponse(
+	runID string, page platform.EvaluationRunBehaviorPage, nextAfter string,
+) runBehaviorListResponse {
+	behaviors := make([]runBehaviorDTO, 0, len(page.Entries))
+	for _, entry := range page.Entries {
+		behaviors = append(behaviors, runBehaviorDTO{
+			FingerprintID: entry.FingerprintID,
+			Behavior:      newBehaviorDescriptorDTO(entry.Behavior),
+			Observations:  u64(entry.Observations),
+		})
+	}
+	return runBehaviorListResponse{
+		Version:   WireVersion,
+		RunID:     runID,
+		Complete:  page.Complete,
+		Behaviors: behaviors,
+		NextAfter: nextAfter,
+	}
+}
