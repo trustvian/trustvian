@@ -36,6 +36,7 @@ import (
 	"time"
 
 	trustvian "github.com/trustvian/trustvian"
+	"github.com/trustvian/trustvian/event"
 )
 
 const (
@@ -253,10 +254,23 @@ func parseSequence(s string) (uint64, error) {
 // ---------------------------------------------------------------------
 
 type ingestEnvelope struct {
-	Version           string                   `json:"version"`
-	Sequence          string                   `json:"sequence"`
-	BehavioralProfile string                   `json:"behavioral_profile"`
-	Record            trustvian.DecisionRecord `json:"record"`
+	Version           string `json:"version"`
+	Sequence          string `json:"sequence"`
+	BehavioralProfile string `json:"behavioral_profile"`
+
+	// Fidelity rides beside the record for the same reason BehavioralProfile
+	// does, and it is the same kind of fact: metadata about how the record was
+	// *produced*, which the engine has no opinion about. DecisionRecord carries
+	// no attributes at all (see the core module's decision_record.go), so this
+	// is the only place the value can travel — without it the indicator the
+	// adapter computed never leaves the Collector, and every record reaching a
+	// control plane this way reads as transport. Task 075.
+	//
+	// Omitted when empty, matching the server's optional field: absent means
+	// "not stated", which is read as transport.
+	Fidelity string `json:"fidelity,omitempty"`
+
+	Record trustvian.DecisionRecord `json:"record"`
 }
 
 // ingestStateBody and ingestBody are decoded leniently — never with
@@ -355,12 +369,13 @@ func (c *client) runStatus(ctx context.Context, runID string) (string, error) {
 // cap — is definitive by construction.
 func (c *client) ingest(
 	ctx context.Context, runID string, sequence uint64,
-	profile string, record trustvian.DecisionRecord,
+	profile string, fidelity event.Fidelity, record trustvian.DecisionRecord,
 ) (ingestResult, error) {
 	envelope := ingestEnvelope{
 		Version:           wireVersion,
 		Sequence:          formatSequence(sequence),
 		BehavioralProfile: profile,
+		Fidelity:          string(fidelity),
 		Record:            record,
 	}
 	encoded, err := json.Marshal(envelope)

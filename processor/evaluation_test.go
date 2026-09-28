@@ -40,6 +40,11 @@ type ingestAPIServer struct {
 	mu      sync.Mutex
 	records []trustvian.DecisionRecord
 
+	// fidelities[i] is what rode beside records[i] on the envelope. Kept
+	// separately because DecisionRecord has no field for it — which is the
+	// whole reason it travels alongside.
+	fidelities []string
+
 	// digests[i] is the encoded record durably stored at sequence i+1. The
 	// control plane recognizes a retry by content, so a stub without this
 	// could not replay one — and a replay that ignored content would prove
@@ -113,6 +118,7 @@ func newIngestAPIServer(t *testing.T) *ingestAPIServer {
 			var envelope struct {
 				Sequence          string                   `json:"sequence"`
 				BehavioralProfile string                   `json:"behavioral_profile"`
+				Fidelity          string                   `json:"fidelity"`
 				Record            trustvian.DecisionRecord `json:"record"`
 			}
 			if err := json.Unmarshal(body, &envelope); err != nil {
@@ -136,6 +142,7 @@ func newIngestAPIServer(t *testing.T) *ingestAPIServer {
 			// level either.
 			case envelope.Sequence == itoa(cp.next):
 				cp.records = append(cp.records, envelope.Record)
+				cp.fidelities = append(cp.fidelities, envelope.Fidelity)
 				cp.digests = append(cp.digests, digest)
 				cp.next++
 				next := cp.next
@@ -216,6 +223,13 @@ func (cp *ingestAPIServer) recorded() []trustvian.DecisionRecord {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
 	return append([]trustvian.DecisionRecord(nil), cp.records...)
+}
+
+// recordedFidelities is what arrived beside those records, in the same order.
+func (cp *ingestAPIServer) recordedFidelities() []string {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	return append([]string(nil), cp.fidelities...)
 }
 
 // config points a processor at this server, with its own pending state file.

@@ -13,6 +13,7 @@ package trustvianprocessor_test
 // the same boundary ADR 0035 keeps real locally, used here as a test seam.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -514,5 +515,190 @@ func TestEndToEndRestartCompletesAPendingRecord(t *testing.T) {
 	}
 	if progress.DistinctBehaviorCount != 2 {
 		t.Errorf("distinct_behavior_count = %d, want 2", progress.DistinctBehaviorCount)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Fidelity on the realtime observation
+// ---------------------------------------------------------------------
+
+// observationFrame is the part of one realtime observation this file asserts
+// on. Declared locally rather than imported: the whole point of this file is
+// that the platform is reached over /v1 and never as a Go type.
+//
+// It is also the live view's own projection — `platform/webui/assets/live.js`
+// reads `observation.fidelity` off exactly this payload — so a frame that
+// carries the right value is the live view carrying it.
+type observationFrame struct {
+	Sequence string `json:"sequence"`
+	Behavior struct {
+		OperationCategory string `json:"operation_category"`
+		OperationName     string `json:"operation_name"`
+	} `json:"behavior"`
+	Fidelity string `json:"fidelity"`
+}
+
+// subscribeObservations opens GET /v1/realtime for one run and returns the
+// observation frames it receives.
+//
+// The stream is subscribed — and its handshake read — before this returns, so
+// a caller that produces a span afterwards cannot lose it: the bus retains no
+// history, and a subscription registered after the record would simply never
+// see it.
+func subscribeObservations(t *testing.T, apiURL, runID string) <-chan observationFrame {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	request, err := http.NewRequestWithContext(
+		ctx, http.MethodGet, apiURL+"/v1/realtime?run_id="+runID, nil)
+	if err != nil {
+		t.Fatalf("building the realtime request: %v", err)
+	}
+	request.Header.Set("Accept", "text/event-stream")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("GET /v1/realtime: %v", err)
+	}
+	t.Cleanup(func() { response.Body.Close() })
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/realtime = HTTP %d", response.StatusCode)
+	}
+
+	// Buffered well past what these tests produce: an unbuffered channel
+	// would make the reader block on a frame nothing is waiting for, and a
+	// test that ignores a frame must not stall the stream.
+	frames := make(chan observationFrame, 64)
+	ready := make(chan struct{})
+
+	go func() {
+		defer close(frames)
+		scanner := bufio.NewScanner(response.Body)
+		var kind string
+		for scanner.Scan() {
+			line := scanner.Text()
+			switch {
+			case strings.HasPrefix(line, "event: "):
+				kind = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				payload := strings.TrimPrefix(line, "data: ")
+				if kind == "stream_ready" {
+					close(ready)
+					continue
+				}
+				if kind != "observation" {
+					continue
+				}
+				var frame struct {
+					Observation *observationFrame `json:"observation"`
+				}
+				if err := json.Unmarshal([]byte(payload), &frame); err != nil || frame.Observation == nil {
+					continue
+				}
+				frames <- *frame.Observation
+			}
+		}
+	}()
+
+	select {
+	case <-ready:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the realtime stream never sent its handshake")
+	}
+	return frames
+}
+
+// nextObservation reads one frame or fails the test.
+func nextObservation(t *testing.T, frames <-chan observationFrame, what string) observationFrame {
+	t.Helper()
+	select {
+	case frame, open := <-frames:
+		if !open {
+			t.Fatalf("the realtime stream closed before %s", what)
+		}
+		return frame
+	case <-time.After(30 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+		return observationFrame{}
+	}
+}
+
+// TestEndToEndFidelityReachesTheRealtimeObservation is the delivered half of
+// task 075's criterion 9 on the path an operator actually runs.
+//
+// The platform half has always been able to carry fidelity, and
+// platform/httpapi/fidelity_test.go asserts it for a producer that fills the
+// envelope field itself. Nothing filled it on the Collector path: the
+// processor's envelope had no such field, DecisionRecord has no attributes,
+// and the live view was consequently told `transport` for every record —
+// including the ones whose operation name came from a GenAI convention.
+//
+// So this drives the whole chain, with nothing mocked between a real span and
+// the SSE frame a browser reads: a semantic span must arrive as semantic and a
+// transport span as transport, in the same run, on the same stream.
+func TestEndToEndFidelityReachesTheRealtimeObservation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("end-to-end test builds and runs the platform runtime")
+	}
+
+	apiURL := startLocalRuntime(t)
+	const runID, profile = "run-fidelity", "support-fidelity"
+
+	postJSON(t, apiURL, "/v1/projects", map[string]string{"id": "p", "name": "P"})
+	postJSON(t, apiURL, "/v1/agents", map[string]string{
+		"id": "a", "project_id": "p", "name": "A"})
+	postJSON(t, apiURL, "/v1/candidates", map[string]any{
+		"id": "c", "agent_id": "a", "metadata": map[string]string{}})
+	postJSON(t, apiURL, "/v1/environments", map[string]string{
+		"project_id": "p", "ref": "local", "name": "Local"})
+	postJSON(t, apiURL, "/v1/evaluation-runs", map[string]string{
+		"id": runID, "candidate_id": "c",
+		"environment": "local", "behavioral_profile": profile})
+	postJSON(t, apiURL, "/v1/evaluation-runs/"+runID+"/start", nil)
+
+	// Subscribed before the first span, because the bus keeps no history.
+	frames := subscribeObservations(t, apiURL, runID)
+
+	required := true
+	proc, err := newTestProcessorWithConfig(
+		t, consumertest.NewNop(), evaluationConfigFor(t, apiURL, runID, profile, &required))
+	if err != nil {
+		t.Fatalf("CreateTraces() error = %v", err)
+	}
+
+	// A GenAI tool span: the convention supplied the operation identity.
+	if err := proc.ConsumeTraces(context.Background(),
+		toolTraces("support-agent", "export_customer", "export.localhost")); err != nil {
+		t.Fatalf("ConsumeTraces(tool) error = %v", err)
+	}
+	semantic := nextObservation(t, frames, "the tool span's observation")
+	if semantic.Behavior.OperationCategory != "tool" ||
+		semantic.Behavior.OperationName != "export_customer" {
+		t.Fatalf("behavior = %q · %q, want tool · export_customer; the mapping itself did not work",
+			semantic.Behavior.OperationCategory, semantic.Behavior.OperationName)
+	}
+	if semantic.Fidelity != "semantic" {
+		t.Errorf("fidelity = %q, want semantic; the indicator did not survive the Collector path",
+			semantic.Fidelity)
+	}
+
+	// A plain HTTP span in the same run: nothing proved a semantic identity.
+	if err := proc.ConsumeTraces(context.Background(),
+		evaluationTraces("support-agent", "crm.localhost")); err != nil {
+		t.Fatalf("ConsumeTraces(http) error = %v", err)
+	}
+	transport := nextObservation(t, frames, "the HTTP span's observation")
+	if transport.Behavior.OperationCategory != "http" {
+		t.Fatalf("behavior category = %q, want http", transport.Behavior.OperationCategory)
+	}
+	if transport.Fidelity != "transport" {
+		t.Errorf("fidelity = %q, want transport", transport.Fidelity)
+	}
+
+	// Both records are in the run, so the two readings above describe one
+	// evaluation rather than two attempts at the same one.
+	if progress := readProgress(t, apiURL, runID); progress.RecordCount != "2" {
+		t.Errorf("record_count = %q, want 2", progress.RecordCount)
 	}
 }

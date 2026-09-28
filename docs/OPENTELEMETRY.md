@@ -363,6 +363,14 @@ a span carrying conventions the table declined to read is `transport`.
 | WebUI inspector | a sentence, not a badge |
 | `StableFeatures` / the fingerprint | **never** — it would reset baselines on an instrumentation upgrade |
 
+It rides **beside** the record on the ingest envelope rather than inside it, for
+the same reason `behavioral_profile` does: it describes how the record was
+*produced*, and `DecisionRecord` carries no attributes at all, so this is the
+only place the value can travel. Both producers fill it — a client POSTing to
+`/v1` directly, and the Collector processor, which reads it at the ingest call
+site from the same `Result` that produced the span attribute. The two therefore
+cannot disagree about one span.
+
 There is deliberately **no inbound `trustvian.fidelity` override**: a producer able
 to claim semantic fidelity would defeat the guarantee the indicator makes. An
 unrecognized value on the ingest envelope is refused with `400` rather than

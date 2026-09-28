@@ -72,7 +72,7 @@ func TestUnresolvedRecordIsNotLearnedFrom(t *testing.T) {
 	sink, learner := newTestSinkWith(t, server.URL, path)
 	recordA := trustvian.DecisionRecord{EventID: "A", Decision: "allow"}
 
-	_, err := sink.Record(context.Background(), recordA, learningFor("A"))
+	_, err := sink.Record(context.Background(), recordA, "", learningFor("A"))
 	if err == nil {
 		t.Fatal("Record() error = nil, want an unresolved outcome")
 	}
@@ -121,7 +121,7 @@ func TestRestartDiscardsARecordTheServerNeverReceived(t *testing.T) {
 	first, firstLearner := newTestSinkWith(t, server.URL, path)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := first.Record(ctx, recordA, learningFor("A")); err == nil {
+	if _, err := first.Record(ctx, recordA, "", learningFor("A")); err == nil {
 		t.Fatal("Record(A) error = nil, want the cancellation surfaced")
 	}
 	if got := server.durable(); len(got) != 0 {
@@ -156,7 +156,7 @@ func TestRestartDiscardsARecordTheServerNeverReceived(t *testing.T) {
 	}
 
 	// The sequence the discarded record held goes to the next one.
-	if _, err := sink.Record(context.Background(), recordB, learningFor("B")); err != nil {
+	if _, err := sink.Record(context.Background(), recordB, "", learningFor("B")); err != nil {
 		t.Fatalf("Record(B) error = %v", err)
 	}
 	durable := server.durable()
@@ -187,7 +187,7 @@ func TestRestartFinishesARecordTheServerAlreadyHeld(t *testing.T) {
 	recordB := trustvian.DecisionRecord{EventID: "B", Decision: "block"}
 
 	first, firstLearner := newTestSinkWith(t, server.URL, path)
-	if _, err := first.Record(context.Background(), recordA, learningFor("A")); err == nil {
+	if _, err := first.Record(context.Background(), recordA, "", learningFor("A")); err == nil {
 		t.Fatal("Record(A) error = nil, want an unresolved outcome")
 	}
 	if got := len(server.durable()); got != 1 {
@@ -226,7 +226,7 @@ func TestRestartFinishesARecordTheServerAlreadyHeld(t *testing.T) {
 		t.Error("the pending state survived a completed recovery")
 	}
 
-	if _, err := sink.Record(context.Background(), recordB, learningFor("B")); err != nil {
+	if _, err := sink.Record(context.Background(), recordB, "", learningFor("B")); err != nil {
 		t.Fatalf("Record(B) error = %v", err)
 	}
 	if got := sink.nextSequence(); got != 3 {
@@ -384,7 +384,9 @@ func TestPendingStateWriteFailureSendsNothing(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 	_, err := sink.Record(context.Background(),
-		trustvian.DecisionRecord{EventID: "A"}, learningFor("A"))
+		trustvian.DecisionRecord{EventID: "A"}, "",
+		learningFor("A"))
+
 	if err == nil {
 		t.Fatal("Record() error = nil, want the unwritable pending state surfaced")
 	}
@@ -445,7 +447,9 @@ func TestLearningFollowsConfirmationOnly(t *testing.T) {
 			sink, learner := newTestSinkWith(t, server.URL, path)
 
 			_, err := sink.Record(context.Background(),
-				trustvian.DecisionRecord{EventID: "A"}, learningFor("A"))
+				trustvian.DecisionRecord{EventID: "A"}, "",
+				learningFor("A"))
+
 			if tt.wantErr != (err != nil) {
 				t.Fatalf("Record() error = %v, want an error: %t", err, tt.wantErr)
 			}
@@ -463,7 +467,7 @@ func TestRecordRefusesAnEmptyLearningPayload(t *testing.T) {
 	server := newReplayServer(t)
 	sink := newTestSink(t, server.URL)
 
-	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{EventID: "A"}, nil); err == nil {
+	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{EventID: "A"}, "", nil); err == nil {
 		t.Fatal("Record() error = nil, want a record with no learning refused")
 	}
 	if got := server.postCount(); got != 0 {
