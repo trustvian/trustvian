@@ -659,6 +659,23 @@ not** — the central design question this task answers explicitly:
 | `Context.DelegatedFrom` | **No** (new, `v0.7`) |
 | `Context.ApprovalStatus` | **No** (new, `v0.7`) |
 
+**`v1.0` fills those dimensions better without changing which ones they are.**
+[Task 075](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) reads
+agent-oriented telemetry conventions at the adapter boundary, so
+`Operation.Category`/`Name` and `Target.Name` can carry `tool · export_customer →
+export.localhost` where they previously carried `http · POST /v1/export`. The
+table above is unchanged: the same six dimensions are identity, and
+`Context.SessionID` — now populated from `gen_ai.conversation.id` or `session.id`
+rather than only by hand — is still deliberately not one of them.
+
+Two additions worth naming because they are the kind of thing a reader would
+expect to be identity and which deliberately is not:
+
+| Value | Affects `Fingerprint`? |
+|---|---|
+| The **fidelity** a behavior was derived at (`transport` / `semantic`) | **No** (`v1.0`) — it would reset every baseline the day a producer upgraded its instrumentation |
+| Any content attribute a convention defines — prompts, completions, tool arguments, retrieved documents | **No**, and none is read at all — see [ADR 0045](adr/0045-conventions-are-read-frameworks-are-not.md) |
+
 - **`SessionID`** groups events belonging to one bounded
   interaction/session (e.g. one agent conversation). It must never
   affect `Fingerprint`/`baseline.Key` identity: a session identifier is
@@ -779,6 +796,12 @@ not** — the central design question this task answers explicitly:
   input, which would both explode Fingerprint cardinality and retain
   sensitive data in behavioral state indefinitely. See
   [docs/SECURITY.md § AI Agent behavioral security](SECURITY.md).
+
+  Since task 075 that stable string can come from the telemetry itself —
+  `gen_ai.tool.name` or OpenInference's `tool.name` — rather than only from a
+  producer that set `Operation.Name` by hand. The prohibition is unchanged and is
+  now enforced by the mapping: the adapter reads identity attributes and reads no
+  content attribute, so a tool *argument* has no path into `Operation.Name`.
 - **No new detector — the existing signals already work, proven not
   assumed.** `TestAnalyzeAgentToolNoveltyDetectedByExistingEngine`
   shows the pre-existing `categorical_novelty`/`transition_deviation`

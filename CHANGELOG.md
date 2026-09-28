@@ -10,6 +10,97 @@ actually depend on.
 
 ### Added
 
+- **Trustvian understands agent-oriented telemetry** (task 075). Zero-code
+  instrumentation flattens an agent into its transport: a model, a CRM, a
+  knowledge service, an exporter and a mailer all become `POST` and `GET` against
+  hostnames, and the baseline learns transport shapes rather than behavior. Where
+  a producer emits OpenTelemetry GenAI or OpenInference, Trustvian now reads it:
+
+  ```text
+  before   http · POST /v1/export → export.localhost
+  after    tool · export_customer → export.localhost
+  ```
+
+  Same engine, same pipeline, same six behavioral dimensions. No AI-specific
+  branch anywhere, and **no core change**: `event.OperationCategoryTool`,
+  `event.ActorTypeAIAgent` and `event.Context.SessionID` already existed.
+
+  **One table, read by both adapters.** `internal/semconv` takes a span reduced to
+  plain Go values and returns what a convention established. `internal/otel` and
+  the Collector processor both call it — their *traversal* stays duplicated
+  because `sdktrace.ReadOnlySpan` and `ptrace.Span` are unrelated types, but the
+  table does not, because two copies of a convention table would be two
+  conventions and the one a developer got would depend on which adapter their
+  telemetry took. `event.NormalizeSpan` re-exports it so the processor's separate
+  module can reach it.
+
+  **It imports no OpenTelemetry package**, and that cost nothing to arrange: the
+  GenAI attribute keys appeared in Go's `semconv` around v1.39.0, grew to 50 keys
+  by v1.41.0, and were **gone by v1.42.0** — the version both adapters pin. The
+  names had to be string literals wherever the table lived, so the confinement
+  rule holds with no exception. `scripts/check-platform-boundary.sh` now proves the
+  core's graph contains zero OpenTelemetry packages via `go list -deps`, paired
+  with a check that `internal/otel` still imports one so the first cannot pass
+  vacuously.
+
+  **Conventions are read; frameworks are never named.** No framework appears in
+  any type, field or branch, and the boundary script fails the build if one
+  appears in non-test source. Both conventions were verified live rather than from
+  memory, with the commits recorded in the source:
+  `semantic-conventions-genai` at `e57c543b4889` and `Arize-ai/openinference` at
+  `300bba9191bf`. `gen_ai.system` turned out to appear nowhere in the current
+  convention, so it is read only as a legacy alias because producers lag the spec —
+  and deliberately not confused with `gen_ai.system_instructions`, which is the
+  system prompt.
+
+  **Identity is read; content is refused.** A tool *name* is what the agent did; a
+  tool *argument* is what it said. Twenty-two content attributes are enumerated in
+  `internal/semconv/content.go` and read by nothing — the list exists so the
+  refusal is checkable rather than asserted. The privacy guarantee is a **durable
+  and public evidence boundary**, not a claim that the transient
+  `Event.Attributes` map is empty: the adapters' documented
+  preserve-every-attribute behavior is unchanged, and the tests deliberately
+  assert content *is* there while proving it reaches no `StableFeatures`, no
+  fingerprint, no `DecisionRecord`, no realtime field, no persisted row and no
+  `/v1` payload. Each content attribute carries its own distinctive value so a
+  failure names which one leaked, and the sweep is verified to catch a planted leak.
+
+  **No fabrication.** A category that matched with its identity attribute missing
+  does not fire — `tool · POST` would be a semantic category wearing a transport
+  name. An unknown operation name, an unknown span kind, a renamed attribute or an
+  attribute of the wrong type all mean "the convention is absent". OpenInference's
+  `tool.name` is read only on a `TOOL` span, because the same key appears under
+  `llm.tools.<index>` as an advertised tool *definition* — reading it bare would
+  record a model span that merely lists its tools as having used one.
+
+  **`Actor.Type` upgrades only on an explicit agent identity**, never on the mere
+  presence of a GenAI operation: a backend service calling an LLM through an
+  instrumented client emits `gen_ai.operation.name=chat` and is not an agent — and
+  `ActorType` is a `StableFeatures` dimension, so a wrong upgrade would discard
+  that actor's learned baseline.
+
+  **Fidelity is reported, never implied.** A closed two-value vocabulary —
+  `transport` or `semantic` — describing the mapping result rather than the span.
+  Carried on the outbound span attribute `trustvian.fidelity`, on the ingest
+  envelope beside the record, on the realtime observation (always present, so
+  absence never needs interpreting), and in the WebUI inspector as a sentence
+  rather than a badge. Never in `StableFeatures`: folding it in would reset every
+  baseline the day a producer upgraded its instrumentation. There is no inbound
+  override — a producer able to claim semantic fidelity would defeat the
+  guarantee.
+
+  **Graceful degradation is asserted, not hoped for.** A producer emitting no
+  convention sees byte-identical behavior, checked against real SDK spans as whole
+  values and end to end through a real Collector: the same fixture producer emits
+  GenAI spans in one mode and plain HTTP spans in the other, and the second yields
+  exactly one transport-named behavior with the actor left as `service`.
+
+  Reasoning in
+  [ADR 0045](docs/adr/0045-conventions-are-read-frameworks-are-not.md).
+  One piece is deferred as task 081: fidelity is not persisted per behavior, so a
+  comparison delta does not carry it — that needs a forward-only schema step in
+  both backends, and `TestFidelityIsNotPersistedYet` fails the moment it lands.
+
 - **`trustvian dev` — one command runs an agent under Trustvian** (task 077).
   Watching an agent behave used to mean a control plane, a Collector, a
   hand-written processor configuration, four `create` commands and the right OTLP
