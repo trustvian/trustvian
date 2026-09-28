@@ -28,7 +28,7 @@ Tasks for the `v1.0` milestone.
 | [075 — AI Semantic Telemetry Normalization](075-ai-semantic-telemetry-normalization.md) | Specified; not implemented |
 | [076 — Behavioral Trace & Session Evidence Explorer](076-behavioral-evidence-explorer.md) | Specified; not implemented |
 | [077 — Unified OTLP Local Dev Runtime](077-unified-otlp-local-dev-runtime.md) | Specified and implemented |
-| [078 — Behavioral Scenario Suites](078-behavioral-scenario-suites.md) | Specified; not implemented |
+| [078 — Behavioral Scenario Suites](078-behavioral-scenario-suites.md) | Specified; not implemented — sequenced after 075, and its k-of-N thresholds await a measurement that can fail |
 | [079 — CI Integration: A GitHub Action](079-ci-integration-github-action.md) | Specified; not implemented |
 | [080 — Metadata-Only Detection Evaluation](080-metadata-only-detection-evaluation.md) | Specified; not implemented |
 
@@ -135,7 +135,8 @@ one whose results reach a reviewer and whose central claim carries a number:
   ([ADR 0044](../../adr/0044-instrumentation-ownership-requires-positive-evidence.md)),
   which is why `python-zero-code` is named, reserved and refused rather than
   half-attached. **Independent of 075** — it transports whatever telemetry
-  exists, and 075 decides how richly that telemetry is read.
+  exists, and 075 decides how richly that telemetry is read. (078 is *not*
+  independent of 075; see below.)
 - **078 — Behavioral Scenario Suites.** Diff, scorecard and gate all exist;
   what is missing is repeatability. A scenario runs the same workload again,
   compares the behavioral surface and applies deterministic limits — reusing
@@ -143,9 +144,23 @@ one whose results reach a reviewer and whose central claim carries a number:
   runner scripts no ordering of its own and overrides none of the engine's
   learned sequence evidence: a reorder that drives the engine to a block
   decision or critical risk fails the gate, exactly as it should. Each scenario
-  runs N times per side, because an LLM-driven agent may call a tool in one
-  execution and not the next, and a gate that FAILs on unchanged code teaches a
-  team to re-run CI. `N = 1` reproduces the single-pair semantics exactly.
+  runs N times per side, and `N = 1` reproduces the single-pair semantics exactly.
+
+  **Its own measurement rule fired, and the specification changed.** The task
+  required its k-of-N thresholds to be measured before being written down, and
+  said the measurement was allowed to refute it. Forty model-driven runs of an
+  unchanged agent — two temperatures, two learning configurations — produced a
+  **zero** false-FAIL rate. The reason is the useful part: at HTTP fidelity a
+  behavior is a method and a destination, that workload's behavioral surface was
+  saturated, and behavioral identity is not sequence-dependent — so the property
+  the workload was chosen for, varying action order, is exactly the one the diff
+  ignores. The task is **not** deleted and **not** implemented on an expectation:
+  it now ships no default `k`, recommends set semantics (`k = 1, j = 0`) until a
+  workload's variance is measured, is sequenced after **075** because tool-name
+  fidelity is where the phenomenon can appear, and carries two re-run conditions.
+  Two pieces of it are exempt and can land first — a run-scoped behavior route
+  that 079 and 080 both need, and an additive `--behavioral-profile` flag on
+  `trustvian dev`.
 - **079 — CI Integration: A GitHub Action.** A gate nobody reads is a gate
   nobody acts on. 078 makes the verdict scriptable; 079 makes it legible where
   the change is reviewed — a pull request comment rendered from 078's result
