@@ -90,6 +90,8 @@ Identity, each derived when not given:
   --candidate <id>       default: git:<short sha>, with +dirty when the
                          worktree has uncommitted changes
   --environment <ref>    default: local
+  --behavioral-profile <ref>
+                         learning scope for this run; default: the candidate
   --run-id <id>          default: generated per invocation
 
 Instrumentation ownership:
@@ -159,6 +161,8 @@ func runDev(s streams, args []string) int {
 	runID := fs.String("run-id", "", "evaluation run identifier (default: generated per run)")
 	instrumentation := fs.String("instrumentation", string(modeAuto),
 		"who owns OpenTelemetry setup: existing, none or auto")
+	behavioralProfile := fs.String("behavioral-profile", "",
+		"learning scope for this run (default: the candidate)")
 	if err := fs.Parse(before); err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n\n%s\n", err, devUsage)
 		return exitDevUsage
@@ -191,6 +195,8 @@ func runDev(s streams, args []string) int {
 		environment:     *environment,
 		runID:           *runID,
 		instrumentation: *instrumentation,
+
+		behavioralProfile: *behavioralProfile,
 	})
 }
 
@@ -211,6 +217,13 @@ type devConfig struct {
 	candidate   string
 	environment string
 	runID       string
+
+	// behavioralProfile overrides the learning scope, which otherwise is the
+	// candidate. Task 078: a scenario runner needs a profile per repetition,
+	// and allocating a candidate per repetition to get one would change the
+	// identity of the thing under test to obtain an isolation property that has
+	// nothing to do with identity.
+	behavioralProfile string
 
 	// instrumentation is the ownership mode, as given. Parsed in composeAndRun so
 	// an unknown value is a usage error before anything starts.
