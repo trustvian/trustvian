@@ -259,8 +259,22 @@ until then.
 |---|---|---|
 | 075 | **Implemented** | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) |
 | 077 | **Implemented** | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) |
-| 078 | Specified | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
+| 078 | Specified; awaits its own re-run at 075's fidelity | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
 | 079 | Specified | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
+
+**The build order inside this preview is 075 → 078 → 079**, not the four in
+parallel: 078's thresholds can only be measured at 075's tool-name fidelity — see
+[the execution order](#execution-order-rather-than-numeric-order).
+
+**075 has since landed**, so that edge is satisfied and the preview's critical path
+is back to its original length. What 078 still waits on is its own measurement
+re-run, now that the fidelity it needs exists — not on another task.
+
+Two pieces of 078 are exempt and can land whenever there is capacity, because
+neither depends on fidelity: a run-scoped behavior route
+(`GET /v1/evaluation-runs/{run_id}/behaviors`), which 079 and 080 both need before
+078's aggregation exists, and an additive `--behavioral-profile` flag on
+`trustvian dev`.
 
 074 is already implemented and is a prerequisite rather than contents: without
 it, opening the browser asks for an identifier the developer does not have.
@@ -940,12 +954,14 @@ Conceptually:
 ```text
 066  promotion workflow
        ↓
-074  zero-input live WebUI ──┬──▶ 077  unified local dev runtime
-                             │             ↓
-                             │    078  behavioral scenario suites
-                             │             ↓
-075  AI semantic telemetry ──┤    079  CI integration (GitHub Action)
-       │                     │
+074  zero-input live WebUI ──▶ 077  unified local dev runtime  [implemented]
+                                          │
+075  AI semantic telemetry ───────────────┤
+       │                                  ↓
+       │                         078  behavioral scenario suites
+       │                                  ↓
+       │                         079  CI integration (GitHub Action)
+       │
        └──────────▶ 080  detection evaluation
                              │        (measurement; gates nothing)
      ═══════════ v0.10.0 developer preview ships here ═══════════
@@ -963,6 +979,15 @@ Conceptually:
 068  ClickHouse — only if measured volume justifies it
 ```
 
+**075 now precedes 078, and that edge was added by a measurement.** It used to
+run beside this thread, on the reasoning that repetition transports whatever
+telemetry exists while 075 decides how richly it is read. That is still true for
+*running* a scenario and false for **deciding 078's thresholds** — see
+[078 § Sequencing](tasks/v1.0/078-behavioral-scenario-suites.md#sequencing-078-follows-075).
+Two pieces of 078 are not blocked by it and can proceed: a run-scoped behavior
+route that 079 and 080 both need, and an additive `--behavioral-profile` flag on
+`trustvian dev`.
+
 Six things this diagram says, and one it does not:
 
 - **074 and 075 were independent of each other** and both are implemented.
@@ -972,9 +997,25 @@ Six things this diagram says, and one it does not:
   read. `trustvian dev` was useful at HTTP, DB and RPC fidelity before 075 landed
   and reports tool-level behavior now that it has. They were parallel
   capabilities, which is how they were built.
+- **075 does block 078**, which is a change and the one edge here that was added
+  by evidence rather than by design. 078's central mechanism is a k-of-N
+  threshold over how many runs showed a behavior, and its own specification
+  required that threshold be measured before being written down. The measurement
+  was performed against a real local model — forty runs, two temperatures, two
+  learning configurations — and returned a **zero** false-FAIL rate, because at
+  HTTP fidelity a behavior is a method and a destination and the workload's
+  behavioral surface was saturated. At 075's tool-name fidelity the surface is the
+  size of the toolset instead, which is where the phenomenon can appear at all.
+
+  **That edge is now satisfied: 075 is implemented.** What remains before 078 can
+  be built is not 075 but 078's own re-run — a workload whose toolset is wider
+  than one run visits, measured at the tool-name fidelity 075 now delivers. The
+  two [re-run conditions](tasks/v1.0/078-behavioral-scenario-suites.md#the-section-stays-with-two-re-run-conditions)
+  are stated in the task, and one of them has just been removed as a blocker.
 - **077, 078 and 079 are a second thread**, needing 074's discovery but not the
-  explorer. 078 needs 077's repeatable invocation, and 079 needs 078's
-  machine-readable result and exit codes — it renders them and computes nothing.
+  explorer. 078 needs 077's repeatable invocation *and* 075's fidelity, and 079
+  needs 078's machine-readable result and exit codes — it renders them and
+  computes nothing.
 - **The `v0.10.0` line is a release boundary, not a dependency edge.** It marks
   where the [developer preview](#v0100--developer-preview) ships. Nothing above
   it depends on anything below it, which is the property that makes the preview

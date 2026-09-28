@@ -6,6 +6,9 @@ Depends on: [054](054-behavioral-diff.md),
 [055](055-evaluation-scorecards.md),
 [056](056-deterministic-hard-gates.md),
 [062](062-integrated-local-developer-workflow.md),
+[075](075-ai-semantic-telemetry-normalization.md) — added after the
+[measurement](#measurement-before-implementation); see
+[Sequencing](#sequencing-078-follows-075),
 [077](077-unified-otlp-local-dev-runtime.md)
 
 The engine's sequence-aware signals — transition and n-gram deviation and
@@ -62,19 +65,39 @@ property, for the same demo workload this task would use:
 > The demo is model-driven, so that order is the model's choice and differs
 > between runs.
 
-Compare one such run with one other and `max_added_behaviors: 0` FAILs on
-unchanged code, because task 054 classifies a behavior as `Added` when
-`reference == 0 && candidate > 0` and a single reference execution is a single
-sample of a distribution. A gate that fails a third of the time on code nobody
-touched is worse than no gate: a team meets it twice and learns to re-run CI,
-which costs them the one signal the gate exists to carry — the same failure
+That quotation is about **order**, and the
+[measurement](#measurement-before-implementation) later showed why that matters:
+order is precisely what behavioral identity ignores, so this workload's variation
+never reached the diff. The claim that one run is not evidence stands; the
+evidence offered for it here did not support it, and is corrected rather than
+quietly kept.
+
+Where that variation reaches a *different set of services*, comparing one such
+run with one other makes `max_added_behaviors: 0` FAIL on unchanged code, because
+task 054 classifies a behavior as `Added` when `reference == 0 && candidate > 0`
+and a single reference execution is a single sample of a distribution. A gate that
+fails a third of the time on code nobody touched is worse than no gate: a team
+meets it twice and learns to re-run CI, which costs them the one signal the gate
+exists to carry — the same failure
 [ADR 0033 § 9](../../adr/0033-developer-cli-is-a-thin-http-adapter.md) reasoned
 through for uninterpretable verdicts.
 
-So repetition is not a convenience knob bolted onto this task. It is the
-difference between a behavioral gate and a flaky one, and it is why the gate
-limits below are expressed over *counts of runs* rather than over presence in
-one.
+**How often that actually happens is now partly measured, and the answer was
+"not at all" for the first workload tried.** The conditional in the paragraph
+above is doing real work: a model can vary its turn count, its arguments and its
+action order without ever varying which services it reaches, and behavioral
+identity is deliberately insensitive to all four. See
+[Measurement before implementation](#measurement-before-implementation) for the
+numbers and for what a workload must look like before this argument can be tested
+at all.
+
+So repetition is not a convenience knob bolted onto this task — but what it buys
+is broader than the original claim. It is the difference between a behavioral gate
+and a flaky one *where flakiness exists*, and where it does not, `N` runs are what
+let a scenario **demonstrate** that: "every behavior, 10 of 10, isolated
+profiles" is a statement no single comparison can make. The gate limits below are
+expressed over counts of runs to serve both, which is why they survive a zero
+false-FAIL rate.
 
 ## Scope
 
@@ -88,6 +111,9 @@ one.
   candidate runs each behavioral identity appeared — and a gate over it.
 - A machine-readable result, and an exit code that follows the contract that
   already exists.
+- **A run-scoped behavior route**, which is this task's
+  [first implementation slice](#first-slice-a-run-scoped-behavior-route) and the
+  only part of it that does not wait for 075.
 
 ## Non-goals
 
@@ -172,6 +198,21 @@ evaluation that never happened cannot look perfect.
 
 `runs: 1` is legal and is the degenerate case, not a deprecated one — see
 [N = 1](#n--1-is-todays-behavior-exactly).
+
+**What repetition is for, after the measurement.** This task originally justified
+`runs: N` as the thing that *absorbs* presence variance. The
+[measurement](#measurement-before-implementation) found no variance to absorb in
+the workload it tested — and in doing so demonstrated the other half of what
+repetition is for, which is the half that survives a zero rate:
+
+> every behavior, 10/10, in all four configurations
+
+A single run cannot say that. `N` runs with per-repetition isolation is what makes
+the **absence** of variance demonstrable, and "this workload's behavior set did
+not move across ten isolated executions" is a stronger statement than any single
+comparison can make. That is a claim about evidence quality rather than a
+threshold, it holds whether or not `k` is ever justified, and it is why `runs: N`
+stays regardless of how the k-of-N question resolves.
 
 The upper bound is stated rather than derived. One scenario execution at
 `runs: N` creates `2N` evaluation runs and `2N` learning scopes, executes the
@@ -274,6 +315,65 @@ for `ErrIncompleteSnapshot`. A confident `RepeatedAddedBehaviorCount` derived
 from evidence that stopped early is the failure mode task 054 named as the
 worst thing its type could get wrong, and it is no better one layer up.
 
+### First slice: a run-scoped behavior route
+
+The aggregation above is the whole task, and it waits for
+[075](#sequencing-078-follows-075). One piece of it does not, and it should ship
+first because two other tasks already need it.
+
+```text
+GET /v1/evaluation-runs/{run_id}/behaviors
+```
+
+The behavior set of **one** run: for each behavioral identity the run observed,
+its `FingerprintID`, its descriptor, and how many observations carried it.
+
+**And the fidelity the descriptor was read at — but that part waits on task 081,
+not on 075.** 075 has landed, so a descriptor may now name a tool rather than a
+transport; what it did not do is persist fidelity *per behavior*, which needs a
+forward-only schema step in both backends. Until 081 lands, this route can return
+the descriptor but not the fidelity qualifying it — and a consumer would then be
+back to guessing a tool name from its shape, which is the guess the indicator
+exists to remove. So the route's fidelity field ships with 081 or after it, and
+this specification should not imply otherwise.
+
+Bounded and paged exactly as [task 065](065-environment-model.md)'s collections
+are, reused rather than redesigned:
+
+```text
+order      id byte-ascending
+cursor     `after`, exclusive
+limit      1–64, default 64
+404        the run does not exist
+200        a run with no evidence — an empty page, not an error
+```
+
+**Why it is worth its own slice.** There is no per-run behavior snapshot on `/v1`
+today. `GET /v1/evaluation-runs/{run_id}/progress` returns counts, and
+`POST /v1/evaluations/compare` is the only route that returns behaviors at all.
+So the companion demo reads a run's behavior set by **comparing the run against
+itself** — which `CompareEvaluations` permits only because the same-run refusal
+exists for promotions and not for comparisons. Three things make that worth
+replacing rather than blessing:
+
+- it works because nothing forbids it, not because anything promises it. A
+  same-run guard added for any reason would break it silently, and a consumer
+  less careful than that demo would report confidently wrong counts;
+- it costs `N` extra comparisons per side, each computing a full diff, scorecard
+  and gate that nobody reads;
+- **[079](079-ci-integration-github-action.md) and
+  [080](080-metadata-only-detection-evaluation.md) both need per-run behavior
+  before the full aggregation ships.** 079 renders per-run presence into a pull
+  request comment; 080 needs a run's behavior set to score detections against a
+  labelled benchmark. Neither should wait for k-of-N to be justified.
+
+It publishes what a self-compare already returns, minus the scorecard and gate —
+so it is new surface over existing evidence rather than a new computation, and
+[Compatibility](#compatibility) covers it as an additive `/v1` route.
+
+The demo's `make stability` switches to this route when it exists, and retires the
+self-compare it documents as a workaround.
+
 ### New named gates over that evidence
 
 New gates, not a reinterpretation of the existing ones. ADR 0029 is explicit
@@ -300,6 +400,32 @@ candidate_runs_present >= k    and    reference_runs_present <= j
 appearing equally often on both sides would satisfy both halves and be reported
 as added, which is not what the word means.
 
+#### No default `k` ships, and the guidance is set semantics
+
+`k` and `j` stay **required and explicit**, as every other limit here is. The
+[measurement](#measurement-before-implementation) produced no basis for a default
+and this task's own rule — a guessed threshold that ships becomes the
+contract — applies to its author as much as to anyone else.
+
+The documented guidance is therefore:
+
+```text
+k: 1   j: 0      unless presence variance has been measured for that workload
+```
+
+At `k = 1, j = 0` the predicate is plain set semantics — "in at least one
+candidate run and no reference run" — which is [exactly task 054's
+rule](#n--1-is-todays-behavior-exactly) and behaves identically at every `N`.
+A scenario that has not measured its workload's variance therefore gets the
+semantics it already understands, with `N` buying evidence quality rather than a
+threshold, and the presence counts reported beside the verdict so the developer
+can *see* whether variance exists before choosing to tolerate any.
+
+Raising `k` above 1 is a deliberate statement — "this workload is known to vary,
+and I have measured by how much". The specification does not make it for them, and
+the result document carries `k` and `j` precisely so a reader can tell which
+choice was made.
+
 Six checks, evaluated in this stable order, all evaluated on every call with no
 short-circuit — the composition rule task 056 established and this gate
 inherits:
@@ -310,15 +436,21 @@ inherits:
 | 2 | Candidate repetitions completed | `== N` |
 | 3 | Repetitions failing minimum evidence | `== 0` |
 | 4 | Repeatedly added behaviors | `<= max_repeated_added_behaviors` |
-| 5 | Worst candidate block count across repetitions | `<= max_block_decisions_per_run` |
-| 6 | Worst candidate critical-risk count across repetitions | `<= max_critical_risk_observations_per_run` |
+| 5 | Worst candidate block count across repetitions | `<= max_block_decisions_per_run` — [advisory at `N > 1`](#checks-5-and-6-are-advisory-against-a-fresh-scope) |
+| 6 | Worst candidate critical-risk count across repetitions | `<= max_critical_risk_observations_per_run` — [advisory at `N > 1`](#checks-5-and-6-are-advisory-against-a-fresh-scope) |
 
 Checks 1–3 are evidence-sufficiency gates and are not configurable away, for
 the reason [ADR 0029 §
 2](../../adr/0029-hard-gates-use-explicit-integer-evidence.md)
 gives: a scenario that ran nothing satisfies every maximum.
 
-Checks 5 and 6 take the **maximum across repetitions**, not a sum and not a
+Checks 5 and 6 are marked **advisory** at `N > 1`, because against
+per-repetition learning scopes they
+[report `0` by construction](#checks-5-and-6-are-advisory-against-a-fresh-scope).
+They are still evaluated and still fail the verdict when they fail; the marker
+says the question could not be answered, so a pass is not read as an answer.
+
+They take the **maximum across repetitions**, not a sum and not a
 mean. The limit therefore keeps exactly the per-comparison meaning task 056
 gave it — hence the `_per_run` suffix, which says so in the name. A sum would
 silently make a limit of `2` mean something different at `runs: 5` than at
@@ -398,44 +530,257 @@ Scope selection also stays **configuration, never telemetry**, as ADR 0024
 requires. The runner chooses each repetition's profile; the workload cannot
 influence it, and no scope is derived from a span, a session or an attribute.
 
-One consequence stated rather than hidden: a freshly allocated scope has learned
-nothing, so the engine reports maximal novelty in every repetition. That is
-*uniform* across repetitions by construction, so it adds no false variance to
-the presence counts — but it does mean checks 5 and 6 at a strict limit may fail
-for reasons unrelated to the candidate. This is not new to this task; a single
-evaluation run against a fresh profile already has the property. Whether a
-scenario should warm one shared profile *before* the measured repetitions, and
-isolate only those, is the question the measurement below has to answer, and it
-is recorded as an open question rather than assumed either way.
+#### `trustvian dev` needs a profile flag this task can use
+
+[Task 077](077-unified-otlp-local-dev-runtime.md) shipped `dev` deriving the
+learning profile **from the candidate**: the candidate id *is* the profile, which
+is correct for 077's own purpose — two runs of one commit sharing a baseline is
+what makes "this behavior is new" mean anything on the second run.
+
+It is the wrong coupling for this task. A runner needing a profile per repetition
+would have to allocate a **candidate** per repetition to get one, which changes
+the identity of the thing under test to obtain an isolation property that has
+nothing to do with identity. The companion demo does exactly that today, and says
+so as a workaround rather than a design.
+
+So this task requires an additive flag on `dev`:
+
+```text
+--behavioral-profile <ref>    the learning scope for this run
+                              default: the candidate, exactly as today
+```
+
+Three properties, none of them new mechanism:
+
+- **Additive.** Omitted, `dev` behaves precisely as it does now. No existing
+  invocation changes meaning, and 077's own documented default is untouched.
+- **Opaque to the core.** A profile ref is a string the engine never parses
+  ([ADR 0024](../../adr/0024-learning-scope-is-a-baseline-key-dimension.md)
+  § *Scope is opaque*), so `dev` passes it through to the Collector
+  configuration and nothing interprets it.
+- **The mapping stays in the runner.** Nothing requires the ref to encode a
+  repetition index, and this specification must not make it do so — as
+  [stated above](#learning-isolation-across-repetitions). The flag accepts a ref;
+  which ref each repetition gets is the runner's business.
+
+`dev` already keeps one baseline file per profile and refuses two concurrent
+writers of one, so a profile per repetition needs no change to that mechanism
+either — `N` sequential repetitions produce `N` files and no contention.
+
+### Checks 5 and 6 are advisory against a fresh scope
+
+A freshly allocated scope has learned nothing, so the engine reports maximal
+novelty in every repetition. That much was predicted here before the
+[measurement](#measurement-before-implementation); what the measurement added is
+the *direction* of the consequence, and it is the opposite of what this section
+first worried about.
+
+**Measured.** Anomaly *confidence* — the second number the engine reports beside
+the score, precisely so
+[cold start is two numbers rather than one](../../ARCHITECTURE.md#cold-start-two-numbers-not-one)
+— sits at its floor in every isolated repetition and never moves:
+
+```text
+isolated   0.1786 in every one of ten repetitions (one excursion to 0.1957)
+shared     0.1786 → 0.5714 → 0.7214 → 0.7857 → 0.8500 → 0.9143 → 0.9795
+                 → 1.0000 → 1.0000 → 1.0000        saturated by repetition 8
+```
+
+At confidence near zero a maximally novel event contributes almost nothing to the
+trust score, because `trust.Compute` combines the two as
+`effectiveAnomaly = Anomaly.Score * Anomaly.Confidence`. So trust is barely
+penalized, no `BLOCK` is decided, and no critical-risk observation is recorded:
+**checks 5 and 6 read `0` in all ninety comparisons of every isolated
+configuration.** They did not fail spuriously, which is what this section feared.
+They could not fire at all.
+
+**The conflict, stated.** Per-repetition isolation is required so presence counts
+measure the workload rather than learning order. Checks 5 and 6 need a warmed
+baseline to mean anything. One set of repetitions cannot provide both, and the
+shared column above is what warming costs: the checks become live only after it,
+and the warming is a function of repetition index — which is the contamination
+isolation exists to prevent.
+
+**Decision: keep isolation, and mark those two checks advisory.**
+
+```text
+at N > 1, with per-repetition profiles:
+    check 5   worst candidate block count             advisory: fresh scope
+    check 6   worst candidate critical-risk count     advisory: fresh scope
+```
+
+Both are still evaluated, still reported with their actual values, and still
+contribute to the verdict when they fail — nothing is removed and no limit is
+ignored. What changes is that the runner and the
+[result document](#result-document) **must label them** at `N > 1`, so a scenario
+setting them to `0` and seeing them pass is not read as evidence that the
+candidate blocked nothing. It is evidence that the question was not asked.
+
+The two rejected alternatives, and why:
+
+| Alternative | Rejected because |
+|---|---|
+| Warm one shared profile before the measured repetitions, isolate only those | Two execution phases per side, warming runs producing evidence nobody counts, and "how much warming is enough" becomes exactly the guessed constant this task refuses everywhere else |
+| Drop checks 5 and 6 from scenario gates entirely | Loses a real signal for a deployment that *does* warm a profile, and silently diverges from what `eval compare` reports for the same evidence |
+
+This resolves what was open question 6, which asked the measurement to decide it.
 
 ## Measurement before implementation
 
-None of the numbers above is known. `k`, `j` and a default `N` are guesses until
-somebody measures a real agent, and a guessed threshold that ships becomes the
-contract.
+`k`, `j` and a default `N` are guesses until somebody measures a real agent, and
+a guessed threshold that ships becomes the contract. So this section required a
+measurement before implementation, and said plainly that the measurement was
+allowed to refute it:
 
-So, **before 078 is implemented**:
+> **If the false-FAIL rate at `N = 1` is already zero against a real agent, the
+> k-of-N machinery is not justified and this section should be reconsidered rather
+> than implemented** — a specification whose own measurement cannot contradict it
+> is not measuring anything.
 
-1. Take one real, instrumented, **nondeterministic** agent. The task 074 demo
-   workload qualifies and is already in the repository: its action order is the
-   model's choice and differs between runs.
-2. Run it against **itself, unchanged**, 10 or more times, using the same
-   execution as both reference and candidate.
-3. Record the **false-FAIL rate** — the share of comparisons that FAIL although
-   nothing changed — under the current task 056 gates at `N = 1`, and under the
-   gates above at `N >= 5`.
-4. Record whether checks 5 and 6 are usable at all against a freshly allocated
-   learning scope, since that decides the warming question above.
+**It has been performed, and the rate is zero.** This section is therefore
+reconsidered below rather than left standing on an expectation.
 
-That result sets the documented guidance for `N` and `k`, and is recorded in
-this task and in its ADR, with the measurement method reproducible by a reader.
+### What was measured
 
-The measurement is allowed to refute this amendment. **If the false-FAIL rate at
-`N = 1` is already zero against a real agent, the k-of-N machinery is not
-justified and this section should be reconsidered rather than implemented** — a
-specification whose own measurement cannot contradict it is not measuring
-anything. The repository's own evidence points the other way, but "points the
-other way" is not a number, which is the whole reason this section exists.
+Performed 2026-09-27 against Trustvian `5362f51` — the commit that added
+`trustvian dev`, which is what made repeated invocation cheap enough to sweep.
+Recorded in the companion demo repository, at commit `e5dcaf8`:
+
+- [`docs/results/2026-09-27-stability.md`](https://github.com/trustvian/trustvian-python-agent-demo/blob/main/docs/results/2026-09-27-stability.md)
+  — conditions, per-run tables, raw counts
+- [`docs/upstream/078-measurement.md`](https://github.com/trustvian/trustvian-python-agent-demo/blob/main/docs/upstream/078-measurement.md)
+  — the contribution addressed to this section
+
+Forty model-driven runs of the **unchanged** reference side of that repository's
+Ollama `gemma3:4b` agent: `N = 10`, in two learning configurations (one shared
+profile, and one profile per repetition), at two temperatures (0.7, and 1.3 as a
+stress case above every shipping default). Gate limits were task 056's three at
+zero.
+
+```text
+                        adjacent pairs   all ordered pairs   presence
+shared,   T=0.7            0 / 9 FAIL         0 / 90 FAIL    every behavior 10/10
+isolated, T=0.7            0 / 9 FAIL         0 / 90 FAIL    every behavior 10/10
+shared,   T=1.3            0 / 9 FAIL         0 / 90 FAIL    every behavior 10/10
+isolated, T=1.3            0 / 9 FAIL         0 / 90 FAIL    every behavior 10/10
+```
+
+**Zero false FAILs in every configuration**, and every behavior present in all
+ten runs of every configuration.
+
+### The agent was nondeterministic; the behavior set was not
+
+This is the finding, and it is more useful than the rate.
+
+Turn counts varied, and varied more at the higher temperature: 21 records in
+most runs, with excursions to 22 and 23 at `T = 0.7`, and **21, 23, 25, 23, 21,
+21, 25** across the isolated repetitions at `T = 1.3` — four of ten runs taking
+two to four extra turns. The agent was measurably less deterministic and the gate
+did not notice, because **the behavior set was four distinct identities in every
+one of the forty runs.**
+
+Two properties of this task's own design explain that, and both are working
+exactly as specified:
+
+- **At HTTP fidelity the workload's behavioral surface is saturated.** A behavior
+  is a method and a destination; that agent's reference toolset has three tools on
+  three hosts, the model call is the fourth, and its prompt requires all three
+  actions for each of three tickets per run. For a behavior to be absent from a
+  run the model would have to skip one tool for every ticket in that run.
+- **Behavioral identity is not sequence-dependent**, by deliberate design in
+  [task 054](054-behavioral-diff.md) and reaffirmed in
+  [Ordering](#ordering-the-runner-asserts-none-the-engine-may-still-care).
+
+Those two together are the problem with the workload this section chose. It was
+selected because "its action order is the model's choice and differs between
+runs" — and order *does* differ. But **order variance is precisely what the diff
+ignores**, so the property the workload was chosen for cannot produce the
+presence variance the k-of-N machinery exists to absorb.
+
+### So this measurement does not qualify as the one this section needs
+
+Both halves are stated, because only stating the first would be misleading:
+
+- the k-of-N machinery is **not justified by this measurement**;
+- this measurement **does not qualify** as the measurement this section asked
+  for, because the workload it named is structurally incapable of exhibiting the
+  phenomenon. A zero rate from a workload that cannot vary is not evidence that
+  workloads do not vary.
+
+The earlier claim that "the repository's own evidence points the other way" is now
+contradicted by a number, and is withdrawn.
+
+### The section stays, with two re-run conditions
+
+This section is **not** deleted, and the machinery below is **not** implemented on
+the strength of an expectation. It waits for a measurement that can fail, which
+needs at least one of:
+
+1. **A toolset wider than one run visits.** An agent with more tools than its
+   prompt requires per task, so *which* services a run reaches is a real choice
+   rather than a fixed consequence. Then presence counts vary for the reason this
+   task cares about.
+2. **[Task 075](075-ai-semantic-telemetry-normalization.md)'s tool-name
+   fidelity.** At that fidelity a behavior is `export_customer` rather than
+   `POST → export.localhost`, so the behavioral surface grows to the size of the
+   toolset and stops being saturated by a three-step workflow. **This is the
+   decisive one**, and it is why [sequencing](#sequencing-078-follows-075) placed
+   this task after 075.
+
+   **It is now available.** 075 is implemented, so this condition is satisfied as
+   soon as somebody re-runs the sweep against a workload emitting an
+   agent-oriented convention. That is the cheapest remaining path to the number
+   this section needs, and it does not require condition 1.
+
+Raising the temperature is *not* one of the conditions, and that is a measured
+result rather than an assumption: `T = 1.3` nearly doubled the turn-count spread
+and moved the FAIL rate by nothing at all.
+
+When either condition holds, the sweep is re-run and this section is revisited
+with the new numbers. Until then the guidance below is written so that a scenario
+which has measured nothing gets set semantics rather than a threshold somebody
+guessed.
+
+## Sequencing: 078 follows 075
+
+**This task's implementation follows
+[075](075-ai-semantic-telemetry-normalization.md), and 079 follows this one.**
+
+**075 has since landed, so the edge is satisfied.** What this task still waits on
+is its own measurement re-run at the fidelity 075 now delivers — see
+[the two re-run conditions](#the-section-stays-with-two-re-run-conditions) — rather
+than on another task. The reasoning below is kept because it is why the edge was
+added, and because a reader who finds a zero false-FAIL rate in the results will
+otherwise ask why the k-of-N design survived it.
+
+That was a change when it was made. The dependency list at the top of this file names 054, 055, 056,
+062 and 077, and `docs/ROADMAP.md` previously placed 075 beside this thread rather
+than before it, on the grounds that repetition transports whatever telemetry
+exists and 075 only decides how richly it is read. That reasoning is still true
+for *running* a scenario. It is not true for **deciding k**.
+
+The [measurement](#measurement-before-implementation) is why. The k-of-N question
+can only be answered by a workload whose behavioral surface is larger than one run
+visits, and at HTTP fidelity a behavior is a method and a destination — so the
+surface is the size of the *host set*, which a workflow-shaped agent saturates.
+At 075's tool-name fidelity a behavior is `export_customer`, and the surface
+becomes the size of the *toolset*. The phenomenon this task's central mechanism
+exists to absorb may only be observable there.
+
+Implementing before that is possible and would be a mistake: the thresholds would
+ship unmeasured, which is the failure this task's own measurement rule was written
+to prevent.
+
+Two things are *not* blocked by 075, and should proceed:
+
+- the [run-scoped behavior route](#first-slice-a-run-scoped-behavior-route),
+  which 079 and 080 both need and which is independent of fidelity;
+- the additive
+  [`--behavioral-profile` flag on `dev`](#trustvian-dev-needs-a-profile-flag-this-task-can-use),
+  which is a coupling fix worth making on its own terms.
+
+079 renders this task's result document and computes nothing, so it follows this
+task as it always did — one step further out now.
 
 ## What it produces
 
@@ -591,7 +936,9 @@ per behavior    behavioral identity · its descriptor
 gate            the six checks, in the stable order this task defines,
                 each with its actual value, its limit or rule, and its
                 own pass/fail outcome — all six, including the ones
-                that passed
+                that passed; and checks 5 and 6 additionally carry
+                `advisory: fresh scope` at N > 1, because against
+                per-repetition profiles they report 0 by construction
 
 verdict         pass | fail — the closed vocabulary, nothing else
 
@@ -614,6 +961,14 @@ every call with no short-circuit so an auditor sees everything measured; a
 document that dropped the passing checks would undo that at the serialization
 boundary, and would leave a consumer unable to tell a check that passed from one
 that did not run.
+
+**Checks 5 and 6 carry their advisory marker at `N > 1`.** This is the same
+concern one step further: against freshly allocated scopes those two
+[report `0` by construction](#checks-5-and-6-are-advisory-against-a-fresh-scope),
+so a document that showed them passing without saying so would leave a consumer
+unable to tell a check that passed from one that could not fail. Measured, not
+inferred — they read `0` in all ninety comparisons of every isolated
+configuration.
 
 **The producer versions are in the document.** A gate result whose producer is
 unknown is not evidence, and a consumer must not have to make a second call to
@@ -771,6 +1126,16 @@ Additive for the repeated evidence too, and this matters because
 - The repeated aggregation, its gate, its limits and its route are **new**
   surface, published alongside rather than replacing. A new route and new
   response fields are what a minor release is allowed to add.
+- `GET /v1/evaluation-runs/{run_id}/behaviors` is likewise **new** surface over
+  evidence that already exists, and it is additive in the strongest sense: it
+  returns what a self-compare of the same run already returns. Nothing about
+  `POST /v1/evaluations/compare` changes, including the fact that it permits a
+  same-run comparison — the route makes that workaround unnecessary rather than
+  forbidden, and any decision to refuse it belongs to whoever adds that guard.
+- `--behavioral-profile` on `trustvian dev` is additive and defaults to today's
+  behavior, so no existing invocation changes meaning. `docs/compatibility.md`
+  classifies `dev`'s flags, and a new flag with a default equal to the current
+  derivation is a minor addition.
 - Schema impact is whatever persisting a scenario execution requires, under the
   existing forward-only version-gated rule. The task must state its schema step
   explicitly if it takes one, as tasks 065, 066 and 074 each did.
@@ -814,6 +1179,20 @@ Additive for the repeated evidence too, and this matters because
   two block decisions and four with none FAILs at
   `max_block_decisions_per_run: 1`. The test that fails if anyone changes it to
   a sum or a mean.
+- **Checks 5 and 6 are marked advisory at `N > 1`** and not at `N = 1`, in both
+  the runner's output and the result document — asserted on the marker, because
+  [an unmarked passing check reads as evidence it is
+  not](#checks-5-and-6-are-advisory-against-a-fresh-scope). The marker does not
+  change the verdict: a repetition that genuinely blocks still FAILs the check
+  with the marker present, asserted by the pair.
+- **The documented default guidance produces set semantics.** A scenario at
+  `k = 1, j = 0` classifies a behavior as repeatedly added exactly when task 054
+  would classify it as added at every `N`, not only at `N = 1` — the property that
+  makes [the guidance](#no-default-k-ships-and-the-guidance-is-set-semantics)
+  safe for a workload whose variance nobody has measured.
+- **No `k` or `j` default exists.** A scenario omitting either is a usage error
+  naming the field, asserted for both — the test that fails if anyone writes the
+  guidance value in as a default.
 - **Every check is populated in every result**, including when checks 1–3 fail —
   task 056's no-short-circuit rule, inherited.
 - **Evidence saturating at 512 distinct identities refuses the gate**, and does
@@ -825,6 +1204,24 @@ Additive for the repeated evidence too, and this matters because
 - **The runner computes no presence count and no repeated verdict** — added to
   the existing source scan, alongside "no diff, scorecard, gate or policy
   outcome".
+
+**The [run-scoped behavior route](#first-slice-a-run-scoped-behavior-route).**
+Shippable and testable before the rest of this task:
+
+- **A run's behavior set matches what a self-compare of the same run returns** —
+  identity for identity and count for count. The test that makes the route a
+  replacement for the workaround rather than a second answer, and the one that
+  fails if they ever disagree.
+- **Paging follows task 065's rules**: `id` byte-ascending, `after` exclusive,
+  `limit` outside `[1, 64]` a usage error, `next_after` present exactly when
+  another row follows.
+- **A missing run is `404`; a run with no evidence is `200` with an empty page** —
+  both halves, because collapsing the second into the first would make "nothing
+  happened" indistinguishable from "no such run", which is the distinction
+  [ADR 0029 § 2](../../adr/0029-hard-gates-use-explicit-integer-evidence.md)
+  insists on one layer down.
+- **The route publishes no content**: identities, descriptors and counts only, no
+  prompt, completion, argument, result or body.
 - A candidate with an added behavior produces a diff naming it and a gate FAIL
   under `max_added_behaviors: 0`.
 - The same candidate passes under a limit that permits it, proving the verdict
@@ -876,6 +1273,12 @@ agent and the method that produced them, and the `N` and `k` guidance they
 justify — in this task and in the ADR, not in a pull request description that
 stops being findable.
 
+The first sweep is already recorded above rather than waiting for that PR, because
+it changed this specification and a specification revised by evidence should carry
+the evidence. The implementation PR adds whatever the re-run under
+[one of the two conditions](#the-section-stays-with-two-re-run-conditions)
+produces.
+
 ## ADR
 
 Warranted for the boundary decision: why a behavioral scenario compares
@@ -904,6 +1307,14 @@ a future reader will ask "why not the obvious thing":
   measurement recorded rather than summarized. An ADR that states `k = 4`
   without
   the run that produced it has frozen a guess.
+- **Why the measurement's zero rate did not delete this task**, and what
+  distinguishes "the machinery is unjustified" from "the measurement could not
+  test it". The reasoning is
+  [above](#so-this-measurement-does-not-qualify-as-the-one-this-section-needs) and
+  belongs in the ADR because a future reader finding a zero false-FAIL rate in the
+  results will otherwise reasonably ask why the k-of-N design survived it.
+- **Why checks 5 and 6 are advisory rather than warmed or dropped**, with the
+  measured confidence floor that forced the choice.
 
 ## Acceptance criteria
 
@@ -951,9 +1362,31 @@ a future reader will ask "why not the obvious thing":
     been performed and recorded** in this task and its ADR, and the documented
     `N` and `k` guidance cites it. This criterion is not satisfied by a
     plausible number.
+
+    **Partially satisfied, and recorded as such.** The sweep has been performed
+    and is cited above; it returned a zero false-FAIL rate and therefore did not
+    produce a `k`. The criterion is met for "performed and recorded" and is
+    explicitly *not* met for "guidance that a measurement justifies" — the
+    guidance is `k = 1, j = 0`, which is set semantics and asserts no threshold.
+    It closes when a sweep against one of the
+    [two re-run conditions](#the-section-stays-with-two-re-run-conditions) exists.
 18. **Repeatedly removed behaviors are classified by the control plane** under
     the mirrored rule, reported in the result document, and gate nothing. No
     consumer derives the classification for itself.
+19. **`k` and `j` have no defaults**, and the documented guidance of
+    `k = 1, j = 0` produces task 054's set semantics at every `N` — not only at
+    `N = 1`.
+20. **Checks 5 and 6 are marked `advisory: fresh scope` at `N > 1`**, in the
+    runner's output and in the result document, and the marker changes no verdict.
+    A scenario setting them to `0` and seeing them pass can be told apart from one
+    where the question could be answered.
+21. **`GET /v1/evaluation-runs/{run_id}/behaviors` returns a run's behavior set**,
+    paged as task 065's collections are, `404` for a missing run and `200` with an
+    empty page for a run with no evidence — and returns the same identities and
+    counts a self-compare of that run does.
+22. **`trustvian dev` accepts an additive `--behavioral-profile <ref>`** that
+    defaults to the candidate, so a runner can isolate repetitions without
+    changing candidate identity.
 
 ## Open questions left to implementation
 
@@ -973,12 +1406,17 @@ a future reader will ask "why not the obvious thing":
    external service measure contention rather than the workload. Concurrency is
    an optimization that needs a measurement, and it must never reorder the
    recorded repetition indices.
-6. **Whether the measured repetitions should be preceded by a shared warm-up
-   profile.** Unresolved on purpose: a fresh scope reports maximal novelty in
-   every repetition, which is uniform and therefore harmless to the presence
-   counts, but may make `max_block_decisions_per_run: 0` unusable. Step 4 of the
-   measurement decides it. Whichever way it goes, the measured repetitions stay
-   isolated from one another — that part is settled above, not open.
-7. **What `N` and `k` the documentation should recommend.** Deliberately
-   unanswered here. The measurement sets them, and no number is written into
-   this specification before it exists.
+6. ~~**Whether the measured repetitions should be preceded by a shared warm-up
+   profile.**~~ **Resolved by the measurement: no.** Isolation is kept and checks
+   5 and 6 are marked advisory at `N > 1` instead — see
+   [Checks 5 and 6](#checks-5-and-6-are-advisory-against-a-fresh-scope) for the
+   numbers and the two rejected alternatives.
+7. **What `N` and `k` the documentation should recommend.** Still open for `k`,
+   and now open for a different reason: the measurement was performed and
+   produced no threshold, because the workload could not vary. The documented
+   guidance is `k = 1, j = 0` — set semantics, asserting nothing — until a sweep
+   against one of the
+   [two re-run conditions](#the-section-stays-with-two-re-run-conditions) exists.
+   `N` is a cost-versus-evidence choice rather than a threshold, and the
+   measurement supports stating `10` as a usable figure: forty runs at `N = 10`
+   completed in roughly two hours of model time on a laptop.
