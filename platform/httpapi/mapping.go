@@ -244,6 +244,10 @@ func newRealtimeEventPayload(e platform.RealtimeEvent) realtimeEventPayload {
 
 			FingerprintID: o.FingerprintID,
 			Behavior:      newBehaviorDescriptorDTO(o.Behavior),
+			// Always emitted, never omitted: a consumer that had to interpret an
+			// absent field would be guessing at exactly the thing this field
+			// exists to remove the guess from.
+			Fidelity: string(o.Fidelity.OrTransport()),
 
 			Decision:       o.Decision,
 			RiskLevel:      o.RiskLevel,

@@ -64,6 +64,26 @@ export function renderInspector(host, edge, context = {}) {
     ["Environment", edge.environment],
   ]));
 
+  // Where the name above came from, stated rather than implied.
+  //
+  // This is the whole point of task 075's fidelity indicator: `tool ·
+  // export_customer` and `http · POST · export.localhost` look equally
+  // authoritative in a panel, and only the server knows which one the telemetry
+  // actually proved. A reader who cannot tell the difference will assume the
+  // stronger reading, which is the assumption this sentence removes.
+  const fidelity = document.createElement("p");
+  fidelity.className = "note-inline";
+  if (edge.fidelity === "semantic") {
+    fidelity.textContent =
+      "Semantic fidelity: the agent's own instrumentation named this operation.";
+  } else {
+    fidelity.textContent =
+      "Transport fidelity: only the protocol and destination were available, so " +
+      "this is what the call looked like on the wire rather than what the agent " +
+      "called it.";
+  }
+  host.append(fidelity);
+
   // NEW is a state, and it is stated in words before anything else about it.
   if (edge.newBehavior) {
     const banner = document.createElement("p");
