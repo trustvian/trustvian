@@ -41,6 +41,15 @@ const (
 // SDK dependency) so the convention names themselves can never drift
 // between the two adapters, even though the traversal code differs.
 //
+// Since task 075 it reads the agent-oriented conventions — OpenTelemetry GenAI
+// and OpenInference — through event.NormalizeSpan. That is **not** a second copy
+// of the table: internal/semconv in the core module holds it once, and
+// internal/otel and this file both call it. The traversal below is duplicated
+// because the span types are unrelated; the convention table is not, because both
+// adapters reduce their span to the same plain map first. Two copies of a
+// convention table would be two conventions, and the one a developer gets would
+// be whichever adapter their telemetry happened to take.
+//
 // Why this can't just call internal/otel.EventFromSpan: that function
 // takes sdktrace.ReadOnlySpan, a type only the OpenTelemetry SDK's own
 // in-process span-export path produces (it has a deliberately
@@ -69,10 +78,50 @@ func EventFromSpan(resourceAttrs pcommon.Map, span ptrace.Span) event.Event {
 		identityConfidence = v
 	}
 
+	// The shared convention table. Read after the overrides above, which outrank
+	// it, and before the transport fallbacks below, which defer to it.
+	normalized := event.NormalizeSpan(event.NormalizedSpan{
+		Kind:       spanKind(span.Kind()),
+		Name:       span.Name(),
+		Attributes: attrs,
+		Resource:   resourceAttrs.AsRaw(),
+	})
+
 	category := event.OperationCategory(stringAttr(attrs, attrOperationCategory))
+	if category == "" && normalized.Matched() {
+		category = event.OperationCategory(normalized.OperationCategory)
+	}
 	if category == "" {
 		category = inferCategory(attrs)
 	}
+
+	// A span name is transport: "POST /v1/export" describes the request, not the
+	// tool the agent chose. It stays the operation name only when no convention
+	// supplied a better one.
+	operationName := span.Name()
+	if normalized.Matched() {
+		operationName = normalized.OperationName
+	}
+
+	// The convention's target where it has one, else the transport's. Left empty
+	// rather than substituted when neither says: inventing a target is the
+	// fabrication task 075 forbids, and Target.Name is optional.
+	target := normalized.TargetName
+	if target == "" {
+		target = targetName(attrs)
+	}
+
+	// A convention may raise the actor type but never override an explicit one.
+	// Actor.Type is a StableFeatures dimension, so a wrong upgrade discards that
+	// actor's learned baseline — see internal/semconv's own reasoning.
+	if stringAttr(attrs, attrActorType) == "" && normalized.ActorType != "" {
+		actorType = event.ActorType(normalized.ActorType)
+	}
+
+	// Recorded on the Event, not in a core field: Event has no fidelity field and
+	// task 075 must not add one. Attributes is where this adapter already puts
+	// derived values, and SetAttributesFromResult reads it back from here.
+	attrs[event.AttrFidelity] = string(normalized.Fidelity.OrTransport())
 
 	return event.Event{
 		ID:        span.SpanID().String(),
@@ -84,16 +133,38 @@ func EventFromSpan(resourceAttrs pcommon.Map, span ptrace.Span) event.Event {
 		},
 		Operation: event.Operation{
 			Category:  category,
-			Name:      span.Name(),
+			Name:      operationName,
 			Direction: directionFromSpanKind(span.Kind()),
 		},
-		Target:     event.Target{Name: targetName(attrs)},
+		Target:     event.Target{Name: target},
 		Attributes: attrs,
 		Context: event.Context{
 			Environment: stringResourceAttr(resourceAttrs, string(semconv.DeploymentEnvironmentNameKey)),
 			TraceID:     span.TraceID().String(),
 			SpanID:      span.SpanID().String(),
+			SessionID:   normalized.SessionID,
 		},
+	}
+}
+
+// spanKind translates the pipeline's kind into the table's own vocabulary.
+//
+// The table holds no OpenTelemetry import, so the translation happens here where
+// the pdata types already are — the mirror of internal/otel's own spanKind.
+func spanKind(kind ptrace.SpanKind) event.SpanKind {
+	switch kind {
+	case ptrace.SpanKindClient:
+		return event.SpanKindClient
+	case ptrace.SpanKindServer:
+		return event.SpanKindServer
+	case ptrace.SpanKindProducer:
+		return event.SpanKindProducer
+	case ptrace.SpanKindConsumer:
+		return event.SpanKindConsumer
+	case ptrace.SpanKindInternal:
+		return event.SpanKindInternal
+	default:
+		return event.SpanKindUnspecified
 	}
 }
 

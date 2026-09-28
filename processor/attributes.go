@@ -4,6 +4,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
 	trustvian "github.com/trustvian/trustvian"
+	"github.com/trustvian/trustvian/event"
 )
 
 // Trustvian output attributes — the same five names and meanings as
@@ -22,6 +23,15 @@ const (
 	attrRiskLevel     = "trustvian.risk.level"
 	attrDecision      = "trustvian.decision"
 	attrFingerprintID = "trustvian.fingerprint.id"
+
+	// attrFidelity says where the Event's operation identity came from —
+	// "semantic" or "transport". Task 075.
+	//
+	// The name comes from event.AttrFidelity rather than being spelled again, so
+	// the two adapters cannot disagree about it. Outbound only: there is no
+	// inbound override, because a producer able to claim semantic fidelity would
+	// defeat the guarantee the indicator makes.
+	attrFidelity = event.AttrFidelity
 )
 
 // SetAttributesFromResult writes the outbound trustvian.* attributes
@@ -46,4 +56,17 @@ func SetAttributesFromResult(attrs pcommon.Map, result trustvian.Result) {
 	attrs.PutStr(attrRiskLevel, string(result.Trust.Risk))
 	attrs.PutStr(attrDecision, string(result.Decision))
 	attrs.PutStr(attrFingerprintID, result.Fingerprint.ID)
+	attrs.PutStr(attrFidelity, string(fidelityOf(result)))
+}
+
+// fidelityOf reads back what the inbound mapping recorded on the Event.
+//
+// From result.Event.Attributes rather than a Result field, because fidelity is a
+// property of how the Event was derived and Result already retains its Event for
+// that kind of traceability. A Result whose Event never passed through
+// EventFromSpan carries none, and gets "transport" — the honest answer, since
+// nothing proved a semantic identity.
+func fidelityOf(result trustvian.Result) event.Fidelity {
+	raw, _ := result.Event.Attributes[attrFidelity].(string)
+	return event.Fidelity(raw).OrTransport()
 }

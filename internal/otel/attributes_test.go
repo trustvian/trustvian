@@ -111,6 +111,11 @@ func TestAttributesFromResultCoversAllDecisions(t *testing.T) {
 				{trustvianotel.AttrRiskLevel, string(result.Trust.Risk)},
 				{trustvianotel.AttrDecision, string(result.Decision)},
 				{trustvianotel.AttrFingerprintID, result.Fingerprint.ID},
+				// Task 075. A Result built here never passed through
+				// EventFromSpan, so it carries no recorded fidelity and gets
+				// "transport" — which is the honest answer rather than a
+				// default: nothing proved a semantic identity.
+				{trustvianotel.AttrFidelity, string(event.FidelityTransport)},
 			}
 			for _, c := range checks {
 				v, ok := findAttr(attrs, c.key)
@@ -129,8 +134,20 @@ func TestAttributesFromResultCoversAllDecisions(t *testing.T) {
 					}
 				}
 			}
+			// The set is exact, not a minimum. This guard exists to stop
+			// undocumented attributes accumulating — trustvian.behavior.id is the
+			// one it was originally written against — so a new attribute belongs
+			// in `checks` above with its reason, which is what makes adding one a
+			// deliberate act rather than a silent one.
 			if len(attrs) != len(checks) {
-				t.Errorf("AttributesFromResult returned %d attributes, want exactly %d (no trustvian.behavior.id, no extras)", len(attrs), len(checks))
+				var got []string
+				for _, a := range attrs {
+					got = append(got, string(a.Key))
+				}
+				t.Errorf("AttributesFromResult returned %d attributes, want exactly %d.\n"+
+					"  got: %v\nA new attribute must be added to this test's `checks` "+
+					"with the reason it exists; an unlisted one is the drift this "+
+					"assertion prevents.", len(attrs), len(checks), got)
 			}
 		})
 	}
