@@ -150,7 +150,25 @@ func deriveIdentity(config devConfig, workloadDir string,
 	}
 	identity.Dirty = repository.dirty
 
+	// Profile: the candidate, unless the caller named one.
+	//
+	// Deriving it from the candidate is right for dev's own purpose — two runs
+	// of one commit sharing a baseline is what makes "this behavior is new"
+	// mean anything on the second run. It is the wrong coupling for a scenario
+	// runner (task 078), which needs a learning scope per repetition so that
+	// presence counts measure the workload rather than the order the
+	// repetitions ran in. Allocating a candidate per repetition to obtain that
+	// would change the identity of the thing under test.
+	//
+	// Additive: omitted, dev behaves exactly as it did, and no existing
+	// invocation changes meaning. The ref is opaque to the core (ADR 0024,
+	// "Scope is opaque"), so nothing here parses it and nothing requires it to
+	// encode a repetition index — which repetition gets which ref is the
+	// runner's business, not this command's.
 	identity.Profile = identity.Candidate
+	if config.behavioralProfile != "" {
+		identity.Profile = config.behavioralProfile
+	}
 
 	// The run is the one generated value, and the only one allowed to be.
 	//
