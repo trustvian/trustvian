@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	trustvian "github.com/trustvian/trustvian"
+	"github.com/trustvian/trustvian/event"
 )
 
 // LearnFunc applies the local half of one record's delivery.
@@ -103,6 +104,20 @@ type pendingRecord struct {
 	sequence uint64
 	record   trustvian.DecisionRecord
 	learning json.RawMessage
+
+	// fidelity is the fifth part of the logical request, and unlike the
+	// profile it varies per record — so a re-presentation within this process
+	// has to carry the one its first attempt sent.
+	//
+	// It is kept in memory and deliberately not in the durable entry. A
+	// recovered entry is only ever re-presented to *prove* which record
+	// occupies a taken sequence, and the control plane recognizes a retry by
+	// the record's own digest: it replays without consuming fidelity, or it
+	// conflicts. Fidelity is read only when a record is applied, which a
+	// recovered posting entry cannot be — the sequence it wants is already
+	// taken, or the entry is discarded before any request is sent. Persisting
+	// it would change the on-disk format to carry a value no reader uses.
+	fidelity event.Fidelity
 
 	// state mirrors the durable entry's own, because the two mean different
 	// things to the next call. posting is recoverable in place: the record
@@ -350,6 +365,9 @@ func (s *Sink) Initialize(ctx context.Context) (Recovery, error) {
 			// anything else. A replay changes no evidence, and only then is
 			// the learning applied — exactly once, because a posting entry
 			// proves the previous process never got that far.
+			// No fidelity: this re-presentation can only be recognized or
+			// refused, never applied, and the field is read only on apply.
+			// See pendingRecord.fidelity.
 			s.pending = &pendingRecord{
 				sequence: sequence, record: entry.Record,
 				learning: entry.Learning, state: statePosting}
@@ -414,8 +432,14 @@ func (s *Sink) Initialize(ctx context.Context) (Recovery, error) {
 // There is exactly one extra attempt per call, made synchronously under the
 // same ctx; a sink that still cannot settle the record reports ErrUnresolved
 // and refuses to accept another one until it can.
+//
+// fidelity travels beside the record rather than inside it, because
+// DecisionRecord carries no attributes and the value describes how the record
+// was produced rather than anything the engine decided. The zero value is
+// "not stated", which the control plane reads as transport.
 func (s *Sink) Record(
-	ctx context.Context, record trustvian.DecisionRecord, learning []byte,
+	ctx context.Context, record trustvian.DecisionRecord,
+	fidelity event.Fidelity, learning []byte,
 ) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -452,7 +476,8 @@ func (s *Sink) Record(
 
 	sequence := s.next
 	held := &pendingRecord{
-		sequence: sequence, record: record, learning: learning, state: statePosting}
+		sequence: sequence, record: record, fidelity: fidelity,
+		learning: learning, state: statePosting}
 	if err := s.journal.write(entryFor(s.runID, statePosting, held)); err != nil {
 		// Nothing has been sent, so the sequence is untouched and this
 		// record simply did not happen. Refusing here is what keeps the
@@ -462,7 +487,7 @@ func (s *Sink) Record(
 	}
 	s.pending = held
 
-	disposition, err := s.attempt(ctx, sequence, record)
+	disposition, err := s.attempt(ctx, sequence, fidelity, record)
 	if err == nil {
 		if settleErr := s.settle(ctx); settleErr != nil {
 			return "", settleErr
@@ -495,7 +520,7 @@ func (s *Sink) Record(
 // absent, so its sequence stays bound to it rather than being handed on.
 func (s *Sink) reconcile(ctx context.Context) (string, error) {
 	held := s.pending
-	disposition, err := s.attempt(ctx, held.sequence, held.record)
+	disposition, err := s.attempt(ctx, held.sequence, held.fidelity, held.record)
 	if err != nil {
 		return "", fmt.Errorf(
 			"%w: sequence %d holds a record the control plane may already have; "+
@@ -570,9 +595,10 @@ func (s *Sink) settle(ctx context.Context) error {
 // cannot make sense of hides what it did rather than proving it did nothing.
 // Failing closed and holding the sequence are the same decision here.
 func (s *Sink) attempt(
-	ctx context.Context, sequence uint64, record trustvian.DecisionRecord,
+	ctx context.Context, sequence uint64,
+	fidelity event.Fidelity, record trustvian.DecisionRecord,
 ) (string, error) {
-	result, err := s.client.ingest(ctx, s.runID, sequence, s.profile, record)
+	result, err := s.client.ingest(ctx, s.runID, sequence, s.profile, fidelity, record)
 	if err != nil {
 		return "", err
 	}

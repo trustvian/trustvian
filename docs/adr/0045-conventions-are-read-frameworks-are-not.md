@@ -260,6 +260,19 @@ per-dimension matrix is a third shape nobody asked for.
 - `internal/semconv` will need editing whenever either convention moves. That is
   the cost of reading an unstable contract, and it is bounded: one package, one
   table, two commits of provenance recorded in its source.
+- **The indicator reaches Collector-path operators.** As first shipped it did not:
+  the mapping computed fidelity and the outbound span carried it, the platform's
+  ingest envelope accepted it, and the *processor's* envelope had no such field —
+  so the value stopped at the Collector and the live view read `transport` for
+  every record, including the ones a convention had named. `DecisionRecord` has no
+  attributes, so nothing downstream could re-derive it. It now rides beside the
+  record in the processor's envelope too, exactly as `behavioral_profile` does and
+  for the identical stated reason, read at the ingest call site from the same
+  `Result` that produced the span attribute. Fidelity is therefore reported to
+  everyone who is told a behavior's name, not only to a producer that POSTs to
+  `/v1` itself. The gap was found by measurement rather than by reading — twice,
+  independently, against a real agent — which is the argument for the end-to-end
+  assertion that now covers it: every layer was individually correct.
 - **Open: fidelity is not persisted per behavior**, so the comparison response's
   behavior deltas do not carry it. A delta is built from persisted behavioral
   evidence, and storing fidelity per behavior needs a forward-only schema step in

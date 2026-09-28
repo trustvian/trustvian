@@ -619,6 +619,36 @@ actually depend on.
   removal — because a rename that reached only the page cache is one a host
   crash can undo.
 
+### Fixed
+
+- **The fidelity indicator never left the Collector** (task 075). The mapping
+  computed it, the outbound span carried it, and the control plane's ingest
+  envelope accepted it — but the *processor's* envelope carried `version`,
+  `sequence`, `behavioral_profile` and `record` and nothing else, so the value
+  was dropped on the way out. `DecisionRecord` has no attributes, so nothing
+  downstream could recover it either: the live view was told `transport` for
+  every record that arrived this way, including the ones whose operation name
+  came from a GenAI or OpenInference convention. Fidelity reached a live view
+  only for a producer that POSTed to `/v1` and filled the field itself.
+
+  `fidelity` now rides beside the record in the processor's ingest envelope,
+  exactly as `behavioral_profile` already does and for the identical stated
+  reason — it is metadata about how the record was *produced*, which the engine
+  has no opinion about. The processor reads it at the ingest call site from the
+  same `Result` that produced the span attribute, so the two reports of one
+  mapping cannot disagree.
+
+  No core change, no `DecisionRecord` change and no schema change: per-behavior
+  persistence is still deferred (task 081), and a comparison delta still carries
+  no fidelity. The value is kept in memory rather than in the sink's pending
+  entry, because a recovered record is only ever re-presented to prove which
+  record occupies a taken sequence — the control plane recognizes that by the
+  record's own digest and replays without reading fidelity.
+
+  Asserted end to end with nothing mocked between a real span and the SSE frame
+  a browser reads: a GenAI tool span arrives as `semantic` and a plain HTTP span
+  as `transport`, in the same run, on the same stream.
+
 ### Security
 
 - **Per-actor fingerprint state is now bounded.** `Baseline.Fingerprints`

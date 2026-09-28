@@ -58,7 +58,7 @@ func TestLearningFailureKeepsTheConfirmedEntry(t *testing.T) {
 		t.Fatalf("Initialize() error = %v", err)
 	}
 
-	_, err = sink.Record(context.Background(), recordA, learningFor("A"))
+	_, err = sink.Record(context.Background(), recordA, "", learningFor("A"))
 	if err == nil {
 		t.Fatal("Record() error = nil, want the learning failure surfaced")
 	}
@@ -94,7 +94,7 @@ func TestLearningFailureKeepsTheConfirmedEntry(t *testing.T) {
 	// observation and abandoning it could lose one; neither is this span's
 	// decision to make.
 	postsBefore := server.postCount()
-	_, err = sink.Record(context.Background(), recordB, learningFor("B"))
+	_, err = sink.Record(context.Background(), recordB, "", learningFor("B"))
 	if err == nil {
 		t.Fatal("Record(B) error = nil, want the sink to refuse while the record is unsettled")
 	}
@@ -135,7 +135,7 @@ func TestLearningFailureKeepsTheConfirmedEntry(t *testing.T) {
 	}
 
 	// The run continues from there.
-	if _, err := second.Record(context.Background(), recordB, learningFor("B")); err != nil {
+	if _, err := second.Record(context.Background(), recordB, "", learningFor("B")); err != nil {
 		t.Fatalf("Record(B) error = %v after recovery", err)
 	}
 	if got := len(server.durable()); got != 2 {
@@ -222,7 +222,8 @@ func TestConfirmedRecoveryRequiresTheVeryNextSequence(t *testing.T) {
 			// An uninitialized sink accepts nothing, so a refused startup
 			// cannot be ignored into a running Collector.
 			if _, err := sink.Record(context.Background(),
-				trustvian.DecisionRecord{EventID: "B"}, learningFor("B")); err == nil {
+				trustvian.DecisionRecord{EventID: "B"}, "",
+				learningFor("B")); err == nil {
 				t.Error("Record() error = nil after a refused Initialize, want the sink unusable")
 			}
 		})
@@ -250,7 +251,7 @@ func TestUnsettledSequenceIsNotStrandedByTheCursor(t *testing.T) {
 	recorder := &syncRecorder{failN: 2}
 	sink.journal.syncDir = recorder.sync
 
-	_, err := sink.Record(context.Background(), recordA, learningFor("A"))
+	_, err := sink.Record(context.Background(), recordA, "", learningFor("A"))
 	if err == nil {
 		t.Fatal("Record(A) error = nil, want the unprovable pending state surfaced")
 	}
@@ -270,7 +271,7 @@ func TestUnsettledSequenceIsNotStrandedByTheCursor(t *testing.T) {
 
 	// The next call resumes sequence 1 rather than taking 2 for B.
 	sink.journal.syncDir = (&syncRecorder{}).sync
-	if _, err := sink.Record(context.Background(), recordB, learningFor("B")); err != nil {
+	if _, err := sink.Record(context.Background(), recordB, "", learningFor("B")); err != nil {
 		t.Fatalf("Record(B) error = %v", err)
 	}
 
@@ -298,7 +299,9 @@ func TestUnprovenPendingWriteSendsNothing(t *testing.T) {
 	sink.journal.syncDir = (&syncRecorder{failN: 1}).sync
 
 	_, err := sink.Record(context.Background(),
-		trustvian.DecisionRecord{EventID: "A"}, learningFor("A"))
+		trustvian.DecisionRecord{EventID: "A"}, "",
+		learningFor("A"))
+
 	if err == nil {
 		t.Fatal("Record() error = nil, want the unprovable pending state surfaced")
 	}
@@ -327,7 +330,9 @@ func TestUnprovenReleaseIsReportedAndRecoverable(t *testing.T) {
 	sink.journal.syncDir = (&syncRecorder{failN: 3}).sync // posting, confirmed, then the release
 
 	_, err := sink.Record(context.Background(),
-		trustvian.DecisionRecord{EventID: "A"}, learningFor("A"))
+		trustvian.DecisionRecord{EventID: "A"}, "",
+		learningFor("A"))
+
 	if err == nil {
 		t.Fatal("Record() error = nil, want the unprovable release surfaced")
 	}
@@ -345,7 +350,8 @@ func TestUnprovenReleaseIsReportedAndRecoverable(t *testing.T) {
 	// release left behind.
 	sink.journal.syncDir = (&syncRecorder{}).sync
 	if _, err := sink.Record(context.Background(),
-		trustvian.DecisionRecord{EventID: "B"}, learningFor("B")); err != nil {
+		trustvian.DecisionRecord{EventID: "B"}, "",
+		learningFor("B")); err != nil {
 		t.Fatalf("Record(B) error = %v", err)
 	}
 	if got := len(server.durable()); got != 2 {
@@ -373,7 +379,9 @@ func TestOversizedLearningSendsNothing(t *testing.T) {
 
 	oversized := []byte(`{"pad":"` + strings.Repeat("x", maxPendingFile) + `"}`)
 	_, err := sink.Record(context.Background(),
-		trustvian.DecisionRecord{EventID: "A"}, oversized)
+		trustvian.DecisionRecord{EventID: "A"}, "",
+		oversized)
+
 	if err == nil {
 		t.Fatal("Record() error = nil, want an entry its own reader would reject refused")
 	}
@@ -406,7 +414,7 @@ func TestOversizedLearningSendsNothing(t *testing.T) {
 
 	// The sequence it did not take is still there for the next record.
 	recordB := trustvian.DecisionRecord{EventID: "B"}
-	if _, err := sink.Record(context.Background(), recordB, learningFor("B")); err != nil {
+	if _, err := sink.Record(context.Background(), recordB, "", learningFor("B")); err != nil {
 		t.Fatalf("Record(B) error = %v; sequence 1 must still be usable", err)
 	}
 	durable := server.durable()
