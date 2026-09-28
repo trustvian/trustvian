@@ -50,19 +50,31 @@ beforehand, and attaching a second stack would report every action twice. See
 
 ### What `dev` needs on disk
 
-`dev` supervises two helper executables that are **not** part of the released
-`trustvian` binary:
+`dev` supervises two helper executables it does not contain:
 
 ```text
 trustvian-local      the local control plane
 trustvian-collector  the OTLP receiver and the Trustvian processor
 ```
 
-`make dev` builds both and points `dev` at them. From a bare `go install` they
-do not exist, and `dev` says so and names `make dev` rather than downloading
-anything — it makes no network call at all. Each can also be given explicitly
-(`--local-bin`, `--collector-bin`, or `$TRUSTVIAN_LOCAL_BIN` /
-`$TRUSTVIAN_COLLECTOR_BIN`).
+They are separate binaries rather than linked-in packages because the root CLI
+must not import `trustvian-platform` (ADR 0022, 0033, 0035).
+
+**Two ways to have them**, and `dev` needs no configuration for either:
+
+- **A release archive.** The macOS and Linux archives ship all three binaries
+  side by side, and dev looks alongside its own executable, so `trustvian dev`
+  works from a download with no checkout. Keep the three together.
+- **A checkout.** `make dev` builds both and points `dev` at them.
+
+`go install` gives you only `trustvian`: it builds the root module's command,
+and the helpers live in repository-internal modules. `dev` says so and names
+the ways forward rather than downloading anything — it makes no network call at
+all. Each can also be given explicitly (`--local-bin`, `--collector-bin`, or
+`$TRUSTVIAN_LOCAL_BIN` / `$TRUSTVIAN_COLLECTOR_BIN`).
+
+Not on Windows, where `dev` refuses to start at all; see
+[Running the parts separately](#running-the-parts-separately).
 
 ### Where `dev` keeps its state
 
@@ -354,8 +366,9 @@ trustvian-local [--state-dir <dir>] [--listen <loopback-address>]
 `--state-dir` defaults to `.trustvian`; `--listen` defaults to `127.0.0.1:0`
 and accepts only numeric loopback (`127.0.0.1:8080`, `[::1]:0`).
 
-`trustvian-local` is a repository-internal executable, not a released
-artifact — `trustvian` is the shipped binary.
+`trustvian-local` is built from a repository-internal module, so `go install`
+does not produce it. It does ship in the macOS and Linux release archives
+beside `trustvian`, because `trustvian dev` supervises it.
 
 ## Related
 

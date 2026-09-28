@@ -128,7 +128,8 @@ validated and whose gates already passed — it does not re-establish trust.
 ```text
 tag push (v*)
   ├─ release job    validate SemVer → verify tagged commit → gates
-  │                 → binaries + checksums → draft GitHub Release
+  │                 → binaries (CLI + dev helpers) + checksums
+  │                 → draft GitHub Release
   └─ container job  build → scan → gate → push vX.Y.Z (+ SBOM, provenance)
                     → sign digest → move X.Y and latest to that digest
 ```
@@ -244,6 +245,32 @@ provenance, attached to the image in the registry. Platform-standard
 mechanisms rather than a bespoke format, and no extra tool in the release
 path. The provenance records which commit, workflow, and builder produced
 the image.
+
+### What covers which artifact
+
+Stated plainly, because the two artifact kinds are covered differently and a
+reader who assumes otherwise is assuming too much.
+
+| Artifact | Contains | Covered by |
+|---|---|---|
+| release archives | `trustvian`, and on macOS/Linux `trustvian-local` and `trustvian-collector` | SHA-256 `checksums.txt`, published with the release |
+| container image | `trustvian-collector` only | SBOM (SPDX 2.3), SLSA v1 provenance, keyless Cosign signature over the digest |
+
+**The archives carry no SBOM and no provenance attestation**, and they did not
+before the helpers were added either. Adding two binaries to an archive
+therefore changes nothing about its supply-chain posture: all three are covered
+by the same checksum manifest, computed over the archive, verified in the
+release job before publication and verifiable by anyone afterwards.
+
+The image contains only `trustvian-collector` because it *is* the Collector
+deployment image — its entrypoint is that binary. It does not ship the CLI, and
+adding the helpers to the archives did not change what it contains.
+
+**Attesting the archives is a real gap and a deliberate non-goal of the change
+that added the helpers.** It would mean `actions/attest-build-provenance` over
+`dist/*`, which is a new supply-chain mechanism in the release path and wants
+its own review rather than arriving as a side effect of packaging two more
+binaries. Recorded here so it is a known gap rather than an assumed guarantee.
 
 ## Verifying a published image
 

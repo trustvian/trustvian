@@ -287,9 +287,8 @@ Released versions are immutable; ship the next patch instead.
 
 ## Artifacts
 
-Only the `trustvian` CLI is packaged. The processor's binaries belong to a
-non-published module, and libraries are distributed as Go modules rather
-than as binaries.
+The `trustvian` CLI, and on macOS and Linux the two helpers `trustvian dev`
+supervises. Libraries are distributed as Go modules rather than as binaries.
 
 | OS | Arch | Archive |
 |---|---|---|
@@ -299,7 +298,38 @@ than as binaries.
 | darwin | arm64 | `trustvian_<version>_darwin_arm64.tar.gz` |
 | windows | amd64 | `trustvian_<version>_windows_amd64.zip` |
 
-Each archive holds the binary, `LICENSE`, and `README.md` — nothing else.
+Each archive holds `LICENSE`, `README.md`, and:
+
+| Binary | In which archives | What it is |
+|---|---|---|
+| `trustvian` | all five | the CLI |
+| `trustvian-local` | macOS and Linux | the local control plane |
+| `trustvian-collector` | macOS and Linux | the OTLP receiver and the Trustvian processor |
+
+Nothing else — an archive is not a repository.
+
+**Why the two helpers ship.** `trustvian dev` supervises a control plane and
+an OTLP Collector it does not contain: the root CLI must not import
+`trustvian-platform` (ADR 0022, 0033, 0035), so they are separate binaries
+found on disk. dev's resolution order looks alongside its own executable, so
+an archive holding all three makes `dev` work from a download with no
+checkout and no configuration. This closes the open item
+[ADR 0043](adr/0043-dev-provisions-the-local-hierarchy-from-the-repository.md)
+recorded.
+
+**Not on Windows**, where `dev` refuses to start at all — it forwards SIGINT
+and SIGTERM to a child and Windows has no equivalent delivery. Shipping 60 MB
+of helpers for a command that declines to run them would be weight with no
+capability behind it, so the Windows archive is unchanged.
+
+**The cost, measured rather than estimated.** A macOS/Linux archive goes from
+roughly 8.8 MB compressed to roughly 40 MB: `trustvian` is 18.9 MB uncompressed,
+`trustvian-local` 21.3 MB, and `trustvian-collector` 39.5 MB. ADR 0043
+predicted "triples"; the measured figure is about 4.5x compressed, because an
+OpenTelemetry Collector build is larger than the CLI it accompanies.
+
+A consumer who wants only the CLI can delete the other two, or use
+`go install`, which builds the root module's command alone.
 
 Built with `CGO_ENABLED=0` (every dependency is pure Go, so the matrix
 cross-compiles from one runner and the binaries carry no libc dependency)

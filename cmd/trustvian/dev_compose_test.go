@@ -211,7 +211,13 @@ func TestHelperNotFoundExplainsTheSituation(t *testing.T) {
 	// The developer meeting this has probably never heard of either binary, so
 	// the message says what they are, where it looked, and what to do.
 	for _, want := range []string{
-		"not part of the released",
+		// The release archives ship all three side by side, so the message
+		// names the situations that actually produce this error rather than
+		// telling a reader the helpers are not released. `go install` is the
+		// common one and is named explicitly.
+		"ship beside it",
+		"go install",
+		"release archives contain all three",
 		localRuntimeBinary,
 		collectorBinary,
 		"Searched:",

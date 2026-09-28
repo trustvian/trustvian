@@ -120,14 +120,20 @@ func (h helper) resolve() (string, error) {
 
 // notFoundMessage explains the situation rather than just reporting it.
 //
-// A developer who installed the released binary has only `trustvian`, and the
-// honest thing is to say so and name the way forward — not to hint that
-// something is misconfigured.
+// A developer meeting this has probably never heard of either binary, so the
+// message says what they are, where it looked, and what to do.
+//
+// The macOS and Linux release archives ship all three binaries side by side,
+// so the ordinary way to reach this error is no longer "you installed the
+// release" — it is one of three specific situations, and the message names
+// them instead of implying a misconfiguration. `go install` is the common one:
+// it builds the root module's command and nothing else, because the helpers
+// live in repository-internal modules the root module must not import
+// (ADR 0022, 0033, 0035).
 func (h helper) notFoundMessage(searched []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "cannot find %q.\n\n", h.name)
-	b.WriteString("dev supervises two helper processes that are not part of the released\n")
-	b.WriteString("trustvian binary:\n\n")
+	b.WriteString("dev supervises two helper processes that ship beside it:\n\n")
 	fmt.Fprintf(&b, "  %-20s the local control plane\n", localRuntimeBinary)
 	fmt.Fprintf(&b, "  %-20s the OTLP receiver and the Trustvian processor\n", collectorBinary)
 	b.WriteString("\nSearched:\n")
@@ -135,6 +141,13 @@ func (h helper) notFoundMessage(searched []string) string {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
+	b.WriteString("\nThe macOS and Linux release archives contain all three, so this\n")
+	b.WriteString("usually means one of:\n\n")
+	b.WriteString("  go install          builds only trustvian; download the release\n")
+	b.WriteString("                      archive instead, or build from a checkout\n")
+	b.WriteString("  moved out of the    keep the three together, or point at them with\n")
+	b.WriteString("  archive             --local-bin and --collector-bin\n")
+	b.WriteString("  Windows             dev is not supported there at all\n")
 	b.WriteString("\nFrom a repository checkout:\n\n")
 	b.WriteString("  make dev ARGS='-- python agent.py'\n\n")
 	b.WriteString("Nothing is downloaded. trustvian dev makes no network call.")
