@@ -2635,3 +2635,60 @@ func TestGraphEntitiesAreReachableByKeyboard(t *testing.T) {
 		t.Error("rail cards do not report their selected state")
 	}
 }
+
+// ---------------------------------------------------------------------
+// Task 075: fidelity is shown, never implied
+// ---------------------------------------------------------------------
+
+// TestInspectorStatesFidelityInWords is acceptance criterion 9 on this surface.
+//
+// `tool · export_customer` and `http · POST · export.localhost` look equally
+// authoritative in a panel, and only the server knows which one the telemetry
+// actually proved. A reader who cannot tell them apart will assume the stronger
+// reading — so the panel says which, in a sentence rather than a badge nobody
+// can decode.
+func TestInspectorStatesFidelityInWords(t *testing.T) {
+	source := readAsset(t, "inspector.js")
+
+	for _, want := range []string{
+		`edge.fidelity === "semantic"`,
+		"Semantic fidelity",
+		"Transport fidelity",
+	} {
+		if !strings.Contains(source, want) {
+			t.Errorf("inspector.js does not state fidelity: missing %q", want)
+		}
+	}
+
+	// And it explains what transport fidelity means rather than only naming it.
+	// "Transport" is Trustvian's word, not a developer's.
+	if !strings.Contains(source, "only the protocol and destination were available") {
+		t.Error("inspector.js names transport fidelity without explaining it")
+	}
+}
+
+// TestLiveViewReadsFidelityAndDoesNotDeriveIt is the no-fabrication rule on the
+// browser side.
+//
+// The browser cannot tell a tool name from a span name by looking at it. Any
+// fidelity it displayed that it had worked out itself would be the browser
+// asserting something no evidence supports — which is the same prohibition the
+// adapter obeys, one layer out.
+func TestLiveViewReadsFidelityAndDoesNotDeriveIt(t *testing.T) {
+	source := stripJSComments(readAsset(t, "live.js"))
+
+	if !strings.Contains(source, "observation.fidelity") {
+		t.Error("live.js does not read the server's fidelity")
+	}
+
+	// Nothing that looks like deriving it from the category or the name.
+	for _, forbidden := range []string{
+		`operation_category === "tool"`,
+		`operationCategory === "tool"`,
+		`=== "semantic" ? "semantic"`,
+	} {
+		if strings.Contains(source, forbidden) {
+			t.Errorf("live.js appears to derive fidelity rather than read it: %q", forbidden)
+		}
+	}
+}

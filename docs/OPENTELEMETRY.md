@@ -253,41 +253,135 @@ why absence of detectable instrumentation must not select injection, and
 [ADR 0042](adr/0042-dev-composes-the-collector-rather-than-owning-a-receiver.md)
 for why the CLI supervises this processor instead of opening its own receiver.
 
-## Potential AI-agent (GenAI) mappings — documented, not implemented
+## Agent-oriented conventions — implemented
 
-`v0.7` ([task 014](archive/tasks/v0.7/014-ai-agent.md)) added `event.Context.SessionID`/
-`DelegatedFrom`/`ApprovalStatus`. OpenTelemetry's own GenAI semantic
-conventions (`gen_ai.*` span/event attributes — covering conversation
-IDs, agent names, and tool-call spans) are, as of this writing, still
-marked experimental/evolving upstream. `internal/otel.EventFromSpan`
-does **not** read any `gen_ai.*` attribute today, and this task did not
-add that mapping — hard-coding an unstable external convention into
-this module's adapter would risk a breaking upstream rename reaching
-into Trustvian's own `Event` semantics for no current consumer need.
+Since [task 075](tasks/v1.0/075-ai-semantic-telemetry-normalization.md),
+Trustvian reads agent-oriented telemetry when a producer emits it. Both
+conventions are read by **one** table, `internal/semconv`, which both
+`internal/otel` and the Collector processor call — so the two adapters cannot
+drift into two conventions.
 
-Documented here as *potential* future adapter work, not a commitment or
-an implemented behavior:
+```text
+telemetry says                               Trustvian records
+──────────────────────────────────────────   ────────────────────────────────────
+POST → export.localhost                      http · POST /v1/export → export.localhost
+gen_ai.operation.name=execute_tool           tool · export_customer → export.localhost
+  + gen_ai.tool.name=export_customer
+```
 
-| OTel GenAI attribute (illustrative, unstable) | Potential Trustvian mapping |
+### What is read
+
+**OpenTelemetry GenAI**, verified against
+`open-telemetry/semantic-conventions-genai` at commit `e57c543b4889`:
+
+| `gen_ai.operation.name` | Category | `Operation.Name` | `Target.Name` |
+|---|---|---|---|
+| `execute_tool` | `tool` | `gen_ai.tool.name` | the transport target, if any |
+| `invoke_agent`, `create_agent` | `tool` | `gen_ai.agent.name` | the transport target, if any |
+| `invoke_workflow`, `plan` | `tool` | `gen_ai.agent.name`, else the operation | the transport target, if any |
+| `chat`, `text_completion`, `generate_content`, `embeddings` | `external` | `gen_ai.request.model` | the provider |
+| `retrieval` | `external` | `gen_ai.data_source.id`, else `retrieval` | `gen_ai.data_source.id` |
+
+`gen_ai.conversation.id` becomes `Context.SessionID`. The provider is
+`gen_ai.provider.name`, falling back to `gen_ai.system` — which appears nowhere in
+the current convention and is read **only** because producers pinned to an older
+one still emit it.
+
+**OpenInference**, verified against `Arize-ai/openinference` at commit
+`300bba9191bf`:
+
+| `openinference.span.kind` | Category | `Operation.Name` | `Target.Name` |
+|---|---|---|---|
+| `TOOL` | `tool` | `tool.name` | the transport target, if any |
+| `AGENT` | `tool` | `agent.name` | the transport target, if any |
+| `LLM`, `EMBEDDING` | `external` | `llm.model_name` | `llm.provider`, else `llm.system` |
+| `RETRIEVER` | `external` | `retriever` | the transport target, if any |
+| `RERANKER` | `external` | `reranker.model_name` | the transport target, if any |
+
+`session.id` becomes `Context.SessionID`. `CHAIN`, `GUARDRAIL`, `EVALUATOR` and
+`PROMPT` are deliberately unmapped — `CHAIN` because its own spec calls it the glue
+code between steps, so it names no operation the actor performed; the other three
+because the spec defines no identity attribute for them.
+
+**`tool.name` is read only on a `TOOL` span.** The same key appears under
+`llm.tools.<index>.tool.name` as an *advertised tool definition*, so reading it
+bare would record a model span that merely lists its available tools as having used
+one.
+
+### What is not read
+
+Twenty-two content attributes, enumerated in `internal/semconv/content.go`:
+`gen_ai.input.messages`, `gen_ai.output.messages`,
+`gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`,
+`gen_ai.tool.definitions`, `gen_ai.system_instructions`, `input.value`,
+`output.value`, both `mime_type` keys, `llm.input_messages`,
+`llm.output_messages`, both `llm.prompt_template.*` keys,
+`retrieval.documents`, both `reranker.*_documents` keys, `tool.parameters`,
+`input.images`, `output.images`, `metadata` and `user.id`.
+
+A tool *name* is what the agent did; a tool *argument* is what it said. See
+[Privacy](SECURITY.md) for where that boundary binds and what it does **not**
+claim.
+
+### Precedence
+
+```text
+trustvian.* override   always wins
+OpenTelemetry GenAI    wins over OpenInference when a span carries both
+OpenInference          wins over transport
+transport              unchanged
+```
+
+### Degradation is a requirement, not a fallback
+
+A producer emitting no agent-oriented convention sees **byte-identical**
+behavior — asserted against real spans in
+`internal/otel/degradation_test.go` and end to end in
+`cmd/trustvian/semantic_e2e_test.go`.
+
+An unknown operation name, an unknown span kind, a renamed attribute, or an
+attribute of the wrong type all mean "the convention is absent". A category that
+matched with its identity attribute missing does **not** fire: `tool · POST` would
+be a semantic category wearing a transport name, and no layer may claim a name the
+telemetry did not supply.
+
+### Fidelity
+
+```text
+transport     only protocol and target were available
+semantic      an agent-oriented convention supplied the operation identity
+```
+
+Reported, never implied. It describes the *mapping result* rather than the span, so
+a span carrying conventions the table declined to read is `transport`.
+
+| Where | How |
 |---|---|
-| `gen_ai.conversation.id` | `Context.SessionID` |
-| A span representing one delegated call between agents | `Context.DelegatedFrom` = the calling agent's identity |
-| `gen_ai.tool.name` | `Operation.Name` (already representable via the existing `Operation`/`Target` mapping this document describes above — no new mapping rule needed) |
+| outbound span attribute | `trustvian.fidelity`, beside the other enrichment |
+| ingest envelope | optional `fidelity`; absent means transport |
+| realtime observation | always present, so absence never needs interpreting |
+| WebUI inspector | a sentence, not a badge |
+| `StableFeatures` / the fingerprint | **never** — it would reset baselines on an instrumentation upgrade |
 
-If and when a future task adopts a stabilized GenAI convention, the
-change belongs entirely in `internal/otel` (or a dedicated adapter),
-exactly like every other mapping this document describes — never in
-`event`, `internal/features`, or any other core package, preserving
-the "OTel is an adapter, never a dependency of the core" boundary
-[`docs/ARCHITECTURE.md`](ARCHITECTURE.md) already establishes.
+There is deliberately **no inbound `trustvian.fidelity` override**: a producer able
+to claim semantic fidelity would defeat the guarantee the indicator makes. An
+unrecognized value on the ingest envelope is refused with `400` rather than
+degraded, because this vocabulary is Trustvian's own closed set rather than an
+external convention.
 
-> **Planned, not shipped.**
-> [Task 075](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) specifies
-> that adoption — GenAI and OpenInference identity attributes normalized at the
-> adapter boundary, with content deliberately ignored and graceful degradation
-> to the transport mapping above. It is specified and not implemented, so
-> everything this document states about current behavior remains accurate: no
-> `gen_ai.*` or OpenInference attribute is read today.
+**Not yet persisted per behavior**, so the comparison response's behavior deltas
+do not carry it — that needs a schema step and is deferred as its own task. See
+[ADR 0045](adr/0045-conventions-are-read-frameworks-are-not.md)'s consequences.
+
+### No framework is named
+
+Trustvian reads conventions, not frameworks. No framework appears in any type,
+field or branch, and `scripts/check-platform-boundary.sh` fails the build if one
+appears in non-test source. `openinference` is the convention's own published
+attribute name, not a framework.
+
+The design reasoning is
+[ADR 0045](adr/0045-conventions-are-read-frameworks-are-not.md).
 
 ## Best-effort, not validated
 

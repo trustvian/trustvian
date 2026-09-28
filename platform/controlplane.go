@@ -20,6 +20,7 @@ import (
 	"time"
 
 	trustvian "github.com/trustvian/trustvian"
+	"github.com/trustvian/trustvian/event"
 )
 
 // ErrEvaluationState reports an operation that does not fit a run's current
@@ -830,6 +831,21 @@ type IngestRequest struct {
 	// core's public type would push a platform concept into every producer.
 	BehavioralProfile BehavioralProfileRef
 
+	// Fidelity travels beside the record for the same reason, and it is the
+	// same kind of fact: metadata about how the record was *produced* rather
+	// than anything the engine decided.
+	//
+	// The engine has no opinion about fidelity — it is a property of the
+	// telemetry adapter's mapping, established before Analyze is called. Putting
+	// it in DecisionRecord would imply the engine produced it, and would push an
+	// adapter concept into every producer, which is the objection ADR 0024 made
+	// to putting the learning scope there.
+	//
+	// The zero value means "not stated", which is read as transport: a producer
+	// that says nothing has proved nothing, and claiming less than the telemetry
+	// showed is the safe direction. Task 075.
+	Fidelity event.Fidelity
+
 	Record trustvian.DecisionRecord
 }
 
@@ -1025,6 +1041,11 @@ func (c *ControlPlane) publishObservation(
 
 			FingerprintID: record.FingerprintID,
 			Behavior:      record.Behavior,
+			// Where the behavior's identity came from. Reported rather than
+			// implied: a live view showing `tool · export_customer` must be able
+			// to say whether the telemetry named that tool or Trustvian inferred
+			// a category from a hostname.
+			Fidelity: request.Fidelity.OrTransport(),
 
 			Decision:       record.Decision,
 			RiskLevel:      record.RiskLevel,

@@ -2113,6 +2113,56 @@ the AI-agent case specifically; a few are explicitly future work.
   `TestAnalyzeAgentSessionIDDoesNotExplodeBaseline` runs 1,000 events
   with 1,000 distinct `SessionID` values and confirms exactly one
   `Fingerprint` entry accumulates all 1,000 observations.
+- **Reading agent-oriented telemetry conventions.**
+  **Status: implemented, and the boundary is stated precisely.**
+  [Task 075](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) reads
+  OpenTelemetry GenAI and OpenInference *identity* attributes — which tool,
+  which model, which agent, which conversation — and reads **none** of the
+  twenty-two content attributes those conventions define. A tool *name* is what
+  the agent did; a tool *argument* is what it said, and routinely carries
+  customer data.
+
+  The guarantee is a **durable and public evidence boundary**, not a claim that
+  a transient in-process map is empty, and that distinction is the one most
+  likely to be misread. `internal/otel`'s own package comment says every span
+  attribute is preserved in `Event.Attributes`, which was true before task 075
+  and is unchanged by it — so a prompt emitted as a span attribute *is* in that
+  map. What content never becomes is `StableFeatures`, fingerprint identity, a
+  `DecisionRecord` field, a realtime field, a persisted row, or a published
+  payload.
+
+  Each of those layers is asserted with all twenty-two content attributes
+  carrying individually distinctive values, so a failure names which one leaked:
+  `internal/otel/privacy_test.go` for the core layers,
+  `platform/httpapi/privacy_semantic_test.go` for the platform ones, and
+  `cmd/trustvian/semantic_e2e_test.go` for the whole path through a real
+  Collector. The sweep is verified to catch a planted leak rather than assumed
+  to.
+
+  **A future proposal to sanitize `Event.Attributes` at the adapter is therefore
+  a compatibility change**, not a tightening of an existing promise — today's
+  preserve-everything behavior is documented and a consumer may rely on it. See
+  [ADR 0045](adr/0045-conventions-are-read-frameworks-are-not.md) § 4.
+
+- **Actor type escalation from telemetry.**
+  **Status: implemented, conservatively.** `Actor.Type` is upgraded to
+  `ai_agent` only when a producer emits an explicit agent-identity attribute
+  (`gen_ai.agent.id`, `gen_ai.agent.name` or `agent.name`), never on the mere
+  presence of a GenAI operation — a plain backend service calling an LLM through
+  an instrumented client library emits `gen_ai.operation.name=chat` and is not an
+  agent. This is a security-relevant default rather than a cosmetic one:
+  `ActorType` is a `StableFeatures` dimension, so an incorrect upgrade changes
+  every fingerprint for that actor and discards its learned baseline — silently
+  resetting behavioral history the first time a service adopted a client library.
+
+- **A producer claiming a fidelity it did not earn.**
+  **Status: implemented, by construction.** The fidelity indicator says whether
+  a behavior's name came from telemetry or from the transport, and there is
+  deliberately **no inbound `trustvian.fidelity` override**. A producer able to
+  claim semantic fidelity would defeat the only guarantee the indicator makes.
+  An unrecognized value on the ingest envelope is refused rather than degraded,
+  because the vocabulary is Trustvian's own closed set.
+
 - **Prompt/tool-argument data leakage into behavioral state.**
   **Status: implemented, by construction.** Trustvian's `Event` model
   has no field for raw prompt text, completion text, or tool argument

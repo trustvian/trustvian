@@ -208,8 +208,12 @@ export class RunGraph {
         targetID,
         // Exactly the descriptor's own strings. No inference, no prettifying,
         // no mapping to a friendlier verb: if telemetry proves only
-        // "POST -> export.localhost", that is what is drawn. Semantic fidelity
-        // is task 075's, and inventing a name here would be the browser
+        // "POST -> export.localhost", that is what is drawn.
+        //
+        // Task 075 landed, so the descriptor may now name a tool rather than a
+        // transport — and the server says which, in `fidelity`. That value is
+        // read and displayed, never derived: the browser cannot tell a tool name
+        // from a span name by looking at it, and guessing would be the browser
         // asserting something no evidence supports.
         operationCategory: behavior.operation_category || "",
         operationName: behavior.operation_name || "",
@@ -220,6 +224,10 @@ export class RunGraph {
         // and would otherwise have to resolve a target key back to its name.
         targetName: behavior.target_name || "",
         targetCategory: behavior.target_category || "",
+        // The server's own answer. Absent is read as "transport" rather than as
+        // unknown, matching the wire contract: a producer that stated nothing
+        // proved nothing.
+        fidelity: observation.fidelity || "transport",
         pulses: 0,
         newBehavior: false,
       };
@@ -238,6 +246,10 @@ export class RunGraph {
     edge.trustScore = observation.trust_score;
     edge.anomalyScore = observation.anomaly_score;
     edge.anomalyConfidence = observation.anomaly_confidence;
+    // Latest wins, like every field above it. Not a conservative minimum across
+    // observations: that would be the browser computing a summary, and each
+    // value displayed has to be an answer the server actually gave.
+    edge.fidelity = observation.fidelity || "transport";
     // Sticky: a behavior that was new when first observed stays labelled new
     // for this viewport, because the badge describes the observation that
     // introduced it rather than the most recent repeat.

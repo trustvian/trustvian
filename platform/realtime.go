@@ -124,6 +124,17 @@ type RealtimeObservation struct {
 	FingerprintID string
 	Behavior      trustvian.StableFeatures
 
+	// Fidelity says how much semantic information the behavior above was
+	// derived from: "semantic" when an agent-oriented telemetry convention
+	// supplied the operation identity, "transport" when only protocol and
+	// target were available.
+	//
+	// It is metadata about the derivation, never behavioral identity — it is
+	// absent from StableFeatures on purpose, because folding it in would make
+	// the same behavior fingerprint differently before and after a producer
+	// upgraded its instrumentation. Task 075.
+	Fidelity event.Fidelity
+
 	Decision       string
 	RiskLevel      string
 	ApprovalStatus event.ApprovalStatus

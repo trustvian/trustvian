@@ -18,6 +18,23 @@
 //	trustvian.identity.confidence overrides the default Actor.IdentityConfidence
 //	trustvian.operation.category  overrides the inferred Operation.Category (e.g. "tool")
 //
+// Since task 075 it also reads the agent-oriented conventions — OpenTelemetry
+// GenAI and OpenInference — through internal/semconv, which holds the table both
+// this adapter and the Collector processor use. The convention supplies a better
+// operation identity where a producer emits one; where none does, the mapping is
+// byte-for-byte what it was before, which internal/otel's degradation_test.go
+// asserts against real spans.
+//
+// The precedence is fixed: an explicit trustvian.* override always wins over a
+// convention reading, and a convention reading always wins over the transport
+// mapping. An operator's statement about their own telemetry outranks a
+// convention, and a convention outranks a guess from a hostname.
+//
+// It also sets one *derived* attribute on the Event:
+//
+//	trustvian.fidelity            "transport" or "semantic" — where the operation
+//	                              name came from. Never an inbound override.
+//
 // Every span attribute — mapped or not — is preserved in Event.Attributes,
 // so nothing is silently dropped.
 package otel
@@ -33,6 +50,7 @@ import (
 
 	"github.com/trustvian/trustvian/event"
 	"github.com/trustvian/trustvian/internal/features"
+	trustviansemconv "github.com/trustvian/trustvian/internal/semconv"
 )
 
 // Trustvian-specific override attributes. See the package doc for why
@@ -73,10 +91,52 @@ func EventFromSpan(span sdktrace.ReadOnlySpan) event.Event {
 		identityConfidence = v
 	}
 
+	// The convention table, before the transport fallbacks below so they can
+	// defer to it — but after the override reads above, which outrank it.
+	normalized := trustviansemconv.Normalize(trustviansemconv.Span{
+		Kind:       spanKind(span.SpanKind()),
+		Name:       span.Name(),
+		Attributes: attrs,
+		Resource:   resourceMap(span),
+	})
+
 	category := event.OperationCategory(stringAttr(attrs, AttrOperationCategory))
+	if category == "" && normalized.Matched() {
+		category = event.OperationCategory(normalized.OperationCategory)
+	}
 	if category == "" {
 		category = inferCategory(attrs)
 	}
+
+	// The span name stays the operation name unless a convention supplied a
+	// better one. A span name is transport: "POST /v1/export" describes the
+	// request, not the tool the agent chose.
+	operationName := span.Name()
+	if normalized.Matched() {
+		operationName = normalized.OperationName
+	}
+
+	// The convention's target wins where it has one, and falls back to the
+	// transport target otherwise — which is what makes `tool · export_customer →
+	// export.localhost` possible on a tool span that wraps an HTTP call. An empty
+	// result is left empty rather than substituted: Target.Name is optional, and
+	// inventing a target would be the fabrication task 075 forbids.
+	target := normalized.TargetName
+	if target == "" {
+		target = targetName(attrs)
+	}
+
+	// The actor type is the one dimension a convention may only *raise*, never
+	// override: Actor.Type is a StableFeatures dimension, so an upgrade discards
+	// that actor's learned baseline. The explicit override above still wins.
+	if stringAttr(attrs, AttrActorType) == "" && normalized.ActorType != "" {
+		actorType = event.ActorType(normalized.ActorType)
+	}
+
+	// Recorded on the Event rather than in a core field: Event has no fidelity
+	// field and task 075 must not add one. Attributes is where this adapter
+	// already puts derived values, and the outbound half reads it from here.
+	attrs[trustviansemconv.AttrFidelity] = string(normalized.Fidelity.OrTransport())
 
 	sc := span.SpanContext()
 
@@ -90,17 +150,56 @@ func EventFromSpan(span sdktrace.ReadOnlySpan) event.Event {
 		},
 		Operation: event.Operation{
 			Category:  category,
-			Name:      span.Name(),
+			Name:      operationName,
 			Direction: directionFromSpanKind(span.SpanKind()),
 		},
-		Target:     event.Target{Name: targetName(attrs)},
+		Target:     event.Target{Name: target},
 		Attributes: attrs,
 		Context: event.Context{
 			Environment: resourceAttr(span, semconv.DeploymentEnvironmentNameKey),
 			TraceID:     sc.TraceID().String(),
 			SpanID:      sc.SpanID().String(),
+			SessionID:   normalized.SessionID,
 		},
 	}
+}
+
+// spanKind translates the SDK's kind into the table's own vocabulary.
+//
+// internal/semconv holds no OpenTelemetry import, so the translation happens here
+// where the OTel types already are.
+func spanKind(kind trace.SpanKind) trustviansemconv.Kind {
+	switch kind {
+	case trace.SpanKindClient:
+		return trustviansemconv.KindClient
+	case trace.SpanKindServer:
+		return trustviansemconv.KindServer
+	case trace.SpanKindProducer:
+		return trustviansemconv.KindProducer
+	case trace.SpanKindConsumer:
+		return trustviansemconv.KindConsumer
+	case trace.SpanKindInternal:
+		return trustviansemconv.KindInternal
+	default:
+		return trustviansemconv.KindUnspecified
+	}
+}
+
+// resourceMap flattens a span's resource for the table.
+//
+// Built rather than passed lazily because the table takes plain values; a span
+// resource is small and bounded, so the copy is not worth avoiding.
+func resourceMap(span sdktrace.ReadOnlySpan) map[string]any {
+	res := span.Resource()
+	if res == nil {
+		return nil
+	}
+	kvs := res.Attributes()
+	out := make(map[string]any, len(kvs))
+	for _, kv := range kvs {
+		out[string(kv.Key)] = attributeValue(kv.Value)
+	}
+	return out
 }
 
 // bridgeVolatileSignals sets the features.AttrDurationMS/AttrError keys

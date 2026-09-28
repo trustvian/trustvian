@@ -292,6 +292,12 @@ type ingestEnvelope struct {
 	// carries no learning scope, and ADR 0024 kept it that way.
 	BehavioralProfile string `json:"behavioral_profile"`
 
+	// Fidelity rides here for the same reason and is the same kind of fact:
+	// metadata about how the adapter derived the record, not anything the engine
+	// decided. Optional — absent means "transport", so a producer built before
+	// task 075 keeps working unchanged. Task 075.
+	Fidelity string `json:"fidelity,omitempty"`
+
 	Record jsonRaw `json:"record"`
 }
 
@@ -553,6 +559,11 @@ type realtimeObservationDTO struct {
 
 	FingerprintID string                `json:"fingerprint_id"`
 	Behavior      behaviorDescriptorDTO `json:"behavior"`
+
+	// Fidelity says where the behavior's identity came from — "semantic" or
+	// "transport". Always present, so a consumer never has to decide what an
+	// absent field meant. Task 075.
+	Fidelity string `json:"fidelity"`
 
 	Decision       string `json:"decision"`
 	RiskLevel      string `json:"risk_level"`

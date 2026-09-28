@@ -29,7 +29,8 @@ Status vocabulary:
 evaluation foundation, local persistence, the local control-plane API and
 realtime, the developer CLI, the TUI, the WebUI, the PostgreSQL backend, the
 environment model and promotion (tasks 051–066, 073 and 074) exist, while
-075–080 are specified and 067–072 are still PLANNED.
+076 and 078–080 are specified, 075 and 077 are implemented, and 067–072 are
+still PLANNED.
 What exists is not usable end to end on its own. Everything under
 [Beyond v1.0](#beyond-v10) is FUTURE.
 
@@ -256,7 +257,7 @@ until then.
 
 | Task | Status | Milestone |
 |---|---|---|
-| 075 | Specified | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) |
+| 075 | **Implemented** | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) |
 | 077 | **Implemented** | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) |
 | 078 | Specified | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
 | 079 | Specified | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
@@ -488,8 +489,8 @@ gate result the decision consumed is snapshotted field for field rather than
 re-derived on read, and the write commits only against the environment state it
 was decided against. Schema version is now **4** on both backends.
 
-**Six gap-closing milestones remain specified and not implemented: 075–080.
-074 is implemented.**
+**Four gap-closing milestones remain specified and not implemented: 076, 078,
+079 and 080. 074, 075 and 077 are implemented.**
 075–078 were each found by running the product end to end — an instrumented
 agent, a browser, and a developer who has not read the source — rather than by
 planning, which is why they sit outside the reserved 049–072 block alongside
@@ -835,7 +836,7 @@ decision that needs a measurement behind it.
 
 Small, independently shippable tasks continuing this repository's numbering.
 **Partly implemented:** tasks 049–066 are done; 067–072 remain PLANNED.
-Outside that reserved sequence, 073 and 074 are done and 075–080 are
+Outside that reserved sequence, 073, 074, 075 and 077 are done and the rest are
 specified — see the gap-closing table below.
 
 **Numbering is identity, not order.** A task's number records when it was
@@ -901,12 +902,13 @@ says which rows the release actually depends on.
 |---|---|---|---|
 | 073 | OTel Collector evaluation ingest — the Collector produces a `Result`, the control plane accepts a `DecisionRecord`, and nothing joined them | **Implemented** | `v1.0` |
 | 074 | [Zero-input live behavior WebUI](tasks/v1.0/074-zero-input-live-behavior-webui.md) — automatic active-scope discovery, a bounded live behavior graph, and a browseable hierarchy without entering an identifier | Implemented | `v1.0` |
-| 075 | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) — read agent-oriented OpenTelemetry where a producer emits it, so a tool call is a tool call rather than an HTTP POST | Specified | `v1.0` |
+| 075 | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) — read agent-oriented OpenTelemetry where a producer emits it, so a tool call is a tool call rather than an HTTP POST | **Implemented** | `v1.0` |
 | 076 | [Behavioral trace and session evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md) — see *why* behavior was familiar, new or anomalous, from metadata alone | Specified | `v1.0` |
 | 077 | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — one command wraps an existing agent, composes the runtime, and needs no change to the application | **Implemented** | `v1.0` |
 | 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) — run the same scenario N times per side, diff the behavior, gate the difference over k-of-N evidence | Specified | `v1.0` |
 | 079 | [CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md) — the 078 verdict rendered on the pull request, exit codes passed through, no `pull_request_target` with an untrusted checkout | Specified | preview only |
 | 080 | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md) — precision, recall and false-positive rate for the existing signals against a public agent prompt-injection benchmark | Specified | neither |
+| 081 | Persist behavior fidelity, so a comparison delta reports whether a behavior was named by telemetry or inferred from transport — a forward-only schema step in both backends, deferred from 075 | Not specified | neither |
 
 **Production history and scale:**
 
@@ -918,6 +920,17 @@ says which rows the release actually depends on.
 | 070 | Platform security hardening |
 | 071 | Platform backup, restore, and upgrade |
 | 072 | OSS platform `v1.0` release gate |
+
+**081 is a deferral, not a discovery.** Task 075 shipped fidelity on the
+outbound span attribute, the ingest envelope, the realtime observation and the
+WebUI — everywhere it needs no storage. Carrying it on a comparison delta needs it
+persisted per behavior, which is a forward-only schema step in both SQLite and
+PostgreSQL plus the backup/restore/upgrade path. It was separated deliberately: a
+migration bug damages a user's database, and the rule for a behavior whose
+observations disagree about fidelity is a decision that should be made rather than
+arrived at. `TestFidelityIsNotPersistedYet` records the gap in the suite and fails
+the moment it closes. See
+[ADR 0045](adr/0045-conventions-are-read-frameworks-are-not.md)'s consequences.
 
 ### Execution order, rather than numeric order
 
@@ -952,12 +965,13 @@ Conceptually:
 
 Six things this diagram says, and one it does not:
 
-- **074 and 075 are independent of each other** and can proceed in parallel.
+- **074 and 075 were independent of each other** and both are implemented.
   076 needs both, plus whatever history 067 makes durable.
-- **075 does not block 077.** The local dev runtime transports whatever
-  telemetry the workload emits; 075 decides how richly it is read.
-  `trustvian dev` is useful at today's HTTP, DB and RPC fidelity and becomes
-  better when 075 lands. The two are parallel capabilities.
+- **075 did not block 077**, and both are implemented. The local dev runtime
+  transports whatever telemetry the workload emits; 075 decides how richly it is
+  read. `trustvian dev` was useful at HTTP, DB and RPC fidelity before 075 landed
+  and reports tool-level behavior now that it has. They were parallel
+  capabilities, which is how they were built.
 - **077, 078 and 079 are a second thread**, needing 074's discovery but not the
   explorer. 078 needs 077's repeatable invocation, and 079 needs 078's
   machine-readable result and exit codes — it renders them and computes nothing.
