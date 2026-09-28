@@ -198,6 +198,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /v1/evaluation-runs/{run_id}/cancel", h.cancelRun)
 
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/progress", h.progress)
+	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/behaviors", h.runBehaviors)
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/ingest-state", h.ingestState)
 	h.mux.HandleFunc("POST /v1/evaluation-runs/{run_id}/records", h.ingestRecord)
 
@@ -1200,4 +1201,44 @@ func (h *Handler) listCandidateRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK,
 		newEvaluationRunListResponse(string(candidateID), page, nextAfter))
+}
+
+// runBehaviors serves GET /v1/evaluation-runs/{run_id}/behaviors.
+//
+// Paged exactly as task 065's collections are, reused rather than redesigned:
+// ordered by fingerprint byte-ascending, `after` exclusive, limit 1..64.
+//
+// next_after is established by a second bounded question rather than by asking
+// for limit+1, which is the correction task 066 made when a transport widened
+// the store's public contract to 65 for lookahead. The probe costs one more
+// page of one entry and keeps the bound meaning one thing everywhere.
+func (h *Handler) runBehaviors(w http.ResponseWriter, r *http.Request) {
+	runID := platform.EvaluationRunID(r.PathValue("run_id"))
+
+	limit, err := listLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	after := r.URL.Query().Get("after")
+
+	page, err := h.controlPlane.EvaluationRunBehaviors(r.Context(), runID, after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	nextAfter := ""
+	if len(page.Entries) == limit {
+		last := page.Entries[len(page.Entries)-1].FingerprintID
+		probe, err := h.controlPlane.EvaluationRunBehaviors(r.Context(), runID, last, 1)
+		if err != nil {
+			h.writeError(w, err)
+			return
+		}
+		if len(probe.Entries) > 0 {
+			nextAfter = last
+		}
+	}
+	writeJSON(w, http.StatusOK, newRunBehaviorListResponse(string(runID), page, nextAfter))
 }
