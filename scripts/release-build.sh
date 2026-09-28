@@ -24,6 +24,22 @@ readonly BINARY="trustvian"
 readonly CMD="./cmd/trustvian"
 readonly DIST="${DIST_DIR:-dist}"
 
+# The two helpers `trustvian dev` supervises, and the modules they come from.
+#
+# dev composes a local control plane and an OTLP Collector it does not contain:
+# the root CLI must not import trustvian-platform (ADR 0022, 0033, 0035), so
+# they are separate binaries found on disk. Shipping them here is what closes
+# ADR 0043's open item — dev's resolution order already looks alongside its own
+# executable, so an archive holding all three needs no configuration at all.
+#
+# Built from their own modules with GOWORK=off, exactly as the Makefile and the
+# container build do: the release must resolve modules the way a consumer does,
+# not the way a developer's workspace does.
+readonly HELPERS=(
+    "trustvian-local:platform:./cmd/trustvian-local"
+    "trustvian-collector:processor:./cmd/trustvian-collector"
+)
+
 # The advertised target matrix. Every entry here is built; a target that
 # fails to compile fails the whole run, because a release that silently
 # skips a platform it advertises is worse than one that fails loudly.
@@ -72,6 +88,30 @@ for target in "${TARGETS[@]}"; do
     # revision itself (see internal/buildinfo).
     CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
         go build -trimpath -o "$stage/${BINARY}${ext}" "$CMD"
+
+    # The dev helpers, on the platforms where `dev` runs.
+    #
+    # Not on Windows: dev refuses to start there outright (it forwards SIGINT
+    # and SIGTERM to a child, and Windows has no equivalent delivery — see
+    # cmd/trustvian/dev_child_windows.go). Shipping 60 MB of helpers for a
+    # command that declines to run them would be weight with no capability
+    # behind it, so the Windows archive is unchanged by this.
+    if [ "$os" != "windows" ]; then
+        for entry in "${HELPERS[@]}"; do
+            helper="${entry%%:*}"
+            rest="${entry#*:}"
+            module="${rest%%:*}"
+            pkg="${rest#*:}"
+
+            printf '\n  %-16s %s ' "" "$helper"
+            (
+                cd "$module"
+                CGO_ENABLED=0 GOWORK=off GOOS="$os" GOARCH="$arch" \
+                    go build -trimpath -o "../$stage/$helper" "$pkg"
+            )
+        done
+        printf '\n  %-16s ' ""
+    fi
 
     # Licensing travels with the artifact; the README gives a recipient
     # somewhere to start. Nothing else — an archive is not a repository.

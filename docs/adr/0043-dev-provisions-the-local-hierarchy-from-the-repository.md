@@ -156,14 +156,27 @@ so a developer knows which control plane they are looking at.
   it is a real complaint rather than an imagined one.
 - `resolveLocalDiscovery` now has two locations, so an unexpected endpoint has
   two places to come from. The operational error names both.
-- **Open: `trustvian dev` cannot work from a bare `go install`.** The release
-  archive contains one binary, and dev supervises two helpers that are not in
-  it, so the resolution order ends in an error that says so and names
-  `make dev`. Shipping both helpers in the archive would close this, and it is
-  not free: it triples artifact size, puts an OpenTelemetry Collector build into
-  every release, and needs a supply-chain review plus changes to
-  `release-build.sh` and the release workflow. `docs/compatibility.md` classifies
-  "Archive internal layout" as OBSERVATIONAL, so adding files breaks no promise.
-  It is deliberately left as a separate task rather than folded into a feature
-  change: until then `dev` is a checkout-and-`make` capability, which is what the
-  demo repository and task 078 need.
+- **Closed: the release archive ships both helpers**, so `trustvian dev` works
+  from a downloaded release with no checkout. This was left open here and taken
+  as its own change rather than folded into a feature change, which is what let
+  the cost be measured instead of estimated.
+
+  The resolution order needed no edit. Step 3 — *beside this binary* — was
+  written for exactly this and carried the note "no release ships that way
+  today; it costs nothing now and is the whole mechanism if the archive ever
+  grows." The archive grew and the mechanism worked unchanged.
+
+  Three things this ADR predicted, checked against what shipping it actually
+  cost:
+
+  | Predicted | Measured |
+  |---|---|
+  | "triples artifact size" | ~4.5x compressed, 8.8 MB → ~40 MB. `trustvian` 18.9 MB, `trustvian-local` 21.3 MB, `trustvian-collector` 39.5 MB uncompressed — a Collector build is larger than the CLI it accompanies |
+  | "puts an OpenTelemetry Collector build into every release" | Into every **macOS and Linux** release. Not Windows, where `dev` refuses to start at all, so the helpers would be weight with no capability behind it |
+  | "needs a supply-chain review" | Performed, and the finding is that the posture is unchanged: the archives carry a SHA-256 manifest and no attestation, before and after. Attesting them is a real gap, now recorded in `docs/supply-chain.md` rather than assumed |
+
+  `docs/compatibility.md` classifies "Archive internal layout" as OBSERVATIONAL,
+  so adding files breaks no promise. `go install` still yields only
+  `trustvian`, because the helpers live in repository-internal modules the root
+  module must not import — the not-found message names that case explicitly
+  instead of implying a misconfiguration.

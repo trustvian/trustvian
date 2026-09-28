@@ -10,6 +10,34 @@ actually depend on.
 
 ### Added
 
+- **`trustvian dev` works from a downloaded release** — no checkout, no `make`.
+  The macOS and Linux archives now ship the two helpers dev supervises beside
+  the CLI:
+
+  ```text
+  trustvian            the CLI
+  trustvian-local      the local control plane
+  trustvian-collector  the OTLP receiver and the Trustvian processor
+  ```
+
+  Extract, run `trustvian dev`, and it finds them. dev's resolution order
+  already looked alongside its own executable — that step was written for this
+  and needed no change — so there is no new configuration and no new mechanism.
+
+  This closes the item ADR 0043 left open. The Windows archive is unchanged:
+  `dev` refuses to start there at all, so the helpers would be 60 MB with no
+  capability behind them. A macOS or Linux archive grows from roughly 8.8 MB
+  compressed to roughly 40 MB; `go install` still yields only `trustvian`,
+  because the helpers live in repository-internal modules the root module must
+  not import, and the not-found message now names that case instead of implying
+  something is misconfigured.
+
+  Supply-chain posture is unchanged and now stated explicitly in
+  `docs/supply-chain.md`: all three binaries are covered by the release's
+  SHA-256 manifest, exactly as the CLI alone was. The archives carry no SBOM or
+  provenance attestation — they did not before either — and attesting them is
+  recorded as a known gap rather than left as an assumed guarantee.
+
 - **Trustvian understands agent-oriented telemetry** (task 075). Zero-code
   instrumentation flattens an agent into its transport: a model, a CRM, a
   knowledge service, an exporter and a mailer all become `POST` and `GET` against
