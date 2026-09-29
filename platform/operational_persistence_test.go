@@ -344,12 +344,20 @@ func TestValidOperationalEvidenceStillLoads(t *testing.T) {
 		{"every duration identical", `
 			duration_count = record_count, duration_unobserved = '0',
 			duration_sum = '9', duration_min = '3', duration_max = '3'`},
+		// Count 3 with Min 2 and Max 4: both extrema are observed, so the
+		// multiset is [2, x, 4] with x in [2,4] and the total lies in [8,10].
+		// An earlier version of this table used 6 and 12, which no run could
+		// produce — see TestDurationExtremaBoundsArePersistedAndEnforced.
 		{"a sum exactly at the lower bound", `
 			duration_count = record_count, duration_unobserved = '0',
-			duration_sum = '6', duration_min = '2', duration_max = '4'`},
+			duration_sum = '8', duration_min = '2', duration_max = '4'`},
+		{"a sum between the bounds", `
+			duration_count = record_count, duration_unobserved = '0',
+			duration_sum = '9', duration_min = '2', duration_max = '4'`},
 		{"a sum exactly at the upper bound", `
 			duration_count = record_count, duration_unobserved = '0',
-			duration_sum = '12', duration_min = '2', duration_max = '4'`},
+			duration_sum = '10', duration_min = '2', duration_max = '4'`},
+
 		{"extrema at the per-observation maximum", `
 			duration_count = '2', duration_unobserved = '1',
 			duration_sum = '18446744073709551614',
@@ -377,9 +385,14 @@ func TestValidOperationalEvidenceStillLoads(t *testing.T) {
 	}
 }
 
-// TestLegitimateTotalIsNotRejectedByIntermediateOverflow is the requirement that
-// the upper-bound check must not reject a real total just because Max*Count
-// would wrap.
+// TestLegitimateTotalIsNotRejectedByIntermediateOverflow keeps a large but
+// reachable total loadable.
+//
+// Three observations with Min 1 and Max the per-observation maximum: the
+// smallest reachable total is Max + 2*Min, which this sits exactly on. The
+// upper-bound overflow case it used to cover moved to
+// TestExtremaBoundOverflowCases, which exercises it against the corrected
+// bounds.
 func TestLegitimateTotalIsNotRejectedByIntermediateOverflow(t *testing.T) {
 	store, _ := testStore(t)
 	run := seedOperationalEvidence(t, store)
@@ -399,4 +412,218 @@ func TestLegitimateTotalIsNotRejectedByIntermediateOverflow(t *testing.T) {
 		t.Fatalf("a legitimate total was refused because an intermediate product "+
 			"would overflow: %v", err)
 	}
+}
+
+// seedDurations writes one run whose observed durations are exactly the given
+// values, through the real AddRecord path so every counter is consistent by
+// construction.
+//
+// The corruption tests below then edit only the duration columns, which is what
+// makes them tests of the validator rather than of the fixture.
+func seedDurations(t *testing.T, store *SQLiteStore, durations ...string) EvaluationRun {
+	t.Helper()
+	run := seedRun(t, store)
+
+	aggregate, err := NewEvaluationAggregate(run)
+	if err != nil {
+		t.Fatalf("NewEvaluationAggregate() error = %v", err)
+	}
+	collector, err := NewBehaviorCollector(run)
+	if err != nil {
+		t.Fatalf("NewBehaviorCollector() error = %v", err)
+	}
+	for i, duration := range durations {
+		record := operationalTestRecord(run, "e"+strconv.Itoa(i), duration, event.StatusUnset)
+		if aggregate, err = aggregate.AddRecord(record); err != nil {
+			t.Fatalf("AddRecord(%d) error = %v", i, err)
+		}
+		if err := collector.Observe(record); err != nil {
+			t.Fatalf("Observe(%d) error = %v", i, err)
+		}
+	}
+	if err := store.SaveEvaluationEvidence(
+		t.Context(), aggregate, collector.Snapshot()); err != nil {
+		t.Fatalf("SaveEvaluationEvidence() error = %v", err)
+	}
+	return run
+}
+
+// TestDurationExtremaBoundsArePersistedAndEnforced is the corrected invariant,
+// exercised through the persisted read path.
+//
+// Min and Max are *observed* extrema, so each appears at least once and the
+// remaining Count-2 observations lie between them:
+//
+//	Max + (Count-1)*Min  <=  Sum  <=  Min + (Count-1)*Max
+//
+// An earlier version used Min*Count <= Sum <= Max*Count, which admits totals no
+// run could produce — Count 3 with Min 2 and Max 4 accepted Sum 6, while the
+// smallest such multiset is [2,2,4] and sums to 8.
+func TestDurationExtremaBoundsArePersistedAndEnforced(t *testing.T) {
+	tests := []struct {
+		name     string
+		seed     []string
+		sum      string
+		accepted bool
+	}{
+		// Three observations, Min 2 and Max 4: only 8, 9 and 10 are reachable.
+		{"below the lower bound", []string{"2", "3", "4"}, "6", false},
+		{"one below the lower bound", []string{"2", "3", "4"}, "7", false},
+		{"exactly the lower bound", []string{"2", "3", "4"}, "8", true},
+		{"between the bounds", []string{"2", "3", "4"}, "9", true},
+		{"exactly the upper bound", []string{"2", "3", "4"}, "10", true},
+		{"one above the upper bound", []string{"2", "3", "4"}, "11", false},
+		{"above the upper bound", []string{"2", "3", "4"}, "12", false},
+
+		// The existing fixture's shape: two observed durations, 1000 and 3000.
+		// Both extrema are observed and there is no third value, so 4000 is the
+		// only possible total.
+		{"the only possible total for two observations",
+			[]string{"1000", "", "3000"}, "4000", true},
+		{"below it", []string{"1000", "", "3000"}, "3000", false},
+		{"above it", []string{"1000", "", "3000"}, "5000", false},
+
+		// Identical durations leave no freedom at all.
+		{"identical durations", []string{"3", "3", "3"}, "9", true},
+		{"identical durations, wrong total", []string{"3", "3", "3"}, "8", false},
+
+		// Zero is a measurement like any other.
+		{"every duration zero", []string{"0", "0", "0"}, "0", true},
+		{"zeroes cannot sum to anything", []string{"0", "0", "0"}, "1", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, _ := testStore(t)
+			run := seedDurations(t, store, tt.seed...)
+
+			exec(t, store.db,
+				`UPDATE `+tableAggregates+` SET duration_sum = ? WHERE run_id = ?`,
+				tt.sum, string(run.ID()))
+
+			_, _, err := store.EvaluationEvidence(t.Context(), run.ID())
+			if tt.accepted {
+				if err != nil {
+					t.Fatalf("a reachable total was refused: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("an unreachable total %s was accepted", tt.sum)
+			}
+			if !errors.Is(err, ErrStoreCorrupt) {
+				t.Errorf("error = %v, want ErrStoreCorrupt", err)
+			}
+		})
+	}
+}
+
+// TestSingleObservationRequiresAgreement is the Count == 1 case: the extrema and
+// the total are all the same measurement.
+func TestSingleObservationRequiresAgreement(t *testing.T) {
+	tests := []struct {
+		name     string
+		update   string
+		accepted bool
+	}{
+		{"all three agree", `duration_min = '7', duration_max = '7', duration_sum = '7'`, true},
+		{"a zero observation", `duration_min = '0', duration_max = '0', duration_sum = '0'`, true},
+		{"the sum disagrees", `duration_min = '7', duration_max = '7', duration_sum = '8'`, false},
+		{"the max disagrees", `duration_min = '7', duration_max = '9', duration_sum = '7'`, false},
+		{"the min disagrees", `duration_min = '5', duration_max = '7', duration_sum = '7'`, false},
+		{"all three differ", `duration_min = '5', duration_max = '9', duration_sum = '7'`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, _ := testStore(t)
+			run := seedDurations(t, store, "7")
+
+			exec(t, store.db,
+				`UPDATE `+tableAggregates+` SET `+tt.update+` WHERE run_id = ?`,
+				string(run.ID()))
+
+			_, _, err := store.EvaluationEvidence(t.Context(), run.ID())
+			if tt.accepted {
+				if err != nil {
+					t.Fatalf("a consistent single observation was refused: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("a single observation whose extrema and total disagree was accepted")
+			}
+			if !errors.Is(err, ErrStoreCorrupt) {
+				t.Errorf("error = %v, want ErrStoreCorrupt", err)
+			}
+		})
+	}
+}
+
+// TestExtremaBoundOverflowCases covers the two directions separately, because
+// they mean opposite things.
+func TestExtremaBoundOverflowCases(t *testing.T) {
+	maxOne := strconv.FormatUint(event.MaxDurationNanos, 10)
+
+	t.Run("a lower bound that overflows is impossible", func(t *testing.T) {
+		store, _ := testStore(t)
+		run := seedDurations(t, store, "1", "2", "3")
+
+		// Three observations at the per-observation maximum: the smallest total
+		// is Max + 2*Min, which cannot be represented, so no stored Sum is valid.
+		exec(t, store.db, `UPDATE `+tableAggregates+` SET
+			duration_count = '3', duration_unobserved = '0',
+			duration_min = ?, duration_max = ?, duration_sum = ?
+			WHERE run_id = ?`,
+			maxOne, maxOne, strconv.FormatUint(math.MaxUint64, 10), string(run.ID()))
+
+		_, _, err := store.EvaluationEvidence(t.Context(), run.ID())
+		if err == nil {
+			t.Fatal("a summary whose smallest possible total is unrepresentable was accepted")
+		}
+		if !errors.Is(err, ErrStoreCorrupt) {
+			t.Errorf("error = %v, want ErrStoreCorrupt", err)
+		}
+	})
+
+	t.Run("an upper bound that overflows constrains nothing", func(t *testing.T) {
+		store, _ := testStore(t)
+		run := seedDurations(t, store, "1", "2", "3", "4")
+
+		// Four observations, Min 1 and Max the per-observation maximum. The
+		// upper bound Min + 3*Max exceeds uint64, so it cannot constrain a
+		// stored Sum — and a legitimate total must not be refused because that
+		// intermediate calculation would have wrapped.
+		exec(t, store.db, `UPDATE `+tableAggregates+` SET
+			duration_count = '4', duration_unobserved = '0',
+			duration_min = '1', duration_max = ?, duration_sum = ?
+			WHERE run_id = ?`,
+			maxOne, strconv.FormatUint(math.MaxUint64, 10), string(run.ID()))
+
+		if _, _, err := store.EvaluationEvidence(t.Context(), run.ID()); err != nil {
+			t.Fatalf("a legitimate total was refused because its upper bound would "+
+				"overflow: %v", err)
+		}
+	})
+
+	t.Run("a sum above MaxInt64 stays valid", func(t *testing.T) {
+		store, _ := testStore(t)
+		run := seedDurations(t, store, "1", "2")
+
+		// Two observations at the per-observation maximum sum to MaxUint64-1.
+		// The individual-duration limit must not become an aggregate-sum limit.
+		exec(t, store.db, `UPDATE `+tableAggregates+` SET
+			duration_count = '2', duration_unobserved = '0',
+			duration_min = ?, duration_max = ?, duration_sum = ?
+			WHERE run_id = ?`,
+			maxOne, maxOne, strconv.FormatUint(uint64(math.MaxUint64)-1, 10), string(run.ID()))
+
+		restored, _, err := store.EvaluationEvidence(t.Context(), run.ID())
+		if err != nil {
+			t.Fatalf("an aggregate sum above MaxInt64 was refused: %v", err)
+		}
+		if restored.Durations().Sum != math.MaxUint64-1 {
+			t.Errorf("restored sum = %d, want MaxUint64-1", restored.Durations().Sum)
+		}
+	})
 }

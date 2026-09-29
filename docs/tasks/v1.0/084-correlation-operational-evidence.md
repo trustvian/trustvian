@@ -230,15 +230,35 @@ or repairing anything:
 - both bucket sets partition the run, summed overflow-safely so two corrupt
   counters cannot wrap into a plausible total;
 - `Count == 0` requires `Sum`, `Min` and `Max` to be zero;
+- `Count == 1` requires `Min == Max == Sum`;
 - `Min <= Max`, and `Max` within the per-observation bound;
-- `Sum >= Max`, and `Sum` between `Min*Count` and `Max*Count`.
+- for `Count >= 2`, `Sum` within the extrema bounds below.
 
-The two product checks handle overflow in opposite directions, deliberately. If
-`Min*Count` overflows, no representable sum could satisfy the lower bound, so the
-persisted state is impossible and is refused. If `Max*Count` overflows, every
-representable sum satisfies the upper bound, so the check constrains nothing and
-is skipped — **a legitimate total is never rejected because an intermediate
-calculation would have wrapped**.
+**`Min` and `Max` are *observed* extrema, not merely limits**, which makes the
+bounds tighter than a first reading suggests. Each appears at least once and the
+remaining `Count-2` observations lie between them, so:
+
+```text
+Max + (Count-1)*Min   <=   Sum   <=   Min + (Count-1)*Max
+```
+
+An earlier version used `Min*Count <= Sum <= Max*Count` and accepted summaries no
+run could produce: `Count 3, Min 2, Max 4` admitted `Sum 6`, while the smallest
+multiset containing both extrema is `[2, 2, 4]` and sums to `8`. Only `8`, `9`
+and `10` are reachable there, and two persistence fixtures asserting otherwise
+were corrected with the validator.
+
+The two bounds handle overflow in opposite directions, deliberately. If the
+**lower** bound overflows, no representable `Sum` could satisfy it, so the
+persisted summary is impossible and is refused. If the **upper** bound overflows,
+every representable `Sum` satisfies it, so the check constrains nothing and is
+skipped — **a legitimate total is never rejected because an intermediate
+calculation would have wrapped**. Neither product is allowed to wrap: both are
+guarded before they are computed.
+
+This constrains the *summary*, never the aggregate's capacity: two observations
+at the per-observation maximum legitimately sum past `MaxInt64`, and a test pins
+that.
 
 Overflow follows the existing contract exactly: any counter or the nanosecond
 sum reaching `math.MaxUint64` returns `ErrAggregateOverflow` and the record is

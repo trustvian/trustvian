@@ -248,36 +248,73 @@ func validateRestoredOperational(d DurationSummary, c SpanStatusCounts, records 
 		return fmt.Errorf("duration max %d exceeds the per-observation maximum %d",
 			d.Max, event.MaxDurationNanos)
 	}
-	// One observation of Max is already in the sum.
-	if d.Sum < d.Max {
-		return fmt.Errorf("duration sum %d is below its own maximum %d", d.Sum, d.Max)
+	// One observation, so the extrema and the total are the same measurement.
+	if d.Count == 1 {
+		if d.Min != d.Max || d.Sum != d.Min {
+			return fmt.Errorf(
+				"one observed duration but min %d, max %d and sum %d disagree",
+				d.Min, d.Max, d.Sum)
+		}
+		return nil
 	}
 
-	// Count values, each between Min and Max, sum to between Min*Count and
-	// Max*Count. Both products are guarded, and the two overflow cases mean
-	// opposite things:
+	// Min and Max are *observed* extrema, not merely limits: each appears at
+	// least once, and the remaining Count-2 observations lie between them. So
+	// the tightest bounds are
 	//
-	//   Min*Count overflows  no representable sum could satisfy the lower bound,
-	//                        so the persisted state is impossible and is refused;
-	//   Max*Count overflows  every representable sum satisfies the upper bound,
-	//                        so the check constrains nothing and is skipped.
+	//     Max + (Count-1)*Min  <=  Sum  <=  Min + (Count-1)*Max
+	//
+	// and not Min*Count <= Sum <= Max*Count, which an earlier version used. The
+	// looser pair accepts summaries no run could produce: Count 3 with Min 2 and
+	// Max 4 admits Sum 6, while the smallest multiset containing both extrema is
+	// [2, 2, 4] and sums to 8.
+	//
+	// The two overflow cases mean opposite things, which is why each is handled
+	// separately rather than through one shared helper:
+	//
+	//   lower bound overflows   no representable Sum could satisfy it, so the
+	//                           persisted summary is impossible and is refused;
+	//   upper bound overflows   every representable Sum satisfies it, so the
+	//                           check constrains nothing and is skipped.
 	//
 	// Skipping the second is what keeps a legitimate total from being rejected
-	// because an intermediate calculation would have wrapped.
-	if d.Min != 0 && d.Count > math.MaxUint64/d.Min {
+	// because an intermediate calculation would have wrapped. Neither product is
+	// ever allowed to wrap: both are guarded before they are computed.
+	others := d.Count - 1
+
+	lower, ok := addMulNoOverflow(d.Max, others, d.Min)
+	if !ok {
 		return fmt.Errorf(
-			"duration min %d across %d observations cannot sum to any representable value",
-			d.Min, d.Count)
+			"duration min %d and max %d across %d observations cannot sum to any "+
+				"representable value", d.Min, d.Max, d.Count)
 	}
-	if lower := d.Min * d.Count; d.Sum < lower {
-		return fmt.Errorf("duration sum %d is below %d observations of at least %d",
-			d.Sum, d.Count, d.Min)
+	if d.Sum < lower {
+		return fmt.Errorf(
+			"duration sum %d is below %d, the smallest total for %d observations "+
+				"with min %d and max %d", d.Sum, lower, d.Count, d.Min, d.Max)
 	}
-	if d.Max == 0 || d.Count <= math.MaxUint64/d.Max {
-		if upper := d.Max * d.Count; d.Sum > upper {
-			return fmt.Errorf("duration sum %d exceeds %d observations of at most %d",
-				d.Sum, d.Count, d.Max)
-		}
+
+	if upper, ok := addMulNoOverflow(d.Min, others, d.Max); ok && d.Sum > upper {
+		return fmt.Errorf(
+			"duration sum %d exceeds %d, the largest total for %d observations "+
+				"with min %d and max %d", d.Sum, upper, d.Count, d.Min, d.Max)
 	}
 	return nil
+}
+
+// addMulNoOverflow computes base + factor*value, reporting false if any step
+// would exceed uint64 rather than wrapping.
+//
+// Separate from sumNoOverflow because the multiplication has to be guarded
+// before it happens: a wrapped product would produce a bound that looks
+// plausible and admits exactly the summaries this validation exists to refuse.
+func addMulNoOverflow(base, factor, value uint64) (uint64, bool) {
+	if value != 0 && factor > math.MaxUint64/value {
+		return 0, false
+	}
+	product := factor * value
+	if product > math.MaxUint64-base {
+		return 0, false
+	}
+	return base + product, true
 }
