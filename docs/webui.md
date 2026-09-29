@@ -42,12 +42,13 @@ one URL and needs no second field.
 | **Live** *(default)* | Watch. Active agents appear by themselves, one run's behavior flow animates as calls arrive, and an inspector shows what Trustvian decided |
 | **Investigate** | Explore. Browse the durable hierarchy a bounded page at a time, open a run's authoritative detail, or narrow the stream to one run |
 | **Compare** | Measure. Compare a reference run against a candidate and read the server's gate, diff and scorecard |
+| **Evidence** | Explain. Follow a gate check or a behavioral delta to the observations behind it, and read one run's retained session, trace, sequence and timeline |
 | **Promotions** | Decide. Record a promotion decision and page a project's history |
 | **Manage** | Administer. Create projects, agents, candidates and runs; drive a run's lifecycle; open anything by identifier |
 
 What it deliberately cannot do: ingest decision records (that is the job of the
-application under evaluation, through the CLI or the API), browse event history
-(task 067), or manage environments (task 065).
+application under evaluation, through the CLI or the API), or manage
+environments (task 065).
 
 ## The Live Observatory
 
@@ -95,7 +96,8 @@ typed by anyone.
 
 **Live activity is a current viewport, not event history.** The stream keeps
 nothing and replays nothing, so a reconnect starts again from what is happening
-then. Task 067 owns retained history; this view owns what is happening now.
+then. Task 067 owns retained history and **Evidence** is where you read it;
+this view owns what is happening now.
 
 **Hierarchy collections are durable discovery.** They answer *what exists*,
 which is a different question from *what is active*, and they are what a reload
@@ -323,7 +325,8 @@ current connection**, and it is **cleared whenever the stream restarts**.
 That is not a shortcoming to work around. The realtime bus keeps no history and
 there is nothing to replay, so joining two connections into one apparent
 sequence would present a continuity that does not exist. Retained event history
-is [task 067](tasks/v1.0/).
+is [task 067](tasks/v1.0/067-event-history-capability-boundary.md)'s, and
+[the Evidence surface](#the-evidence-surface) is where it is read.
 
 ### Counts always come from the database
 
@@ -380,6 +383,161 @@ Two things that look similar and are not:
 A comparison of two runs with no ingested evidence returns a real FAIL, because
 the gate requires a minimum of one observation on each side and fails closed
 when evidence is missing. That is the gate working, not a bug.
+
+## The Evidence surface
+
+A gate FAIL names a count. **Evidence** is where that count becomes the
+observations behind it.
+
+```text
+Compare               gate FAIL · added_behaviors 2 / max 0
+  → Evidence          the two behavioral identities that contributed
+  → Evidence          the retained observations that carried one of them
+  → Run history       that observation's session · trace · behavior
+```
+
+**Nothing in that path is typed.** The evidence control on a gate check and on
+a behavioral delta builds the finding reference from the two run identifiers the
+comparison itself returned, and the `Session`, `Trace` and `Behavior` controls
+on an observation row carry the identifier that observation recorded.
+
+### What it shows, and what it refuses to
+
+This surface renders retained evidence. It resolves nothing: **task 085** owns
+resolution at the control plane, **task 067** owns retention, and every status,
+side, count, verdict and exhaustiveness flag on screen is a value `/v1`
+returned. The browser chooses a URL and renders a response.
+
+What it deliberately cannot reach: no prompt, completion, reasoning trace, tool
+argument, tool result, retrieved document, HTTP body, SQL text or arbitrary
+attribute. Not filtered out here — **no column holds one**, so no response
+carries one. The one retained field it declines to render is `policy_reason`,
+the single free-text producer-supplied value on the row; `policy_rule`, the
+identifier naming which rule decided, is shown in its place.
+
+### Finding
+
+The finding view answers *which evidence supports this*, and it keeps four
+answers apart because three of them look identical in a payload:
+
+| Status | What it means |
+|---|---|
+| `resolved` | The finding has supporting evidence in the retained history |
+| `none_found` | Nothing matches, **and** this side's retained history is complete — so that is a fact about the run |
+| `indeterminate` | Nothing matches and the history is partial or unavailable, so the absence establishes nothing |
+| `aggregate_only` | The check counts an absence — it fails when a run observed *too little* — so there is no observation to link and none is invented |
+
+**The status describes the finding, not the page.** Paging past the last match
+shows zero rows and still reports `resolved`, because the evidence exists and
+you have read all of it. "End of results" is worded as a statement about the
+page for exactly that reason.
+
+**Reference and candidate stay visibly distinct**, with a chip and a word on
+every resolution. A **shared** behavioral delta is offered one control per side
+and no default: both runs hold their own observations of it, those two sets are
+what you are comparing, and picking one silently would look identical to the
+answer you wanted. Added and removed behaviors send no side at all — presence
+decides it, and the control plane is what decides.
+
+The **recorded count** is what the evidence holds: it counts records the run
+ingested, while retained history is bounded at 4096 per run and may be partial.
+A larger recorded count beside a shorter page is bounded retention describing
+itself, and the page says so rather than reconciling two different
+measurements.
+
+### Run history
+
+Five views over one run, each a bounded page:
+
+| View | Reads |
+|---|---|
+| **Session actions** | one bounded interaction's actions, in the order the platform accepted them |
+| **Trace context** | one invocation's actions and the parent/child structure recorded for them |
+| **Behavior sequence** | the behavioral identities the run exhibited, in ingest order |
+| **Decision timeline** | the decisions in order, with each observation's duration and span status |
+| **Behavior detail** | one behavioral identity's retained observations inside this run |
+
+Each narrowing — session, trace or behavior — is a **storage predicate applied
+before the page bound**, so a page of 64 holds 64 matches rather than 64 rows of
+which some matched. At most one may be set; the control plane refuses a
+combination rather than answering a question nobody specified. See
+[ADR 0049](adr/0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md).
+
+### Trace structure is recorded, never inferred
+
+The tree is drawn from the recorded parent span reference and from nothing
+else — never from timestamps, adjacency, name similarity or ingestion order.
+**A parent this page does not have is not a root**, and the view distinguishes
+seven states:
+
+```text
+root         the producer said this span starts the trace
+child        the parent reference names a span on this page
+unresolved   the parent is not here — never retained, sampled away, or on
+             another page. Which of those is not knowable from here
+ambiguous    more than one retained observation carries that span id
+self         the span names itself as its parent
+cycle        the recorded parent chain returns to this span
+unstated     no parent recorded, and the lineage does not claim a root
+```
+
+Rows are in the order the platform **accepted** them, which is not wall-clock
+order: a parent span ends after the children it started, so a child is routinely
+accepted first. Durations are per observation and are **never summed**, because
+a sum of span durations is not wall-clock latency.
+
+**Ordering is not reasoning.** No label says an agent decided, chose, intended
+or planned anything, and no label carries a causal connective between two spans.
+A trace shows what was observed and in what structure; why a model chose
+anything is not something the telemetry can support.
+
+### Absence is shown as absence
+
+| Fact | Shown as |
+|---|---|
+| a measured duration of zero | `0 ms (measured)` |
+| no duration measured | `not available` — never `0`, and never "fast" |
+| span status `unset` | `unset — the producer stated no status`, never success |
+| span status absent | `not available`, never "no errors" |
+| `new_behavior` | *new to this run* — which is **not** novelty against a learned baseline |
+| retained history | `complete`, `partial` or `unavailable`, each with a sentence saying what it means |
+
+### Two things this surface cannot tell you
+
+Both because task 067 does not retain them, and both stated on screen rather
+than guessed at:
+
+- **Fidelity and behavioral layer.** They travel beside a record at ingest and
+  on the realtime stream and have no retained column, so a historical view does
+  not know whether an operation's identity came from agent-oriented telemetry or
+  from its transport. It renders the recorded descriptor exactly as it stands and
+  says fidelity was not retained. **Live** still states fidelity, because
+  realtime carries it.
+- **Sequence deviation.** The engine's sequence signals live in the anomaly
+  contributors, which 067 excluded as its one variable-length field. No view
+  states whether an order departed from what was learned.
+
+### Provenance
+
+Both sides' supplied `CandidateMetadata`, side by side: label, source ref,
+artifact digest, model, toolset digest and config digest. **Every field the
+producer did not supply reads `not stated`** — never blank, never a default, and
+never omitted. An unknown model is materially different from a model both sides
+shared, and a panel that could not tell them apart would be worse than one that
+said nothing.
+
+### Bounds
+
+One page at a time, `after` exclusive, `limit` 64, continuation offered exactly
+when the route publishes a cursor. **A continuation replaces what is on
+screen**, so the memory a history costs is a page however far you read — the
+same shape the promotion history uses. There is no previous-page control,
+because reverse traversal is not something `/v1` offers.
+
+Changing the run, view, side, finding or identifier resets the cursor and
+abandons whatever is in flight: a response that lands after the question changed
+is discarded rather than drawn. Nothing about which finding you were reading
+survives a reload, and nothing is stored in the browser.
 
 ## Recording a promotion
 
@@ -503,6 +661,10 @@ is the machine contract every client shares.
   is a static same-origin client with no control-plane authority
 - [ADR 0041](adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md)
   — the collection capability, the id cursor, and why the graph is one run
+- [ADR 0049](adr/0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md)
+  — why the Evidence surface narrows retained history with three mutually
+  exclusive predicates, and why it answers a behavioral question rather than a
+  trace question
 - [ADR 0036](adr/0036-webui-is-a-same-origin-adapter-over-v1.md) — why the UI is
   a static same-origin adapter rather than a server-rendered or framework app
 - [Task 063](tasks/v1.0/063-minimal-web-control-plane.md) — the specification

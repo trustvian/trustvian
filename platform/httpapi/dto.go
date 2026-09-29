@@ -920,6 +920,11 @@ type observationListResponse struct {
 	Version string `json:"version"`
 	RunID   string `json:"run_id"`
 
+	// Scope echoes the correlated view this page answered, so a stored response
+	// is self-describing and a reader cannot mistake a session's actions for the
+	// run's whole history. Omitted entirely for an unnarrowed read. Task 076.
+	Scope *observationScopeDTO `json:"scope,omitempty"`
+
 	HistoryState  string `json:"history_state"`
 	RetainedCount string `json:"retained_count"`
 	Complete      bool   `json:"complete"`
@@ -929,8 +934,32 @@ type observationListResponse struct {
 	NextAfter string `json:"next_after,omitempty"`
 }
 
+// observationScopeDTO is the narrowing a correlated history read applied.
+//
+// Exactly one field is ever set, because the control plane refuses more than
+// one — see platform.ObservationScope for why a combination is refused rather
+// than answered.
+type observationScopeDTO struct {
+	SessionID     string `json:"session_id,omitempty"`
+	TraceID       string `json:"trace_id,omitempty"`
+	FingerprintID string `json:"fingerprint_id,omitempty"`
+}
+
+// newObservationScopeDTO renders the scope, or nothing for an unnarrowed read.
+func newObservationScopeDTO(scope platform.ObservationScope) *observationScopeDTO {
+	if scope.SessionID == "" && scope.TraceID == "" && scope.FingerprintID == "" {
+		return nil
+	}
+	return &observationScopeDTO{
+		SessionID:     scope.SessionID,
+		TraceID:       scope.TraceID,
+		FingerprintID: scope.FingerprintID,
+	}
+}
+
 func newObservationListResponse(
-	runID string, page platform.ObservationPage, nextAfter string,
+	runID string, scope platform.ObservationScope,
+	page platform.ObservationPage, nextAfter string,
 ) observationListResponse {
 	observations := make([]observationDTO, 0, len(page.Observations))
 	for _, o := range page.Observations {
@@ -939,6 +968,7 @@ func newObservationListResponse(
 	return observationListResponse{
 		Version:       WireVersion,
 		RunID:         runID,
+		Scope:         newObservationScopeDTO(scope),
 		HistoryState:  page.History.State().String(),
 		RetainedCount: u64(page.History.RetainedCount()),
 		Complete:      page.History.Complete(),

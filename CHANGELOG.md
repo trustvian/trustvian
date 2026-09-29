@@ -10,6 +10,69 @@ actually depend on.
 
 ### Added
 
+- **The browser now follows a finding to the evidence behind it** (task 076). A
+  gate FAIL named a count, task 085 made that count resolvable over `/v1` and the
+  CLI, and a developer still had to leave the page to read the answer. An
+  **Evidence** tab closes it.
+
+  From a comparison, every gate check and every behavioral delta carries an
+  evidence control. One step reaches the behavioral identities that contributed;
+  one more reaches the retained observations that carried one of them; and from
+  an observation, `Session`, `Trace` and `Behavior` controls open that run's
+  retained history in the correlated view. **No identifier is typed anywhere in
+  that path** — the finding reference is built from the two run identifiers the
+  comparison itself returned, and each navigation control appears only when the
+  observation actually recorded the identifier it needs.
+
+  **Five views over one run's retained history**: session actions, trace context
+  with its recorded parent/child structure, behavior sequence, decision timeline,
+  and one behavioral identity's detail. Plus a provenance panel showing both
+  sides' supplied `CandidateMetadata`, where **every field the producer did not
+  supply reads `not stated`** — an unknown model is not the same fact as a model
+  both sides shared.
+
+  **Trace structure is drawn from the recorded parent span reference and nothing
+  else** — never from timestamps, adjacency, name similarity or ingestion order.
+  A parent this page does not have is not a root: `root`, `child`, `unresolved`,
+  `ambiguous`, `self`, `cycle` and `unstated` are seven distinct states, the tree
+  emits every row exactly once, and a cycle is stated rather than followed.
+  Ordering is arrival order, which is not wall-clock order and is not reasoning:
+  no label says an agent decided, chose, intended or planned anything, and
+  per-observation durations are never summed into a latency.
+
+  **Absence is shown as absence.** A measured zero renders as `0 ms (measured)`
+  and an unmeasured duration as `not available`; `unset` is never success and an
+  absent status is never "no errors"; `resolved`, `none_found`, `indeterminate`
+  and `aggregate_only` each carry the sentence that keeps it apart from the other
+  three. The status describes the **finding**, so a continuation page that comes
+  back empty still reports `resolved`.
+
+  **The browser decides nothing.** Every status, side, recorded count and
+  exhaustiveness flag is a value `/v1` returned; a test asserts each status
+  literal appears in shipped source exactly once, as the key of the sentence
+  explaining it. A cross-layer test runs the shipped row projection over a real
+  route response and compares each rendered cell against the field it came from.
+
+  **Two things the views cannot state, and say so.** Fidelity and behavioral
+  layer are not retained per observation — they ride on the ingest envelope and
+  the realtime frame — so a historical view renders the recorded descriptor
+  verbatim and states that fidelity was not retained. Sequence-deviation evidence
+  lives in the anomaly contributors, which retention excludes, so no view makes a
+  statement about sequence deviation. Neither is inferred.
+
+  **One new query capability, no schema change.**
+  `GET /v1/evaluation-runs/{run_id}/observations` gains `session_id`, `trace_id`
+  and `fingerprint_id`: optional, mutually exclusive equality narrowings applied
+  in storage **before** the page bound, through task 067's existing digest
+  indexes and against the original value beside each key. More than one is
+  refused rather than answered. No table, no index, no migration, and no existing
+  route, field or response shape changed. See
+  [ADR 0049](docs/adr/0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md).
+
+  **Nothing is stored in the browser**, one page is held at a time, and a
+  response arriving after the run, view, side, finding or filter changed is
+  discarded rather than drawn.
+
 - **A failed gate check now leads to the evidence behind it** (task 085). The gate
   printed `added_behaviors actual 3 maximum 0 FAIL` and nothing in the platform
   could answer *which three*, or which observations carried them — `BehaviorDelta`

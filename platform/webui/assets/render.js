@@ -149,6 +149,84 @@ export const GATE_CHECKS = Object.freeze([
   Object.freeze({ key: "critical_risk_observations", label: "Critical risk observations", bound: "maximum" }),
 ]);
 
+// EVIDENCE_OBSERVATION_FIELDS is what task 076's views may show of one retained
+// observation.
+//
+// A subset of task 067's retention contract, and the two exclusions are
+// deliberate:
+//
+//   - **`policy_reason` is absent.** It is the one free-text field on the
+//     retained row, it is producer-supplied, and task 059 already keeps it off
+//     the realtime projection for that reason. `policy_rule` names which rule
+//     decided and is an identifier, which is the explanatory half without the
+//     free text. The Go guard over this file forbids `policy_reason` outright.
+//   - **`behavior` is absent** because it is a nested descriptor rather than a
+//     scalar; it is rendered through BEHAVIOR_FIELDS, which is its own
+//     allowlist.
+//
+// There is no fidelity or behavioral-layer field, because task 067 retained
+// neither — see FIDELITY_NOT_RETAINED in trace.js.
+export const EVIDENCE_OBSERVATION_FIELDS = Object.freeze([
+  "sequence",
+  "event_id",
+  "timestamp",
+  "actor_id",
+  "actor_type",
+  "identity_confidence",
+  "fingerprint_id",
+  "new_behavior",
+  "anomaly_score",
+  "anomaly_confidence",
+  "trust_score",
+  "context_risk",
+  "risk_level",
+  "decision",
+  "policy_rule",
+  "matched_default",
+  "trace_id",
+  "span_id",
+  "session_id",
+  "delegated_from",
+  "approval_status",
+  "parent_span_id",
+  "span_lineage",
+  "duration_nanos",
+  "span_status",
+]);
+
+
+
+
+
+// GATE_CHECK_EVIDENCE says which resolution route answers each gate check.
+//
+// **Navigation metadata, not resolution logic.** It records only whether a check
+// counts behaviors or observations — which is what decides the URL to ask — and
+// it decides nothing about the answer. Every status, count, side and verdict on
+// screen is the server's, including `aggregate_only`: the two evidence checks are
+// sent to the behaviors route and the control plane is what reports that they
+// have no per-observation evidence to link to. This page never claims that on
+// its own, because it is a fact about the check's meaning rather than about its
+// name.
+export const GATE_CHECK_EVIDENCE = Object.freeze([
+  Object.freeze({ key: "reference_evidence", route: "behaviors" }),
+  Object.freeze({ key: "candidate_evidence", route: "behaviors" }),
+  Object.freeze({ key: "added_behaviors", route: "behaviors" }),
+  Object.freeze({ key: "block_decisions", route: "observations" }),
+  Object.freeze({ key: "critical_risk_observations", route: "observations" }),
+]);
+
+// evidenceRouteFor returns the route a gate check resolves through, or "" for a
+// name this page does not publish.
+export function evidenceRouteFor(check) {
+  for (const entry of GATE_CHECK_EVIDENCE) {
+    if (entry.key === check) {
+      return entry.route;
+    }
+  }
+  return "";
+}
+
 // Human labels for allowlisted keys. Absent keys fall back to the raw key,
 // which is already known-safe because it came from an allowlist above rather
 // than from the server.
@@ -199,6 +277,34 @@ const LABELS = Object.freeze({
   added_count: "Added",
   removed_count: "Removed",
   shared_count: "Shared",
+  event_id: "Event ID",
+  timestamp: "Recorded at",
+  actor_id: "Actor",
+  identity_confidence: "Identity confidence",
+  context_risk: "Context risk",
+  policy_rule: "Policy rule",
+  matched_default: "Matched default",
+  trace_id: "Trace",
+  span_id: "Span",
+  session_id: "Session",
+  delegated_from: "Delegated from",
+  parent_span_id: "Parent span",
+  span_lineage: "Lineage",
+  duration_nanos: "Duration (ns)",
+  span_status: "Span status",
+  reference_run_id: "Reference run",
+  candidate_run_id: "Candidate run",
+  check: "Gate check",
+  behavior: "Behavior",
+  presence: "Presence",
+  status: "Status",
+  side: "Side",
+  recorded_count: "Recorded count",
+  exhaustive: "Exhaustive",
+  state: "Retained history",
+  retained_count: "Retained observations",
+  complete: "Complete",
+  history_state: "Retained history",
 });
 
 const labelFor = (key) => (Object.hasOwn(LABELS, key) ? LABELS[key] : key);
@@ -262,6 +368,31 @@ function pick(source, fields) {
     pairs.push([labelFor(key), display(source[key])]);
   }
   return pairs;
+}
+
+// displayValue is display(), exported for the evidence surface.
+//
+// One formatting rule for the whole application rather than two: the absent /
+// zero distinction below is a correctness property, and a second renderer with
+// its own idea of what "—" means is how a missing value starts reading as a
+// measured one.
+export function displayValue(value) {
+  return display(value);
+}
+
+// retainedValue reads one field of a retained observation, through the
+// allowlist.
+//
+// **The allowlist is the gate, not a comment.** A key it does not name returns
+// the absent marker rather than the value, so a field `/v1` gains later cannot
+// reach a cell by somebody writing `observation.new_thing` — which is the
+// failure mode a declared-but-unconsulted list would leave wide open. Every
+// evidence cell goes through here.
+export function retainedValue(observation, key) {
+  if (observation === undefined || observation === null || !EVIDENCE_OBSERVATION_FIELDS.includes(key)) {
+    return display(undefined);
+  }
+  return display(observation[key]);
 }
 
 // definitionList renders label/value pairs.
@@ -437,7 +568,7 @@ export function renderObservationRows(target, rows) {
 // compares an actual against a bound to decide it — the arithmetic belongs to
 // task 056, once, and a second implementation in a browser would be a rule
 // that can disagree with the one that matters.
-export function renderGate(target, gate) {
+export function renderGate(target, gate, options = {}) {
   const verdict = typeof gate.verdict === "string" ? gate.verdict : "";
   const upper = verdict.toUpperCase();
 
@@ -449,24 +580,45 @@ export function renderGate(target, gate) {
   banner.classList.add(upper === "PASS" ? "gate-pass" : "gate-fail");
   target.append(banner);
 
+  // A control per check, when a caller supplied one. Offered on every check
+  // rather than only the failing ones: which checks have evidence behind them is
+  // the control plane's answer, and hiding the control where this page guessed
+  // there was nothing to see would be that answer moved into a browser.
+  const resolve = typeof options.onResolveCheck === "function"
+    ? options.onResolveCheck
+    : null;
+
+  const headers = ["Check", "Actual", "Bound", "Result"];
+  if (resolve !== null) {
+    headers.push("Evidence");
+  }
+
   const rows = [];
   for (const check of GATE_CHECKS) {
     const value = gate[check.key];
     if (value === undefined || value === null) {
-      rows.push([check.label, "—", "—", "—"]);
+      const absent = [check.label, "—", "—", "—"];
+      if (resolve !== null) {
+        absent.push("—");
+      }
+      rows.push(absent);
       continue;
     }
-    rows.push([
+    const row = [
       check.label,
       display(value.actual),
       display(value[check.bound]),
       value.passed === true ? "pass" : "fail",
-    ]);
+    ];
+    if (resolve !== null) {
+      row.push(resolve(check.key, check.label));
+    }
+    rows.push(row);
   }
-  target.append(table(["Check", "Actual", "Bound", "Result"], rows, "Gate checks"));
+  target.append(table(headers, rows, "Gate checks"));
 }
 
-export function renderDiff(target, diff) {
+export function renderDiff(target, diff, options = {}) {
   target.append(element("h4", null, "Behavior diff"));
   target.append(definitionList(pick(diff, DIFF_FIELDS)));
 
@@ -475,20 +627,34 @@ export function renderDiff(target, diff) {
     target.append(emptyState("No behavioral deltas."));
     return;
   }
-  const rows = deltas.map((delta) => [
-    display(delta.change),
-    display(delta.fingerprint_id),
-    behaviorSummary(delta.behavior),
-    display(delta.reference_observations),
-    display(delta.candidate_observations),
-  ]);
-  target.append(
-    table(
-      ["Change", "Fingerprint", "Behavior", "Reference", "Candidate"],
-      rows,
-      `${deltas.length} delta(s)`,
-    ),
-  );
+
+  // One or more controls per delta, when a caller supplied a builder. A shared
+  // behavior gets one per side and no default — see evidence.js, which builds
+  // them, for why defaulting to the candidate is the failure this whole path
+  // exists to avoid.
+  const controls = typeof options.deltaControls === "function"
+    ? options.deltaControls
+    : null;
+
+  const headers = ["Change", "Fingerprint", "Behavior", "Reference", "Candidate"];
+  if (controls !== null) {
+    headers.push("Evidence");
+  }
+
+  const rows = deltas.map((delta) => {
+    const row = [
+      display(delta.change),
+      display(delta.fingerprint_id),
+      behaviorSummary(delta.behavior),
+      display(delta.reference_observations),
+      display(delta.candidate_observations),
+    ];
+    if (controls !== null) {
+      row.push(controls(delta));
+    }
+    return row;
+  });
+  target.append(table(headers, rows, `${deltas.length} delta(s)`));
 }
 
 // rate renders one count/total pair as text.
@@ -546,16 +712,16 @@ export function renderScorecard(target, scorecard) {
   }
 }
 
-export function renderComparison(target, response) {
+export function renderComparison(target, response, options = {}) {
   clear(target);
   target.append(
     element("p", "note-inline", `Reference ${display(response.reference_run_id)} → candidate ${display(response.candidate_run_id)}`),
   );
   if (response.gate !== undefined && response.gate !== null) {
-    renderGate(target, response.gate);
+    renderGate(target, response.gate, options);
   }
   if (response.behavior_diff !== undefined && response.behavior_diff !== null) {
-    renderDiff(target, response.behavior_diff);
+    renderDiff(target, response.behavior_diff, options);
   }
   if (response.scorecard !== undefined && response.scorecard !== null) {
     renderScorecard(target, response.scorecard);

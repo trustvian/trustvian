@@ -38,7 +38,7 @@ carries it because it contradicts
 evaluation foundation, local persistence, the local control-plane API and
 realtime, the developer CLI, the TUI, the WebUI, the PostgreSQL backend, the
 environment model and promotion (tasks 051–066, 073 and 074) exist, while
-076 and 078–080 are specified, 067, 075 and 077 are implemented, and 068–072
+078–080 are specified, 067, 075, 076 and 077 are implemented, and 068–072
 are still PLANNED. [Task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md)
 is a planning task, in 049's shape: it reserves and scopes 083–090 — inspection
 and evaluation depth — and implements nothing.
@@ -256,7 +256,8 @@ It exists because of a sequencing problem, not a scope disagreement. The whole
 Track B journey currently reaches users at exactly one moment — the `v1.0` tag —
 and that moment is gated on event history (067), multi-node and load validation
 (069), platform security hardening (070), platform backup and restore (071),
-the behavioral evidence explorer (076), sandbox sharing and promotion. A
+the behavioral evidence explorer (076), sandbox sharing and promotion — of which
+067 and 076 have since landed, and the rest have not. A
 developer who wants to run their own agent locally and catch a behavioral change
 in CI needs none of those, and today waits for all of them. Shipping nothing
 until everything is ready means the feedback that would improve the rest arrives
@@ -341,7 +342,9 @@ to open. That last part is what task 079 adds.
 ### What it does not require
 
 Explicitly **not** gated on 067 (event history), 068–071, 076 (the behavioral
-evidence explorer), sandbox sharing, or promotion.
+evidence explorer), sandbox sharing, or promotion. 067 and 076 have since been
+implemented; that does not add them to this milestone's requirements, and this
+section is unchanged by it.
 
 Those remain `v1.0` requirements and lose none of their force. **The `v1.0` gate
 keeps every criterion it has**, this milestone removes nothing from it, and a
@@ -352,7 +355,8 @@ release.
 
 The two journey steps this preview drops are the ones that genuinely need
 what it omits: *inspect why a behavior was familiar, new or anomalous* needs
-durable history (067, then 076), and *share, then promote on the evidence*
+durable history (067, then 076 — both now implemented), and *share, then promote
+on the evidence*
 needs a deployment more than one person uses. Neither is needed to answer
 "did my agent's behavior change, and does that change pass my limits", which
 is the question a developer preview has to answer.
@@ -525,8 +529,8 @@ gate result the decision consumed is snapshotted field for field rather than
 re-derived on read, and the write commits only against the environment state it
 was decided against. Schema version is now **4** on both backends.
 
-**Four gap-closing milestones remain specified and not implemented: 076, 078,
-079 and 080. 074, 075 and 077 are implemented.**
+**Three gap-closing milestones remain specified and not implemented: 078,
+079 and 080. 074, 075, 076 and 077 are implemented.**
 075–078 were each found by running the product end to end — an instrumented
 agent, a browser, and a developer who has not read the source — rather than by
 planning, which is why they sit outside the reserved 049–072 block alongside
@@ -554,10 +558,18 @@ exit criterion.
   OpenTelemetry, Trustvian should read it — through the same pipeline, with no
   AI-specific engine and no framework dependency, and with content kept out of
   behavioral identity and every durable and published surface.
-- **[076 — behavioral evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md).**
-  A verdict without its evidence is not explainable. Sessions, traces and
-  behavioral sequence, from metadata alone, over whatever history 067 makes
-  durable.
+- **[076 — behavioral evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md)
+  is implemented.** A verdict without its evidence is not explainable. An
+  **Evidence** surface leads from a gate check or a behavioral delta to the
+  behaviors that contributed and the observations that carried them, and from
+  one observation into its session, its trace's recorded parent/child structure,
+  the behavior sequence, the decision timeline and one behavior's detail — with
+  no identifier typed. It stores nothing and resolves nothing; 067 owns
+  retention and 085 owns resolution. Its one added capability is three optional,
+  mutually exclusive narrowings on the existing observation route
+  ([ADR 0049](adr/0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md)),
+  with no schema change. Fidelity and sequence deviation are **not** shown,
+  because 067 retains neither, and the views say so.
 - **[077 — unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md)
   is implemented.** `trustvian dev -- <command>` composes the runtime around an
   existing agent, with no source modification and no Trustvian dependency in the
@@ -941,7 +953,7 @@ The **Gate** column says which rows the release actually depends on.
 | 073 | OTel Collector evaluation ingest — the Collector produces a `Result`, the control plane accepts a `DecisionRecord`, and nothing joined them | **Implemented** | `v1.0` |
 | 074 | [Zero-input live behavior WebUI](tasks/v1.0/074-zero-input-live-behavior-webui.md) — automatic active-scope discovery, a bounded live behavior graph, and a browseable hierarchy without entering an identifier | Implemented | `v1.0` |
 | 075 | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) — read agent-oriented OpenTelemetry where a producer emits it, so a tool call is a tool call rather than an HTTP POST | **Implemented** | `v1.0` |
-| 076 | [Behavioral trace and session evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md) — see *why* behavior was familiar, new or anomalous, from metadata alone | Specified | `v1.0` |
+| 076 | [Behavioral trace and session evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md) — see *why* behavior was familiar, new or anomalous, from metadata alone | **Implemented** — an Evidence surface over 085's resolution and 067's history; three narrowings on the existing observation route, no schema change; fidelity and sequence deviation narrowed because neither is retained | `v1.0` |
 | 077 | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — one command wraps an existing agent, composes the runtime, and needs no change to the application | **Implemented** | `v1.0` |
 | 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) — run the same scenario N times per side, diff the behavior, gate the difference over k-of-N evidence | Specified | `v1.0` |
 | 079 | [CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md) — the 078 verdict rendered on the pull request, exit codes passed through, no `pull_request_target` with an untrusted checkout | Specified | preview only |
@@ -1004,12 +1016,13 @@ The workflow, with who owns each step:
 
 ```text
 1  run an agent against a versioned set of scenarios      078, + 086
-2  inspect model calls, tool calls, requests, errors      076 over 067, +083, 084
+2  inspect model calls, tool calls, requests, errors      076 (shipped) over 067,
+                                                          083, 084
 3  compare a reference version with a candidate           054 055 056  (shipped)
 4  evaluate behavior, task quality, performance, cost     behavior shipped;
                                                           performance and cost 087;
                                                           quality PROPOSED (089)
-5  investigate a regression through linked evidence       085 (shipped), 076
+5  investigate a regression through linked evidence       085, 076 (both shipped)
 6  apply release criteria and record the decision         066 (shipped), + 088
 ```
 
@@ -1075,7 +1088,8 @@ code — and it is **Proposed**, not Accepted.
 **091 is a planning task, 092–095 are what it reserves, and none of them is a
 `v1.0` gate.** It is positioned after the current investigation chain, not
 inside it: observe, retain, explain, compare and gate are implemented, while
-finding review (088) and the explorer (076) are scoped rather than shipped. The planning is in
+finding review (088) is scoped rather than shipped and the explorer (076) has
+since shipped. The planning is in
 [task 091](tasks/v1.0/091-platform-analytics-and-developer-ecosystem.md), which
 follows 082's shape: each item carries its developer problem, verified current
 state, scope, non-goals, dependencies, architectural constraints and privacy
@@ -1163,8 +1177,8 @@ Conceptually:
        │   085's retention needs were specified alongside it, not after it
        └──▶ 085  evidence resolution   [implemented, no schema step]
                    │   control plane + /v1 + CLI; shipped without a browser
-                   ├──▶ 076  behavioral evidence explorer   ← NEXT
-                   │          navigates 085; needs 084 for the timeline
+                   ├──▶ 076  behavioral evidence explorer   [implemented]
+                   │          navigates 085; needed 084 for the timeline
                    └──▶ 088  review decisions and annotations
                               [needs 066; wants 070 for authorship]
 
@@ -1563,12 +1577,13 @@ Labels will be refined during implementation; the ordering is the point.
 Live          active actors · animated behavior topology · new behavior
               trust · anomaly · risk · decision                        (074)
 
-Evidence      sessions · traces · behavioral sequence
+Evidence      sessions · traces · behavioral sequence            (076, shipped)
               correlation and explanation                              (076)
               trace tree · timeline · errors · duration            (076 over 084)
 
 Evaluations   runs · reference and candidate · diff · scorecard · gate
-              every finding links to the observations behind it  (076 over 085)
+              every finding links to the observations behind it  (076 over 085,
+                                                                    shipped)
               which prompt, model, toolset, config and inputs          (086)
               latency · errors · tokens · cost, where telemetry says   (087)
 

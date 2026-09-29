@@ -637,6 +637,19 @@ retained observation influences no decision, no baseline and no fingerprint.
 [ADR 0048](adr/0048-retained-history-is-sequence-identified-bounded-and-honest-about-absence.md)
 records the reasoning.
 
+**That history is read through three narrowings and nothing wider.**
+[Task 076](tasks/v1.0/076-behavioral-evidence-explorer.md) added `session_id`,
+`trace_id` and `fingerprint_id` as optional, mutually exclusive equality
+predicates on the run-scoped observation route — applied in storage before the
+page bound, through 067's existing digest indexes and against the original value
+beside each key. No table, no index and no migration was added, and the browser
+that consumes them holds no resolution logic: which observations support a
+finding is [task 085](tasks/v1.0/085-evidence-resolution.md)'s answer, computed
+in the control plane.
+[ADR 0049](adr/0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md)
+records why a combination of narrowings is refused rather than answered, and why
+the explorer answers a behavioral question rather than a trace question.
+
 The adapter lives inside package `platform` rather than a subpackage, because
 the aggregate and snapshot carry private bound markers and restoring them from
 outside would require a public evidence-forging constructor. The cost is a

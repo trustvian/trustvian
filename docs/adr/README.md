@@ -72,6 +72,7 @@ as long as its own decision holds.
 | [0046](0046-trace-backends-are-interoperability-targets-not-dependencies.md) | Trace backends are interoperability targets, not dependencies | **Proposed** |
 | [0047](0047-behavioral-identity-is-per-observation-counting-is-a-policy.md) | Behavioral identity is per observation; counting is a control-plane policy | Accepted |
 | [0048](0048-retained-history-is-sequence-identified-bounded-and-honest-about-absence.md) | Retained observation history is sequence-identified, bounded, and honest about its own absence | Accepted |
+| [0049](0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md) | The evidence explorer narrows retained history, and answers a behavioral question rather than a trace question | Accepted |
 
 **0046 is the first record here carried as Proposed.** Its reasoning is
 complete and no maintainer has ratified it, which is exactly what this status
@@ -92,8 +93,10 @@ composes, 0045 on the adapter boundary 0003 drew and the public surface 0002
 bounded, 0046 on the consumer-of-observability position 0003 and 0022 together
 establish, 0047 on the StableFeatures boundary 0021 published and the learning-scope
 reasoning 0024 applied to a baseline key, 0048 on the retention boundary 0026, 0027,
-0030, 0031 and 0032 each deferred to it and the atomic ingest contract 0031 drew
-— and each cites the earlier decision as still governing rather than
+0030, 0031 and 0032 each deferred to it and the atomic ingest contract 0031 drew,
+0049 on the retention contract 0048 established, the trace-scoped correlation
+0047 refused to make a global key, and the no-authority browser boundary 0036
+drew — and each cites the earlier decision as still governing rather than
 replacing it.
 
 ## Writing one

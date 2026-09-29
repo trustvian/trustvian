@@ -1,6 +1,9 @@
 # 076 — Behavioral Trace & Session Evidence Explorer
 
-Status: specified; not implemented
+Status: specified; **implemented** — see [§ Implementation](#implementation)
+for what shipped, and [§ Narrowed criteria](#narrowed-criteria) for the two
+presentations that narrowed because 067 does not retain what they would have
+needed
 Milestone: `v1.0`
 Depends on: [067](README.md) — event-history capability boundary,
 [074](074-zero-input-live-behavior-webui.md),
@@ -53,18 +56,25 @@ developer can use Trustvian without opening another trace tool merely to
 understand Trustvian's own evidence. That is a bounded, achievable goal
 precisely because the question is narrower than a trace viewer's.
 
-## Current gap, verified against `main`
+## Current gap, as it stood when this was written
 
-| Claim | Verified |
-|---|---|
-| `DecisionRecord` carries `TraceID`, `SpanID`, `SessionID`, `DelegatedFrom` | **True** |
-| The platform persists no per-record correlation | **True** — a run persists an aggregate and a behavior snapshot; no per-record row exists |
-| Realtime carries correlation only while a connection is open | **True** — bounded and ephemeral, ADR 0032 |
-| No session, trace or sequence view exists in any interface | **True** |
-| Task 067 is approved and unspecified | **True** |
+The table below described `main` at specification time. **Three of its five
+rows are now stale, and they are the three this task was waiting on** — 067,
+084 and 085 all shipped before implementation began. It is kept as written,
+with the current state beside it, because the gap is what motivates the task
+and rewriting it would erase the reason it exists.
 
-So the explorer cannot be built on what is stored today, and this task does
-not pretend otherwise. It depends on 067.
+| Claim | At specification time | Now |
+|---|---|---|
+| `DecisionRecord` carries `TraceID`, `SpanID`, `SessionID`, `DelegatedFrom` | **True** | Unchanged, plus 084's `ParentSpanID`, `SpanLineage`, duration and span status |
+| The platform persists no per-record correlation | **True** | **Stale** — 067 retains one row per observation, bounded at 4096 per run |
+| Realtime carries correlation only while a connection is open | **True** — bounded and ephemeral, ADR 0032 | Unchanged, and still the only place fidelity and behavioral layer travel |
+| No session, trace or sequence view exists in any interface | **True** | **Stale** — this task is what closed it |
+| Task 067 is approved and unspecified | **True** | **Stale** — specified and implemented |
+
+So the explorer could not be built on what was stored then, and this task did
+not pretend otherwise. It was built on what 067 made durable and what 085 made
+resolvable, and it added **no storage and no resolution of its own**.
 
 ## The boundary with task 067
 
@@ -154,6 +164,24 @@ SESSION   support-agent · local · run-candidate
 **The same view, at whatever fidelity the telemetry provided.** The explorer
 states which it is rather than implying the richer one — task 075's fidelity
 indicator is what makes that honest.
+
+> **Corrected by implementation.** Two things in the two sketches above are not
+> what shipped, and both for the same reason: **067 does not retain them.**
+>
+> - **Fidelity is not stated per observation.** Fidelity and behavioral layer
+>   travel beside a record at ingest and on the realtime stream, and 067's
+>   retained column set includes neither — so a historical view genuinely does
+>   not know whether `crm_lookup` came from agent-oriented telemetry or from its
+>   transport. The views render the recorded descriptor exactly as it stands and
+>   say that fidelity was not retained. The **Live** view still states fidelity,
+>   because realtime carries it.
+> - **`unusual sequence` is not shown at all.** The engine's sequence signals
+>   live in the anomaly contributors, which 067 deliberately excluded as its one
+>   variable-length field. Nothing durable says whether an observation departed
+>   from a learned sequence, so no view says anything about it.
+>
+> `familiar` / `NEW` and the scores **are** shown, because `NewBehavior` and all
+> five scores are retained. See [§ Narrowed criteria](#narrowed-criteria).
 
 ## Correlation model
 
@@ -371,3 +399,124 @@ Additional to the nine above, not replacing them:
 15. Resolved evidence renders identically to what `/v1` returned for the same
     finding; a test compares the rendering's inputs against the route's response
     rather than trusting the view.
+
+## Implementation
+
+Shipped as one **Evidence** tab in the existing WebUI, over one new query
+capability and no new storage.
+
+### What was added, and where
+
+| Layer | Change |
+|---|---|
+| `platform` | `ObservationScope` — three optional, mutually exclusive narrowings — and `ControlPlane.FindEvaluationRunObservations`. `ObservationFilter` gains `SessionID` and `TraceID`, each matched through 067's digest index **and** against the original value |
+| `platform/httpapi` | `GET /v1/evaluation-runs/{run_id}/observations` gains `session_id`, `trace_id` and `fingerprint_id`; the response echoes the scope it applied. No new route |
+| `platform/webui` | `trace.js` (recorded-structure and honest-fact rendering), `evidence.js` (the surface and its controller), plus an Evidence panel, allowlists and styles |
+| Storage | **Nothing.** 067's two tables and four indexes are unchanged, and there is no migration |
+
+[ADR 0049](../../adr/0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md)
+records why the narrowing is three mutually exclusive equality predicates on an
+existing route, why a combination is refused rather than answered, and why the
+explorer answers a behavioral question rather than a trace question.
+
+### The views
+
+Three sub-sections, six presentations:
+
+```text
+Finding      a gate check or a behavioral delta → the behaviors that
+             contributed → the retained observations that carried them
+Run history  session actions · trace context (with recorded structure) ·
+             behavior sequence · decision timeline · behavior detail
+Provenance   both sides' supplied CandidateMetadata, side by side
+```
+
+**The gate-to-evidence path types nothing.** A comparison under **Compare**
+renders an evidence control on every gate check and every behavioral delta;
+the finding reference is built from the comparison's own echo of the two run
+identifiers. From a resolved observation, `Session`, `Trace` and `Behavior`
+controls open the run-history views with the identifier the observation
+recorded — and each is offered only when that observation actually carries one.
+
+**A shared behavior is offered one control per side and no default.** Presence
+decides the side for `added` and `removed`, so no side is sent and the control
+plane derives it; `shared` gets two controls, because defaulting to the
+candidate would answer a question nobody asked with an answer indistinguishable
+from the one they wanted.
+
+### Honest rendering
+
+- **A parent this page does not have is not a root.** Structure is drawn from
+  the recorded parent span reference and from nothing else — never from
+  timestamps, adjacency, name similarity or ingestion order. Seven parent
+  states are distinguished: `root`, `child`, `unresolved` (never retained,
+  sampled away, or outside the rows read), `ambiguous` (more than one retained
+  observation carries that span id), `self`, `cycle` and `unstated`. The tree
+  emits every input row exactly once, indents to a bound, and states clamping.
+- **Unavailable is not zero, and unset is not success.** A measured `0`
+  renders as `0 ms (measured)`; an unmeasured duration renders as
+  `not available`. Only `ok` is success and only `error` is failure; `unset`
+  and unavailable say what they are.
+- **"New to this run" is not novelty against a learned baseline.** The label
+  says which it is. Nothing is called novel, anomalous, suspicious or unsafe.
+- **No rendering asserts reasoning, intent or causality.** Asserted by a test
+  that collects every sentence the surface can render and fails on any
+  intent word or causal connective.
+- **Durations are per observation and are never summed**, because a sum of span
+  durations is not wall-clock latency.
+
+### Bounds and client state
+
+One page at a time, `after` exclusive, `limit` defaulting to 64, continuation
+offered exactly when the route publishes a cursor. A continuation **replaces**
+what is on screen, so a history costs a page however far it is read; the
+controller holds no row array at all, asserted by test. Changing the run, view,
+side, finding or identifier bumps a generation token and resets the cursor — a
+response issued under an old token is discarded rather than drawn, and every
+awaited read is followed immediately by that check.
+
+## Narrowed criteria
+
+Two of the fifteen criteria are narrowed, both because 067 does not retain what
+they would need. Neither is worked around, and neither is fabricated.
+
+| Criterion | Status |
+|---|---|
+| **2** — the view states its fidelity | **Narrowed.** Fidelity and behavioral layer are not retained per observation; they ride on the ingest envelope and the realtime frame only. Historical views state that fidelity was not retained and render the recorded descriptor verbatim. Nothing infers semantic fidelity from the shape of a descriptor, which would be the fabrication 075 refuses for operation names. The Live view is unchanged and still states fidelity. |
+| **Scope § behavior sequence** — *"where the sequence departed from what it had learned"* | **Not implemented, deliberately.** Sequence signals live in the anomaly contributors, which 067 excluded as its one variable-length field. No view states a sequence deviation, and the behavior-sequence view says so. Open question 3 is answered: the required evidence was not retained. |
+
+Both are stated on screen rather than left as an omission, and both are pinned
+by tests that fail if a future change starts deriving either.
+
+One further presentational decision, recorded because it is a deliberate
+subtraction rather than a limitation: **`policy_reason` is retained and is not
+rendered.** It is the single free-text, producer-supplied value on the retained
+row; task 059 already keeps it off the realtime projection for that reason, and
+the WebUI's field-allowlist guard forbids it. `policy_rule` — the identifier
+naming which rule decided — is rendered in its place.
+
+Everything else in [§ Acceptance criteria](#acceptance-criteria) and
+[§ Amended acceptance criteria](#amended-acceptance-criteria) is implemented,
+including criteria 9–15 from the task 082 amendment.
+
+## Validation
+
+At the store, control-plane, `/v1` and browser levels.
+
+- **Both backends.** The new correlation predicates run in the shared
+  conformance suite; the PostgreSQL half is skipped without a database and was
+  run against a real one for this change.
+- **Pure browser logic under `node`**, the arrangement
+  [083](083-behavioral-layer-classification.md) established: the trace tree
+  against every degenerate parent reference, the duration and status mappings
+  including a nanosecond count above 2^53, every rendered sentence against
+  intent and causality words, and the controller against pagination reset,
+  out-of-order responses and unbounded state. Structural assertions hold when
+  `node` is absent.
+- **Rendering against the route.** A cross-layer test builds real evidence
+  through the real ingest path, reads `/v1`, runs the **shipped** row
+  projection over the response under `node`, and compares each cell against the
+  field it came from — the criterion-15 check, asserting the rendering's inputs
+  rather than trusting the view.
+- **Privacy tripwire** extended to all three narrowed reads, each swept
+  individually rather than assumed to inherit the unnarrowed page's result.

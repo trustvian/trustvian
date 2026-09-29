@@ -37,6 +37,7 @@
   <button type="button" class="tab" id="tab-live" data-panel="panel-live" aria-selected="true">Live</button>
   <button type="button" class="tab" id="tab-investigate" data-panel="panel-investigate" aria-selected="false">Investigate</button>
   <button type="button" class="tab" id="tab-compare" data-panel="panel-compare" aria-selected="false">Compare</button>
+  <button type="button" class="tab" id="tab-evidence" data-panel="panel-evidence" aria-selected="false">Evidence</button>
   <button type="button" class="tab" id="tab-promotion" data-panel="panel-promotion" aria-selected="false">Promotions</button>
   <button type="button" class="tab" id="tab-manage" data-panel="panel-manage" aria-selected="false">Manage</button>
 </nav>
@@ -226,6 +227,122 @@
   <div class="result" id="compare-result" aria-live="polite">
     <p class="empty">No comparison run.</p>
   </div>
+</section>
+
+<!-- ============================ Evidence ============================
+     Task 076. Navigation from a finding to the behaviors that contributed and
+     the observations that carried them, and from one observation into its
+     session, trace and behavioral context.
+
+     Nothing here resolves anything. Every status, count, side and verdict on
+     screen is a value /v1 returned — task 085 owns resolution, task 067 owns
+     retention, and this surface owns reading them.
+-->
+<section class="panel" id="panel-evidence" aria-labelledby="tab-evidence" hidden>
+  <h2>Evidence</h2>
+  <p class="note">
+    Why Trustvian reached a conclusion, from what it retained. This surface shows
+    which observations a finding rests on, which actions a session or trace
+    contained, and what was recorded about each one.
+  </p>
+  <p class="note">
+    <strong>What it cannot show, by design.</strong> No prompt, completion,
+    reasoning, tool argument, tool result, retrieved document, HTTP body or
+    arbitrary attribute &mdash; none of those is retained, so none is reachable
+    here. Trace structure is the recorded parent span reference and nothing else:
+    ordering is not reasoning, and this page never says an agent decided,
+    intended or chose anything.
+  </p>
+
+  <nav class="subtabs" aria-label="Evidence sections">
+    <button type="button" class="subtab" data-section="evidence-finding" aria-selected="true">Finding</button>
+    <button type="button" class="subtab" data-section="evidence-run" aria-selected="false">Run history</button>
+    <button type="button" class="subtab" data-section="evidence-provenance" aria-selected="false">Provenance</button>
+  </nav>
+
+<div class="evidence-section" id="evidence-finding" hidden>
+  <h3>Evidence &mdash; finding</h3>
+  <p class="note">
+    Opened from a gate check or a behavioral delta under <strong>Compare</strong>.
+    Compare two runs, then choose the evidence control on the check or delta you
+    want to understand &mdash; no identifier is typed anywhere in that path.
+  </p>
+  <div class="result" id="evidence-finding-result" aria-live="polite">
+    <p class="empty">
+      Nothing open. Run a comparison under Compare, then choose a gate check or a
+      behavioral delta to see the evidence behind it.
+    </p>
+  </div>
+</div>
+
+<div class="evidence-section" id="evidence-run" hidden>
+  <h3>Evidence &mdash; run history</h3>
+  <p class="note">
+    Five views over one run's retained history, each a bounded page. Opening an
+    observation from a finding fills these in for you.
+  </p>
+
+  <form class="stack" id="form-evidence-run">
+    <div class="field">
+      <label for="evidence-run-id">Evaluation run ID</label>
+      <input type="text" id="evidence-run-id" name="run_id" autocomplete="off" required>
+      <p class="hint">
+        The run whose history to read. Filled for you when you open an
+        observation from a finding. Example: <code>run-2026-03-04-a</code>
+      </p>
+    </div>
+
+    <div class="field">
+      <label for="evidence-view">View</label>
+      <select id="evidence-view"></select>
+      <p class="hint" id="evidence-view-blurb"></p>
+    </div>
+
+    <div class="field" id="evidence-identifier-field">
+      <label for="evidence-identifier" id="evidence-identifier-label">Identifier</label>
+      <input type="text" id="evidence-identifier" name="identifier" autocomplete="off">
+      <p class="hint" id="evidence-identifier-hint">
+        Filled for you when you open a session, trace or behavior from a row
+        below. The value is the one the observation recorded.
+      </p>
+    </div>
+
+    <button type="submit">Load</button>
+  </form>
+
+  <div class="result" id="evidence-run-result" aria-live="polite">
+    <p class="empty">No run history loaded.</p>
+  </div>
+</div>
+
+<div class="evidence-section" id="evidence-provenance" hidden>
+  <h3>Evidence &mdash; version provenance</h3>
+  <p class="note">
+    What the two sides of a comparison <em>were</em>, as the producer supplied it
+    when each candidate was created. Every field a producer did not supply reads
+    <code>not stated</code>: an unknown model is not the same fact as a model both
+    sides shared, and a panel that could not tell them apart would be worse than
+    one that said nothing.
+  </p>
+
+  <form class="stack" id="form-evidence-provenance">
+    <div class="field">
+      <label for="evidence-provenance-reference">Reference run ID</label>
+      <input type="text" id="evidence-provenance-reference" autocomplete="off" required>
+      <p class="hint">Filled from a comparison, or typed if you already have it.</p>
+    </div>
+    <div class="field">
+      <label for="evidence-provenance-candidate">Candidate run ID</label>
+      <input type="text" id="evidence-provenance-candidate" autocomplete="off" required>
+      <p class="hint">The run being evaluated.</p>
+    </div>
+    <button type="submit">Load provenance</button>
+  </form>
+
+  <div class="result" id="evidence-provenance-result" aria-live="polite">
+    <p class="empty">No provenance loaded.</p>
+  </div>
+</div>
 </section>
 
 <section class="panel" id="panel-promotion" aria-labelledby="tab-promotion" hidden>

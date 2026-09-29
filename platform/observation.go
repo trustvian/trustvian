@@ -363,3 +363,83 @@ func validateObservationPage(after string, limit int) error {
 	_, err := ParseObservationCursor(after)
 	return err
 }
+
+// ---------------------------------------------------------------------
+// Correlated reads (task 076)
+// ---------------------------------------------------------------------
+
+// ObservationScope narrows a run's retained history to one correlated view.
+//
+// Task 076 renders six views over retained history — session actions, trace
+// context, behavior sequence, decision timeline, behavior detail and
+// provenance — and exactly three of them need the read narrowed. This is that
+// narrowing, and it is a closed value rather than free-form criteria for the
+// reason ObservationFilter is: every field is one equality predicate over a
+// column task 067 already retains and already indexes, run-scoped first.
+//
+// **At most one field may be set.** Not because the SQL could not combine them
+// — it can, and ObservationFilter does — but because each combination is a
+// query shape nothing has measured and a view nobody specified. A session
+// inside a trace is a question this task does not ask, and answering it
+// speculatively would publish a contract on the strength of a guess.
+//
+// There is no decision or risk-level field here. Those belong to task 085's
+// gate checks, reached through the resolution routes, and duplicating them on a
+// run-scoped route would give the browser a second way to ask a question the
+// control plane already answers authoritatively.
+type ObservationScope struct {
+	// SessionID orders one bounded interaction's actions.
+	SessionID string
+
+	// TraceID gathers one invocation's actions, which is also the only way a
+	// parent span reference is resolvable: task 084 makes ParentSpanID
+	// trace-scoped and unindexed, so a parent is found by reading its trace
+	// rather than by querying for it.
+	TraceID string
+
+	// FingerprintID selects one behavioral identity's observations inside one
+	// run, which is the behavior-detail view. The same predicate task 085 uses
+	// for a resolved finding, reached here without a comparison.
+	FingerprintID string
+}
+
+// filter renders the scope as the storage filter, after checking its shape.
+//
+// Session and trace identifiers are deliberately **not** put through
+// validateID. Task 067 records that neither has any length bound at ingest and
+// that retention must never narrow which records the platform accepts —
+// refusing an over-long or unusual value here would make a row the platform
+// legitimately retained permanently unreachable, which is the same defect from
+// the read side. The value travels as a bound parameter and is never assembled
+// into SQL, so nothing is gained by refusing it either.
+//
+// FingerprintID keeps validateID, because task 085's resolution route already
+// applies it to the same value and two routes disagreeing about what a
+// fingerprint may be is worse than either rule.
+func (s ObservationScope) filter() (ObservationFilter, error) {
+	set := 0
+	if s.SessionID != "" {
+		set++
+	}
+	if s.TraceID != "" {
+		set++
+	}
+	if s.FingerprintID != "" {
+		set++
+	}
+	if set > 1 {
+		return ObservationFilter{}, fmt.Errorf(
+			"%w: a correlated read names one of session, trace or behavior, never "+
+				"more than one", ErrInvalidID)
+	}
+	if s.FingerprintID != "" {
+		if err := validateID("observation behavior", s.FingerprintID); err != nil {
+			return ObservationFilter{}, err
+		}
+	}
+	return ObservationFilter{
+		SessionID:     s.SessionID,
+		TraceID:       s.TraceID,
+		FingerprintID: s.FingerprintID,
+	}, nil
+}

@@ -1301,8 +1301,10 @@ func (h *Handler) runObservations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	after := r.URL.Query().Get("after")
+	scope := observationScopeParam(r)
 
-	page, err := h.controlPlane.EvaluationRunObservations(r.Context(), runID, after, limit)
+	page, err := h.controlPlane.FindEvaluationRunObservations(
+		r.Context(), runID, scope, after, limit)
 	if err != nil {
 		h.writeError(w, err)
 		return
@@ -1312,7 +1314,12 @@ func (h *Handler) runObservations(w http.ResponseWriter, r *http.Request) {
 	if len(page.Observations) == limit {
 		last := platform.FormatObservationCursor(
 			page.Observations[len(page.Observations)-1].Sequence)
-		probe, err := h.controlPlane.EvaluationRunObservations(r.Context(), runID, last, 1)
+		// The same scope, deliberately. A probe that dropped it would ask
+		// whether *any* row follows rather than whether another matching row
+		// does, and would publish a continuation cursor leading to an empty
+		// page — the defect task 085 avoided by filtering before the limit.
+		probe, err := h.controlPlane.FindEvaluationRunObservations(
+			r.Context(), runID, scope, last, 1)
 		if err != nil {
 			h.writeError(w, err)
 			return
@@ -1321,7 +1328,25 @@ func (h *Handler) runObservations(w http.ResponseWriter, r *http.Request) {
 			nextAfter = last
 		}
 	}
-	writeJSON(w, http.StatusOK, newObservationListResponse(string(runID), page, nextAfter))
+	writeJSON(w, http.StatusOK,
+		newObservationListResponse(string(runID), scope, page, nextAfter))
+}
+
+// observationScopeParam reads the correlated view a history read is narrowed to
+// (task 076).
+//
+// Three optional, mutually exclusive equality narrowings over columns task 067
+// already retains and already indexes. Nothing is defaulted and nothing is
+// combined here: more than one is refused by the control plane with a
+// diagnostic, because each combination is a query shape nothing measured and a
+// view nobody specified.
+func observationScopeParam(r *http.Request) platform.ObservationScope {
+	query := r.URL.Query()
+	return platform.ObservationScope{
+		SessionID:     query.Get("session_id"),
+		TraceID:       query.Get("trace_id"),
+		FingerprintID: query.Get("fingerprint_id"),
+	}
 }
 
 // ---------------------------------------------------------------------
