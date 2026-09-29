@@ -72,16 +72,22 @@ reconstructed later. Everything else in this table is already released.
 | Platform `/v1` control-plane route shapes | STABLE | Path, method and path-parameter shape of each documented `/v1` route | New routes; new optional request fields | Major, or a new path version |
 | Platform `/v1` JSON field names | STABLE | A published request or response field name keeps its meaning | New fields — **consumers must tolerate unknown fields** | Major, or a new path version |
 | Platform ingest envelope | STABLE | `version` field, currently `"1"`; `sequence`, `behavioral_profile`, `record` | Additive envelope fields — `fidelity` (075) and `behavior_layer` (083) are both optional | New envelope version |
+| Retained observation field set | STABLE | An allowlist expressed as columns. No attribute map, no span-event list, no link list and no payload field exists, so no prompt, completion, argument, result, document, body or arbitrary attribute can be retained or published | New named scalar fields | Major |
 | `DecisionRecord` JSON fields | STABLE | A published field name keeps its meaning; absent optional fields mean *unavailable*, never a measured value | New optional fields — `parent_span_id`, `span_lineage`, `duration_nanos` and `span_status` (084). **A record written before a field existed stays valid**; `duration_nanos` distinguishes `""` (unavailable) from `"0"` (measured zero), and a value that is malformed, non-canonical or above `event.MaxDurationNanos` is **refused at ingest** rather than read as unavailable | Major |
 | Platform error `code` values and HTTP statuses | STABLE | A code and its status keep the condition they name | New codes | Major |
 | Platform error `message` text | OBSERVATIONAL | The code and status are the contract; wording is diagnostic | Any change | None |
 | Platform ingest sequence semantics | STABLE | Monotonic from 1; expected applies, identical retry of the last replays, gap and stale fail | — | Major |
-| Platform SQLite schema | OPERATIONALLY STABLE | Forward-only, version-gated; currently version 6 | Additive tables, columns or indexes with a schema-version bump and a migration | Major for a destructive change |
+| Platform SQLite schema | OPERATIONALLY STABLE | Forward-only, version-gated; currently version 7 | Additive tables, columns or indexes with a schema-version bump and a migration | Major for a destructive change |
 | Platform collection paging | STABLE | Every `/v1` collection shares one shape: parent-scoped except `GET /v1/projects`, ordered by `id` byte-ascending, exclusive `after` cursor, `limit` 1–64 defaulting to 64, `next_after` present exactly when another row follows, `404` for a missing parent and `200` with an empty array for an empty one | New optional query parameters | Major, or a new path version |
 | `GET /v1/projects` | STABLE | Path, method, and the bounded paging contract above; the one unscoped collection | New optional query parameters | Major, or a new path version |
 | `GET /v1/projects/{project_id}/agents` | STABLE | Same | New optional query parameters | Major, or a new path version |
 | `GET /v1/agents/{agent_id}/candidates` | STABLE | Same | New optional query parameters | Major, or a new path version |
 | `GET /v1/candidates/{candidate_id}/evaluation-runs` | STABLE | Same | New optional query parameters | Major, or a new path version |
+| `GET /v1/evaluation-runs/{run_id}/observations` | STABLE | Task 067's retained history: same bounded paging, except that the cursor is an **ingest sequence** rather than an identifier — canonical decimal, exclusive, starting at 1, and refused rather than coerced when it is not | New optional query parameters | Major, or a new path version |
+| Retained observation identity and order | STABLE | An observation is `(run_id, sequence)` and pages in ascending sequence — the order the platform accepted records. **Never ordered by timestamp**, which ties, and never keyed on a span id, which is unique only inside its trace | — | Major |
+| Observation page consistency | STABLE | One page is read from one database snapshot. An ingest committing during a read yields the state before it or after it, never a mixture of the two | — | Major |
+| Correlation identifier length | STABLE | `trace_id`, `session_id` and `fingerprint_id` are retained and returned **whole, at any length the request body allows**. Retention imposes no limit of its own: the index keys on a fixed-width digest so a storage detail cannot narrow which records are accepted | A length limit would be a change to the record contract, not to storage | Major |
+| Observation `history_state` values | STABLE | Exactly `complete`, `partial` and `unavailable`, and always present. `unavailable` means the run has records whose history was never retained — **it is not an empty history**; `partial` means the run passed the retention bound or began before schema 7 | — | Major |
 | Collection element shape | STABLE | Each element is the entity's existing detail DTO, field for field; a listing publishes nothing a by-id read does not | New fields, in both places together | Major |
 | Platform environment identity | STABLE | An environment is `(project_id, ref)`; a run keeps recording only the ref, and refs are an open set rather than an enum | New optional environment fields | Major |
 | `GET /v1/projects/{project_id}/environments` paging | STABLE | Traversal by `ref` ascending, exclusive `after` cursor, `limit` 1–64 defaulting to 64, `next_after` present only when another page follows | New optional query parameters | Major, or a new path version |
@@ -427,7 +433,7 @@ of the contracts above.
 |---|---|---|---|---|
 | Backend selection names (`sqlite`, `postgres`) | OPERATIONALLY STABLE | The accepted values and that omitting one means SQLite | New backend names | Major |
 | `TRUSTVIAN_PLATFORM_POSTGRES_DSN` | OPERATIONALLY STABLE | `trustvian-local` reads the PostgreSQL DSN from it | An additional configuration source | Major |
-| `platform.SchemaVersion` | INTERNAL | One logical version governs both physical schemas | Incremented with a migration on **both** backends | n/a |
+| `platform.SchemaVersion` | INTERNAL | One logical version governs both physical schemas; currently **7** | Incremented with a migration on **both** backends | n/a |
 | Physical SQLite schema | OPERATIONALLY STABLE | Migrated forward only; a newer schema fails closed | Additive tables and columns via a version bump | Major |
 | Physical PostgreSQL schema | OPERATIONALLY STABLE | Same | Same | Major |
 
@@ -440,6 +446,29 @@ A deployment sharing one PostgreSQL database between processes shares
 authoritative state but **not** realtime notifications; each process keeps its
 own in-process bus. That is a known limitation of task 064, not a defect, and
 task 069 owns cross-node realtime.
+
+**Retained observations index a digest, not the value.** `fingerprint_key`,
+`trace_key` and `session_key` hold hex SHA-256 of the column beside each, and the
+three correlation indexes key on those. PostgreSQL refuses a B-tree entry over
+roughly 2704 bytes at `INSERT`, and none of the three values has a length bound
+the ingest path enforces — so indexing the value would turn a record the platform
+already accepts into a failed ingest, on PostgreSQL and not on SQLite. The key
+columns are derived, never caller-supplied, and are verified against their values
+on read. **Any future lookup through one of these indexes must compare the
+original value as well as the key**, because a digest narrows rather than
+identifies.
+
+**Schema 7 (task 067) adds per-observation history and no row.** The step is
+forward-only on both backends and creates two tables and three run-scoped
+indexes. Runs that existed beforehand keep every byte of their aggregate and
+behavior evidence and gain **no** observations: their history reports
+`unavailable`, which is a different statement from an empty history and is the
+reason no backfill is attempted. A run that was mid-ingest when the upgrade
+happened and then continues reports `partial`, because its earliest records were
+never retained. Retention is bounded at 4096 observations per run, after which
+the run keeps ingesting and reports `partial` — saturation degrades the
+historical evidence and never the decision evidence. There is no age-based
+expiry: history is deleted with its run.
 
 ### Web control plane
 

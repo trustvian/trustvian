@@ -108,6 +108,10 @@ func TestSemanticPathLeaksNoContentToAnyV1Payload(t *testing.T) {
 		"GET /v1/evaluation-runs/run-1":              a.do("GET", "/v1/evaluation-runs/run-1", nil).Body.String(),
 		"GET /v1/evaluation-runs/run-1/progress":     a.do("GET", "/v1/evaluation-runs/run-1/progress", nil).Body.String(),
 		"GET /v1/evaluation-runs/run-1/ingest-state": a.do("GET", "/v1/evaluation-runs/run-1/ingest-state", nil).Body.String(),
+		// Task 067. The route with the largest published field set, and the
+		// first that survives the run that produced it — which is exactly why
+		// it is swept here rather than trusted to its own contract.
+		"GET /v1/evaluation-runs/run-1/observations": a.do("GET", "/v1/evaluation-runs/run-1/observations", nil).Body.String(),
 		"GET /v1/candidates/cand-1":                  a.do("GET", "/v1/candidates/cand-1", nil).Body.String(),
 		"GET /v1/agents/agent-1/candidates":          a.do("GET", "/v1/agents/agent-1/candidates", nil).Body.String(),
 		"GET /v1/candidates/cand-1/evaluation-runs":  a.do("GET", "/v1/candidates/cand-1/evaluation-runs", nil).Body.String(),
@@ -120,6 +124,13 @@ func TestSemanticPathLeaksNoContentToAnyV1Payload(t *testing.T) {
 				t.Errorf("content attribute %q reached %s\n  value: %s", key, name, canary)
 			}
 		}
+	}
+
+	// The observation route must have returned the behavior, or its silence
+	// above proves nothing.
+	if !strings.Contains(bodies["GET /v1/evaluation-runs/run-1/observations"], "export_customer") {
+		t.Errorf("the observation page holds no behavior, so its absence of canaries "+
+			"proves nothing:\n%s", bodies["GET /v1/evaluation-runs/run-1/observations"])
 	}
 
 	// Absence must not have been achieved by losing the behavior with it.
@@ -188,7 +199,18 @@ func TestSemanticPathPersistsNoContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EvaluationEvidence() error = %v", err)
 	}
-	text := fmt.Sprintf("%+v\n%+v", aggregate, snapshot)
+	// Task 067's retained history is read the same way and for the same
+	// reason: it is durable, it reaches a backup, and it is the newest place a
+	// content value could come to rest.
+	page, err := a.store.RunObservations(t.Context(), "run-1", 0, platform.MaxListPage)
+	if err != nil {
+		t.Fatalf("RunObservations() error = %v", err)
+	}
+	if len(page.Observations) == 0 {
+		t.Fatal("no observation was retained, so the assertion below proves nothing")
+	}
+
+	text := fmt.Sprintf("%+v\n%+v\n%+v", aggregate, snapshot, page.Observations)
 	if !strings.Contains(text, "export_customer") {
 		t.Fatalf("the persisted evidence holds no behavior, so this assertion proves "+
 			"nothing:\n%s", text)

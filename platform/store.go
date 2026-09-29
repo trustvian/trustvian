@@ -67,6 +67,15 @@ type Store interface {
 	ControlStore
 	EvaluationStore
 	EvaluationIngestStore
+
+	// ObservationStore reads the per-observation history task 067 retains.
+	//
+	// Part of the full-backend contract rather than optional, because the
+	// history is written inside CommitEvaluationIngest's transaction: a
+	// backend that can write it and not read it is not a coherent backend, and
+	// the conformance suite would have no way to assert the two are equivalent.
+	ObservationStore
+
 	io.Closer
 }
 

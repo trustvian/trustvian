@@ -662,6 +662,7 @@ func TestPostgresIngestCommitsEvidenceAndCursorTogether(t *testing.T) {
 		Sequence:             1,
 		PreviousNextSequence: 1,
 		RecordDigest:         strings.Repeat("a", 64),
+		Observation:          conformanceObservation(t, 1),
 	}
 
 	result, err := store.CommitEvaluationIngest(ctx, commit)

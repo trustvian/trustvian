@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -233,6 +234,56 @@ func (s *PostgresStore) withTx(ctx context.Context, fn func(tx pgx.Tx) error) er
 		return mapPostgresError("transaction", "", err)
 	}
 	return nil
+}
+
+// withReadSnapshot runs fn inside a read-only REPEATABLE READ transaction.
+//
+// Separate from withTx, and deliberately not a change to it: withTx carries
+// every run-scoped *write* in this store, those writes take row locks and their
+// isolation level is part of a concurrency design that works — see
+// docs/adr/0037-postgresql-is-the-shared-platform-persistence-backend.md — and
+// raising it globally would change how they fail under contention to fix a
+// problem none of them has.
+//
+// READ COMMITTED takes a new snapshot per statement, so a multi-statement read
+// sees a different committed state in each one. That is invisible in a read that
+// asks one question and wrong in a read that has to combine three — which is
+// what a page of observations beside the history describing it is. REPEATABLE
+// READ takes the snapshot once, at first statement, and holds it.
+//
+// ReadOnly is not decoration: it makes the intent enforceable rather than
+// conventional, so a write that ever appears on this path fails here instead of
+// quietly acquiring a different isolation level's semantics. A read-only
+// transaction also cannot hit the serialization failures a REPEATABLE READ
+// writer can, so no retry loop is needed.
+func (s *PostgresStore) withReadSnapshot(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return mapPostgresError("transaction", "", err)
+	}
+	// Rollback after rollback is a no-op, so one deferred call covers the error
+	// paths and a panic. Nothing was written, so there is nothing to commit.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return mapPostgresRollback(tx.Rollback(ctx))
+}
+
+// mapPostgresRollback treats "already finished" as success.
+//
+// A rollback that reports the transaction is done is the deferred call having
+// won the race with the explicit one, which is the arrangement working rather
+// than a failure to report.
+func mapPostgresRollback(err error) error {
+	if err == nil || errors.Is(err, pgx.ErrTxClosed) {
+		return nil
+	}
+	return mapPostgresError("transaction", "", err)
 }
 
 // testHookInRunMutation runs between the in-transaction read and the write in
@@ -856,6 +907,9 @@ func (s *PostgresStore) CommitEvaluationIngest(
 	if err := validatePersistedDigest("record digest", commit.RecordDigest); err != nil {
 		return EvaluationIngestCommitResult{}, err
 	}
+	if err := validateCommitObservation(commit); err != nil {
+		return EvaluationIngestCommitResult{}, err
+	}
 	next, err := nextSequenceAfter(commit.Sequence)
 	if err != nil {
 		return EvaluationIngestCommitResult{}, err
@@ -885,11 +939,16 @@ func (s *PostgresStore) CommitEvaluationIngest(
 			// same logical record already landed, which is the retry contract
 			// working rather than a failure.
 			if current.NextSequence() == next && current.LastDigest() == commit.RecordDigest {
+				history, err := observationHistoryFor(ctx, q, runID)
+				if err != nil {
+					return err
+				}
 				result = EvaluationIngestCommitResult{
 					Disposition:      EvaluationIngestAlreadyCommitted,
 					NextSequence:     current.NextSequence(),
 					RecordCount:      current.RecordCount(),
 					BehaviorComplete: current.BehaviorComplete(),
+					History:          history,
 				}
 				return nil
 			}
@@ -925,6 +984,14 @@ func (s *PostgresStore) CommitEvaluationIngest(
 			return err
 		}
 
+		// Task 067's history row, inside this transaction for the reason
+		// everything else here is: evidence whose history is short by one and
+		// reports itself complete is a silent wrong answer, not a failure.
+		history, err := retainObservationPostgres(ctx, tx, runID, commit.Observation)
+		if err != nil {
+			return err
+		}
+
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO `+tableIngestState+` (run_id, next_sequence, last_digest)
 			 VALUES ($1, $2, $3)
@@ -940,6 +1007,7 @@ func (s *PostgresStore) CommitEvaluationIngest(
 			NextSequence:     next,
 			RecordCount:      commit.Aggregate.RecordCount(),
 			BehaviorComplete: commit.Snapshot.Complete(),
+			History:          history,
 		}
 		return nil
 	})
@@ -947,6 +1015,70 @@ func (s *PostgresStore) CommitEvaluationIngest(
 		return EvaluationIngestCommitResult{}, err
 	}
 	return result, nil
+}
+
+// retainObservationPostgres writes one observation and advances the run's
+// history row, inside the caller's transaction.
+//
+// The decision is planObservationRetention's, shared with SQLite; only the
+// placeholder syntax and the upsert spelling live here, which is the split
+// querier.go draws.
+func retainObservationPostgres(
+	ctx context.Context, tx pgx.Tx, runID EvaluationRunID, o Observation,
+) (ObservationHistory, error) {
+	q := pgxQuerier{q: tx}
+	present, retained, complete, err := loadObservationHistoryRow(ctx, q, runID)
+	if err != nil {
+		return ObservationHistory{}, err
+	}
+
+	plan := planObservationRetention(present, retained, complete, o.Sequence)
+
+	if plan.Insert {
+		columns := observationInsertColumns()
+		placeholders := make([]string, len(columns))
+		for i := range columns {
+			placeholders[i] = "$" + strconv.Itoa(i+1)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO `+tableObservations+` (`+strings.Join(columns, ", ")+`)
+			 VALUES (`+strings.Join(placeholders, ", ")+`)`,
+			observationInsertArgs(runID, o)...); err != nil {
+			return ObservationHistory{}, mapPostgresError("observation", string(runID), err)
+		}
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO `+tableObservationHistory+` (run_id, retained_count, complete)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (run_id) DO UPDATE SET
+			retained_count = excluded.retained_count,
+			complete = excluded.complete`,
+		string(runID), uint64Text(plan.Retained), boolInt(plan.Complete)); err != nil {
+		return ObservationHistory{}, mapPostgresError("observation history", string(runID), err)
+	}
+
+	return NewObservationHistory(true, plan.Retained, plan.Complete, 0), nil
+}
+
+// RunObservations returns one bounded page of a run's retained history.
+//
+// Under withReadSnapshot rather than withTx: the page is three statements and
+// they have to describe one instant. See withReadSnapshot for why the isolation
+// level is raised here and nowhere else.
+func (s *PostgresStore) RunObservations(
+	ctx context.Context, id EvaluationRunID, after uint64, limit int,
+) (ObservationPage, error) {
+	var page ObservationPage
+	err := s.withReadSnapshot(ctx, func(tx pgx.Tx) error {
+		var err error
+		page, err = runObservationPage(ctx, pgxQuerier{q: tx}, id, after, limit)
+		return err
+	})
+	if err != nil {
+		return ObservationPage{}, err
+	}
+	return page, nil
 }
 
 // ---------------------------------------------------------------------

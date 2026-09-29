@@ -199,6 +199,7 @@ func (h *Handler) routes() {
 
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/progress", h.progress)
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/behaviors", h.runBehaviors)
+	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/observations", h.runObservations)
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/ingest-state", h.ingestState)
 	h.mux.HandleFunc("POST /v1/evaluation-runs/{run_id}/records", h.ingestRecord)
 
@@ -361,6 +362,16 @@ func classify(err error) (int, string, string) {
 		// the state becomes, so it is the request that is wrong.
 		errors.Is(err, platform.ErrPromotionScope),
 		errors.Is(err, platform.ErrInvalidGateEvidence),
+		// A page cursor this contract did not produce. Permanently wrong
+		// whatever the state becomes, so it is the request rather than a
+		// conflict — the same class an invalid identifier is in, and kept
+		// distinct from it because a sequence and an identifier fail
+		// differently and deserve different diagnostics.
+		errors.Is(err, platform.ErrObservationCursor),
+		// A retained observation this path could not project. Reachable only
+		// from a record the ingest boundary would also refuse, so it is the
+		// caller's record rather than a server fault.
+		errors.Is(err, platform.ErrInvalidObservation),
 		errors.Is(err, platform.ErrFingerprintConflict):
 		return http.StatusBadRequest, codeInvalidRequest, err.Error()
 
@@ -1254,4 +1265,48 @@ func (h *Handler) runBehaviors(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, newRunBehaviorListResponse(string(runID), page, nextAfter))
+}
+
+// runObservations returns one bounded page of a run's retained per-observation
+// history, task 067.
+//
+// The same collection contract every other list route on this mux follows: an
+// exclusive `after` cursor, `limit` 1..64 defaulting to 64, and `next_after`
+// present exactly when another row follows — established by a second bounded
+// question rather than by fetching limit+1, which task 066 corrected precisely
+// because it had widened the store's public page bound.
+//
+// The cursor here is a sequence rather than an identifier, which is the one
+// difference: it is the immutable page key, and the platform refuses a
+// non-canonical one rather than coercing it.
+func (h *Handler) runObservations(w http.ResponseWriter, r *http.Request) {
+	runID := platform.EvaluationRunID(r.PathValue("run_id"))
+
+	limit, err := listLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	after := r.URL.Query().Get("after")
+
+	page, err := h.controlPlane.EvaluationRunObservations(r.Context(), runID, after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	nextAfter := ""
+	if len(page.Observations) == limit {
+		last := platform.FormatObservationCursor(
+			page.Observations[len(page.Observations)-1].Sequence)
+		probe, err := h.controlPlane.EvaluationRunObservations(r.Context(), runID, last, 1)
+		if err != nil {
+			h.writeError(w, err)
+			return
+		}
+		if len(probe.Observations) > 0 {
+			nextAfter = last
+		}
+	}
+	writeJSON(w, http.StatusOK, newObservationListResponse(string(runID), page, nextAfter))
 }

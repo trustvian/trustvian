@@ -124,15 +124,16 @@ func sqliteTableNames(t *testing.T, db *sql.DB) []string {
 	return names
 }
 
-// TestSchemaV4MigratesForwardAddingOnlyIndexesAndOperationalColumns asserts the
-// whole forward chain from a v4 database, from both sides: what it must add, and
+// TestSchemaV4MigratesForwardAddingOnlyTheIntendedSchema asserts the whole
+// forward chain from a v4 database, from both sides: what it must add, and
 // everything it must leave alone.
 //
-// Opening a v4 database now runs v4—v5 and v5—v6, so the two additions are
-// asserted together and separately: v5's three indexes (task 074) and v6's nine
-// operational columns on one table (task 084). Everything else — every other
-// table, every other column, every pre-existing index — must be untouched.
-func TestSchemaV4MigratesForwardAddingOnlyIndexesAndOperationalColumns(t *testing.T) {
+// Opening a v4 database now runs v4—v5, v5—v6 and v6—v7, so all three additions
+// are asserted together and separately: v5's three child-collection indexes
+// (task 074), v6's nine operational columns on one table (task 084), and v7's
+// two observation tables with their three indexes (task 067). Everything else —
+// every pre-existing table, column and index — must be untouched.
+func TestSchemaV4MigratesForwardAddingOnlyTheIntendedSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v4.db")
 	db := writeSchemaV4(t, path)
 	seedV1Content(t, db, "run-legacy", 4)
@@ -169,7 +170,11 @@ func TestSchemaV4MigratesForwardAddingOnlyIndexesAndOperationalColumns(t *testin
 			added = append(added, name)
 		}
 	}
-	want := []string{indexAgentsByProject, indexCandidatesByAgent, indexRunsByCandidate}
+	want := []string{
+		indexAgentsByProject, indexCandidatesByAgent, indexRunsByCandidate,
+		indexObservationsByFingerprint, indexObservationsByTrace,
+		indexObservationsBySession,
+	}
 	slices.Sort(want)
 	slices.Sort(added)
 	if !slices.Equal(added, want) {
@@ -181,17 +186,35 @@ func TestSchemaV4MigratesForwardAddingOnlyIndexesAndOperationalColumns(t *testin
 		}
 	}
 
-	// No table added, none dropped. Neither migration in this chain creates one.
+	// Exactly v7's two tables added, and none dropped.
 	afterTables := sqliteTableNames(t, store.db)
-	if !slices.Equal(afterTables, beforeTables) {
-		t.Errorf("tables after = %v, before = %v; neither migration adds a table",
-			afterTables, beforeTables)
+	var addedTables []string
+	for _, name := range afterTables {
+		if !slices.Contains(beforeTables, name) {
+			addedTables = append(addedTables, name)
+		}
+	}
+	wantTables := []string{tableObservations, tableObservationHistory}
+	slices.Sort(wantTables)
+	slices.Sort(addedTables)
+	if !slices.Equal(addedTables, wantTables) {
+		t.Errorf("migration added tables %v, want exactly %v", addedTables, wantTables)
+	}
+	for _, name := range beforeTables {
+		if !slices.Contains(afterTables, name) {
+			t.Errorf("migration dropped table %s", name)
+		}
 	}
 
 	// Exactly the nine operational columns, on exactly the aggregate table.
 	operational := aggregateOperationalColumns()
 	slices.Sort(operational)
 	for _, table := range afterTables {
+		// A table v7 created has no "before" to compare against; its columns
+		// are asserted by the shared DDL and by the round-trip tests, not here.
+		if slices.Contains(addedTables, table) {
+			continue
+		}
 		after := sqliteTableColumns(t, store.db, table)
 		var addedColumns []string
 		for _, name := range after {

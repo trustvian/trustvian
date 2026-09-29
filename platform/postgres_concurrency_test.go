@@ -473,6 +473,7 @@ func runningRunWithCommit(
 		Sequence:             1,
 		PreviousNextSequence: 1,
 		RecordDigest:         digest,
+		Observation:          conformanceObservation(t, 1),
 	}
 }
 
@@ -586,22 +587,47 @@ func TestPostgresRunScopedWritesTakeTheRowLock(t *testing.T) {
 
 // TestPostgresUsesReadCommitted pins the isolation decision.
 //
-// Every invariant here is held by a row lock, a predicate or a constraint.
+// Every write invariant here is held by a row lock, a predicate or a constraint.
 // Raising isolation globally to SERIALIZABLE would make 40001 a routine outcome
 // and push retry handling onto every caller for a property two row locks already
-// provide — so the empty TxOptions is deliberate, not an oversight.
+// provide — so the empty TxOptions on the write path is deliberate, not an
+// oversight.
+//
+// Task 067 added the one exception, and this test pins its shape rather than
+// making room for it: a page of retained observations is three statements that
+// have to describe one instant, READ COMMITTED takes a fresh snapshot per
+// statement, and no row lock helps a reader. So exactly one transaction raises
+// isolation, it raises it to REPEATABLE READ rather than SERIALIZABLE, and it is
+// **read-only** — which is what keeps the exception from becoming the rule. A
+// second one, or a writable one, fails here.
 func TestPostgresUsesReadCommitted(t *testing.T) {
 	source := goSourceWithoutCommentsForTest(t, "postgres.go")
 
 	if !strings.Contains(source, "BeginTx(ctx, pgx.TxOptions{})") {
-		t.Error("transactions no longer begin with default isolation")
+		t.Error("write transactions no longer begin with default isolation")
 	}
-	for _, stronger := range []string{"Serializable", "RepeatableRead"} {
-		if strings.Contains(source, stronger) {
-			t.Errorf("postgres.go requests %s isolation; correctness here comes from "+
-				"row locks and predicates, and a global bump would make 40001 "+
-				"routine for every caller", stronger)
-		}
+	if strings.Contains(source, "Serializable") {
+		t.Error("postgres.go requests Serializable isolation; correctness here comes " +
+			"from row locks and predicates, and that bump would make 40001 routine " +
+			"for every caller")
+	}
+
+	// The read snapshot, and only it.
+	if got := strings.Count(source, "pgx.RepeatableRead"); got != 1 {
+		t.Errorf("postgres.go requests RepeatableRead %d times, want exactly 1 "+
+			"(withReadSnapshot). Every write invariant is held by a row lock or a "+
+			"predicate, so a second raised-isolation transaction is a design change "+
+			"rather than a fix.", got)
+	}
+	if got := strings.Count(source, "pgx.ReadOnly"); got != 1 {
+		t.Errorf("postgres.go declares ReadOnly %d times, want exactly 1. The raised "+
+			"isolation level is only defensible because that transaction cannot "+
+			"write; a writable REPEATABLE READ transaction can fail with 40001 and "+
+			"has no retry here.", got)
+	}
+	if !strings.Contains(source, "IsoLevel:   pgx.RepeatableRead,\n\t\tAccessMode: pgx.ReadOnly,") {
+		t.Error("the raised isolation level is not paired with ReadOnly in one " +
+			"TxOptions; they are one decision and must not drift apart")
 	}
 }
 

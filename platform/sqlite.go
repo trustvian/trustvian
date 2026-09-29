@@ -35,7 +35,7 @@ import (
 // schema version. They change for different reasons, and coupling them would
 // force a migration on an unrelated release or hide a real one behind an
 // unchanged number.
-const SchemaVersion = 6
+const SchemaVersion = 7
 
 // Table names. Compile-time constants: these are the only identifiers that
 // ever appear in assembled SQL. Every caller-supplied value is a bound
@@ -59,6 +59,17 @@ const (
 
 	// Added by schema v4: one immutable row per recorded promotion decision.
 	tablePromotions = "platform_promotions"
+
+	// Added by schema v7, task 067: one row per retained observation, and one
+	// row per run describing what that run's retained history *is*.
+	//
+	// Two tables rather than a count column on the run, for the reason the
+	// aggregate and the behavior snapshot are two tables: the history row
+	// exists exactly when retention has happened, and its absence beside a
+	// non-zero record count is what distinguishes a run that predates
+	// retention from one that retained everything.
+	tableObservations       = "platform_observations"
+	tableObservationHistory = "platform_observation_history"
 )
 
 // indexPromotionsByProject supports the one query that is not a primary-key
@@ -82,14 +93,38 @@ const (
 	indexRunsByCandidate   = "platform_runs_by_candidate"
 )
 
+// The v7 indexes, one per access pattern task 082 stated for 085 and 076, and
+// none that is not.
+//
+// Every one is **run-scoped first**, because every access pattern in those two
+// is scoped to a run: a trace id and a session id are producer-supplied and a
+// global index on either would invite the cross-run key task 084 forbids. Each
+// ends in `sequence` so the page order is the index order and a resolution scan
+// never sorts.
+//
+// **The middle column is a digest, not the value.** PostgreSQL refuses a B-tree
+// entry over roughly 2704 bytes at INSERT time, and none of the three indexed
+// values has a length bound the ingest path enforces — see
+// observationCorrelationColumns. Indexing the raw value would let an already
+// accepted record fail on insert and roll back its whole ingest, on PostgreSQL
+// and not on SQLite. The digest is bounded, so the key is bounded, and the value
+// is stored whole beside it. A lookup filters on both.
+//
+// The (run_id, sequence) pattern needs no index of its own — it is the primary
+// key. `parent_span_id` gets none deliberately: task 084 states that nothing
+// indexes it and that this task must not either, because it is meaningful only
+// beside a trace id and an index would suggest otherwise.
+const (
+	indexObservationsByFingerprint = "platform_observations_by_fingerprint"
+	indexObservationsByTrace       = "platform_observations_by_trace"
+	indexObservationsBySession     = "platform_observations_by_session"
+)
+
 // schemaTables is every table this schema owns, and the allowlist a test
 // asserts against so an event, scorecard, or gate-result table cannot appear
 // without something failing.
-var schemaTables = []string{
-	tableSchemaVersion, tableProjects, tableAgents, tableCandidates,
-	tableRuns, tableAggregates, tableSnapshots, tableEntries,
-	tableIngestState, tableEnvironments, tablePromotions,
-}
+var schemaTables = append(append([]string{}, schemaTablesV6...),
+	tableObservations, tableObservationHistory)
 
 // SQLiteStore is the local persistence adapter.
 //
@@ -248,7 +283,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV4ToV5(ctx); err != nil {
 			return err
 		}
-		return s.migrateV5ToV6(ctx)
+		if err := s.migrateV5ToV6(ctx); err != nil {
+			return err
+		}
+		return s.migrateV6ToV7(ctx)
 
 	case schemaVersionV2:
 		if err := s.requireTables(ctx, schemaVersionV2, schemaTablesV2); err != nil {
@@ -263,7 +301,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV4ToV5(ctx); err != nil {
 			return err
 		}
-		return s.migrateV5ToV6(ctx)
+		if err := s.migrateV5ToV6(ctx); err != nil {
+			return err
+		}
+		return s.migrateV6ToV7(ctx)
 
 	case schemaVersionV3:
 		if err := s.requireTables(ctx, schemaVersionV3, schemaTablesV3); err != nil {
@@ -275,7 +316,19 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV4ToV5(ctx); err != nil {
 			return err
 		}
-		return s.migrateV5ToV6(ctx)
+		if err := s.migrateV5ToV6(ctx); err != nil {
+			return err
+		}
+		return s.migrateV6ToV7(ctx)
+
+	case schemaVersionV6:
+		// A task 084 database: v4's tables, v5's indexes and v6's columns, and
+		// no observation history. Told apart from v4 and v5 by the stamped
+		// version alone, which is why it needs a case rather than a table check.
+		if err := s.requireTables(ctx, schemaVersionV6, schemaTablesV6); err != nil {
+			return err
+		}
+		return s.migrateV6ToV7(ctx)
 
 	case schemaVersionV5:
 		// v5 and v6 hold the same tables — schema 6 adds columns, not tables —
@@ -284,7 +337,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.requireTables(ctx, schemaVersionV5, schemaTablesV4); err != nil {
 			return err
 		}
-		return s.migrateV5ToV6(ctx)
+		if err := s.migrateV5ToV6(ctx); err != nil {
+			return err
+		}
+		return s.migrateV6ToV7(ctx)
 
 	case schemaVersionV4:
 		// v4 and v5 hold the same tables, so the table check cannot tell them
@@ -297,7 +353,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV4ToV5(ctx); err != nil {
 			return err
 		}
-		return s.migrateV5ToV6(ctx)
+		if err := s.migrateV5ToV6(ctx); err != nil {
+			return err
+		}
+		return s.migrateV6ToV7(ctx)
 
 	default:
 		// No path from anything else. Newer is refused too: this binary
@@ -549,7 +608,12 @@ func (s *SQLiteStore) migrateV4ToV5Once(ctx context.Context) error {
 // backfill is the honest resting value rather than the DEFAULT '0'.
 func (s *SQLiteStore) migrateV5ToV6(ctx context.Context) error {
 	if err := s.migrateV5ToV6Once(ctx); err != nil {
-		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+		// schemaVersionV6, not SchemaVersion: every step recovers against the
+		// version *it* produces. While v6 was the newest these were the same
+		// number, and v7 is where they stop being — a racing opener that had
+		// reached v6 would otherwise fail a recovery that had in fact
+		// succeeded. The same trap migrateV1ToV2 documents.
+		if s.migrationRaceRecovered(ctx, schemaVersionV6) {
 			return nil
 		}
 		return err
@@ -575,11 +639,57 @@ func (s *SQLiteStore) migrateV5ToV6Once(ctx context.Context) error {
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
-		SchemaVersion); err != nil {
+		schemaVersionV6); err != nil {
 		return fmt.Errorf("platform: migrate schema v5 to v6: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("platform: migrate schema v5 to v6: %w", err)
+	}
+	return nil
+}
+
+// migrateV6ToV7 adds per-observation history, task 067.
+//
+// **It adds an empty history and invents nothing.** A schema-6 database's runs
+// have aggregates and behavior snapshots and no observations, and there is no
+// honest way to reconstruct one: the aggregate is a reduction, and a
+// synthesized row would be a decision nobody recorded. The same reasoning task
+// 066 applied when its migration declined to synthesize promotions from old
+// evaluations.
+//
+// The absence is what makes those runs detectable afterwards. A run with
+// records and no history row reports ObservationHistoryUnavailable, which is a
+// different statement from "retained nothing" and is the whole reason the
+// history row is a row rather than a column default.
+func (s *SQLiteStore) migrateV6ToV7(ctx context.Context) error {
+	if err := s.migrateV6ToV7Once(ctx); err != nil {
+		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateV6ToV7Once(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: migrate schema v6 to v7: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, statement := range observationSchemaStatements("TEXT", "REAL") {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("platform: migrate schema v6 to v7: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
+		SchemaVersion); err != nil {
+		return fmt.Errorf("platform: migrate schema v6 to v7: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: migrate schema v6 to v7: %w", err)
 	}
 	return nil
 }
@@ -749,6 +859,15 @@ const schemaVersionV4 = 4
 // the operational aggregate columns.
 const schemaVersionV5 = 5
 
+// schemaVersionV6 is task 084's schema: the operational aggregate columns, and
+// the last version before per-observation history existed.
+//
+// v4, v5 and v6 hold the same tables — v5 added indexes and v6 added columns —
+// so all three are told apart by the stamped version alone. v7 is the first
+// step since v4 to add a table, which is what makes a schema-6 database
+// detectable as one whose runs have no retained history.
+const schemaVersionV6 = 6
+
 // schemaTablesV1 is what a complete v1 database holds.
 var schemaTablesV1 = []string{
 	tableSchemaVersion, tableProjects, tableAgents, tableCandidates,
@@ -761,9 +880,17 @@ var schemaTablesV2 = append(append([]string{}, schemaTablesV1...), tableIngestSt
 // schemaTablesV3 is what a complete v3 database holds.
 var schemaTablesV3 = append(append([]string{}, schemaTablesV2...), tableEnvironments)
 
-// schemaTablesV4 is what a complete v4 database holds — the same tables v5
-// does, because v5's migration adds only indexes.
-var schemaTablesV4 = schemaTables
+// schemaTablesV4 is what a complete v4 database holds — the same tables v5 and
+// v6 do, because v5's migration adds only indexes and v6's adds only columns.
+//
+// Built from schemaTablesV3 rather than aliasing schemaTables, which is what it
+// used to do. That alias was correct only while v4 was the newest table set: v7
+// adds two tables, and an alias would have made a v4 database appear to require
+// them.
+var schemaTablesV4 = append(append([]string{}, schemaTablesV3...), tablePromotions)
+
+// schemaTablesV6 is what a complete v6 database holds: still v4's tables.
+var schemaTablesV6 = schemaTablesV4
 
 // schemaTablesByVersion maps every schema version this binary can recognize to
 // the tables a complete database at that version holds.
@@ -783,8 +910,10 @@ var schemaTablesByVersion = map[int][]string{
 	// v5 and v6 hold the same tables as v4: v5 added indexes and v6 added
 	// columns, and neither creates or drops a table. Mapped explicitly to the
 	// same list rather than left out, because a version with no entry is one a
-	// concurrent-open race cannot recover from.
+	// concurrent-open race cannot recover from. v7 is the first step since v4
+	// that adds tables, so it is the first with a list of its own again.
 	schemaVersionV5: schemaTablesV4,
+	schemaVersionV6: schemaTablesV6,
 	SchemaVersion:   schemaTables,
 }
 
@@ -858,7 +987,7 @@ func (s *SQLiteStore) createSchemaOnce(ctx context.Context) error {
 // time. No column defaults to a database clock: every timestamp already
 // exists on the value being stored.
 func schemaStatements() []string {
-	return []string{
+	return append([]string{
 		`CREATE TABLE ` + tableSchemaVersion + ` (
 			id      INTEGER PRIMARY KEY CHECK (id = 1),
 			version INTEGER NOT NULL
@@ -994,6 +1123,46 @@ func schemaStatements() []string {
 		agentsByProjectIndexStatement(),
 		candidatesByAgentIndexStatement(),
 		runsByCandidateIndexStatement(),
+
+		// v7: per-observation history, task 067. Listed last for the same
+		// reason every other version's additions are — the migration applies
+		// exactly these, and a fresh database must end up identical to a
+		// migrated one.
+	}, observationSchemaStatements("TEXT", "REAL")...)
+}
+
+// observationSchemaStatements is schema v7's whole addition, written once so
+// the fresh schema and the v6 -> v7 migration cannot disagree about it.
+//
+// textType and realType carry the dialect difference and nothing else:
+// PostgreSQL needs an explicit C collation on the text columns this schema
+// orders and compares, and spells a float differently.
+func observationSchemaStatements(textType, realType string) []string {
+	return []string{
+		`CREATE TABLE ` + tableObservations + ` (
+			` + strings.Join(observationColumnDDL(textType, realType), ",\n\t\t\t") + `,
+			PRIMARY KEY (run_id, sequence),
+			FOREIGN KEY (run_id) REFERENCES ` + tableRuns + `(id)
+		)`,
+
+		// retained_count is a counter and is therefore TEXT, like every other
+		// counter here. complete is INTEGER for the reason boolInt documents.
+		//
+		// The row's *existence* is load-bearing: a run with records and no row
+		// here was ingested before this schema existed, and reporting it as an
+		// empty complete history would be a fabricated historical fact.
+		`CREATE TABLE ` + tableObservationHistory + ` (
+			run_id         ` + textType + ` PRIMARY KEY REFERENCES ` + tableRuns + `(id),
+			retained_count ` + textType + ` NOT NULL,
+			complete       INTEGER NOT NULL
+		)`,
+
+		`CREATE INDEX ` + indexObservationsByFingerprint + ` ON ` + tableObservations +
+			` (run_id, fingerprint_key, sequence)`,
+		`CREATE INDEX ` + indexObservationsByTrace + ` ON ` + tableObservations +
+			` (run_id, trace_key, sequence)`,
+		`CREATE INDEX ` + indexObservationsBySession + ` ON ` + tableObservations +
+			` (run_id, session_key, sequence)`,
 	}
 }
 
@@ -2870,6 +3039,9 @@ func (s *SQLiteStore) CommitEvaluationIngest(
 	if err := validatePersistedDigest("record digest", commit.RecordDigest); err != nil {
 		return EvaluationIngestCommitResult{}, err
 	}
+	if err := validateCommitObservation(commit); err != nil {
+		return EvaluationIngestCommitResult{}, err
+	}
 	next, err := nextSequenceAfter(commit.Sequence)
 	if err != nil {
 		return EvaluationIngestCommitResult{}, err
@@ -2908,11 +3080,19 @@ func (s *SQLiteStore) CommitEvaluationIngest(
 		//
 		// Anything else moved for a different reason and stays a conflict.
 		if current.NextSequence() == next && current.LastDigest() == commit.RecordDigest {
+			// The winning request already retained this observation, so this
+			// one must not — reporting its history rather than writing a
+			// second row is the same rule the counts above follow.
+			history, err := observationHistoryFor(ctx, sqlQuerier{tx}, runID)
+			if err != nil {
+				return EvaluationIngestCommitResult{}, err
+			}
 			return EvaluationIngestCommitResult{
 				Disposition:      EvaluationIngestAlreadyCommitted,
 				NextSequence:     current.NextSequence(),
 				RecordCount:      current.RecordCount(),
 				BehaviorComplete: current.BehaviorComplete(),
+				History:          history,
 			}, nil
 		}
 		return EvaluationIngestCommitResult{}, fmt.Errorf(
@@ -2954,6 +3134,15 @@ func (s *SQLiteStore) CommitEvaluationIngest(
 		return EvaluationIngestCommitResult{}, err
 	}
 
+	// Task 067's history row, written here rather than beside this
+	// transaction. An observation with no aggregate to belong to, or an
+	// aggregate whose history is short by one and reports itself complete,
+	// are exactly the silent failures this commit exists to prevent.
+	history, err := retainObservation(ctx, tx, runID, commit.Observation)
+	if err != nil {
+		return EvaluationIngestCommitResult{}, err
+	}
+
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO `+tableIngestState+` (run_id, next_sequence, last_digest)
 		 VALUES (?, ?, ?)
@@ -2974,5 +3163,81 @@ func (s *SQLiteStore) CommitEvaluationIngest(
 		NextSequence:     next,
 		RecordCount:      commit.Aggregate.RecordCount(),
 		BehaviorComplete: commit.Snapshot.Complete(),
+		History:          history,
 	}, nil
+}
+
+// retainObservation writes one observation and advances the run's history row,
+// inside the caller's transaction.
+//
+// Returns what the history is afterwards, read from the same transaction that
+// decided it — a caller that read it back separately could observe a third
+// request's state, which is the tear EvaluationIngestState removes for the
+// cursor.
+func retainObservation(
+	ctx context.Context, tx *sql.Tx, runID EvaluationRunID, o Observation,
+) (ObservationHistory, error) {
+	present, retained, complete, err := loadObservationHistoryRow(ctx, sqlQuerier{tx}, runID)
+	if err != nil {
+		return ObservationHistory{}, err
+	}
+
+	plan := planObservationRetention(present, retained, complete, o.Sequence)
+
+	if plan.Insert {
+		columns := observationInsertColumns()
+		placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(columns)), ", ")
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO `+tableObservations+` (`+strings.Join(columns, ", ")+`)
+			 VALUES (`+placeholders+`)`,
+			observationInsertArgs(runID, o)...); err != nil {
+			return ObservationHistory{}, fmt.Errorf("platform: retain observation: %w", err)
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO `+tableObservationHistory+` (run_id, retained_count, complete)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(run_id) DO UPDATE SET
+			retained_count = excluded.retained_count,
+			complete = excluded.complete`,
+		string(runID), uint64Text(plan.Retained), boolInt(plan.Complete)); err != nil {
+		return ObservationHistory{}, fmt.Errorf("platform: record observation history: %w", err)
+	}
+
+	return NewObservationHistory(true, plan.Retained, plan.Complete, 0), nil
+}
+
+// RunObservations returns one bounded page of a run's retained history.
+//
+// Inside a transaction, although it only reads. The page is three statements —
+// the history row, the record count and the observation rows — and run against
+// the pool the connection is released between each one, so a concurrent ingest
+// can commit into the gap and the page ends up describing no moment that ever
+// existed. SetMaxOpenConns(1) does not prevent this: it serializes the
+// statements without joining them.
+//
+// A SQLite read transaction holds its snapshot for its whole life, which is the
+// property being bought here. It is rolled back rather than committed because
+// nothing was written and a rollback says so; committing a read would work
+// identically and read as though something had changed.
+func (s *SQLiteStore) RunObservations(
+	ctx context.Context, id EvaluationRunID, after uint64, limit int,
+) (ObservationPage, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ObservationPage{}, fmt.Errorf("platform: read observations: %w", err)
+	}
+	// Covers the error paths and a panic. A rollback after the deferred one has
+	// already run is a no-op, so the explicit call below is safe to repeat.
+	defer tx.Rollback() //nolint:errcheck // read-only; nothing to lose on rollback
+
+	page, err := runObservationPage(ctx, sqlQuerier{tx}, id, after, limit)
+	if err != nil {
+		return ObservationPage{}, err
+	}
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return ObservationPage{}, fmt.Errorf("platform: read observations: %w", err)
+	}
+	return page, nil
 }

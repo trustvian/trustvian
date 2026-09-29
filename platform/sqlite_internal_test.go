@@ -1246,7 +1246,11 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 	// Versions that add no table. v5 added three indexes (task 074) and v6 added
 	// nine columns to one table (task 084); neither creates or drops one, so the
 	// table list is legitimately unchanged across both.
-	indexOnly := map[int]bool{schemaVersionV5: true, SchemaVersion: true}
+	//
+	// Named by their own constants rather than by SchemaVersion: this set used
+	// to include SchemaVersion, which silently meant "whatever is newest" and
+	// stopped being true the moment task 067 added two tables at v7.
+	indexOnly := map[int]bool{schemaVersionV5: true, schemaVersionV6: true}
 	for version := schemaVersionV1 + 1; version <= SchemaVersion; version++ {
 		previous := schemaTablesByVersion[version-1]
 		current := schemaTablesByVersion[version]

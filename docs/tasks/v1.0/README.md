@@ -22,7 +22,8 @@ Tasks for the `v1.0` milestone.
 | [064 — PostgreSQL Platform Backend](064-postgresql-platform-backend.md) | Specified and implemented |
 | [065 — Environment Model](065-environment-model.md) | Specified and implemented |
 | [066 — Promotion Workflow](066-promotion-workflow.md) | Specified and implemented |
-| 067–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
+| [067 — Event-History Capability Boundary](067-event-history-capability-boundary.md) | Specified and implemented |
+| 068–072 | Approved and sequenced in [ROADMAP.md § v1.0](../../ROADMAP.md#v10--local-first-behavioral-security-platform); **no specification written yet** |
 | [073 — OTel Collector Evaluation Ingest](073-otel-collector-evaluation-ingest.md) | Specified and implemented |
 | [074 — Zero-Input Live Behavior WebUI](074-zero-input-live-behavior-webui.md) | Specified and implemented |
 | [075 — AI Semantic Telemetry Normalization](075-ai-semantic-telemetry-normalization.md) | Specified and implemented |
@@ -37,9 +38,33 @@ Tasks for the `v1.0` milestone.
 | [084 — Correlation and Operational Evidence on the Record Boundary](084-correlation-operational-evidence.md) | Specified and implemented |
 | 085–090 | Reserved and scoped by [082](082-agent-inspection-and-evaluation-depth.md); **no specification written yet.** 089 is **PROPOSED** rather than approved |
 
-The numbers 067–072 are the approved plan, not placeholders — the sequence,
+The numbers 068–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
-is the specification for any of them.
+is the specification for any of them. **067 was the first of that block to be
+specified**, and its specification was written alongside the retention needs
+[085 states](082-agent-inspection-and-evaluation-depth.md#085--evidence-links-from-a-finding-to-the-observations-behind-it)
+rather than after them, which is the ordering the roadmap asked for and the
+mistake [076](076-behavioral-evidence-explorer.md) records having avoided.
+
+Task 067 is **implemented**. It is the first layer allowed to retain anything
+per observation, so it settles what that means before anything reads it: an
+observation is identified and ordered by `(run, ingest sequence)` — never by a
+span id, an event id or a timestamp, because none of those is unique, dense and
+allocated by this platform's own admission decision. The row is written inside
+the transaction that already writes the aggregate, the snapshot and the cursor,
+so a rejected record or a failed commit retains nothing and a retry produces no
+second row. Retention is bounded at 4096 observations per run, and passing the
+bound degrades the evidence rather than failing the ingest — the rule the
+behavior collector already applies at 512 distinct behaviors.
+
+Its honesty property is the one worth stating twice: a run's history has
+**three** states, because two would force a lie. A schema-6 database's runs have
+records and no observations, and reporting "complete, zero rows" for one would
+fabricate a historical fact — so the migration adds an empty history and those
+runs report *unavailable*. Its schema step is **6 → 7**, two tables and three
+run-scoped indexes and no row.
+[ADR 0048](../../adr/0048-retained-history-is-sequence-identified-bounded-and-honest-about-absence.md)
+records the reasoning.
 
 Task 065 is implemented. A project owns environments, identified by the
 `EnvironmentRef` a run already records; a run may only name one its own
@@ -74,7 +99,7 @@ browser, and a developer who has not read the source. 079 and 080 come from two
 different questions: *what actually reaches a user*, and *what is the detection
 claim measured against*.
 
-**Numbering is identity, not execution order.** 067–072 keep their original
+**Numbering is identity, not execution order.** 068–072 keep their original
 identity and scope; 073–080 close concrete gaps; and 072 remains the release
 gate while now depending on several tasks numbered above it. That is correct
 rather than untidy: a number records when a milestone entered the plan, and
@@ -138,7 +163,9 @@ one whose results reach a reviewer and whose central claim carries a number:
   its evidence is not explainable, and `DecisionRecord` already carries trace,
   span and session correlation that the platform receives and does not retain.
   The explorer presents sessions, traces and behavioral sequence over whatever
-  history **067** makes durable — 067 keeps ownership of the storage contract.
+  history **067** makes durable — 067 keeps ownership of the storage contract,
+  and now holds it: per-observation retention is implemented and 085 is the next
+  unblocked item.
 - **077 — Unified OTLP Local Dev Runtime** is **implemented**. Watching an agent
   used to mean a control plane, a Collector, a processor config, a manually
   created hierarchy and the right OTLP environment. `trustvian dev -- <command>`

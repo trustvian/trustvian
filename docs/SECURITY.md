@@ -512,6 +512,15 @@ scorecard with explicit caller-owned limits and returns PASS or FAIL.
 
 ### Local persistence fails closed and stores no raw history
 
+Task 067 added bounded per-observation history and does not change that
+sentence. What it retains is an allowlist of the identifiers, scores and
+correlation fields `DecisionRecord` already publishes, expressed as columns —
+there is no attribute map, no span-event list and no payload column, so a
+prompt, completion, tool argument, tool result, retrieved document, HTTP body
+or arbitrary attribute cannot be written through one. What changed is how long
+those fields live, which is why the content tripwire sweep was extended to the
+retained rows and the route that reads them rather than left to the contract.
+
 ### An evaluation run cannot name an environment nobody registered
 
 **Threat:** a mistyped environment reference silently creates a run whose

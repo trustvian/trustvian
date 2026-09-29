@@ -38,8 +38,8 @@ carries it because it contradicts
 evaluation foundation, local persistence, the local control-plane API and
 realtime, the developer CLI, the TUI, the WebUI, the PostgreSQL backend, the
 environment model and promotion (tasks 051–066, 073 and 074) exist, while
-076 and 078–080 are specified, 075 and 077 are implemented, and 067–072 are
-still PLANNED. [Task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md)
+076 and 078–080 are specified, 067, 075 and 077 are implemented, and 068–072
+are still PLANNED. [Task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md)
 is a planning task, in 049's shape: it reserves and scopes 083–090 — inspection
 and evaluation depth — and implements nothing.
 What exists is not usable end to end on its own. Everything under
@@ -610,7 +610,7 @@ exit criterion.
   no-model-benchmarking line this does not cross. Not a feature and not a gate
   item.
 
-Still planned: everything from 067 onward. The platform
+Still planned: everything from 068 onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
 behavioral snapshots, produce fixed-shape comparative scorecards, apply
 deterministic evidence-backed hard gates to them, persist local control and
@@ -871,7 +871,7 @@ decision that needs a measurement behind it.
 ### Milestone sequence
 
 Small, independently shippable tasks continuing this repository's numbering.
-**Partly implemented:** tasks 049–066 are done; 067–072 remain PLANNED.
+**Partly implemented:** tasks 049–067 are done; 068–072 remain PLANNED.
 Outside that reserved sequence, 073, 074, 075 and 077 are done and the rest are
 specified — see the gap-closing table below.
 
@@ -949,8 +949,8 @@ The **Gate** column says which rows the release actually depends on.
 | 081 | Persist behavior fidelity, so a comparison delta reports whether a behavior was named by telemetry or inferred from transport — a forward-only schema step in both backends, deferred from 075 | Not specified | neither |
 | 082 | [Agent inspection and evaluation depth](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md) — the planning task for the six-step developer workflow: what is implemented, what is missing, and what a decision would cost. Documentation only | Specified | neither |
 | 083 | [Behavioral layer identity and display classification](tasks/v1.0/083-behavioral-layer-classification.md) — an explicit rule for when a tool span and the HTTP request beneath it are one behavior, and a non-identity label so a model call, a tool call and an outbound request are distinguishable without changing what a fingerprint is | **Partially implemented** — classification and rendering shipped; the counting correction deferred to 084 ([ADR 0047](adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md)) | `v1.0` |
-| 084 | [Correlation and operational evidence on the record boundary](tasks/v1.0/084-correlation-operational-evidence.md) — parent span identity, duration and error status promoted from volatile feature inputs to recorded evidence, additively | **Implemented** — carried, aggregated per run and persisted at schema 6; per-observation history stays 067's | `v1.0` |
-| 085 | Evidence resolution — from a gate check or a behavioral delta to the behaviors and observations behind it, as a resolution query rather than a payload inside a fixed-shape verdict. Authoritative at the control plane, exercised over `/v1` and the CLI, and **delivered before 076 consumes it** | Not specified | `v1.0` (via 17) |
+| 084 | [Correlation and operational evidence on the record boundary](tasks/v1.0/084-correlation-operational-evidence.md) — parent span identity, duration and error status promoted from volatile feature inputs to recorded evidence, additively | **Implemented** — carried, aggregated per run and persisted at schema 6; per-observation history is 067's and is now implemented | `v1.0` |
+| 085 | Evidence resolution — from a gate check or a behavioral delta to the behaviors and observations behind it, as a resolution query rather than a payload inside a fixed-shape verdict. Authoritative at the control plane, exercised over `/v1` and the CLI, and **delivered before 076 consumes it** | Not specified — **unblocked**, 067 has landed | `v1.0` (via 17) |
 | 086 | Scenario and input versioning — a scenario-definition digest and an input digest on the evidence, and a prompt *reference* beside `Model`, so a comparison can state whether both sides ran the same thing | Not specified | neither |
 | 087 | Performance and cost evidence — latency and error comparison from 084, token counts from the conventions, and cost only with an explicit pricing version and provenance | Not specified | neither |
 | 088 | Review decisions and annotations — an append-only note on a resolved finding, and an acknowledgement recorded **beside** the computed verdict rather than replacing it | Not specified | neither |
@@ -961,7 +961,7 @@ The **Gate** column says which rows the release actually depends on.
 
 | Task | Milestone |
 |---|---|
-| 067 | Event-history capability boundary |
+| 067 | Event-history capability boundary — **implemented** ([task 067](tasks/v1.0/067-event-history-capability-boundary.md)) |
 | 068 | ClickHouse reference adapter, if justified by measured volume |
 | 069 | Multi-node and load validation |
 | 070 | Platform security hardening |
@@ -1094,9 +1094,9 @@ Conceptually:
        │
        └──▶ 087  performance and cost evidence
 
-067  event history
-       │   specify 085's retention needs alongside 067, not after it
-       └──▶ 085  evidence resolution   [needs 084]
+067  event history   [implemented, schema 7]
+       │   085's retention needs were specified alongside it, not after it
+       └──▶ 085  evidence resolution   [needs 084]   ← NEXT
                    │   control plane + /v1 + CLI; ships without a browser
                    ├──▶ 076  behavioral evidence explorer
                    │          navigates 085; needs 084 for the timeline

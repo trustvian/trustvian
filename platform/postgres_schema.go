@@ -44,7 +44,7 @@ import (
 // prevent. Declared on the column so it governs the index and every comparison
 // without each query remembering to ask.
 func postgresSchemaStatements() []string {
-	return []string{
+	return append([]string{
 		`CREATE TABLE ` + tableSchemaVersion + ` (
 			id      INTEGER PRIMARY KEY CHECK (id = 1),
 			version INTEGER NOT NULL
@@ -184,7 +184,7 @@ func postgresSchemaStatements() []string {
 		agentsByProjectIndexStatement(),
 		candidatesByAgentIndexStatement(),
 		runsByCandidateIndexStatement(),
-	}
+	}, observationSchemaStatements(`TEXT COLLATE "C"`, "DOUBLE PRECISION")...)
 }
 
 // postgresPromotionsStatement is v4's only table, kept separate so the
@@ -321,7 +321,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		case len(present) == 0:
 			return s.createPostgresSchema(ctx, tx)
 
-		case slices.Equal(present, sortedSchemaTables()):
+		case slices.Equal(present, sortedSchemaTablesV6()):
 			// v4 and v5 hold the same tables — v5's migration adds only
 			// indexes — so the table set cannot tell them apart and the
 			// stamped version is the only distinction. A v4 stamp is migrated
@@ -342,10 +342,26 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 				if err := migratePostgresV4ToV5(ctx, tx); err != nil {
 					return err
 				}
-				return migratePostgresV5ToV6(ctx, tx)
+				if err := migratePostgresV5ToV6(ctx, tx); err != nil {
+					return err
+				}
+				return migratePostgresV6ToV7(ctx, tx)
 			case schemaVersionV5:
-				return migratePostgresV5ToV6(ctx, tx)
+				if err := migratePostgresV5ToV6(ctx, tx); err != nil {
+					return err
+				}
+				return migratePostgresV6ToV7(ctx, tx)
+			case schemaVersionV6:
+				return migratePostgresV6ToV7(ctx, tx)
 			}
+			// Not v4, v5 or v6 and holding exactly their tables: a v7 stamp
+			// without v7's tables is damage, and verifyPostgresVersion refuses
+			// it rather than creating what is missing.
+			return verifyPostgresVersion(ctx, tx)
+
+		case slices.Equal(present, sortedSchemaTables()):
+			// The current table set. Nothing to add; the stamp still has to
+			// agree, and a newer one fails closed.
 			return verifyPostgresVersion(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV1()):
@@ -363,7 +379,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV4ToV5(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV5ToV6(ctx, tx)
+			if err := migratePostgresV5ToV6(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV6ToV7(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV2()):
 			if err := migratePostgresV2ToV3(ctx, tx); err != nil {
@@ -375,7 +394,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV4ToV5(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV5ToV6(ctx, tx)
+			if err := migratePostgresV5ToV6(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV6ToV7(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV3()):
 			if err := migratePostgresV3ToV4(ctx, tx); err != nil {
@@ -384,7 +406,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV4ToV5(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV5ToV6(ctx, tx)
+			if err := migratePostgresV5ToV6(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV6ToV7(ctx, tx)
 
 		default:
 			// A recognized subset that is neither version. Nothing here knows
@@ -521,6 +546,31 @@ func migratePostgresV5ToV6(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, operationalBackfillStatement(tableAggregates)); err != nil {
 		return mapPostgresError("schema migration", "", err)
 	}
+	// schemaVersionV6, not SchemaVersion: every step stamps the version *it*
+	// produces. While v6 was the newest these were the same number, and v7 is
+	// where they stop being — stamping SchemaVersion here would mark a
+	// database as current before v7's tables existed in it.
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
+		schemaVersionV6); err != nil {
+		return mapPostgresError("schema version", "", err)
+	}
+	return nil
+}
+
+// migratePostgresV6ToV7 adds per-observation history, task 067.
+//
+// The same step SQLite's migrateV6ToV7 applies, derived from the same
+// statement list so the two backends cannot disagree about a column, an index
+// or a key. **It adds an empty history and invents nothing** — a schema-6
+// run's observations were never recorded, and synthesizing them from the
+// aggregate would fabricate evidence nobody produced.
+func migratePostgresV6ToV7(ctx context.Context, tx pgx.Tx) error {
+	for _, stmt := range observationSchemaStatements(`TEXT COLLATE "C"`, "DOUBLE PRECISION") {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return mapPostgresError("schema migration", "", err)
+		}
+	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
 		SchemaVersion); err != nil {
@@ -643,6 +693,18 @@ func sortedSchemaTablesV1() []string {
 // sortedSchemaTablesV2 is what a complete task 058 database holds, sorted.
 func sortedSchemaTablesV2() []string {
 	sorted := slices.Clone(schemaTablesV2)
+	slices.Sort(sorted)
+	return sorted
+}
+
+// sortedSchemaTablesV6 is what a complete task 066-through-084 database holds,
+// sorted: v4's tables, which v5 and v6 did not change.
+//
+// v7 is the first step since v4 to add a table, which is what lets this
+// backend's table-set dispatch tell a pre-067 database apart from a current
+// one at all.
+func sortedSchemaTablesV6() []string {
+	sorted := slices.Clone(schemaTablesV6)
 	slices.Sort(sorted)
 	return sorted
 }

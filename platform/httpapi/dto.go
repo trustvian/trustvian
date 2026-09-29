@@ -850,3 +850,135 @@ func newRunBehaviorListResponse(
 		NextAfter: nextAfter,
 	}
 }
+
+// ---------------------------------------------------------------------
+// Retained observation history — task 067
+// ---------------------------------------------------------------------
+
+// observationDTO is one retained observation.
+//
+// Every field is one task 067's retention contract names, rendered as it was
+// recorded. There is no attribute map, no span-event list and no payload
+// field, because there is no column that could hold one — the privacy boundary
+// is the schema rather than a filter applied here.
+//
+// Counters and nanosecond values are canonical decimal text for the reason
+// every uint64 on this wire is: a JSON number is a float64 to most parsers.
+type observationDTO struct {
+	Sequence  string `json:"sequence"`
+	EventID   string `json:"event_id"`
+	Timestamp string `json:"timestamp"`
+
+	ActorID            string  `json:"actor_id,omitempty"`
+	ActorType          string  `json:"actor_type,omitempty"`
+	IdentityConfidence float64 `json:"identity_confidence"`
+
+	FingerprintID string                `json:"fingerprint_id"`
+	Behavior      behaviorDescriptorDTO `json:"behavior"`
+
+	// NewBehavior is not omitempty: false is the ordinary value and a field
+	// that vanished when false would be absent exactly when a reader wanted
+	// to know the behavior was already familiar.
+	NewBehavior bool `json:"new_behavior"`
+
+	AnomalyScore      float64 `json:"anomaly_score"`
+	AnomalyConfidence float64 `json:"anomaly_confidence"`
+	TrustScore        float64 `json:"trust_score"`
+	ContextRisk       float64 `json:"context_risk"`
+	RiskLevel         string  `json:"risk_level"`
+
+	Decision       string `json:"decision"`
+	PolicyRule     string `json:"policy_rule,omitempty"`
+	PolicyReason   string `json:"policy_reason"`
+	MatchedDefault bool   `json:"matched_default"`
+
+	TraceID        string `json:"trace_id,omitempty"`
+	SpanID         string `json:"span_id,omitempty"`
+	SessionID      string `json:"session_id,omitempty"`
+	DelegatedFrom  string `json:"delegated_from,omitempty"`
+	ApprovalStatus string `json:"approval_status,omitempty"`
+
+	ParentSpanID string `json:"parent_span_id,omitempty"`
+	SpanLineage  string `json:"span_lineage,omitempty"`
+
+	// DurationNanos is omitted when nothing measured a duration, and present
+	// as "0" for a measured zero. They are different facts — a span with no
+	// end timestamp did not take no time — and this is the same encoding
+	// DecisionRecord uses for the same distinction.
+	DurationNanos string `json:"duration_nanos,omitempty"`
+
+	SpanStatus string `json:"span_status,omitempty"`
+}
+
+// observationListResponse is one bounded page of a run's retained history.
+//
+// HistoryState is always present and is the field that stops this page being
+// read as more than it is: "unavailable" says the run predates retention,
+// "partial" says some records were not retained, and only "complete" says the
+// page set describes the whole run.
+type observationListResponse struct {
+	Version string `json:"version"`
+	RunID   string `json:"run_id"`
+
+	HistoryState  string `json:"history_state"`
+	RetainedCount string `json:"retained_count"`
+	Complete      bool   `json:"complete"`
+
+	Observations []observationDTO `json:"observations"`
+
+	NextAfter string `json:"next_after,omitempty"`
+}
+
+func newObservationListResponse(
+	runID string, page platform.ObservationPage, nextAfter string,
+) observationListResponse {
+	observations := make([]observationDTO, 0, len(page.Observations))
+	for _, o := range page.Observations {
+		observations = append(observations, newObservationDTO(o))
+	}
+	return observationListResponse{
+		Version:       WireVersion,
+		RunID:         runID,
+		HistoryState:  page.History.State().String(),
+		RetainedCount: u64(page.History.RetainedCount()),
+		Complete:      page.History.Complete(),
+		Observations:  observations,
+		NextAfter:     nextAfter,
+	}
+}
+
+func newObservationDTO(o platform.Observation) observationDTO {
+	duration := ""
+	if o.DurationObserved {
+		duration = u64(o.DurationNanos)
+	}
+	return observationDTO{
+		Sequence:           u64(o.Sequence),
+		EventID:            o.EventID,
+		Timestamp:          formatTime(o.Timestamp),
+		ActorID:            o.ActorID,
+		ActorType:          string(o.ActorType),
+		IdentityConfidence: o.IdentityConfidence,
+		FingerprintID:      o.FingerprintID,
+		Behavior:           newBehaviorDescriptorDTO(o.Behavior),
+		NewBehavior:        o.NewBehavior,
+		AnomalyScore:       o.AnomalyScore,
+		AnomalyConfidence:  o.AnomalyConfidence,
+		TrustScore:         o.TrustScore,
+		ContextRisk:        o.ContextRisk,
+		RiskLevel:          o.RiskLevel,
+		Decision:           o.Decision,
+		PolicyRule:         o.PolicyRule,
+		PolicyReason:       o.PolicyReason,
+		MatchedDefault:     o.MatchedDefault,
+		TraceID:            o.TraceID,
+		SpanID:             o.SpanID,
+		SessionID:          o.SessionID,
+		DelegatedFrom:      o.DelegatedFrom,
+		ApprovalStatus:     string(o.ApprovalStatus),
+		ParentSpanID:       o.ParentSpanID,
+		SpanLineage:        string(o.SpanLineage),
+		DurationNanos:      duration,
+		SpanStatus:         string(o.SpanStatus),
+	}
+}

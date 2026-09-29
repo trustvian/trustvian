@@ -90,6 +90,14 @@ func statementVersion(stmt string) (int, bool) {
 		// v6: task 084 adds columns to the v1 aggregate table and creates no
 		// object of its own, so it registers nothing here. See the coverage
 		// check below.
+		//
+		// v7: task 067's per-observation history — two tables and the three
+		// run-scoped indexes its access patterns need.
+		{tableObservations, SchemaVersion},
+		{tableObservationHistory, SchemaVersion},
+		{indexObservationsByFingerprint, SchemaVersion},
+		{indexObservationsByTrace, SchemaVersion},
+		{indexObservationsBySession, SchemaVersion},
 	}
 
 	trimmed := strings.TrimSpace(stmt)
@@ -211,6 +219,25 @@ func createV4Schema(t *testing.T, pool *pgxpool.Pool) {
 	createOlderSchema(t, pool, schemaVersionV4)
 }
 
+// createV6Schema builds a task 084 schema: every table v4 has, v5's
+// child-collection indexes, v6's operational columns, and no observation
+// history — stamped version 6.
+//
+// The operational columns are applied as the real v5 → v6 migration applies
+// them, from the same DDL, because v6 creates no object of its own and
+// replaying the statement list alone would produce a v5-shaped schema wearing a
+// v6 stamp.
+func createV6Schema(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	createOlderSchema(t, pool, schemaVersionV6)
+	for _, column := range operationalColumnDDL(`TEXT COLLATE "C"`) {
+		if _, err := pool.Exec(context.Background(),
+			`ALTER TABLE `+tableAggregates+` ADD COLUMN `+column); err != nil {
+			t.Fatalf("add v6 operational column: %v", err)
+		}
+	}
+}
+
 // TestEverySchemaStatementIsClassified keeps the fixtures above honest.
 //
 // Registering a new statement is one line; forgetting to is a fixture that
@@ -238,7 +265,10 @@ func TestEverySchemaStatementIsClassified(t *testing.T) {
 	// ship inside a v1-attributed statement on a fresh database and inside an
 	// ALTER on an existing one. Listing it as an exception keeps the check
 	// honest rather than loosening it for every version.
-	columnOnly := map[int]bool{SchemaVersion: true}
+	//
+	// Named by its own constant rather than by SchemaVersion, which stopped
+	// meaning 6 when task 067 landed schema 7.
+	columnOnly := map[int]bool{schemaVersionV6: true}
 	for version := schemaVersionV1; version <= SchemaVersion; version++ {
 		if columnOnly[version] {
 			continue
@@ -685,7 +715,16 @@ func TestPostgresMigratesV4ForwardAddingIndexesAndOperationalColumns(t *testing.
 			added = append(added, name)
 		}
 	}
-	want := []string{indexAgentsByProject, indexCandidatesByAgent, indexRunsByCandidate}
+	// PostgreSQL materializes a PRIMARY KEY as an index with a generated name,
+	// so v7's two tables contribute two more than they declare. Listed rather
+	// than filtered out: they are real indexes, and a test that ignored
+	// generated names would stop noticing a key that went missing.
+	want := []string{
+		indexAgentsByProject, indexCandidatesByAgent, indexRunsByCandidate,
+		indexObservationsByFingerprint, indexObservationsByTrace,
+		indexObservationsBySession,
+		tableObservations + "_pkey", tableObservationHistory + "_pkey",
+	}
 	slices.Sort(want)
 	slices.Sort(added)
 	if !slices.Equal(added, want) {
@@ -697,12 +736,36 @@ func TestPostgresMigratesV4ForwardAddingIndexesAndOperationalColumns(t *testing.
 		}
 	}
 
-	// No table and no row. Columns: exactly schema 6's nine on the aggregate
-	// table and nothing anywhere else, because opening a v4 database runs v4-to-v5
-	// and then v5-to-v6 (task 084). v5 itself still adds no column, which is what
-	// the index assertion above pins.
-	if after := sortedPostgresTables(t, pool); !slices.Equal(after, beforeTables) {
-		t.Errorf("tables after = %v, before = %v", after, beforeTables)
+	// Exactly v7's two tables added and none dropped, and no row written into
+	// anything that existed before. Columns: exactly schema 6's nine on the
+	// aggregate table and nothing anywhere else, because opening a v4 database
+	// runs v4-to-v5, v5-to-v6 (task 084) and v6-to-v7 (task 067). v5 itself
+	// still adds no column, which is what the index assertion above pins.
+	afterTables := sortedPostgresTables(t, pool)
+	var addedTables []string
+	for _, name := range afterTables {
+		if !slices.Contains(beforeTables, name) {
+			addedTables = append(addedTables, name)
+		}
+	}
+	wantTables := []string{tableObservations, tableObservationHistory}
+	slices.Sort(wantTables)
+	slices.Sort(addedTables)
+	if !slices.Equal(addedTables, wantTables) {
+		t.Errorf("migration added tables %v, want exactly %v", addedTables, wantTables)
+	}
+	for _, name := range beforeTables {
+		if !slices.Contains(afterTables, name) {
+			t.Errorf("migration dropped table %s", name)
+		}
+	}
+	// The new tables must be empty: a migration that invented a history row
+	// would be fabricating evidence for records that predate retention.
+	for _, table := range addedTables {
+		if rows := countPostgresRows(t, pool, table); rows != 0 {
+			t.Errorf("%s holds %d rows after the migration, want 0; "+
+				"no observation history may be invented", table, rows)
+		}
 	}
 	operational := aggregateOperationalColumns()
 	slices.Sort(operational)
@@ -1142,4 +1205,124 @@ func TestPostgresMigrationDoesNotBlockOnTheEngineLock(t *testing.T) {
 		// Blocking is the expected outcome; the goroutine's own context bounds it.
 	}
 
+}
+
+// TestPostgresMigratesV6ForwardInventingNoObservationHistory is task 067's
+// migration step on this backend.
+//
+// The assertion that matters is the negative one: a schema-6 database's runs
+// were ingested before per-observation history existed, so the migration must
+// create the tables and leave them empty. Synthesizing a history row from a
+// run's record count would fabricate evidence nobody produced — the refusal
+// task 066's migration made when it declined to invent promotions.
+func TestPostgresMigratesV6ForwardInventingNoObservationHistory(t *testing.T) {
+	pool, dsn := schemaTestPool(t)
+	createV6Schema(t, pool)
+	seedPostgresV2Environments(t, pool, "proj-1", []string{"staging", "production"})
+	seedPostgresV3Environments(t, pool, "proj-1", []string{"staging", "production"})
+
+	if got := storedVersion(t, pool); got != schemaVersionV6 {
+		t.Fatalf("fixture version = %d, want %d", got, schemaVersionV6)
+	}
+	beforeTables := sortedPostgresTables(t, pool)
+	if slices.Contains(beforeTables, tableObservations) {
+		t.Fatal("the v6 fixture already holds the observation table; it would prove nothing")
+	}
+	// One run with evidence, so the run under test is a genuine pre-067 run:
+	// records exist and none of their history was retained, which is the state
+	// ObservationHistoryUnavailable describes and the one that must not be
+	// reported as an empty complete history.
+	const legacyRun = "run-proj-1-000"
+	seedPostgresV6Aggregate(t, pool, legacyRun, 3)
+
+	beforeRows := map[string]int{}
+	for _, table := range beforeTables {
+		beforeRows[table] = countPostgresRows(t, pool, table)
+	}
+
+	store, err := OpenPostgresStore(context.Background(), PostgresConfig{DSN: dsn})
+	if err != nil {
+		t.Fatalf("opening a v6 schema: %v", err)
+	}
+	defer store.Close()
+
+	if got := storedVersion(t, pool); got != SchemaVersion {
+		t.Errorf("version after migration = %d, want %d", got, SchemaVersion)
+	}
+
+	// Exactly v7's two tables, and both empty.
+	afterTables := sortedPostgresTables(t, pool)
+	for _, table := range []string{tableObservations, tableObservationHistory} {
+		if !slices.Contains(afterTables, table) {
+			t.Fatalf("migration did not create %s", table)
+		}
+		if rows := countPostgresRows(t, pool, table); rows != 0 {
+			t.Errorf("%s holds %d rows after the migration, want 0; no observation "+
+				"history may be invented for records that predate retention", table, rows)
+		}
+	}
+	for _, table := range beforeTables {
+		if !slices.Contains(afterTables, table) {
+			t.Errorf("migration dropped table %s", table)
+			continue
+		}
+		if rows := countPostgresRows(t, pool, table); rows != beforeRows[table] {
+			t.Errorf("%s holds %d rows after, %d before; the step writes no row",
+				table, rows, beforeRows[table])
+		}
+	}
+
+	// And a run that predates retention says so, rather than reporting an
+	// empty complete history.
+	page, err := store.RunObservations(context.Background(), legacyRun, 0, MaxListPage)
+	if err != nil {
+		t.Fatalf("RunObservations() error = %v", err)
+	}
+	if len(page.Observations) != 0 {
+		t.Errorf("legacy run returned %d observations", len(page.Observations))
+	}
+	if page.History.State() != ObservationHistoryUnavailable {
+		t.Errorf("legacy run history = %v, want unavailable", page.History.State())
+	}
+}
+
+// seedPostgresV6Aggregate writes one run's aggregate into a v6 fixture, using
+// the same shared column list both backends insert through.
+//
+// Built from a real EvaluationAggregate rather than literal SQL, so the fixture
+// cannot hold a distribution AddRecord would never produce — which is what the
+// restore-time invariant checks would reject.
+func seedPostgresV6Aggregate(t *testing.T, pool *pgxpool.Pool, runID string, records int) {
+	t.Helper()
+	created := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	run, err := NewEvaluationRun(
+		EvaluationRunID(runID), "cand-proj-1", "staging", "profile-1", created)
+	if err != nil {
+		t.Fatalf("NewEvaluationRun() error = %v", err)
+	}
+	aggregate, err := NewEvaluationAggregate(run)
+	if err != nil {
+		t.Fatalf("NewEvaluationAggregate() error = %v", err)
+	}
+	for i := range records {
+		aggregate, err = aggregate.AddRecord(
+			internalRecord(fmt.Sprintf("evt-%d", i), fmt.Sprintf("fp-%d", i),
+				fmt.Sprintf("op-%d", i)))
+		if err != nil {
+			t.Fatalf("AddRecord() error = %v", err)
+		}
+	}
+
+	columns := aggregateInsertColumns()
+	placeholders := make([]string, len(columns))
+	for i := range columns {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+	}
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO `+tableAggregates+` (`+strings.Join(columns, ", ")+`)
+		 VALUES (`+strings.Join(placeholders, ", ")+`)`,
+		aggregateInsertArgs(aggregate)...); err != nil {
+		t.Fatalf("seed v6 aggregate: %v", err)
+	}
 }

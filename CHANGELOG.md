@@ -10,6 +10,72 @@ actually depend on.
 
 ### Added
 
+- **A decision can now be read back after the run that produced it ended**
+  (task 067). The platform retained two reductions per evaluation run — a
+  fixed-shape aggregate and a behavior snapshot capped at 512 distinct behaviors
+  — and neither can say *which* observation scored 0.91, when it happened
+  relative to the one before it, or what trace it belonged to. Realtime carried
+  that detail and dropped it when the connection closed.
+
+  Each accepted record now retains one bounded observation row, readable through
+  `GET /v1/evaluation-runs/{run_id}/observations`.
+
+  **An observation is identified and ordered by `(run, ingest sequence)`, never
+  by a span id or a timestamp.** A span id is unique only inside its trace, an
+  event id is caller-supplied, and equal timestamps are ordinary — any of the
+  three would make paging non-deterministic. The sequence is allocated by the
+  transaction that admits the record, so it cannot collide. A parent span ends
+  *after* the children it started, so out-of-order arrival is the normal case and
+  is retained as it arrived; a child whose parent never arrives is still a child.
+
+  **The row is written inside the transaction that already writes the aggregate,
+  the snapshot and the ingest cursor.** A rejected record or a failed transaction
+  retains nothing and moves nothing, and a retry — including a concurrent
+  identical submission — produces no second observation.
+
+  **A run says how much of itself its history describes**, in three states rather
+  than two. *Complete* means every accepted record is retained. *Partial* means
+  some are not: the run passed the 4096-observation bound, or it began ingesting
+  before this schema existed and resumed after it. *Unavailable* means the run has
+  records and none of their history was ever retained. **A database migrated from
+  schema 6 gains an empty history and invents nothing** — reporting "complete,
+  zero rows" for a run whose records predate retention would be a fabricated
+  historical fact.
+
+  Saturation is degraded evidence rather than a failed ingest: past the bound the
+  aggregate, the snapshot and the cursor keep advancing, exactly as they do when
+  the behavior collector saturates.
+
+  **No content, and no new privacy surface.** The retained field set is an
+  allowlist expressed as columns — there is no attribute map, no span-event list
+  and no payload column, so no prompt, completion, tool argument, result,
+  document, body or arbitrary attribute can be written through one. What changed
+  is *duration*, which is why the existing tripwire sweep was extended to the new
+  route and the new rows rather than trusted to the contract.
+
+  **A page is read from one database snapshot**, so an ingest committing during a
+  read yields the state before it or the state after it and never a mixture. The
+  read is three statements, and against a pool a concurrent commit between any two
+  of them returns a retained count of 1 beside two rows — a state the database
+  never held, and one nothing in the response marks as composite. SQLite reads in
+  a transaction; PostgreSQL reads in a read-only `REPEATABLE READ` transaction,
+  and every write in that store keeps `READ COMMITTED`.
+
+  **Correlation identifiers are retained whole, at any length the request body
+  allows.** `trace_id` and `session_id` are validated nowhere on the ingest path
+  and `fingerprint_id`'s 256-byte bound is skipped once a run saturates, so the
+  platform already accepts values larger than a PostgreSQL B-tree key can hold.
+  The three correlation indexes therefore key on a fixed-width digest stored
+  beside each value, rather than on the value — indexing the value would have made
+  retaining an already-accepted record fail and roll back its whole ingest, on
+  PostgreSQL and not on SQLite. Storage does not get to narrow what the platform
+  accepts.
+
+  Schema **6 → 7** on both backends, forward-only: two tables and three
+  run-scoped indexes, and no row.
+  [ADR 0048](docs/adr/0048-retained-history-is-sequence-identified-bounded-and-honest-about-absence.md)
+  records the reasoning.
+
 - **Trustvian records what called what, how long it took, and whether it failed**
   (task 084). The engine already computed two of the three and threw them away at
   the boundary: `features.Extract` reads `duration_ms` and `error` off

@@ -987,12 +987,22 @@ func (c *ControlPlane) applyRecord(
 
 	snapshot := collector.Snapshot()
 
+	// Task 067's history row, projected before the commit so a record this
+	// path cannot retain fails before anything is written rather than after.
+	// newBehavior is captured above and recorded rather than re-derived: once
+	// the fold has happened the question can no longer be answered.
+	observation, err := ObservationFromRecord(request.Sequence, request.Record, newBehavior)
+	if err != nil {
+		return IngestResult{}, err
+	}
+
 	committed, err := c.ingest.CommitEvaluationIngest(ctx, EvaluationIngestCommit{
 		PreviousNextSequence: state.NextSequence(),
 		Sequence:             request.Sequence,
 		RecordDigest:         digest,
 		Aggregate:            aggregate,
 		Snapshot:             snapshot,
+		Observation:          observation,
 	})
 	if err != nil {
 		return IngestResult{}, err
@@ -1195,6 +1205,56 @@ func (c *ControlPlane) EvaluationRunBehaviors(
 		Entries:  entries[start:end],
 		Complete: snapshot.Complete(),
 	}, nil
+}
+
+// EvaluationRunObservations returns one bounded page of a run's retained
+// per-observation history, task 067.
+//
+// A read over evidence the ingest path already wrote. It computes nothing,
+// re-derives nothing and draws no conclusion — every value is returned as the
+// record carried it, which is the property task 085 will depend on and the one
+// task 066 established when it snapshotted a gate result rather than promising
+// to recompute it.
+//
+// Any existing run, not only a completed one, for the reason
+// EvaluationRunBehaviors gives: this makes no comparison, and a run's history
+// is worth reading while it is still accumulating.
+//
+// `after` is the exclusive sequence cursor; empty starts at the beginning.
+// A run with no retained history is an empty page whose History says *why* —
+// unavailable because it predates retention, or complete because nothing was
+// ingested. "No such run" stays a distinct answer and is an error.
+func (c *ControlPlane) EvaluationRunObservations(
+	ctx context.Context, runID EvaluationRunID, after string, limit int,
+) (ObservationPage, error) {
+	if err := validateID("evaluation run observation run id", string(runID)); err != nil {
+		return ObservationPage{}, err
+	}
+	if err := validateObservationPage(after, limit); err != nil {
+		return ObservationPage{}, err
+	}
+	cursor, err := ParseObservationCursor(after)
+	if err != nil {
+		return ObservationPage{}, err
+	}
+
+	// Loaded first so a missing run is ErrStoreNotFound — a 404 — rather than
+	// an empty page, which would make "no such run" indistinguishable from
+	// "that run retained nothing".
+	if _, err := c.evaluations.EvaluationRun(ctx, runID); err != nil {
+		return ObservationPage{}, err
+	}
+
+	// The reader is a capability of the same store that writes the history,
+	// because the two share a transaction and could not be separate objects.
+	// A store that implements the ingest contract without it retained nothing,
+	// and says so rather than erroring: that is the honest answer, and it is
+	// the same one a schema-6 run gets.
+	store, ok := c.ingest.(ObservationStore)
+	if !ok {
+		return ObservationPage{History: ObservationHistory{}}, nil
+	}
+	return store.RunObservations(ctx, runID, cursor, limit)
 }
 
 // EvaluationProgressReport is what an evaluation has observed so far.
