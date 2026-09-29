@@ -4,7 +4,9 @@ package platform_test
 // their overflow behaviour.
 
 import (
+	"errors"
 	"math"
+	"strconv"
 	"testing"
 
 	trustvian "github.com/trustvian/trustvian"
@@ -141,28 +143,118 @@ func TestMalformedDurationIsRefused(t *testing.T) {
 
 // TestDurationSumOverflowIsRefused follows the existing counter contract:
 // refused, never wrapped.
+//
+// Every individual duration here is **valid** — exactly event.MaxDurationNanos,
+// the largest a single observation may report. That is the point: the
+// per-observation bound and the aggregate's capacity are different limits, and a
+// run legitimately totals more span time than any one span took. Two maxima fit
+// in a uint64 sum with one nanosecond to spare; the third does not.
+//
+// An earlier version of this test reached overflow with a single out-of-range
+// value, which now fails validation instead and tested nothing about the sum.
 func TestDurationSumOverflowIsRefused(t *testing.T) {
-	huge := uint64(math.MaxUint64)/2 + 1
-	text := func(v uint64) string {
-		out := ""
-		for v > 0 {
-			out = string(rune('0'+v%10)) + out
-			v /= 10
-		}
-		if out == "" {
-			return "0"
-		}
-		return out
+	maxOne := strconv.FormatUint(event.MaxDurationNanos, 10)
+
+	a := addAll(t, newTestAggregate(t),
+		operationalRecord("e1", maxOne, event.StatusUnset),
+		operationalRecord("e2", maxOne, event.StatusUnset),
+	)
+	// 2 * (2^63 - 1) = 2^64 - 2, one short of the uint64 ceiling.
+	if want := uint64(math.MaxUint64) - 1; a.Durations().Sum != want {
+		t.Fatalf("Sum = %d, want %d", a.Durations().Sum, want)
 	}
 
-	a := addAll(t, newTestAggregate(t), operationalRecord("e1", text(huge), event.StatusUnset))
-	_, err := a.AddRecord(operationalRecord("e2", text(huge), event.StatusUnset))
-	if err == nil {
+	// One more nanosecond fits exactly.
+	fits, err := a.AddRecord(operationalRecord("e3", "1", event.StatusUnset))
+	if err != nil {
+		t.Fatalf("a sum reaching exactly MaxUint64 was refused: %v", err)
+	}
+	if fits.Durations().Sum != math.MaxUint64 {
+		t.Errorf("Sum = %d, want MaxUint64", fits.Durations().Sum)
+	}
+
+	// Two do not.
+	if _, err := a.AddRecord(operationalRecord("e3", "2", event.StatusUnset)); err == nil {
 		t.Fatal("a duration sum past MaxUint64 was accepted; it must be refused rather than wrapped")
 	}
 	// And the aggregate is unchanged, because AddRecord validates before it advances.
-	if a.Durations().Sum != huge {
-		t.Errorf("Sum = %d after a refused record, want %d", a.Durations().Sum, huge)
+	if want := uint64(math.MaxUint64) - 1; a.Durations().Sum != want {
+		t.Errorf("Sum = %d after a refused record, want %d", a.Durations().Sum, want)
+	}
+}
+
+// TestIndividualDurationBound is finding 1's regression guard.
+//
+// A record submitted directly to the control plane used to be able to carry the
+// whole uint64 range, fill an evaluation's duration sum in one observation, and
+// make every later positive duration fail with overflow. The bound the telemetry
+// adapters apply is now applied here too.
+func TestIndividualDurationBound(t *testing.T) {
+	maxOne := strconv.FormatUint(event.MaxDurationNanos, 10)
+	overOne := strconv.FormatUint(event.MaxDurationNanos+1, 10)
+
+	tests := []struct {
+		name     string
+		duration string
+		accepted bool
+	}{
+		{"absent is unavailable", "", true},
+		{"a measured zero", "0", true},
+		{"an ordinary duration", "1500000", true},
+		{"exactly the maximum", maxOne, true},
+		{"the maximum plus one", overOne, false},
+		{"MaxUint64", "18446744073709551615", false},
+		{"a negative value", "-1", false},
+		{"a float", "1.5", false},
+		{"a leading zero is not canonical", "0100", false},
+		{"hexadecimal", "0x10", false},
+		{"leading space", " 10", false},
+		{"scientific notation", "1e3", false},
+		{"not a number", "abc", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			next, err := newTestAggregate(t).AddRecord(
+				operationalRecord("e1", tt.duration, event.StatusUnset))
+			if tt.accepted {
+				if err != nil {
+					t.Fatalf("AddRecord() error = %v, want accepted", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("AddRecord accepted duration %q; sum is now %d",
+					tt.duration, next.Durations().Sum)
+			}
+			if !errors.Is(err, platform.ErrInvalidDecisionRecord) {
+				t.Errorf("error = %v, want platform.ErrInvalidDecisionRecord", err)
+			}
+			// Refused, not downgraded: an invalid value must not be counted as
+			// an unobserved duration either.
+			if next.RecordCount() != 0 {
+				t.Errorf("the aggregate advanced to %d records on a refused value",
+					next.RecordCount())
+			}
+		})
+	}
+}
+
+// TestOversizedDurationCannotStarveLaterRecords is the consequence that made
+// finding 1 worth fixing, asserted end to end on the aggregate.
+func TestOversizedDurationCannotStarveLaterRecords(t *testing.T) {
+	a := newTestAggregate(t)
+	if _, err := a.AddRecord(
+		operationalRecord("attack", "18446744073709551615", event.StatusUnset)); err == nil {
+		t.Fatal("an out-of-range duration was accepted")
+	}
+	// The run is untouched, so ordinary evidence still records.
+	next, err := a.AddRecord(operationalRecord("e1", "1000000", event.StatusUnset))
+	if err != nil {
+		t.Fatalf("a later valid record failed: %v", err)
+	}
+	if next.Durations().Sum != 1_000_000 {
+		t.Errorf("Sum = %d, want 1000000", next.Durations().Sum)
 	}
 }
 

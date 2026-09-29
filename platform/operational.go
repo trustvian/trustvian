@@ -13,6 +13,7 @@ package platform
 // verdicts" line the decision and risk counters already hold.
 
 import (
+	"errors"
 	"fmt"
 	"math"
 
@@ -162,19 +163,27 @@ func (c SpanStatusCounts) count(status event.SpanStatus, eventID string) (SpanSt
 func observeOperational(
 	durations DurationSummary, statuses SpanStatusCounts, record trustvian.DecisionRecord,
 ) (DurationSummary, SpanStatusCounts, error) {
-	nanos, observed := record.DurationNanosValue()
-	switch {
-	case record.DurationNanos != "" && !observed:
-		return durations, statuses, fmt.Errorf(
-			"%w: event %s reports duration %s, which is not canonical decimal nanoseconds",
-			ErrInvalidDecisionRecord, preview(record.EventID), preview(record.DurationNanos))
-	case observed:
+	// Validated before anything is folded in, and refused rather than downgraded.
+	//
+	// A malformed or out-of-range duration is *not* read as unavailable: this
+	// code writes the field, so a value it cannot accept was not produced by an
+	// engine following the contract, and treating it as absent would let a
+	// submitter erase its own evidence by corrupting it. Out of range is judged
+	// against event.MaxDurationNanos, the same bound the adapters apply, so a
+	// record posted directly cannot carry a duration no span could produce and
+	// exhaust the run's sum in one observation.
+	nanos, err := record.ValidateDurationNanos()
+	if err != nil {
+		return durations, statuses, fmt.Errorf("%w: event %s: %w",
+			ErrInvalidDecisionRecord, preview(record.EventID), err)
+	}
+	if record.DurationNanos != "" {
 		next, err := durations.observe(nanos)
 		if err != nil {
 			return durations, statuses, err
 		}
 		durations = next
-	default:
+	} else {
 		next, err := durations.skip()
 		if err != nil {
 			return durations, statuses, err
@@ -182,9 +191,93 @@ func observeOperational(
 		durations = next
 	}
 
-	statuses, err := statuses.count(record.SpanStatus, record.EventID)
+	statuses, err = statuses.count(record.SpanStatus, record.EventID)
 	if err != nil {
 		return durations, statuses, err
 	}
 	return durations, statuses, nil
+}
+
+// validateRestoredOperational refuses persisted operational evidence that
+// cannot have been produced by AddRecord.
+//
+// Task 084 added nine columns and nothing validated them on the way back in, so
+// a corrupted or hand-edited row became a trusted aggregate. Checked on the
+// shared restoration path, so SQLite and PostgreSQL get the same rules from one
+// place.
+//
+// Nothing is clamped or repaired. A summary that disagrees with itself is
+// damage, and silently rewriting it would hide whatever else went wrong with it
+// — the same posture every other restored value here takes.
+func validateRestoredOperational(d DurationSummary, c SpanStatusCounts, records uint64) error {
+	// Both bucket sets partition the run's records, which is the invariant that
+	// makes "missing evidence" distinguishable from "measured zero" without a
+	// nullable column. Summed overflow-safely: two corrupt counters can wrap to
+	// a plausible-looking total.
+	durationTotal, err := sumNoOverflow([]uint64{d.Count, d.Unobserved})
+	if err != nil {
+		return errors.New("duration counts overflow")
+	}
+	if durationTotal != records {
+		return fmt.Errorf("duration counts total %d, record count is %d", durationTotal, records)
+	}
+
+	statusTotal, err := sumNoOverflow([]uint64{c.Unavailable, c.Unset, c.OK, c.Error})
+	if err != nil {
+		return errors.New("span status counts overflow")
+	}
+	if statusTotal != records {
+		return fmt.Errorf("span status counts total %d, record count is %d", statusTotal, records)
+	}
+
+	if d.Count == 0 {
+		if d.Sum != 0 || d.Min != 0 || d.Max != 0 {
+			return fmt.Errorf(
+				"no observed durations but statistics sum %d min %d max %d", d.Sum, d.Min, d.Max)
+		}
+		return nil
+	}
+
+	if d.Min > d.Max {
+		return fmt.Errorf("duration min %d exceeds max %d", d.Min, d.Max)
+	}
+	// The per-observation bound, not the sum's capacity. A run's total
+	// legitimately exceeds what any single observation may report, so only the
+	// extrema are checked against it.
+	if d.Max > event.MaxDurationNanos {
+		return fmt.Errorf("duration max %d exceeds the per-observation maximum %d",
+			d.Max, event.MaxDurationNanos)
+	}
+	// One observation of Max is already in the sum.
+	if d.Sum < d.Max {
+		return fmt.Errorf("duration sum %d is below its own maximum %d", d.Sum, d.Max)
+	}
+
+	// Count values, each between Min and Max, sum to between Min*Count and
+	// Max*Count. Both products are guarded, and the two overflow cases mean
+	// opposite things:
+	//
+	//   Min*Count overflows  no representable sum could satisfy the lower bound,
+	//                        so the persisted state is impossible and is refused;
+	//   Max*Count overflows  every representable sum satisfies the upper bound,
+	//                        so the check constrains nothing and is skipped.
+	//
+	// Skipping the second is what keeps a legitimate total from being rejected
+	// because an intermediate calculation would have wrapped.
+	if d.Min != 0 && d.Count > math.MaxUint64/d.Min {
+		return fmt.Errorf(
+			"duration min %d across %d observations cannot sum to any representable value",
+			d.Min, d.Count)
+	}
+	if lower := d.Min * d.Count; d.Sum < lower {
+		return fmt.Errorf("duration sum %d is below %d observations of at least %d",
+			d.Sum, d.Count, d.Min)
+	}
+	if d.Max == 0 || d.Count <= math.MaxUint64/d.Max {
+		if upper := d.Max * d.Count; d.Sum > upper {
+			return fmt.Errorf("duration sum %d exceeds %d observations of at most %d",
+				d.Sum, d.Count, d.Max)
+		}
+	}
+	return nil
 }

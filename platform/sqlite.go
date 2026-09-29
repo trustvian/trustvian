@@ -2492,6 +2492,12 @@ func validateRestoredAggregate(a EvaluationAggregate) error {
 		}
 	}
 
+	// Task 084's operational summaries, validated on the same shared path as
+	// everything above so both backends get the check.
+	if err := validateRestoredOperational(a.durations, a.statuses, a.recordCount); err != nil {
+		return err
+	}
+
 	if a.recordCount == 0 {
 		if !a.firstObservedAt.IsZero() || !a.lastObservedAt.IsZero() {
 			return errors.New("empty aggregate carries observation timestamps")

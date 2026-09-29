@@ -110,10 +110,32 @@ bridge, which writes `duration_ms` only when the duration is strictly positive.
 Both readings are correct for their purpose and the divergence is asserted by
 test rather than left to be discovered.
 
-`maxDurationNanos` is 2^63 − 1 ns, about 292 years. A span longer than that is
-a clock fault, not a slow call; it is reported unavailable rather than wrapped.
-The bound also keeps every downstream sum inside `uint64` arithmetic that
-already has an overflow contract.
+**`event.MaxDurationNanos` is 2^63 − 1 ns, about 292 years, and it is the one
+authoritative maximum.** A span longer than that is a clock fault, not a slow
+call. The bound binds three places that would otherwise disagree:
+
+| Where | What it guards |
+|---|---|
+| `DurationFrom` | span timing, in both adapters |
+| `Event.Validate` | an `Execution` a caller constructed directly, so the public engine path cannot produce evidence violating its own contract |
+| `DecisionRecord.ValidateDurationNanos` | a record submitted over a wire |
+
+The third matters most and was missing initially: a record posted straight to
+the control plane could carry the whole `uint64` range, fill an evaluation's
+duration sum in one observation, and make every later positive duration fail
+with overflow. It is refused at ingest now, **before** the aggregate, the
+snapshot or the ingest cursor advances, so the submitter retries the same
+sequence with a corrected record.
+
+**Invalid is refused, never downgraded to unavailable.** A malformed,
+non-canonical or out-of-range value produces an error naming the field, not a
+silent "nothing was measured" — otherwise a submitter could erase its own
+evidence by corrupting it.
+
+**This is not a cap on the aggregate's sum.** A run legitimately totals more
+span time than any single observation took, and the sum keeps the full `uint64`
+range with its own overflow contract. Per-observation bound and aggregate
+capacity are different limits, kept apart on purpose and tested separately.
 
 Nanoseconds rather than the milliseconds the feature path uses: an integer
 nanosecond count is exact for every span either adapter can produce, where
@@ -196,9 +218,27 @@ unstatused run cannot dilute anything. `Unavailable` and `Unset` are reported
 separately for the same reason.
 
 `Count + Unobserved == RecordCount` and `Unavailable + Unset + OK + Error ==
-RecordCount` are invariants of every aggregate this code produces, asserted by
-test. They are what makes "missing evidence" distinguishable from "measured
-zero" without a second nullable field.
+RecordCount` are invariants of every aggregate this code produces. They are what
+makes "missing evidence" distinguishable from "measured zero" without a second
+nullable field.
+
+**They are enforced on restore as well as on write.** `validateRestoredOperational`
+runs on the shared restoration path, so both backends get the same rules from one
+place, and refuses through the existing `ErrStoreCorrupt` route without clamping
+or repairing anything:
+
+- both bucket sets partition the run, summed overflow-safely so two corrupt
+  counters cannot wrap into a plausible total;
+- `Count == 0` requires `Sum`, `Min` and `Max` to be zero;
+- `Min <= Max`, and `Max` within the per-observation bound;
+- `Sum >= Max`, and `Sum` between `Min*Count` and `Max*Count`.
+
+The two product checks handle overflow in opposite directions, deliberately. If
+`Min*Count` overflows, no representable sum could satisfy the lower bound, so the
+persisted state is impossible and is refused. If `Max*Count` overflows, every
+representable sum satisfies the upper bound, so the check constrains nothing and
+is skipped — **a legitimate total is never rejected because an intermediate
+calculation would have wrapped**.
 
 Overflow follows the existing contract exactly: any counter or the nanosecond
 sum reaching `math.MaxUint64` returns `ErrAggregateOverflow` and the record is

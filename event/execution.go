@@ -18,15 +18,30 @@ package event
 // beside it rather than widening the map or putting the map on the record —
 // which is the boundary ADR 0030 and task 050 both drew.
 
-import "math"
+import (
+	"fmt"
+	"math"
+)
 
-// maxDurationNanos is the largest duration this type will report.
+// MaxDurationNanos is the largest duration a single observation may report.
 //
 // 2^63 - 1 nanoseconds is about 292 years. A span longer than that is a clock
-// fault rather than a slow call, so it is reported unobserved instead of
-// wrapped — and the bound keeps every downstream sum inside the uint64
-// arithmetic the platform's aggregates already have an overflow contract for.
-const maxDurationNanos = uint64(math.MaxInt64)
+// fault rather than a slow call.
+//
+// **This is the one authoritative maximum**, and it binds three places that
+// would otherwise disagree: DurationFrom, which converts span timing;
+// Event.Validate, which guards an Event a caller constructed directly; and
+// DecisionRecord's reader, which guards a record submitted over a wire. An
+// earlier version bounded only the first, so a record posted straight to the
+// control plane could carry the whole uint64 range, fill an evaluation's
+// duration sum in one observation and make every later positive duration fail
+// with overflow.
+//
+// It is deliberately **not** a cap on an aggregate's *sum*. A run legitimately
+// totals more span time than any single span took, and the platform's sum keeps
+// the full uint64 range with its own overflow contract. Per-observation bound
+// and aggregate capacity are different limits and are kept apart on purpose.
+const MaxDurationNanos = uint64(math.MaxInt64)
 
 // SpanStatus is what the producer said about whether the operation succeeded.
 //
@@ -117,9 +132,13 @@ type Execution struct {
 	// DurationObserved says whether DurationNanos is a measurement.
 	//
 	// False for a span with no end timestamp, no start timestamp, an end before
-	// its start, or a span-to-span interval beyond maxDurationNanos. A malformed
-	// interval is unobserved rather than clamped to zero: zero is a claim that
-	// the operation was instantaneous, which malformed timing does not support.
+	// its start, or an interval beyond MaxDurationNanos. A malformed interval is
+	// unobserved rather than clamped to zero: zero is a claim that the operation
+	// was instantaneous, which malformed timing does not support.
+	//
+	// When true, DurationNanos must not exceed MaxDurationNanos. Event.Validate
+	// enforces that, so a caller constructing an Execution by hand cannot put
+	// evidence into the engine that violates this type's own contract.
 	DurationObserved bool
 
 	// Status is what the producer said about success. See SpanStatus.
@@ -141,8 +160,22 @@ func DurationFrom(startNanos, endNanos uint64) (uint64, bool) {
 		return 0, false
 	}
 	elapsed := endNanos - startNanos
-	if elapsed > maxDurationNanos {
+	if elapsed > MaxDurationNanos {
 		return 0, false
 	}
 	return elapsed, true
+}
+
+// validate rejects operational evidence that violates this type's contract.
+//
+// Only the duration bound is checked here. Status and lineage are closed
+// vocabularies whose zero value is a legitimate state, so an unrecognized one is
+// refused where it crosses a wire — at the platform boundary, beside every other
+// closed vocabulary — rather than on every Analyze call.
+func (x Execution) validate() error {
+	if x.DurationObserved && x.DurationNanos > MaxDurationNanos {
+		return fmt.Errorf("%w: %d nanoseconds exceeds %d",
+			ErrInvalidDuration, x.DurationNanos, MaxDurationNanos)
+	}
+	return nil
 }

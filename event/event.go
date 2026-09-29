@@ -32,6 +32,14 @@ var (
 	// ErrInvalidTimestamp rejects a timestamp Go's standard-library JSON
 	// encoder cannot represent. See Event.Validate.
 	ErrInvalidTimestamp = errors.New("event: timestamp cannot be represented as RFC 3339")
+
+	// ErrInvalidDuration rejects an observed duration beyond MaxDurationNanos.
+	//
+	// Checked on the way *in* rather than only at the telemetry adapters, so a
+	// caller building an Execution directly cannot hand the engine a duration no
+	// span could have produced — which downstream evidence would then have to
+	// carry and an aggregate would have to sum.
+	ErrInvalidDuration = errors.New("event: observed duration exceeds the maximum")
 )
 
 // ActorType identifies the kind of thing that performed an Operation.
@@ -335,6 +343,9 @@ func (e Event) Validate() error {
 		return err
 	}
 	if err := e.Operation.validate(); err != nil {
+		return err
+	}
+	if err := e.Execution.validate(); err != nil {
 		return err
 	}
 	return nil

@@ -7,8 +7,10 @@ package event_test
 // that was not measured is not a duration of zero.
 
 import (
+	"errors"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/trustvian/trustvian/event"
 )
@@ -113,5 +115,83 @@ func TestSpanLineageVocabulary(t *testing.T) {
 		if got := tt.lineage.Valid(); got != tt.valid {
 			t.Errorf("SpanLineage(%q).Valid() = %v, want %v", tt.lineage, got, tt.valid)
 		}
+	}
+}
+
+// TestEventValidateRejectsAnOversizedDuration guards the public engine path.
+//
+// DurationFrom bounds what a telemetry adapter can produce, but a caller may
+// construct an Execution directly. Without this check the engine would accept
+// and project a duration no span could have produced, and the platform would
+// then have to carry and sum it.
+func TestEventValidateRejectsAnOversizedDuration(t *testing.T) {
+	base := func() event.Event {
+		return event.Event{
+			ID:        "evt-1",
+			Timestamp: time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC),
+			Actor: event.Actor{
+				ID: "a", Type: event.ActorTypeService, IdentityConfidence: 1,
+			},
+			Operation: event.Operation{
+				Category: event.OperationCategoryHTTP, Name: "GET",
+				Direction: event.DirectionOutbound,
+			},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		exec     event.Execution
+		rejected bool
+	}{
+		{"nothing observed", event.Execution{}, false},
+		{"a measured zero", event.Execution{DurationObserved: true}, false},
+		{"an ordinary duration",
+			event.Execution{DurationNanos: 1_500_000, DurationObserved: true}, false},
+		{"exactly the maximum",
+			event.Execution{DurationNanos: event.MaxDurationNanos, DurationObserved: true}, false},
+		{"the maximum plus one",
+			event.Execution{DurationNanos: event.MaxDurationNanos + 1, DurationObserved: true}, true},
+		{"MaxUint64",
+			event.Execution{DurationNanos: math.MaxUint64, DurationObserved: true}, true},
+		// Not observed, so the stale value is never read and never rejected:
+		// the field is meaningless unless the bool says otherwise.
+		{"an oversized value that was not observed",
+			event.Execution{DurationNanos: math.MaxUint64}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := base()
+			ev.Execution = tt.exec
+			err := ev.Validate()
+			if tt.rejected {
+				if err == nil {
+					t.Fatal("Validate() accepted a duration beyond the maximum")
+				}
+				if !errors.Is(err, event.ErrInvalidDuration) {
+					t.Errorf("error = %v, want ErrInvalidDuration", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("Validate() error = %v, want accepted", err)
+			}
+		})
+	}
+}
+
+// TestMaxDurationNanosIsTheOneBound pins that the adapters and the validator
+// judge against the same number.
+func TestMaxDurationNanosIsTheOneBound(t *testing.T) {
+	if event.MaxDurationNanos != uint64(math.MaxInt64) {
+		t.Errorf("MaxDurationNanos = %d, want MaxInt64", event.MaxDurationNanos)
+	}
+	// The conversion accepts exactly the bound and refuses one past it.
+	if _, ok := event.DurationFrom(1, event.MaxDurationNanos+1); !ok {
+		t.Error("DurationFrom refused an interval of exactly the maximum")
+	}
+	if _, ok := event.DurationFrom(1, event.MaxDurationNanos+2); ok {
+		t.Error("DurationFrom accepted an interval past the maximum")
 	}
 }

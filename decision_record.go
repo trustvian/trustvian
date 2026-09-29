@@ -1,6 +1,7 @@
 package trustvian
 
 import (
+	"fmt"
 	"strconv"
 	"time"
 
@@ -155,22 +156,51 @@ type DecisionRecord struct {
 
 // DurationNanosValue decodes DurationNanos.
 //
-// Returns the nanosecond count and whether one was recorded, so a caller cannot
-// accidentally read the unavailable state as a zero measurement. A value that is
-// present but not canonical decimal reports false rather than guessing: it was
-// not written by this code.
+// Returns the nanosecond count and whether a *valid* one was recorded, so a
+// caller cannot accidentally read the unavailable state as a zero measurement.
+//
+// False covers three different situations, and a caller that must tell them
+// apart uses ValidateDurationNanos: the field was empty, the text was not
+// canonical decimal, or the value exceeded event.MaxDurationNanos. **Nothing in
+// this repository treats the last two as "unavailable"** — the platform refuses
+// the record instead, because silently downgrading a malformed value to absent
+// would let a submitter erase its own evidence by corrupting it.
 func (r DecisionRecord) DurationNanosValue() (uint64, bool) {
-	if r.DurationNanos == "" {
-		return 0, false
-	}
-	v, err := strconv.ParseUint(r.DurationNanos, 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	if strconv.FormatUint(v, 10) != r.DurationNanos {
+	v, err := r.ValidateDurationNanos()
+	if err != nil || r.DurationNanos == "" {
 		return 0, false
 	}
 	return v, true
+}
+
+// ValidateDurationNanos reports why DurationNanos is unusable, if it is.
+//
+// The empty string is valid and means unavailable, so a nil error with an empty
+// field is the "nothing was measured" case; a nil error with a non-empty field
+// returns the measurement. Everything else is an error naming what is wrong,
+// which is what lets an ingest boundary refuse a record with a diagnostic
+// instead of quietly dropping the value.
+//
+// Out of range is judged against event.MaxDurationNanos, the same bound the
+// telemetry adapters apply, so a record submitted directly cannot carry a
+// duration no span could have produced.
+func (r DecisionRecord) ValidateDurationNanos() (uint64, error) {
+	if r.DurationNanos == "" {
+		return 0, nil
+	}
+	v, err := strconv.ParseUint(r.DurationNanos, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %q is not canonical decimal nanoseconds",
+			event.ErrInvalidDuration, r.DurationNanos)
+	}
+	if strconv.FormatUint(v, 10) != r.DurationNanos {
+		return 0, fmt.Errorf("%w: %q is not canonical decimal nanoseconds",
+			event.ErrInvalidDuration, r.DurationNanos)
+	}
+	if v > event.MaxDurationNanos {
+		return 0, fmt.Errorf("%w: %d exceeds %d", event.ErrInvalidDuration, v, event.MaxDurationNanos)
+	}
+	return v, nil
 }
 
 // ContributorRecord is one signal's contribution to an anomaly score.

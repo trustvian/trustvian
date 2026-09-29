@@ -282,6 +282,7 @@ func TestFullWidthCountersSurviveTheDatabase(t *testing.T) {
 				approval_unspecified = ?, policy_matched_rule = ?,
 				identity_confidence_count = ?, anomaly_score_count = ?,
 				anomaly_confidence_count = ?, trust_score_count = ?, context_risk_count = ?,
+				duration_unobserved = ?, span_status_unavailable = ?,
 				identity_confidence_sum = 0.5, identity_confidence_min = 0.5, identity_confidence_max = 0.5,
 				anomaly_score_sum = 0.5, anomaly_score_min = 0.5, anomaly_score_max = 0.5,
 				anomaly_confidence_sum = 0.5, anomaly_confidence_min = 0.5, anomaly_confidence_max = 0.5,
@@ -292,6 +293,11 @@ func TestFullWidthCountersSurviveTheDatabase(t *testing.T) {
 				uint64Text(count), uint64Text(count), uint64Text(count),
 				uint64Text(count), uint64Text(count),
 				uint64Text(count), uint64Text(count), uint64Text(count),
+				uint64Text(count), uint64Text(count),
+				// Task 084's buckets also partition the run, so a consistent
+				// aggregate at this count puts every record in the "nothing was
+				// observed" bucket — which is what a run ingested before those
+				// columns existed genuinely looks like.
 				uint64Text(count), uint64Text(count),
 				timeText(time.Unix(0, 0).UTC()), timeText(time.Unix(0, 0).UTC()),
 				string(run.ID()))

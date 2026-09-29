@@ -8,6 +8,8 @@ package platform
 // arrangement the other schema tests use.
 
 import (
+	"errors"
+	"math"
 	"strconv"
 	"testing"
 	"time"
@@ -116,6 +118,11 @@ func TestOperationalAggregatesSurviveARestart(t *testing.T) {
 
 // TestOperationalColumnsArePersistedAsText checks the storage form directly,
 // because a nanosecond sum in a signed 64-bit column would corrupt silently.
+//
+// The sum is driven past the signed range by two **individually valid**
+// observations, each exactly event.MaxDurationNanos. That is the distinction the
+// schema depends on: no single observation may exceed the signed range, and a
+// run's total legitimately does.
 func TestOperationalColumnsArePersistedAsText(t *testing.T) {
 	store, _ := testStore(t)
 	run := seedRun(t, store)
@@ -124,20 +131,28 @@ func TestOperationalColumnsArePersistedAsText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEvaluationAggregate() error = %v", err)
 	}
-	// A sum a signed 64-bit column could not hold.
-	huge := strconv.FormatUint(uint64(1)<<63+5, 10)
-	record := operationalTestRecord(run, "e1", huge, event.StatusOK)
-	aggregate, err = aggregate.AddRecord(record)
-	if err != nil {
-		t.Fatalf("AddRecord() error = %v", err)
-	}
 	collector, err := NewBehaviorCollector(run)
 	if err != nil {
 		t.Fatalf("NewBehaviorCollector() error = %v", err)
 	}
-	if err := collector.Observe(record); err != nil {
-		t.Fatalf("Observe() error = %v", err)
+
+	maxOne := strconv.FormatUint(event.MaxDurationNanos, 10)
+	for _, id := range []string{"e1", "e2"} {
+		record := operationalTestRecord(run, id, maxOne, event.StatusOK)
+		if aggregate, err = aggregate.AddRecord(record); err != nil {
+			t.Fatalf("AddRecord(%s) error = %v", id, err)
+		}
+		if err := collector.Observe(record); err != nil {
+			t.Fatalf("Observe(%s) error = %v", id, err)
+		}
 	}
+
+	// Two maxima: beyond the signed range, inside the unsigned one.
+	wantSum := strconv.FormatUint(uint64(math.MaxUint64)-1, 10)
+	if got := strconv.FormatUint(aggregate.Durations().Sum, 10); got != wantSum {
+		t.Fatalf("Sum = %s, want %s", got, wantSum)
+	}
+
 	if err := store.SaveEvaluationEvidence(
 		t.Context(), aggregate, collector.Snapshot()); err != nil {
 		t.Fatalf("SaveEvaluationEvidence() error = %v", err)
@@ -149,17 +164,17 @@ func TestOperationalColumnsArePersistedAsText(t *testing.T) {
 		string(run.ID())).Scan(&sum); err != nil {
 		t.Fatalf("read duration_sum: %v", err)
 	}
-	if sum != huge {
+	if sum != wantSum {
 		t.Errorf("duration_sum = %q, want %q; the column must hold the full uint64 range",
-			sum, huge)
+			sum, wantSum)
 	}
 
 	restored, _, err := store.EvaluationEvidence(t.Context(), run.ID())
 	if err != nil {
 		t.Fatalf("EvaluationEvidence() error = %v", err)
 	}
-	if got := restored.Durations().Sum; strconv.FormatUint(got, 10) != huge {
-		t.Errorf("restored sum = %d, want %s", got, huge)
+	if got := strconv.FormatUint(restored.Durations().Sum, 10); got != wantSum {
+		t.Errorf("restored sum = %s, want %s", got, wantSum)
 	}
 }
 
@@ -187,5 +202,201 @@ func TestFreshAndMigratedSchemasHoldTheSameColumns(t *testing.T) {
 		if freshColumns[i] != migratedColumns[i] {
 			t.Errorf("column %d: fresh %q, migrated %q", i, freshColumns[i], migratedColumns[i])
 		}
+	}
+}
+
+// ---------------------------------------------------------------------
+// Corruption of the operational columns
+// ---------------------------------------------------------------------
+
+// seedOperationalEvidence writes one run's valid evidence and returns its run.
+func seedOperationalEvidence(t *testing.T, store *SQLiteStore) EvaluationRun {
+	t.Helper()
+	run := seedRun(t, store)
+
+	aggregate, err := NewEvaluationAggregate(run)
+	if err != nil {
+		t.Fatalf("NewEvaluationAggregate() error = %v", err)
+	}
+	collector, err := NewBehaviorCollector(run)
+	if err != nil {
+		t.Fatalf("NewBehaviorCollector() error = %v", err)
+	}
+	for _, spec := range []struct {
+		id, duration string
+		status       event.SpanStatus
+	}{
+		{"e1", "1000", event.StatusOK},
+		{"e2", "", event.StatusUnset},
+		{"e3", "3000", event.StatusError},
+	} {
+		record := operationalTestRecord(run, spec.id, spec.duration, spec.status)
+		if aggregate, err = aggregate.AddRecord(record); err != nil {
+			t.Fatalf("AddRecord(%s) error = %v", spec.id, err)
+		}
+		if err := collector.Observe(record); err != nil {
+			t.Fatalf("Observe(%s) error = %v", spec.id, err)
+		}
+	}
+	if err := store.SaveEvaluationEvidence(
+		t.Context(), aggregate, collector.Snapshot()); err != nil {
+		t.Fatalf("SaveEvaluationEvidence() error = %v", err)
+	}
+	return run
+}
+
+// TestCorruptOperationalEvidenceIsRefused writes valid evidence, edits one
+// column, and requires the read to refuse rather than to trust or repair it.
+func TestCorruptOperationalEvidenceIsRefused(t *testing.T) {
+	tests := []struct {
+		name   string
+		column string
+		value  string
+	}{
+		// Bucket totals that no longer partition the run.
+		{"too few observed durations", "duration_count", "0"},
+		{"too many observed durations", "duration_count", "9"},
+		{"too few unobserved durations", "duration_unobserved", "0"},
+		{"status buckets do not add up", "span_status_ok", "7"},
+		{"a status bucket is emptied", "span_status_error", "0"},
+
+		// Bucket arithmetic that would wrap.
+		{"duration buckets overflow", "duration_unobserved", "18446744073709551615"},
+		{"status buckets overflow", "span_status_unset", "18446744073709551615"},
+
+		// Statistics that contradict the counts.
+		{"min exceeds max", "duration_min", "9000"},
+		{"sum below its own maximum", "duration_sum", "1"},
+		{"sum below the minimum across the count", "duration_sum", "1500"},
+		{"sum above the maximum across the count", "duration_sum", "999999"},
+
+		// An extremum beyond what any single observation may report.
+		{"max beyond the per-observation bound", "duration_max", "18446744073709551615"},
+
+		// Malformed text in a counter column.
+		{"a non-canonical counter", "duration_sum", "04000"},
+		{"a negative counter", "duration_count", "-1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, _ := testStore(t)
+			run := seedOperationalEvidence(t, store)
+
+			exec(t, store.db,
+				`UPDATE `+tableAggregates+` SET `+tt.column+` = ? WHERE run_id = ?`,
+				tt.value, string(run.ID()))
+
+			_, _, err := store.EvaluationEvidence(t.Context(), run.ID())
+			if err == nil {
+				t.Fatalf("corrupt %s = %q was accepted", tt.column, tt.value)
+			}
+			if !errors.Is(err, ErrStoreCorrupt) {
+				t.Errorf("error = %v, want ErrStoreCorrupt", err)
+			}
+		})
+	}
+}
+
+// TestNonZeroStatisticsWithNoObservedDurationsAreRefused is its own case
+// because it is the shape a naive migration would produce.
+func TestNonZeroStatisticsWithNoObservedDurationsAreRefused(t *testing.T) {
+	for _, column := range []string{"duration_sum", "duration_min", "duration_max"} {
+		t.Run(column, func(t *testing.T) {
+			store, _ := testStore(t)
+			run := seedOperationalEvidence(t, store)
+
+			// Every record unobserved, but one statistic left behind.
+			exec(t, store.db, `UPDATE `+tableAggregates+`
+				SET duration_count = '0', duration_unobserved = record_count,
+				    duration_sum = '0', duration_min = '0', duration_max = '0'
+				WHERE run_id = ?`, string(run.ID()))
+			exec(t, store.db,
+				`UPDATE `+tableAggregates+` SET `+column+` = '5' WHERE run_id = ?`,
+				string(run.ID()))
+
+			_, _, err := store.EvaluationEvidence(t.Context(), run.ID())
+			if err == nil {
+				t.Fatalf("no observed durations but %s = 5 was accepted", column)
+			}
+			if !errors.Is(err, ErrStoreCorrupt) {
+				t.Errorf("error = %v, want ErrStoreCorrupt", err)
+			}
+		})
+	}
+}
+
+// TestValidOperationalEvidenceStillLoads is the other half: the shapes that are
+// legitimate must keep loading, including a migrated legacy run.
+func TestValidOperationalEvidenceStillLoads(t *testing.T) {
+	tests := []struct {
+		name   string
+		update string
+	}{
+		{"all unknown, as a migrated legacy run looks", `
+			duration_count = '0', duration_unobserved = record_count,
+			duration_sum = '0', duration_min = '0', duration_max = '0',
+			span_status_unavailable = record_count, span_status_unset = '0',
+			span_status_ok = '0', span_status_error = '0'`},
+		{"every duration a measured zero", `
+			duration_count = record_count, duration_unobserved = '0',
+			duration_sum = '0', duration_min = '0', duration_max = '0'`},
+		{"every duration identical", `
+			duration_count = record_count, duration_unobserved = '0',
+			duration_sum = '9', duration_min = '3', duration_max = '3'`},
+		{"a sum exactly at the lower bound", `
+			duration_count = record_count, duration_unobserved = '0',
+			duration_sum = '6', duration_min = '2', duration_max = '4'`},
+		{"a sum exactly at the upper bound", `
+			duration_count = record_count, duration_unobserved = '0',
+			duration_sum = '12', duration_min = '2', duration_max = '4'`},
+		{"extrema at the per-observation maximum", `
+			duration_count = '2', duration_unobserved = '1',
+			duration_sum = '18446744073709551614',
+			duration_min = '9223372036854775807', duration_max = '9223372036854775807'`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, _ := testStore(t)
+			run := seedOperationalEvidence(t, store)
+
+			exec(t, store.db,
+				`UPDATE `+tableAggregates+` SET `+tt.update+` WHERE run_id = ?`,
+				string(run.ID()))
+
+			restored, _, err := store.EvaluationEvidence(t.Context(), run.ID())
+			if err != nil {
+				t.Fatalf("valid evidence was refused: %v", err)
+			}
+			d := restored.Durations()
+			if d.Count+d.Unobserved != restored.RecordCount() {
+				t.Errorf("restored buckets do not partition the run: %+v", d)
+			}
+		})
+	}
+}
+
+// TestLegitimateTotalIsNotRejectedByIntermediateOverflow is the requirement that
+// the upper-bound check must not reject a real total just because Max*Count
+// would wrap.
+func TestLegitimateTotalIsNotRejectedByIntermediateOverflow(t *testing.T) {
+	store, _ := testStore(t)
+	run := seedOperationalEvidence(t, store)
+
+	// Three observations, the largest at the per-observation maximum. Max*Count
+	// overflows uint64; the sum itself is perfectly ordinary.
+	exec(t, store.db, `UPDATE `+tableAggregates+` SET
+		duration_count = '3', duration_unobserved = ?,
+		duration_sum = '9223372036854775809',
+		duration_min = '1', duration_max = '9223372036854775807'
+		WHERE run_id = ?`,
+		uint64Text(0), string(run.ID()))
+	exec(t, store.db,
+		`UPDATE `+tableAggregates+` SET record_count = '3' WHERE run_id = ?`, string(run.ID()))
+
+	if _, _, err := store.EvaluationEvidence(t.Context(), run.ID()); err != nil {
+		t.Fatalf("a legitimate total was refused because an intermediate product "+
+			"would overflow: %v", err)
 	}
 }
