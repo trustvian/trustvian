@@ -554,6 +554,11 @@ func TestDescribeBehaviorIsPresentationOnly(t *testing.T) {
 			OperationName: "POST /pay", TargetCategory: "database"},
 			"http/POST /pay → database"},
 		{"category only", behaviorDescriptor{OperationCategory: "http"}, "http"},
+		// Task 083: a tool behavior legitimately carries no target — the
+		// convention sets none and the transport fallback found none — so the
+		// separator must not be printed with nothing after it.
+		{"named tool with no target", behaviorDescriptor{OperationCategory: "tool",
+			OperationName: "export_customer"}, "tool/export_customer"},
 		{"empty", behaviorDescriptor{}, "(unspecified)"},
 	}
 

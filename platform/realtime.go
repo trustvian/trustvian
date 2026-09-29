@@ -135,6 +135,12 @@ type RealtimeObservation struct {
 	// upgraded its instrumentation. Task 075.
 	Fidelity event.Fidelity
 
+	// BehaviorLayer says which instrumentation layer supplied that identity: a
+	// model call, a named tool call, a retrieval, or the transport. Empty means
+	// nothing classified it, which a consumer shows as such rather than
+	// defaulting. Task 083.
+	BehaviorLayer event.Layer
+
 	Decision       string
 	RiskLevel      string
 	ApprovalStatus event.ApprovalStatus

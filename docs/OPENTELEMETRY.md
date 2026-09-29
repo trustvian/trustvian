@@ -323,6 +323,82 @@ A tool *name* is what the agent did; a tool *argument* is what it said. See
 [Privacy](SECURITY.md) for where that boundary binds and what it does **not**
 claim.
 
+### Behavioral layer
+
+Beside fidelity, and answering a different question. Fidelity says *whether*
+telemetry named the operation; the layer says *what kind* of operation it named.
+
+```text
+model        the producer named a model or embedding invocation
+tool         the producer named a tool, agent or workflow invocation
+retrieval    the producer named a retrieval or rerank against a data source
+transport    no convention named the operation, so identity came from HTTP, DB or RPC
+(empty)      not classified — this Event never passed through a telemetry adapter
+```
+
+Both questions are needed, because `external · gpt-4o` and
+`external · handbook` are both *semantic* and only the layer distinguishes a
+model call from a document-store query.
+
+| Where | How |
+|---|---|
+| outbound span attribute | `trustvian.behavior.layer`, beside the other enrichment |
+| ingest envelope | optional `behavior_layer`; absent means **not classified** |
+| realtime observation | always present; the empty string is a real value |
+| WebUI inspector | a sentence naming the layer, and a distinct sentence for each of the two non-layer states |
+| `StableFeatures` / the fingerprint | **never** |
+
+**Absent is not transport, and that is the one place this differs from fidelity.**
+A producer that said nothing classified nothing, and calling an unclassified Event
+a transport operation would assert an identity source no telemetry established.
+Fidelity can safely default to `transport` because its question is "did anything
+prove a semantic name", and no really is transport.
+
+**A layer is claimed exactly when fidelity is `semantic`.** One gate, so the two
+indicators cannot disagree about one span: a GenAI span whose category matched but
+whose identity attribute was missing keeps its transport mapping and is classified
+`transport`.
+
+**It is never behavioral identity.** There is deliberately no `model`
+operation category: `OperationCategory` is a `StableFeatures` dimension, so a
+sixth value would re-fingerprint every model call a producer had already been
+emitting and discard those baselines, to improve a label. See
+[ADR 0047](adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md).
+
+Like fidelity, it is **not persisted**, so a comparison delta carries no layer.
+
+### What one act counts as
+
+Stated because it was previously true and written down nowhere.
+
+A producer emitting agent-oriented telemetry observes one act at two layers: the
+tool call, and the request the tool made. Each is its own observation, its own
+`StableFeatures` and its own fingerprint:
+
+```text
+tool  · export_customer                    layer=tool        fingerprint A
+http  · POST → export.localhost         layer=transport   fingerprint B
+```
+
+So **`max_added_behaviors` counts behavioral identities, and one act observed at
+two layers contributes two.** A team allowing one added behavior is allowing one
+*identity*, which may be half of one act.
+
+That is misleading, it is a known gap, and **the correction is deferred**: folding
+the two requires knowing the HTTP observation is the tool observation's child, and
+no parent identity reaches the evidence boundary today. Identity is deliberately
+*not* changed to work around it — folding would drop the destination from
+behavioral identity, so a tool that started posting somewhere else would stop
+changing the behavioral surface. See
+[task 083](tasks/v1.0/083-behavioral-layer-classification.md) for the full
+reasoning and
+[084](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#084--correlation-and-operational-evidence-on-the-record-boundary)
+for the prerequisite.
+
+Missing correlation produces the same fallback rather than a guess. **Nothing is
+inferred from timestamps, adjacency or similar names**, and no transport
+observation is dropped to make a count smaller.
+
 ### What is neither read nor refused
 
 Three gaps, recorded here because "not in the table" and "deliberately excluded"
@@ -332,7 +408,7 @@ a content attribute; all three are metadata, and each has an owner.
 | Gap | State | Owner |
 |---|---|---|
 | **Token usage** — `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `llm.token_count.prompt`/`.completion`/`.total` | Unconsidered: not read, and not on the refused list above | [087](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#087--performance-and-cost-evidence) |
-| **Parent span identity** | Not carried. `event.Context` has `TraceID` and `SpanID` and no parent, so a trace *tree* cannot be reconstructed from retained evidence | [084](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#084--correlation-and-operational-evidence-on-the-record-boundary) |
+| **Parent span identity** | Not carried. `event.Context` has `TraceID` and `SpanID` and no parent, so a trace *tree* cannot be reconstructed from retained evidence **and the counting fold in task 083 is blocked** | [084](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#084--correlation-and-operational-evidence-on-the-record-boundary) |
 | **Duration and error status beyond the feature path** | Bridged onto `Attributes["duration_ms"]`/`["error"]` for `features.Extract`, and **not** carried on `DecisionRecord` — so the platform, the comparison and every view are unaware of timing or errors | [084](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#084--correlation-and-operational-evidence-on-the-record-boundary) |
 
 The bridging is described under

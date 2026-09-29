@@ -31,6 +31,14 @@ const (
 	// the indicator makes, which is that a semantic name came from telemetry
 	// rather than from Trustvian. See internal/semconv.Fidelity.
 	AttrFidelity = trustviansemconv.AttrFidelity
+
+	// AttrLayer says which instrumentation layer supplied the identity: a model
+	// call, a named tool call, a retrieval, or the transport.
+	//
+	// Outbound only, and no inbound override, for the same reason as fidelity.
+	// It is never behavioral identity — see internal/semconv.Layer and ADR 0047
+	// for why this is a classification rather than a sixth OperationCategory.
+	AttrLayer = trustviansemconv.AttrLayer
 )
 
 // AttributesFromResult derives the outbound trustvian.* attributes from
@@ -74,6 +82,7 @@ func AttributesFromResult(result trustvian.Result) []attribute.KeyValue {
 		attribute.String(AttrDecision, string(result.Decision)),
 		attribute.String(AttrFingerprintID, result.Fingerprint.ID),
 		attribute.String(AttrFidelity, string(fidelityOf(result))),
+		attribute.String(AttrLayer, string(layerOf(result))),
 	}
 }
 
@@ -90,4 +99,32 @@ func AttributesFromResult(result trustvian.Result) []attribute.KeyValue {
 func fidelityOf(result trustvian.Result) trustviansemconv.Fidelity {
 	raw, _ := result.Event.Attributes[AttrFidelity].(string)
 	return trustviansemconv.Fidelity(raw).OrTransport()
+}
+
+// layerOf reads back the layer the inbound mapping recorded.
+//
+// Unlike fidelityOf there is no OrTransport() fallback, and that asymmetry is the
+// point. A Result whose Event never passed through this adapter was never
+// classified, and reporting it as `transport` would assert that its identity came
+// from a protocol — which nothing established. It is emitted as the empty string,
+// which every consumer renders as "not classified".
+func layerOf(result trustvian.Result) trustviansemconv.Layer {
+	raw, _ := result.Event.Attributes[AttrLayer].(string)
+	layer := trustviansemconv.Layer(raw)
+	if !layer.Valid() {
+		return trustviansemconv.LayerUnspecified
+	}
+	return layer
+}
+
+// layerFor decides the layer for one normalization result.
+//
+// Gated on Matched() rather than on Layer alone, so this cannot claim a layer for
+// a row that did not fire — the same guard fidelity uses, applied once here
+// instead of being repeated per branch in the table.
+func layerFor(n trustviansemconv.Normalized) trustviansemconv.Layer {
+	if n.Matched() && n.Layer.Valid() {
+		return n.Layer
+	}
+	return trustviansemconv.LayerTransport
 }

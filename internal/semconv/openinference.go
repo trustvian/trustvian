@@ -64,15 +64,18 @@ func normalizeOpenInference(s Span) (Normalized, bool) {
 		// The kind check that makes reading tool.name safe — see AttrOIToolName.
 		n.OperationCategory = categoryTool
 		n.OperationName = stringAttr(s.Attributes, AttrOIToolName)
+		n.Layer = LayerTool
 
 	case kindAgent:
 		n.OperationCategory = categoryTool
 		n.OperationName = stringAttr(s.Attributes, AttrOIAgentName)
+		n.Layer = LayerTool
 
 	case kindLLM, kindEmbedding:
 		n.OperationCategory = categoryExternal
 		n.OperationName = stringAttr(s.Attributes, AttrOIModelName)
 		n.TargetName = provider
+		n.Layer = LayerModel
 
 	case kindRetriever:
 		// The spec defines no identity attribute for a retriever — no
@@ -82,10 +85,12 @@ func normalizeOpenInference(s Span) (Normalized, bool) {
 		// whatever the transport mapping found.
 		n.OperationCategory = categoryExternal
 		n.OperationName = "retriever"
+		n.Layer = LayerRetrieval
 
 	case kindReranker:
 		n.OperationCategory = categoryExternal
 		n.OperationName = stringAttr(s.Attributes, AttrOIRerankerName)
+		n.Layer = LayerRetrieval
 
 	default:
 		// CHAIN, GUARDRAIL, EVALUATOR, PROMPT and anything unknown.

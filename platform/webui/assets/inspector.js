@@ -14,6 +14,39 @@
 
 import { decisionToken, decisionClass, riskClass, operationLabel } from "./graph.js";
 
+// LAYER_SENTENCES names each instrumentation layer in a reader's words.
+//
+// A closed map rather than string interpolation, so an unrecognized value from a
+// newer server cannot be rendered as though the browser understood it. Task 083.
+const LAYER_SENTENCES = {
+  model:
+    "Model call: the producer named a model or embedding invocation.",
+  tool:
+    "Tool call: the producer named a tool, agent or workflow the agent invoked.",
+  retrieval:
+    "Retrieval: the producer named a lookup or rerank against a data source.",
+  transport:
+    "Outbound request: no convention named the operation, so this is the " +
+    "protocol-level call \u2014 HTTP, database or RPC.",
+};
+
+// layerSentence renders the layer, including the two states that are not a layer.
+//
+// "" means the server classified nothing, which is a real answer for an Event
+// that never passed through a telemetry adapter. An unrecognized value means this
+// browser is older than the server; saying so is honest and inventing a sentence
+// for it is not.
+export function layerSentence(layer) {
+  if (layer === "") {
+    return "Layer not classified: nothing recorded which kind of operation this was.";
+  }
+  const sentence = LAYER_SENTENCES[layer];
+  if (sentence === undefined) {
+    return "Layer reported as a value this page does not recognize.";
+  }
+  return sentence;
+}
+
 // METRICS are the four numeric readings, in a fixed order.
 //
 // Shown as the server's own numbers. A bar is drawn beside each because a
@@ -83,6 +116,22 @@ export function renderInspector(host, edge, context = {}) {
       "called it.";
   }
   host.append(fidelity);
+
+  // Which instrumentation layer supplied the name above.
+  //
+  // Fidelity says *whether* telemetry named the operation; this says *what kind*
+  // of operation it named. The two are separate questions and a reader needs
+  // both: `external · gpt-4o` and `external · vector-store` are both semantic,
+  // and only this distinguishes a model call from a document-store query.
+  //
+  // Read, never derived. The browser cannot tell a model name from a data-source
+  // name by looking at it, and four states are rendered rather than three —
+  // "not classified" is a real answer the server gives for an Event that never
+  // passed through a telemetry adapter.
+  const layer = document.createElement("p");
+  layer.className = "note-inline";
+  layer.textContent = layerSentence(edge.behaviorLayer);
+  host.append(layer);
 
   // NEW is a state, and it is stated in words before anything else about it.
   if (edge.newBehavior) {

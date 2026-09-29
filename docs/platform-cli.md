@@ -127,6 +127,25 @@ Candidate metadata is descriptive only. The CLI runs no `git` command and
 computes no digests: a value it derived would claim a provenance it cannot
 actually vouch for.
 
+**`--max-added-behaviors` counts behavioral identities**, not acts. A producer
+emitting agent-oriented telemetry observes one act at two layers — the tool call
+and the request the tool made — and each is its own behavioral identity:
+
+```text
+tool  · export_customer                 one identity
+http  · POST → export.localhost      another identity
+```
+
+So one act can consume two of this budget. That is a known gap with a deliberate
+cause: identity is *not* folded, because folding would drop the destination from
+behavioral identity and a tool that started posting somewhere else would stop
+changing the behavioral surface. The counting correction is deferred to its own
+work; see [task 083](tasks/v1.0/083-behavioral-layer-classification.md) and
+[ADR 0047](adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md).
+
+At `--max-added-behaviors 0` none of this is observable. It matters the moment a
+budget is nonzero.
+
 Two collections exist — `env list` and `promotion list` — because two entities
 have a consumer that needs one, and both traverse a project by an immutable key
 in byte order with the server bounding every page. There is no `search`, and no

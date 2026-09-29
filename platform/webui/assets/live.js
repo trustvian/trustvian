@@ -228,6 +228,11 @@ export class RunGraph {
         // unknown, matching the wire contract: a producer that stated nothing
         // proved nothing.
         fidelity: observation.fidelity || "transport",
+        // Which instrumentation layer supplied that identity. Unlike fidelity
+        // there is no default: the server publishes "" for "not classified", and
+        // substituting "transport" here would make the browser assert an identity
+        // source the server did not state. Task 083.
+        behaviorLayer: observation.behavior_layer || "",
         pulses: 0,
         newBehavior: false,
       };
@@ -250,6 +255,7 @@ export class RunGraph {
     // observations: that would be the browser computing a summary, and each
     // value displayed has to be an answer the server actually gave.
     edge.fidelity = observation.fidelity || "transport";
+    edge.behaviorLayer = observation.behavior_layer || "";
     // Sticky: a behavior that was new when first observed stays labelled new
     // for this viewport, because the badge describes the observation that
     // introduced it rather than the most recent repeat.

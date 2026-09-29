@@ -619,6 +619,66 @@ actually depend on.
   removal — because a rename that reached only the page cache is one a host
   crash can undo.
 
+### Added
+
+- **Trustvian says which instrumentation layer a behavior came from** (task 083,
+  partial). A model call, a named tool call, a retrieval and an outbound request
+  were all equally anonymous in a rendered view, and two of them shared a category:
+  `external` meant both "a model was consulted" and "a document store was queried".
+
+  A new closed classification — `model`, `tool`, `retrieval`, `transport`, or not
+  classified — now rides exactly where `trustvian.fidelity` rides: the outbound
+  span attribute `trustvian.behavior.layer`, the ingest envelope's optional
+  `behavior_layer`, and the realtime observation. The WebUI inspector states it in
+  a sentence, with distinct wording for "not classified" and for a value the page
+  does not recognize.
+
+  **It is not behavioral identity, and that is the point.** There is deliberately
+  no sixth `OperationCategory`: that field is a `StableFeatures` dimension, so a
+  `model` value would have re-fingerprinted every model call a producer was already
+  emitting and discarded those baselines — to improve a label. The classification
+  costs no migration, and a test asserts the fingerprint, the whole
+  `StableFeatures` tuple and the learning path are unchanged across every layer
+  value.
+
+  **A layer is claimed exactly when fidelity is `semantic`.** One gate, so two
+  indicators derived from one table cannot disagree about one span. Absent means
+  *not classified* rather than `transport`, which is the one place this differs from
+  fidelity: silence classified nothing, while "nothing proved a semantic name"
+  really is transport.
+
+  Degradation is unchanged: a producer emitting no convention gets byte-identical
+  behavioral results and is classified `transport`. Schema version stays 5.
+
+### Changed
+
+- **What `max-added-behaviors` counts is now stated** (task 083). It counts
+  behavioral *identities*, and a producer emitting agent-oriented telemetry
+  observes one act at two layers — the tool call and the request the tool made —
+  so one act can consume two of the budget:
+
+  ```text
+  tool  · export_customer                 one identity
+  http  · POST → export.localhost      another identity
+  ```
+
+  That was already true and was written down nowhere. It is now in the flag's own
+  help, `docs/platform-cli.md` and `docs/OPENTELEMETRY.md`. At a limit of `0` it is
+  invisible; it matters the first time a budget is nonzero.
+
+  **The correction is deferred, and the task stays open.** Folding the two into one
+  counted change requires knowing the request is the tool call's child, and no
+  parent identity reaches the evidence boundary — verified by a test that fails
+  when it changes, not assumed. Identity was deliberately *not* folded to work
+  around it: folding drops the destination from behavioral identity, so a tool that
+  started posting to another host would stop changing the behavioral surface, which
+  trades a counting annoyance for a detection hole. Missing correlation falls back
+  to today's count rather than to a guess; nothing is inferred from timestamps,
+  adjacency or similar names, and no observation is dropped to make a count
+  smaller.
+  [ADR 0047](docs/adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md)
+  records where the fix belongs and what it must not do.
+
 ### Fixed
 
 - **The fidelity indicator never left the Collector** (task 075). The mapping

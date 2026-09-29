@@ -248,6 +248,11 @@ func newRealtimeEventPayload(e platform.RealtimeEvent) realtimeEventPayload {
 			// absent field would be guessing at exactly the thing this field
 			// exists to remove the guess from.
 			Fidelity: string(o.Fidelity.OrTransport()),
+			// Carried verbatim, including empty. Unlike fidelity there is no
+			// OrTransport() here: "not classified" is a state this field
+			// publishes, and substituting transport would assert an identity
+			// source nothing established.
+			BehaviorLayer: string(o.BehaviorLayer),
 
 			Decision:       o.Decision,
 			RiskLevel:      o.RiskLevel,

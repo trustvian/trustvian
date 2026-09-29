@@ -532,7 +532,7 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 		// that produced the span attribute a few lines up, so the two can
 		// never disagree about one span.
 		disposition, err := p.evaluation.Record(
-			ctx, result.DecisionRecord(), fidelityOf(result), learning)
+			ctx, result.DecisionRecord(), fidelityOf(result), layerOf(result), learning)
 		ingestDuration := time.Since(ingestStart)
 		if err != nil {
 			p.metrics.RecordEvaluationIngest(ctx, metrics.OutcomeError, ingestDuration)

@@ -338,7 +338,10 @@ func runEvalCompare(s streams, args []string, timeout time.Duration) int {
 	candidateRun := fs.String("candidate-run", "", "candidate evaluation run identifier (required)")
 
 	var addedBehaviors, blockDecisions, criticalRisk optionalUint64
-	fs.Var(&addedBehaviors, "max-added-behaviors", "maximum added behaviors (required)")
+	// What the limit counts is stated here because the flag is where an operator
+	// sets it: task 083 and docs/OPENTELEMETRY.md carry the reasoning.
+	fs.Var(&addedBehaviors, "max-added-behaviors",
+		"maximum added behavioral identities (required); one act observed at both the\n			tool and transport layers counts as two")
 	fs.Var(&blockDecisions, "max-block-decisions", "maximum block decisions (required)")
 	fs.Var(&criticalRisk, "max-critical-risk-observations",
 		"maximum critical-risk observations (required)")

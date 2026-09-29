@@ -116,6 +116,13 @@ func TestAttributesFromResultCoversAllDecisions(t *testing.T) {
 				// "transport" — which is the honest answer rather than a
 				// default: nothing proved a semantic identity.
 				{trustvianotel.AttrFidelity, string(event.FidelityTransport)},
+				// Task 083. Same situation, opposite answer: this Result was never
+				// classified, so the layer is empty rather than "transport".
+				// Fidelity's question is "did telemetry name this operation", and
+				// no is transport; the layer's question is "what kind of operation
+				// was it", and calling an unclassified Event a transport operation
+				// would assert something nothing established.
+				{trustvianotel.AttrLayer, string(event.LayerUnspecified)},
 			}
 			for _, c := range checks {
 				v, ok := findAttr(attrs, c.key)

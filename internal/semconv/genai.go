@@ -87,10 +87,12 @@ func normalizeGenAI(s Span) (Normalized, bool) {
 	case opExecuteTool:
 		n.OperationCategory = categoryTool
 		n.OperationName = stringAttr(s.Attributes, AttrGenAIToolName)
+		n.Layer = LayerTool
 
 	case opInvokeAgent, opCreateAgent:
 		n.OperationCategory = categoryTool
 		n.OperationName = stringAttr(s.Attributes, AttrGenAIAgentName)
+		n.Layer = LayerTool
 
 	case opInvokeWorkflow, opPlan:
 		// A workflow or a planning step is the agent acting, so it is the same
@@ -101,6 +103,7 @@ func normalizeGenAI(s Span) (Normalized, bool) {
 		// a class of action and needs the tool to say what happened.
 		n.OperationCategory = categoryTool
 		n.OperationName = stringAttr(s.Attributes, AttrGenAIAgentName)
+		n.Layer = LayerTool
 		if n.OperationName == "" {
 			n.OperationName = operation
 		}
@@ -113,9 +116,11 @@ func normalizeGenAI(s Span) (Normalized, bool) {
 		n.OperationCategory = categoryExternal
 		n.OperationName = stringAttr(s.Attributes, AttrGenAIRequestModel)
 		n.TargetName = provider
+		n.Layer = LayerModel
 
 	case opRetrieval:
 		n.OperationCategory = categoryExternal
+		n.Layer = LayerRetrieval
 		source := stringAttr(s.Attributes, AttrGenAIDataSourceID)
 		n.OperationName = source
 		if n.OperationName == "" {

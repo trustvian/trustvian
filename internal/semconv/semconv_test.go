@@ -94,6 +94,7 @@ func TestGenAIMapping(t *testing.T) {
 				OperationCategory: "tool",
 				OperationName:     "export_customer",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerTool,
 			},
 		},
 		{
@@ -107,6 +108,7 @@ func TestGenAIMapping(t *testing.T) {
 				OperationName:     "researcher",
 				ActorType:         "ai_agent",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerTool,
 			},
 		},
 		{
@@ -120,6 +122,7 @@ func TestGenAIMapping(t *testing.T) {
 				OperationName:     "researcher",
 				ActorType:         "ai_agent",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerTool,
 			},
 		},
 		{
@@ -141,6 +144,7 @@ func TestGenAIMapping(t *testing.T) {
 				OperationCategory: "tool",
 				OperationName:     "invoke_workflow",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerTool,
 			},
 		},
 		{
@@ -154,6 +158,7 @@ func TestGenAIMapping(t *testing.T) {
 				OperationName:     "planner",
 				ActorType:         "ai_agent",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerTool,
 			},
 		},
 		{
@@ -168,6 +173,7 @@ func TestGenAIMapping(t *testing.T) {
 				OperationName:     "gpt-4o",
 				TargetName:        "openai",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerModel,
 			},
 		},
 		{
@@ -182,6 +188,7 @@ func TestGenAIMapping(t *testing.T) {
 				OperationName:     "davinci",
 				TargetName:        "openai",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerModel,
 			},
 		},
 		{
@@ -196,6 +203,7 @@ func TestGenAIMapping(t *testing.T) {
 				OperationName:     "text-embedding-3-small",
 				TargetName:        "openai",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerModel,
 			},
 		},
 		{
@@ -209,6 +217,7 @@ func TestGenAIMapping(t *testing.T) {
 				OperationName:     "policies-index",
 				TargetName:        "policies-index",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerRetrieval,
 			},
 		},
 		{
@@ -220,6 +229,7 @@ func TestGenAIMapping(t *testing.T) {
 				OperationCategory: "external",
 				OperationName:     "retrieval",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerRetrieval,
 			},
 		},
 		{
@@ -234,6 +244,7 @@ func TestGenAIMapping(t *testing.T) {
 				OperationName:     "export_customer",
 				SessionID:         "conv-42",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerTool,
 			},
 		},
 	}
@@ -260,6 +271,7 @@ func TestGenAISystemIsReadOnlyAsALegacyAlias(t *testing.T) {
 		OperationName:     "claude-3",
 		TargetName:        "anthropic",
 		Fidelity:          semconv.FidelitySemantic,
+		Layer:             semconv.LayerModel,
 	})
 
 	t.Run("provider.name wins when both are present", func(t *testing.T) {
@@ -273,6 +285,7 @@ func TestGenAISystemIsReadOnlyAsALegacyAlias(t *testing.T) {
 			OperationName:     "claude-3",
 			TargetName:        "anthropic",
 			Fidelity:          semconv.FidelitySemantic,
+			Layer:             semconv.LayerModel,
 		})
 	})
 }
@@ -293,5 +306,6 @@ func TestGenAISystemInstructionsIsNotAProviderName(t *testing.T) {
 		OperationName:     "gpt-4o",
 		// TargetName deliberately empty: no provider was supplied.
 		Fidelity: semconv.FidelitySemantic,
+		Layer:    semconv.LayerModel,
 	})
 }

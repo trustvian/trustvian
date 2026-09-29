@@ -948,7 +948,7 @@ The **Gate** column says which rows the release actually depends on.
 | 080 | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md) — precision, recall and false-positive rate for the existing signals against a public agent prompt-injection benchmark | Specified | neither |
 | 081 | Persist behavior fidelity, so a comparison delta reports whether a behavior was named by telemetry or inferred from transport — a forward-only schema step in both backends, deferred from 075 | Not specified | neither |
 | 082 | [Agent inspection and evaluation depth](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md) — the planning task for the six-step developer workflow: what is implemented, what is missing, and what a decision would cost. Documentation only | Specified | neither |
-| 083 | Behavioral layer identity and display classification — an explicit rule for when a tool span and the HTTP request beneath it are one behavior, and a non-identity label so a model call, a tool call and an outbound request are distinguishable without changing what a fingerprint is | Not specified | `v1.0` |
+| 083 | [Behavioral layer identity and display classification](tasks/v1.0/083-behavioral-layer-classification.md) — an explicit rule for when a tool span and the HTTP request beneath it are one behavior, and a non-identity label so a model call, a tool call and an outbound request are distinguishable without changing what a fingerprint is | **Partially implemented** — classification and rendering shipped; the counting correction deferred to 084 ([ADR 0047](adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md)) | `v1.0` |
 | 084 | Correlation and operational evidence on the record boundary — parent span identity, duration and error status promoted from volatile feature inputs to recorded evidence, additively | Not specified | `v1.0` |
 | 085 | Evidence resolution — from a gate check or a behavioral delta to the behaviors and observations behind it, as a resolution query rather than a payload inside a fixed-shape verdict. Authoritative at the control plane, exercised over `/v1` and the CLI, and **delivered before 076 consumes it** | Not specified | `v1.0` (via 17) |
 | 086 | Scenario and input versioning — a scenario-definition digest and an input digest on the evidence, and a prompt *reference* beside `Model`, so a comparison can state whether both sides ran the same thing | Not specified | neither |
@@ -981,8 +981,8 @@ the moment it closes. See
 
 ### Agent inspection and evaluation depth
 
-**082 is a planning task, 083–090 are what it reserves, and none of them is
-implemented.** The planning is in
+**082 is a planning task, 083–090 are what it reserves. 083 is partially
+implemented; the rest are not started.** The planning is in
 [task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md), which carries
 each item's developer problem, verified current state, scope, non-goals,
 dependencies, acceptance criteria, validation strategy, privacy implications,
@@ -1077,7 +1077,7 @@ Conceptually:
                                           │
 075  AI semantic telemetry ───────────────┤
        │                                  ↓
-       │                         083  behavioral layer identity
+       │                         083  behavioral layer identity  [part shipped]
        │                                  ↓
        │                         078  behavioral scenario suites
        │                                  ↓
@@ -1161,6 +1161,11 @@ Twelve things this diagram says, and one it does not:
 - **068 remains conditional**, exactly as its row says: an analytical backend
   arrives if measured volume justifies one, and not otherwise. It is not a
   release-gate prerequisite, and this restructuring does not make it one.
+- **083 is partially implemented and still blocks 078's re-run.** Its
+  classification half shipped; its counting half is deferred to 084, because
+  folding a tool observation and the request beneath it needs a parent identity the
+  evidence boundary does not carry. 078's k-of-N thresholds count behaviors, so the
+  re-run still waits.
 - **083 joins the 078 thread ahead of 078**, and that edge is the second one here
   added by a measurement rather than by design. One behavioral change was reported
   as two added behaviors, because a tool span and the HTTP request beneath it are
