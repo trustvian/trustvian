@@ -81,10 +81,15 @@ func statementVersion(stmt string) (int, bool) {
 		// v4: task 066's promotion history and its index.
 		{tablePromotions, schemaVersionV4},
 		{indexPromotionsByProject, schemaVersionV4},
-		// v5: task 074's child-collection indexes.
-		{indexAgentsByProject, SchemaVersion},
-		{indexCandidatesByAgent, SchemaVersion},
-		{indexRunsByCandidate, SchemaVersion},
+		// v5: task 074's child-collection indexes. Attributed to the literal v5
+		// rather than to SchemaVersion, which stopped meaning 5 when schema 6
+		// landed.
+		{indexAgentsByProject, schemaVersionV5},
+		{indexCandidatesByAgent, schemaVersionV5},
+		{indexRunsByCandidate, schemaVersionV5},
+		// v6: task 084 adds columns to the v1 aggregate table and creates no
+		// object of its own, so it registers nothing here. See the coverage
+		// check below.
 	}
 
 	trimmed := strings.TrimSpace(stmt)
@@ -102,6 +107,44 @@ func statementVersion(stmt string) (int, bool) {
 //
 // Assembled from the live statements rather than copied, so a fixture cannot
 // drift from what that version actually was.
+// stripLaterColumns removes columns a statement's own version did not have.
+//
+// The fixtures replay today's CREATE TABLE statements filtered by the version
+// that introduced each *object*, which is exact as long as every version adds
+// objects. Schema 6 adds **columns to a table v1 created**, so replaying v1's
+// statement unfiltered would build a "v4" fixture that already has v6's columns
+// """ + EM + """ and the migration under test would then fail on a column that exists.
+//
+// Keyed off aggregateOperationalColumns, the same list the DDL and the migration
+// derive from, so a column added later cannot be forgotten here.
+func stripLaterColumns(stmt string, version int) string {
+	if version >= SchemaVersion || !strings.Contains(stmt, "CREATE TABLE "+tableAggregates) {
+		return stmt
+	}
+	lines := strings.Split(stmt, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		operational := false
+		for _, column := range aggregateOperationalColumns() {
+			if strings.HasPrefix(trimmed, column+" ") {
+				operational = true
+				break
+			}
+		}
+		if !operational {
+			kept = append(kept, line)
+		}
+	}
+	// Removing the last columns leaves a trailing comma on the line before the
+	// closing paren, which PostgreSQL rejects.
+	out := strings.Join(kept, "\n")
+	if i := strings.LastIndex(out, ","); i != -1 && strings.TrimSpace(out[i+1:]) == ")" {
+		out = out[:i] + out[i+1:]
+	}
+	return out
+}
+
 func createOlderSchema(t *testing.T, pool *pgxpool.Pool, version int) {
 	t.Helper()
 	ctx := context.Background()
@@ -121,7 +164,7 @@ func createOlderSchema(t *testing.T, pool *pgxpool.Pool, version int) {
 				"add it there with the version that introduced it", strings.TrimSpace(stmt))
 		}
 		if introduced <= version {
-			older = append(older, stmt)
+			older = append(older, stripLaterColumns(stmt, version))
 		}
 	}
 	if len(older) == 0 {
@@ -187,9 +230,19 @@ func TestEverySchemaStatementIsClassified(t *testing.T) {
 		}
 		seen[version]++
 	}
-	// Every version from 1 to the current one contributed something, which is
-	// what makes "introduced at or before" a meaningful filter.
+	// Every version that creates an object contributed something, which is what
+	// makes "introduced at or before" a meaningful filter.
+	//
+	// A column-only version legitimately contributes none: schema 6 adds nine
+	// columns to the aggregate table the v1 statement creates, so the columns
+	// ship inside a v1-attributed statement on a fresh database and inside an
+	// ALTER on an existing one. Listing it as an exception keeps the check
+	// honest rather than loosening it for every version.
+	columnOnly := map[int]bool{SchemaVersion: true}
 	for version := schemaVersionV1; version <= SchemaVersion; version++ {
+		if columnOnly[version] {
+			continue
+		}
 		if seen[version] == 0 {
 			t.Errorf("no statement is attributed to v%d", version)
 		}
@@ -594,7 +647,7 @@ func postgresColumnsOf(t *testing.T, pool *pgxpool.Pool, table string) []string 
 // The negative assertions carry the weight. An index-only migration that
 // added a column, wrote a row or synthesized an entity would be inventing
 // platform state from a schema change.
-func TestPostgresMigratesV4ToV5AddingOnlyIndexes(t *testing.T) {
+func TestPostgresMigratesV4ForwardAddingIndexesAndOperationalColumns(t *testing.T) {
 	pool, dsn := schemaTestPool(t)
 	createV4Schema(t, pool)
 	seedPostgresV2Environments(t, pool, "proj-1", []string{"staging", "production"})
@@ -644,24 +697,46 @@ func TestPostgresMigratesV4ToV5AddingOnlyIndexes(t *testing.T) {
 		}
 	}
 
-	// No table, no column, no row.
+	// No table and no row. Columns: exactly schema 6's nine on the aggregate
+	// table and nothing anywhere else, because opening a v4 database runs v4-to-v5
+	// and then v5-to-v6 (task 084). v5 itself still adds no column, which is what
+	// the index assertion above pins.
 	if after := sortedPostgresTables(t, pool); !slices.Equal(after, beforeTables) {
 		t.Errorf("tables after = %v, before = %v", after, beforeTables)
 	}
+	operational := aggregateOperationalColumns()
+	slices.Sort(operational)
 	for _, table := range beforeTables {
-		if after := postgresColumnsOf(t, pool, table); !slices.Equal(after, beforeColumns[table]) {
-			t.Errorf("%s columns after = %v, before = %v", table, after, beforeColumns[table])
+		after := postgresColumnsOf(t, pool, table)
+		var addedColumns []string
+		for _, name := range after {
+			if !slices.Contains(beforeColumns[table], name) {
+				addedColumns = append(addedColumns, name)
+			}
 		}
-		after := countPostgresRows(t, pool, table)
+		slices.Sort(addedColumns)
+		wantColumns := []string(nil)
+		if table == tableAggregates {
+			wantColumns = operational
+		}
+		if !slices.Equal(addedColumns, wantColumns) {
+			t.Errorf("%s gained columns %v, want exactly %v", table, addedColumns, wantColumns)
+		}
+		for _, name := range beforeColumns[table] {
+			if !slices.Contains(after, name) {
+				t.Errorf("%s lost column %s; the chain is additive", table, name)
+			}
+		}
+		rows := countPostgresRows(t, pool, table)
 		if table == tableSchemaVersion {
-			if after != 1 {
-				t.Errorf("%s holds %d rows, want 1", table, after)
+			if rows != 1 {
+				t.Errorf("%s holds %d rows, want 1", table, rows)
 			}
 			continue
 		}
-		if after != beforeRows[table] {
-			t.Errorf("%s holds %d rows after, %d before; an index-only migration "+
-				"writes none", table, after, beforeRows[table])
+		if rows != beforeRows[table] {
+			t.Errorf("%s holds %d rows after, %d before; neither migration in this "+
+				"chain writes a row", table, rows, beforeRows[table])
 		}
 	}
 	if countPostgresRows(t, pool, tablePromotions) != 0 {

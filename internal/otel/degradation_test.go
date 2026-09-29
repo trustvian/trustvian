@@ -163,6 +163,18 @@ func TestTransportOnlySpansMapExactlyAsBefore(t *testing.T) {
 			expected.ID = sc.SpanID().String()
 			expected.Context.TraceID = sc.TraceID().String()
 			expected.Context.SpanID = sc.SpanID().String()
+			// Task 084: every fixture in this table is started from a background
+			// context, so every one of them is a trace root. Asserted rather than
+			// copied from the result, and the same for all cases rather than per
+			// case, because a fixture that stopped being a root would be a change
+			// to this table that should be noticed.
+			//
+			// This field appearing is not a degradation regression. Degradation is
+			// about what Trustvian *concludes* — category, name, target, actor and
+			// therefore the fingerprint — and none of those moved. Correlation is
+			// evidence about the observation, and a transport-only span carries it
+			// exactly as a semantic one does.
+			expected.Context.SpanLineage = event.LineageRoot
 
 			if got != expected {
 				t.Errorf("EventFromSpan mapping changed for a transport-only span\n got  %+v\n want %+v", got, expected)

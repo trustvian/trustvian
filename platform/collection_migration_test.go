@@ -124,9 +124,15 @@ func sqliteTableNames(t *testing.T, db *sql.DB) []string {
 	return names
 }
 
-// TestSchemaV4MigratesToV5AddingOnlyIndexes is task 074's migration, asserted
-// from both sides: what it must add, and everything it must leave alone.
-func TestSchemaV4MigratesToV5AddingOnlyIndexes(t *testing.T) {
+// TestSchemaV4MigratesForwardAddingOnlyIndexesAndOperationalColumns asserts the
+// whole forward chain from a v4 database, from both sides: what it must add, and
+// everything it must leave alone.
+//
+// Opening a v4 database now runs v4—v5 and v5—v6, so the two additions are
+// asserted together and separately: v5's three indexes (task 074) and v6's nine
+// operational columns on one table (task 084). Everything else — every other
+// table, every other column, every pre-existing index — must be untouched.
+func TestSchemaV4MigratesForwardAddingOnlyIndexesAndOperationalColumns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "v4.db")
 	db := writeSchemaV4(t, path)
 	seedV1Content(t, db, "run-legacy", 4)
@@ -175,20 +181,59 @@ func TestSchemaV4MigratesToV5AddingOnlyIndexes(t *testing.T) {
 		}
 	}
 
-	// No table added, none dropped.
+	// No table added, none dropped. Neither migration in this chain creates one.
 	afterTables := sqliteTableNames(t, store.db)
 	if !slices.Equal(afterTables, beforeTables) {
-		t.Errorf("tables after = %v, before = %v; an index-only migration adds none",
+		t.Errorf("tables after = %v, before = %v; neither migration adds a table",
 			afterTables, beforeTables)
 	}
 
-	// No column added to any table.
+	// Exactly the nine operational columns, on exactly the aggregate table.
+	operational := aggregateOperationalColumns()
+	slices.Sort(operational)
 	for _, table := range afterTables {
 		after := sqliteTableColumns(t, store.db, table)
-		if !slices.Equal(after, beforeColumns[table]) {
-			t.Errorf("%s columns after = %v, before = %v; an index-only migration "+
-				"changes no column", table, after, beforeColumns[table])
+		var addedColumns []string
+		for _, name := range after {
+			if !slices.Contains(beforeColumns[table], name) {
+				addedColumns = append(addedColumns, name)
+			}
 		}
+		slices.Sort(addedColumns)
+
+		wantColumns := []string(nil)
+		if table == tableAggregates {
+			wantColumns = operational
+		}
+		if !slices.Equal(addedColumns, wantColumns) {
+			t.Errorf("%s gained columns %v, want exactly %v", table, addedColumns, wantColumns)
+		}
+		for _, name := range beforeColumns[table] {
+			if !slices.Contains(after, name) {
+				t.Errorf("%s lost column %s; the chain is additive", table, name)
+			}
+		}
+	}
+
+	// And the backfill says *unknown* rather than *zero* for the row that
+	// already existed. A pre-084 run observed no duration and no status for any
+	// of its records, so the two "nothing was observed" counters must equal its
+	// record count — the invariant that keeps a migrated run internally
+	// consistent.
+	var recordCount, unobserved, unavailable string
+	if err := store.db.QueryRowContext(t.Context(),
+		`SELECT record_count, duration_unobserved, span_status_unavailable
+		   FROM `+tableAggregates+` WHERE run_id = 'run-legacy'`).
+		Scan(&recordCount, &unobserved, &unavailable); err != nil {
+		t.Fatalf("read migrated aggregate: %v", err)
+	}
+	if unobserved != recordCount {
+		t.Errorf("duration_unobserved = %q, want the record count %q; a migrated row "+
+			"must say the durations are unknown, not that they were zero",
+			unobserved, recordCount)
+	}
+	if unavailable != recordCount {
+		t.Errorf("span_status_unavailable = %q, want the record count %q", unavailable, recordCount)
 	}
 }
 

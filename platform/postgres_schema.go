@@ -138,7 +138,9 @@ func postgresSchemaStatements() []string {
 			context_risk_count TEXT COLLATE "C" NOT NULL,
 			context_risk_sum   DOUBLE PRECISION NOT NULL,
 			context_risk_min   DOUBLE PRECISION NOT NULL,
-			context_risk_max   DOUBLE PRECISION NOT NULL
+			context_risk_max   DOUBLE PRECISION NOT NULL,
+
+			` + strings.Join(operationalColumnDDL(`TEXT COLLATE "C"`), ",\n\t\t\t") + `
 		)`,
 
 		`CREATE TABLE ` + tableSnapshots + ` (
@@ -330,8 +332,19 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if version == schemaVersionV4 {
-				return migratePostgresV4ToV5(ctx, tx)
+			// v4, v5 and v6 hold the same tables — v5 added indexes and v6 adds
+			// columns — so the stamped version is the only distinction. Each
+			// older stamp migrates forward one step at a time; anything else
+			// fails closed inside verifyPostgresVersion, newer-than-this-binary
+			// included.
+			switch version {
+			case schemaVersionV4:
+				if err := migratePostgresV4ToV5(ctx, tx); err != nil {
+					return err
+				}
+				return migratePostgresV5ToV6(ctx, tx)
+			case schemaVersionV5:
+				return migratePostgresV5ToV6(ctx, tx)
 			}
 			return verifyPostgresVersion(ctx, tx)
 
@@ -347,7 +360,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV3ToV4(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV4ToV5(ctx, tx)
+			if err := migratePostgresV4ToV5(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV5ToV6(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV2()):
 			if err := migratePostgresV2ToV3(ctx, tx); err != nil {
@@ -356,13 +372,19 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV3ToV4(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV4ToV5(ctx, tx)
+			if err := migratePostgresV4ToV5(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV5ToV6(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV3()):
 			if err := migratePostgresV3ToV4(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV4ToV5(ctx, tx)
+			if err := migratePostgresV4ToV5(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV5ToV6(ctx, tx)
 
 		default:
 			// A recognized subset that is neither version. Nothing here knows
@@ -468,6 +490,36 @@ func migratePostgresV4ToV5(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, statement); err != nil {
 			return mapPostgresError("schema migration", "", err)
 		}
+	}
+	// Literal schemaVersionV5, not SchemaVersion: they were the same number when
+	// this migration was written, and schema 6 made them different. Stamping the
+	// current version here would mark a v5 database fully migrated while skipping
+	// every later step. SQLite's migrateV4ToV5 carries the same correction.
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
+		schemaVersionV5); err != nil {
+		return mapPostgresError("schema version", "", err)
+	}
+	return nil
+}
+
+// migratePostgresV5ToV6 adds the operational aggregate columns, mirroring
+// SQLite's migrateV5ToV6 statement for statement.
+//
+// Task 084. Nine columns on one table, then one backfill that replaces the
+// DEFAULT '0' for rows that already existed — see operationalBackfillStatement
+// for why a pre-084 run must say *unknown* rather than *zero*. Both backends
+// derive their column definitions from aggregateOperationalColumns, so neither
+// can acquire a column the other lacks.
+func migratePostgresV5ToV6(ctx context.Context, tx pgx.Tx) error {
+	for _, column := range operationalColumnDDL(`TEXT COLLATE "C"`) {
+		if _, err := tx.Exec(ctx,
+			`ALTER TABLE `+tableAggregates+` ADD COLUMN `+column); err != nil {
+			return mapPostgresError("schema migration", "", err)
+		}
+	}
+	if _, err := tx.Exec(ctx, operationalBackfillStatement(tableAggregates)); err != nil {
+		return mapPostgresError("schema migration", "", err)
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,

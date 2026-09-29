@@ -270,6 +270,11 @@ type EvaluationAggregate struct {
 	approvals ApprovalCounts
 	policy    PolicySelection
 
+	// Operational evidence, task 084. Bounded and O(1) like everything above:
+	// two fixed-shape summaries, no retained observation.
+	durations DurationSummary
+	statuses  SpanStatusCounts
+
 	identityConfidence MetricSummary
 	anomalyScore       MetricSummary
 	anomalyConfidence  MetricSummary
@@ -350,6 +355,16 @@ func (a EvaluationAggregate) AnomalyScore() MetricSummary       { return a.anoma
 func (a EvaluationAggregate) AnomalyConfidence() MetricSummary  { return a.anomalyConfidence }
 func (a EvaluationAggregate) TrustScore() MetricSummary         { return a.trustScore }
 func (a EvaluationAggregate) ContextRisk() MetricSummary        { return a.contextRisk }
+
+// Durations is the observed span-duration summary, in nanoseconds.
+//
+// Its Sum is total observed span time, not the run's wall-clock latency: spans
+// nest and run concurrently, so the total exceeds the elapsed time of the run.
+// Task 084.
+func (a EvaluationAggregate) Durations() DurationSummary { return a.durations }
+
+// SpanStatuses is how many observations carried each status. Task 084.
+func (a EvaluationAggregate) SpanStatuses() SpanStatusCounts { return a.statuses }
 
 // AddRecord folds one DecisionRecord into the aggregate and returns the
 // result. The receiver is unchanged.
@@ -472,6 +487,14 @@ func (a EvaluationAggregate) AddRecord(record trustvian.DecisionRecord) (Evaluat
 		}
 	}
 
+	// Task 084. Computed before the aggregate advances, like everything else
+	// above, so a malformed duration or an unrecognized status rejects the whole
+	// record rather than leaving the summaries half-folded.
+	durations, statuses, err := observeOperational(a.durations, a.statuses, record)
+	if err != nil {
+		return a, err
+	}
+
 	// Past this point nothing can fail, so the aggregate is safe to advance.
 	// `a` is this function's own copy — the caller's aggregate is untouched
 	// whichever way this returns.
@@ -492,6 +515,9 @@ func (a EvaluationAggregate) AddRecord(record trustvian.DecisionRecord) (Evaluat
 	if record.Timestamp.After(a.lastObservedAt) {
 		a.lastObservedAt = record.Timestamp
 	}
+
+	a.durations = durations
+	a.statuses = statuses
 
 	a.identityConfidence = a.identityConfidence.observe(record.IdentityConfidence)
 	a.anomalyScore = a.anomalyScore.observe(record.AnomalyScore)

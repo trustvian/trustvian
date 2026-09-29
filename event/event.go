@@ -32,6 +32,14 @@ var (
 	// ErrInvalidTimestamp rejects a timestamp Go's standard-library JSON
 	// encoder cannot represent. See Event.Validate.
 	ErrInvalidTimestamp = errors.New("event: timestamp cannot be represented as RFC 3339")
+
+	// ErrInvalidDuration rejects an observed duration beyond MaxDurationNanos.
+	//
+	// Checked on the way *in* rather than only at the telemetry adapters, so a
+	// caller building an Execution directly cannot hand the engine a duration no
+	// span could have produced — which downstream evidence would then have to
+	// carry and an aggregate would have to sum.
+	ErrInvalidDuration = errors.New("event: observed duration exceeds the maximum")
 )
 
 // ActorType identifies the kind of thing that performed an Operation.
@@ -241,6 +249,23 @@ type Context struct {
 	// ApprovalStatus records this specific event's human-approval
 	// state. See ApprovalStatus's own doc comment.
 	ApprovalStatus ApprovalStatus `json:"approval_status,omitempty"`
+
+	// ParentSpanID is the span this one was started from, within the same
+	// TraceID.
+	//
+	// **A trace-scoped reference, not a globally unique identity.** A span id is
+	// only unique within its trace, so this is meaningful only beside TraceID and
+	// must never be used as a standalone key. Task 084.
+	//
+	// Empty whenever SpanLineage is not LineageChild. Nothing checks that the
+	// named parent was ever received: a child may arrive before its parent, and a
+	// parent may be sampled away entirely, and neither makes the child's own
+	// evidence less true.
+	ParentSpanID string `json:"parent_span_id,omitempty"`
+
+	// SpanLineage says whether this observation is a trace root, a child, or
+	// whether nothing established either. See SpanLineage. Task 084.
+	SpanLineage SpanLineage `json:"span_lineage,omitempty"`
 }
 
 // Event is an immutable, atomic observed action: the input to every stage
@@ -253,6 +278,14 @@ type Event struct {
 	Target     Target         `json:"target,omitzero"`
 	Attributes map[string]any `json:"attributes,omitempty"`
 	Context    Context        `json:"context,omitzero"`
+
+	// Execution is operational evidence about this observation: how long it took
+	// and whether the producer reported a failure.
+	//
+	// Deliberately outside Operation, which feeds StableFeatures: duration and
+	// status are properties of one occurrence, never of the behavior, and a
+	// behavior must not re-fingerprint because a call got slower. Task 084.
+	Execution Execution `json:"execution,omitzero"`
 }
 
 // validateTimestamp rejects the timestamps time.Time.MarshalJSON refuses.
@@ -310,6 +343,9 @@ func (e Event) Validate() error {
 		return err
 	}
 	if err := e.Operation.validate(); err != nil {
+		return err
+	}
+	if err := e.Execution.validate(); err != nil {
 		return err
 	}
 	return nil

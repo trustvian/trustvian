@@ -159,13 +159,19 @@ setting a budget can now read what the budget counts.
 
 **The counting correction is not implemented, and this task is not complete.**
 
-A fold needs to know that the HTTP observation is a child of the tool
-observation. Three verified facts make that impossible in this slice:
+**Task 084 has since landed**, so the *input* a fold needs now exists: a record
+carries `parent_span_id` and `span_lineage`. That is not the fold, and this task
+is still not complete — recording a parent id does not decide how two
+observations become one counted change. What remains is listed below and in
+[084 § What 083 still needs](084-correlation-operational-evidence.md#what-083-still-needs).
+
+The three facts that made the fold impossible when this task shipped, one of
+which 084 has now changed:
 
 | Fact | Verified by |
 |---|---|
 | `ParentSpanID` is read **nowhere** in this repository | `grep` over all non-test source; no call site exists |
-| `event.Context` and `DecisionRecord` carry no parent identity, so the counting layer cannot correlate | `processor/layer_test.go`'s `TestParentIsUnreachableAtCountingTime` serializes a record and asserts no parent field appears |
+| ~~`event.Context` and `DecisionRecord` carry no parent identity~~ | **Resolved by 084.** `TestParentIsUnreachableAtCountingTime` is replaced by `TestParentIsCarriedButCountingStillCannotFold`, which asserts the parent is carried *and* that the fold is still absent |
 | The processor is stateless per span, and a child span **completes and exports before its parent** | `processor.go`'s `ConsumeTraces` loop; OpenTelemetry span lifetime |
 
 So the fold's prerequisite is

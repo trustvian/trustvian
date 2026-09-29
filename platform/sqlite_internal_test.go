@@ -282,6 +282,7 @@ func TestFullWidthCountersSurviveTheDatabase(t *testing.T) {
 				approval_unspecified = ?, policy_matched_rule = ?,
 				identity_confidence_count = ?, anomaly_score_count = ?,
 				anomaly_confidence_count = ?, trust_score_count = ?, context_risk_count = ?,
+				duration_unobserved = ?, span_status_unavailable = ?,
 				identity_confidence_sum = 0.5, identity_confidence_min = 0.5, identity_confidence_max = 0.5,
 				anomaly_score_sum = 0.5, anomaly_score_min = 0.5, anomaly_score_max = 0.5,
 				anomaly_confidence_sum = 0.5, anomaly_confidence_min = 0.5, anomaly_confidence_max = 0.5,
@@ -292,6 +293,11 @@ func TestFullWidthCountersSurviveTheDatabase(t *testing.T) {
 				uint64Text(count), uint64Text(count), uint64Text(count),
 				uint64Text(count), uint64Text(count),
 				uint64Text(count), uint64Text(count), uint64Text(count),
+				uint64Text(count), uint64Text(count),
+				// Task 084's buckets also partition the run, so a consistent
+				// aggregate at this count puts every record in the "nothing was
+				// observed" bucket — which is what a run ingested before those
+				// columns existed genuinely looks like.
 				uint64Text(count), uint64Text(count),
 				timeText(time.Unix(0, 0).UTC()), timeText(time.Unix(0, 0).UTC()),
 				string(run.ID()))
@@ -1237,7 +1243,10 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 	// are told apart by the stamped version alone. Growth is therefore
 	// asserted as monotone rather than strict, and the index-only step is
 	// named so a future reader does not read it as an omission.
-	indexOnly := map[int]bool{SchemaVersion: true}
+	// Versions that add no table. v5 added three indexes (task 074) and v6 added
+	// nine columns to one table (task 084); neither creates or drops one, so the
+	// table list is legitimately unchanged across both.
+	indexOnly := map[int]bool{schemaVersionV5: true, SchemaVersion: true}
 	for version := schemaVersionV1 + 1; version <= SchemaVersion; version++ {
 		previous := schemaTablesByVersion[version-1]
 		current := schemaTablesByVersion[version]

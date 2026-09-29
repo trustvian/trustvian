@@ -949,7 +949,7 @@ The **Gate** column says which rows the release actually depends on.
 | 081 | Persist behavior fidelity, so a comparison delta reports whether a behavior was named by telemetry or inferred from transport — a forward-only schema step in both backends, deferred from 075 | Not specified | neither |
 | 082 | [Agent inspection and evaluation depth](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md) — the planning task for the six-step developer workflow: what is implemented, what is missing, and what a decision would cost. Documentation only | Specified | neither |
 | 083 | [Behavioral layer identity and display classification](tasks/v1.0/083-behavioral-layer-classification.md) — an explicit rule for when a tool span and the HTTP request beneath it are one behavior, and a non-identity label so a model call, a tool call and an outbound request are distinguishable without changing what a fingerprint is | **Partially implemented** — classification and rendering shipped; the counting correction deferred to 084 ([ADR 0047](adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md)) | `v1.0` |
-| 084 | Correlation and operational evidence on the record boundary — parent span identity, duration and error status promoted from volatile feature inputs to recorded evidence, additively | Not specified | `v1.0` |
+| 084 | [Correlation and operational evidence on the record boundary](tasks/v1.0/084-correlation-operational-evidence.md) — parent span identity, duration and error status promoted from volatile feature inputs to recorded evidence, additively | **Implemented** — carried, aggregated per run and persisted at schema 6; per-observation history stays 067's | `v1.0` |
 | 085 | Evidence resolution — from a gate check or a behavioral delta to the behaviors and observations behind it, as a resolution query rather than a payload inside a fixed-shape verdict. Authoritative at the control plane, exercised over `/v1` and the CLI, and **delivered before 076 consumes it** | Not specified | `v1.0` (via 17) |
 | 086 | Scenario and input versioning — a scenario-definition digest and an input digest on the evidence, and a prompt *reference* beside `Model`, so a comparison can state whether both sides ran the same thing | Not specified | neither |
 | 087 | Performance and cost evidence — latency and error comparison from 084, token counts from the conventions, and cost only with an explicit pricing version and provenance | Not specified | neither |
@@ -1173,13 +1173,14 @@ Twelve things this diagram says, and one it does not:
   counts are counts of *behaviors*, so re-running its threshold measurement before
   the counting rule is fixed would measure the double count and then write the
   number down.
-- **084 hangs off nothing and blocks three things.** Parent span identity,
-  duration and error status are additive to `event.Context` and `DecisionRecord`,
-  so it can land at any time — and until it does, 076 cannot draw a timeline with
-  timing or errors, 085 cannot link a finding to a slow call, and 087 has no
-  latency to compare. It is kept separate from 083 for the reason 081 was kept
-  separate from 075: an additive change should not wait behind a possible
-  migration.
+- **084 is implemented, and it unblocked an input rather than a feature.** Parent
+  span identity, duration and error status are now on `event.Context`,
+  `DecisionRecord` and the run aggregate. 076 can draw a timeline with timing and
+  errors, 085 can link a finding to a slow call, and 087 has latency to compare —
+  none of which it delivers. It also gave 083's counting fold the parent ids it
+  lacked, and 083 is still open: a fold needs a bounded correlation structure, an
+  out-of-order rule and a decision about what a folded act reports, none of which
+  a parent id supplies.
 - **085 is *specified* alongside 067 and *delivered* before 076**, which are two
   different orderings. Evidence resolution needs a stable, resolvable identity for
   a finding and for an observation, so 067 should choose its retention contract

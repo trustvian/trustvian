@@ -35,7 +35,7 @@ import (
 // schema version. They change for different reasons, and coupling them would
 // force a migration on an unrelated release or hide a real one behind an
 // unchanged number.
-const SchemaVersion = 5
+const SchemaVersion = 6
 
 // Table names. Compile-time constants: these are the only identifiers that
 // ever appear in assembled SQL. Every caller-supplied value is a bound
@@ -245,7 +245,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV3ToV4(ctx); err != nil {
 			return err
 		}
-		return s.migrateV4ToV5(ctx)
+		if err := s.migrateV4ToV5(ctx); err != nil {
+			return err
+		}
+		return s.migrateV5ToV6(ctx)
 
 	case schemaVersionV2:
 		if err := s.requireTables(ctx, schemaVersionV2, schemaTablesV2); err != nil {
@@ -257,7 +260,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV3ToV4(ctx); err != nil {
 			return err
 		}
-		return s.migrateV4ToV5(ctx)
+		if err := s.migrateV4ToV5(ctx); err != nil {
+			return err
+		}
+		return s.migrateV5ToV6(ctx)
 
 	case schemaVersionV3:
 		if err := s.requireTables(ctx, schemaVersionV3, schemaTablesV3); err != nil {
@@ -266,7 +272,19 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV3ToV4(ctx); err != nil {
 			return err
 		}
-		return s.migrateV4ToV5(ctx)
+		if err := s.migrateV4ToV5(ctx); err != nil {
+			return err
+		}
+		return s.migrateV5ToV6(ctx)
+
+	case schemaVersionV5:
+		// v5 and v6 hold the same tables — schema 6 adds columns, not tables —
+		// so the table check cannot tell them apart and the stamped version is
+		// the only distinction, exactly as with v4.
+		if err := s.requireTables(ctx, schemaVersionV5, schemaTablesV4); err != nil {
+			return err
+		}
+		return s.migrateV5ToV6(ctx)
 
 	case schemaVersionV4:
 		// v4 and v5 hold the same tables, so the table check cannot tell them
@@ -276,7 +294,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.requireTables(ctx, schemaVersionV4, schemaTablesV4); err != nil {
 			return err
 		}
-		return s.migrateV4ToV5(ctx)
+		if err := s.migrateV4ToV5(ctx); err != nil {
+			return err
+		}
+		return s.migrateV5ToV6(ctx)
 
 	default:
 		// No path from anything else. Newer is refused too: this binary
@@ -481,7 +502,11 @@ func (s *SQLiteStore) migrateV3ToV4(ctx context.Context) error {
 // that nobody created. A schema change is not a source of platform state.
 func (s *SQLiteStore) migrateV4ToV5(ctx context.Context) error {
 	if err := s.migrateV4ToV5Once(ctx); err != nil {
-		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+		// schemaVersionV5, not SchemaVersion: every step recovers against the
+		// version *it* produces. Checking the current version here would make a
+		// loser of the v4-to-v5 race wait for a winner that has not reached v6
+		// yet, and report the transient conflict as a failed open.
+		if s.migrationRaceRecovered(ctx, schemaVersionV5) {
 			return nil
 		}
 		return err
@@ -501,13 +526,60 @@ func (s *SQLiteStore) migrateV4ToV5Once(ctx context.Context) error {
 			return fmt.Errorf("platform: migrate schema v4 to v5: %w", err)
 		}
 	}
+	// Literal schemaVersionV5, not SchemaVersion. They were the same number when
+	// this migration was written; schema 6 made them different, and a step that
+	// stamped the *current* version would mark a v5 database as fully migrated
+	// while skipping every later step.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
-		SchemaVersion); err != nil {
+		schemaVersionV5); err != nil {
 		return fmt.Errorf("platform: migrate schema v4 to v5: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("platform: migrate schema v4 to v5: %w", err)
+	}
+	return nil
+}
+
+// migrateV5ToV6 adds the operational aggregate columns and stamps version 6.
+//
+// Task 084. Additive: nine columns on one table, no table created, no row
+// deleted, and nothing rewritten except the two "nothing was observed" counters
+// for rows that already existed — see operationalBackfillStatement for why that
+// backfill is the honest resting value rather than the DEFAULT '0'.
+func (s *SQLiteStore) migrateV5ToV6(ctx context.Context) error {
+	if err := s.migrateV5ToV6Once(ctx); err != nil {
+		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateV5ToV6Once(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: migrate schema v5 to v6: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, column := range operationalColumnDDL("TEXT") {
+		if _, err := tx.ExecContext(ctx,
+			`ALTER TABLE `+tableAggregates+` ADD COLUMN `+column); err != nil {
+			return fmt.Errorf("platform: migrate schema v5 to v6: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, operationalBackfillStatement(tableAggregates)); err != nil {
+		return fmt.Errorf("platform: migrate schema v5 to v6: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
+		SchemaVersion); err != nil {
+		return fmt.Errorf("platform: migrate schema v5 to v6: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: migrate schema v5 to v6: %w", err)
 	}
 	return nil
 }
@@ -673,6 +745,10 @@ const schemaVersionV3 = 3
 // same list rather than to two that happen to be equal.
 const schemaVersionV4 = 4
 
+// schemaVersionV5 is the version task 074 left behind, before schema 6 added
+// the operational aggregate columns.
+const schemaVersionV5 = 5
+
 // schemaTablesV1 is what a complete v1 database holds.
 var schemaTablesV1 = []string{
 	tableSchemaVersion, tableProjects, tableAgents, tableCandidates,
@@ -704,6 +780,11 @@ var schemaTablesByVersion = map[int][]string{
 	schemaVersionV2: schemaTablesV2,
 	schemaVersionV3: schemaTablesV3,
 	schemaVersionV4: schemaTablesV4,
+	// v5 and v6 hold the same tables as v4: v5 added indexes and v6 added
+	// columns, and neither creates or drops a table. Mapped explicitly to the
+	// same list rather than left out, because a version with no entry is one a
+	// concurrent-open race cannot recover from.
+	schemaVersionV5: schemaTablesV4,
 	SchemaVersion:   schemaTables,
 }
 
@@ -873,7 +954,9 @@ func schemaStatements() []string {
 			context_risk_count TEXT NOT NULL,
 			context_risk_sum   REAL NOT NULL,
 			context_risk_min   REAL NOT NULL,
-			context_risk_max   REAL NOT NULL
+			context_risk_max   REAL NOT NULL,
+
+			` + strings.Join(operationalColumnDDL("TEXT"), ",\n\t\t\t") + `
 		)`,
 
 		`CREATE TABLE ` + tableSnapshots + ` (
@@ -2229,6 +2312,9 @@ func loadAggregate(ctx context.Context, q rowQuerier, id EvaluationRunID) (Evalu
 	counts := make([]string, 17)
 	metricCounts := make([]string, 5)
 	metricValues := make([]float64, 15)
+	// Schema 6, task 084: five duration counters then four status counters, in
+	// aggregateOperationalColumns order.
+	operational := make([]string, len(aggregateOperationalColumns()))
 
 	dest := []any{
 		&candidateID, &environment, &profile, &recordCount, &firstObserved, &lastObserved,
@@ -2239,6 +2325,9 @@ func loadAggregate(ctx context.Context, q rowQuerier, id EvaluationRunID) (Evalu
 	for i := range 5 {
 		dest = append(dest, &metricCounts[i],
 			&metricValues[i*3], &metricValues[i*3+1], &metricValues[i*3+2])
+	}
+	for i := range operational {
+		dest = append(dest, &operational[i])
 	}
 
 	err := q.queryRow(ctx,
@@ -2254,7 +2343,9 @@ func loadAggregate(ctx context.Context, q rowQuerier, id EvaluationRunID) (Evalu
 		        anomaly_score_count, anomaly_score_sum, anomaly_score_min, anomaly_score_max,
 		        anomaly_confidence_count, anomaly_confidence_sum, anomaly_confidence_min, anomaly_confidence_max,
 		        trust_score_count, trust_score_sum, trust_score_min, trust_score_max,
-		        context_risk_count, context_risk_sum, context_risk_min, context_risk_max
+		        context_risk_count, context_risk_sum, context_risk_min, context_risk_max,
+		        duration_count, duration_unobserved, duration_sum, duration_min, duration_max,
+		        span_status_unavailable, span_status_unset, span_status_ok, span_status_error
 		 FROM `+tableAggregates+` WHERE run_id = ?`), string(id)).Scan(dest...)
 	if q.noRows(err) {
 		return EvaluationAggregate{}, fmt.Errorf("%w: evidence for run %s", ErrStoreNotFound, preview(string(id)))
@@ -2281,6 +2372,13 @@ func loadAggregate(ctx context.Context, q rowQuerier, id EvaluationRunID) (Evalu
 	lastObservedAt, err := parseNullTimeText("last_observed_at", lastObserved)
 	if err != nil {
 		return EvaluationAggregate{}, err
+	}
+
+	op := make([]uint64, len(operational))
+	for i, raw := range operational {
+		if op[i], err = parseUint64Text("operational count", raw); err != nil {
+			return EvaluationAggregate{}, err
+		}
 	}
 
 	metrics := make([]MetricSummary, 5)
@@ -2325,6 +2423,14 @@ func loadAggregate(ctx context.Context, q rowQuerier, id EvaluationRunID) (Evalu
 		anomalyConfidence:  metrics[2],
 		trustScore:         metrics[3],
 		contextRisk:        metrics[4],
+
+		// Schema 6, task 084.
+		durations: DurationSummary{
+			Count: op[0], Unobserved: op[1], Sum: op[2], Min: op[3], Max: op[4],
+		},
+		statuses: SpanStatusCounts{
+			Unavailable: op[5], Unset: op[6], OK: op[7], Error: op[8],
+		},
 	}
 
 	if err := validateRestoredAggregate(aggregate); err != nil {
@@ -2384,6 +2490,12 @@ func validateRestoredAggregate(a EvaluationAggregate) error {
 		if err := validateRestoredMetric(m.name, m.summary, a.recordCount); err != nil {
 			return err
 		}
+	}
+
+	// Task 084's operational summaries, validated on the same shared path as
+	// everything above so both backends get the check.
+	if err := validateRestoredOperational(a.durations, a.statuses, a.recordCount); err != nil {
+		return err
 	}
 
 	if a.recordCount == 0 {
