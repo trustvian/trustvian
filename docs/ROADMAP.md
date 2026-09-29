@@ -955,12 +955,12 @@ The **Gate** column says which rows the release actually depends on.
 | 087 | Performance and cost evidence — latency and error comparison from 084, token counts from the conventions, and cost only with an explicit pricing version and provenance | Not specified | neither |
 | 088 | Review decisions and annotations — an append-only note on a resolved finding, and an acknowledgement recorded **beside** the computed verdict rather than replacing it | Not specified | neither |
 | 089 | **PROPOSED** — optional quality evaluation and prompt experimentation. Contradicts [What Trustvian is not becoming](#what-trustvian-is-not-becoming) as written; needs a product-boundary decision, and closing it is a legitimate outcome | Not specified | none |
-| 091 | [Platform analytics and developer ecosystem](tasks/v1.0/091-platform-analytics-and-developer-ecosystem.md) — the planning task for what becomes valuable once a developer can already observe, retain, explain, compare, gate and review. Documentation only | Specified | none |
-| 092 | Behavioral analytics — a bounded analytical read model over authoritative evidence, answering questions that span more than one run | Not specified | none |
-| 093 | Behavioral alert rules — platform-level conditions over that evidence, reusing the existing generic webhook sink. Notification, never enforcement | Not specified | none |
-| 094 | Public control-plane API contract and typed clients — an OpenAPI description of `/v1`, machine-validated, with generated or contract-tested clients | Not specified | none |
-| 095 | Saved investigations — shareable investigation context that references authoritative evidence rather than copying it | Not specified | none |
 | 090 | Trace-backend interoperability — a documented OTLP fan-out to a trace backend beside Trustvian, with no runtime dependency in either direction. **Off by default; enabling it names the destination and whether content-bearing attributes may be transmitted.** Optional integration ([ADR 0046](adr/0046-trace-backends-are-interoperability-targets-not-dependencies.md)) | Not specified | none |
+| 091 | [Platform analytics and developer ecosystem](tasks/v1.0/091-platform-analytics-and-developer-ecosystem.md) — the planning task for what becomes valuable once the observation, retention, investigation, comparison and decision foundations are in place, with finding review scoped by 088. Documentation only | Specified | none |
+| 092 | Behavioral analytics — a bounded analytical read model over authoritative evidence, answering questions that span more than one run | Not specified | none |
+| 093 | Behavioral alert rules — platform-level conditions over that evidence, reusing existing delivery and security principles. The notification domain boundary is decided by 093, once a second producer exists. Notification, never enforcement | Not specified | none |
+| 094 | Public control-plane API contract and typed clients — an OpenAPI description of `/v1`, machine-validated, with generated or contract-tested clients | Not specified | none |
+| 095 | Saved investigations — a bounded durable metadata and reference surface holding investigation context that references authoritative evidence rather than copying it. Depends on 085 only | Not specified | none |
 
 **Production history and scale:**
 
@@ -1073,7 +1073,9 @@ code — and it is **Proposed**, not Accepted.
 ### Platform analytics and developer ecosystem
 
 **091 is a planning task, 092–095 are what it reserves, and none of them is a
-`v1.0` gate.** The planning is in
+`v1.0` gate.** It is positioned after the current investigation chain, not
+inside it: observe, retain, explain, compare and gate are implemented, while
+finding review (088) and the explorer (076) are scoped rather than shipped. The planning is in
 [task 091](tasks/v1.0/091-platform-analytics-and-developer-ecosystem.md), which
 follows 082's shape: each item carries its developer problem, verified current
 state, scope, non-goals, dependencies, architectural constraints and privacy
@@ -1084,18 +1086,30 @@ explain one finding completely, nothing can answer a question that spans **more
 than one run**:
 
 ```text
-Which agents are introducing new behaviors most often?
-Which targets appeared for the first time this week?
-Which environments are producing gate failures?
-Which agents have incomplete behavioral evidence?
+Which agents observed new behavior most often?            run-native
+Which targets appeared for the first time this week?      run-native
+Which agents have incomplete behavioral evidence?         run-native
+
+Which environments are producing gate failures?           needs a durable
+                                                          comparison context
 ```
+
+**Not every one of those is the same kind of question**, which is 092's central
+constraint. A normal comparison is not persisted — `CompareEvaluations` derives
+the diff, scorecard and gate on demand from stored run evidence, with
+caller-supplied limits — so a historical gate-failure count has no durable
+decision context to be counted from. 092 aggregates stored facts and **never
+manufactures historical comparison facts by pairing arbitrary runs or
+re-evaluating today's gate over yesterday's**. Promotion (066) is durable
+because it records the gate evidence its decision consumed; 078 may add another
+such context.
 
 | Task | What it reserves |
 |---|---|
-| 092 | **Behavioral analytics** — a bounded analytical read model over authoritative evidence. Counts and groupings of new, added and removed behaviors, gate failures, block decisions, critical-risk observations, incomplete evidence and promotion outcomes, by project, agent, environment, profile, decision, risk, layer and time window |
-| 093 | **Behavioral alert rules** — platform-level conditions over that evidence, reusing the existing `alert` package and its generic webhook `Sink`. An alert is a *notification about evidence* and never changes a verdict, a decision or a promotion |
+| 092 | **Behavioral analytics** — a bounded analytical read model over authoritative evidence, split by how durable that evidence is. **Run-native**: agents observed, evaluation runs, new and familiar behaviors, block decisions, critical-risk observations, incomplete evidence, newly observed targets. **Durable workflow**: promotion accepted and rejected, because 066 records the gate evidence its decision consumed. **Comparison and scenario** — added and removed behaviors, gate failures — **only where a durable comparison or scenario context exists**, and otherwise unavailable rather than reconstructed. Dimensions: project, agent, environment, profile, decision, risk, layer, time window |
+| 093 | **Behavioral alert rules** — platform-level conditions over that evidence, reusing the existing delivery and security *principles* and generic webhook mechanics. **Whether the core `alert.Sink` boundary is reused is 093's decision, not 091's**: `Alert` describes one behavioral decision, and a gate or promotion notification has no actor, target or fingerprint to put in it. A notification is *about evidence* and never changes a verdict, a decision or a promotion |
 | 094 | **Public control-plane API contract and typed clients** — an OpenAPI description of `/v1`, machine-validated against the implementation, and generated or contract-tested clients. Python matters most, as *tooling*, never as instrumentation |
-| 095 | **Saved investigations** — bounded, shareable investigation context that references authoritative evidence rather than copying it, and states when referenced evidence has aged out |
+| 095 | **Saved investigations** — a bounded durable metadata and reference surface: shareable investigation context that references authoritative evidence rather than copying it, and states when referenced evidence has aged out. Depends on 085 only; **076 does not depend on it**, and after it ships the Evidence surface may consume it |
 
 **This is behavioral security analytics, not LLM product analytics.** A prompt
 registry, a playground, a dataset platform, LLM-as-a-judge, hallucination,
@@ -1168,7 +1182,8 @@ Conceptually:
        ├──▶ 092  behavioral analytics        [optional enrichment from 087]
        ├──▶ 093  behavioral alert rules      [independent of 092]
        ├──▶ 094  public API contract and typed clients   [independent]
-       └──▶ 095  saved investigations        [needs 085; consumed by 076]
+       └──▶ 095  saved investigations        [needs 085 only]
+                   └──▶ future extension of the Evidence/076 surface
 ```
 
 **075 now precedes 078, and that edge was added by a measurement.** It used to

@@ -14,9 +14,14 @@ which is the model this task follows
 
 ## Objective
 
-Name the capabilities that become valuable **after** Trustvian can already
-observe, retain, explain, compare, gate and review — and sequence them without
-building them.
+Name the capabilities that become valuable once the current observation,
+retention, investigation, comparison and decision foundations are in place —
+with finding review already scoped by 088 — and sequence them without building
+them.
+
+**Implemented today:** observe (074), retain (067), explain (085), compare
+(054), gate (056). **Scoped, not implemented:** review (088), and the explorer
+(076) that presents all of it. This task names nothing as shipped that is not.
 
 082 decomposed one sentence: *inspect what your agent did, understand what
 changed, make release decisions using evidence.* That sentence is now largely
@@ -28,16 +33,22 @@ What that developer still cannot do is ask a question about **more than one
 run**:
 
 ```text
-Which agents are introducing new behaviors most often?
-Which targets appeared for the first time this week?
-Which environments are producing gate failures?
-Where are block decisions increasing?
-Which agents have incomplete behavioral evidence?
+Which agents observed new behavior most often?            run-native
+Which targets appeared for the first time this week?      run-native
+Where are block decisions increasing?                     run-native
+Which agents have incomplete behavioral evidence?         run-native
+
+Which environments are producing gate failures?           needs a durable
+How often is this behavior added by a candidate?          comparison context
 ```
 
-Every one of those is a question about evidence Trustvian already holds,
-authoritatively, and cannot be asked. That gap — plus three adjacent ones this
-task names — is what 092–095 reserve.
+The first four are questions about evidence Trustvian already holds durably, and
+cannot be asked. **The last two are not the same kind of question** — they are
+about comparison decisions, and a normal comparison is not persisted. 092 treats
+that difference as its central constraint rather than a detail; see
+[§ Three evidence classes](#three-evidence-classes-because-they-are-not-equally-durable).
+
+That gap — plus three adjacent ones this task names — is what 092–095 reserve.
 
 ## Why now
 
@@ -89,7 +100,7 @@ Read from source at `71a5f24`, not from an earlier document's description of it.
 | The `/v1` surface is 34 routes | **True**, across projects, agents, candidates, environments, evaluation runs, promotions, evidence resolution and realtime |
 | No machine-readable API description exists | **True.** No OpenAPI or equivalent document is present in the repository |
 | No typed client exists in any language | **True.** The CLI is the only first-party consumer, and it is a hand-written HTTP adapter (ADR 0033) |
-| Core alerting exists and is generic | **True.** `alert` holds `Alert`, a condition evaluator and a webhook sink. `Sink` is exported specifically so code this module does not control can implement it (ADR 0007) |
+| Core alerting exists and is generic | **True.** `alert` holds `Alert`, a condition evaluator and a webhook sink. `Sink` is exported so code this module does not control can implement it (ADR 0007) — but it is **typed on `Alert`**, which describes one behavioral decision and carries `Actor`, `Target`, `FingerprintID` and `AnomalyScore` |
 | No alert rule evaluates platform evidence | **True.** `alert` is strictly downstream of one `Result`/`Decision`. Nothing evaluates a condition over an evaluation run, a gate result, a promotion or retained history |
 | No saved-view or investigation concept exists | **True**, at any layer — no route, no store, no browser state |
 | The WebUI has no analytics surface | **True.** Its assets are the live graph, the inspector, the rail and discovery |
@@ -163,23 +174,79 @@ evidence that exists today; optionally enriched by
 
 **Developer and operator problem.** Trustvian can explain one evaluation
 completely and cannot answer a question that spans several. A team running
-nightly scenario suites across a dozen agents has every fact needed to see that
-one agent has introduced new behavior in six of the last ten runs, and no way to
-see it. The investigation always starts from a run identifier somebody
-remembered.
+nightly suites across a dozen agents has every fact needed to see that one agent
+observed behavior marked new in six of the last ten runs, or that block
+decisions against one environment tripled this week — and no way to see either.
+The investigation always starts from a run identifier somebody remembered.
+
+Both of those examples are deliberately **run-native**: each is a count over
+evidence every run already retains. The questions that sound similar but are not
+— *how many gate failures did this agent have* — are the ones
+[§ Three evidence classes](#three-evidence-classes-because-they-are-not-equally-durable)
+separates out.
 
 **Scope.** A bounded analytical read model over already-authoritative platform
-evidence. Candidate metrics, recorded as direction rather than as an API:
+evidence — and the first thing its specification must settle is **which
+evidence is authoritative for a historical claim at all.**
+
+### Three evidence classes, because they are not equally durable
+
+A count is only a historical fact if the thing it counts was durably recorded.
+Trustvian's evidence divides into three classes on exactly that line, and 092
+must keep them apart.
+
+**A. Run- and observation-native analytics.** Aggregated from authoritative
+retained run and observation evidence, which is durable by construction:
 
 ```text
 agents observed                  evaluation runs
-new behaviors                    added behaviors
-removed behaviors                gate failures
-block decisions                  critical-risk observations
-incomplete evidence              promotion accepted / rejected
-behavior change by environment   behavior change by agent
-newly observed targets
+new and familiar behaviors       block decisions
+critical-risk observations       incomplete evidence
+newly observed targets           behavior, risk and decision counts
 ```
+
+**B. Durable workflow analytics.** Aggregated from authoritative durable
+workflow records. Promotion qualifies because [066](066-promotion-workflow.md)
+records the decision **and the gate evidence it consumed**, field for field, at
+decision time:
+
+```text
+promotion accepted               promotion rejected
+```
+
+**C. Comparison and scenario analytics.** Metrics such as **added behaviors,
+removed behaviors, gate failures and repeatedly added behaviors** are historical
+analytics **only when the underlying comparison or scenario decision is itself
+durably identifiable and its decision-time context was retained.**
+
+### Why C is not available today
+
+**A normal `EvaluationComparison` is not persisted.** `CompareEvaluations`
+derives the `BehaviorDiff`, the `EvaluationScorecard` and the
+`EvaluationGateResult` on demand from stored run evidence, and **its gate limits
+are supplied by the caller on every request.** No table holds a comparison, a
+scorecard or a gate result (§ Current state).
+
+So a claim like *"this agent had 12 gate failures last week"* cannot be
+reconstructed honestly. Nothing recorded which two sides were compared, which
+limits were applied, or which verdict was reached — and a limit is a caller's
+acceptance policy, not a property of the runs. Re-running today's gate over
+yesterday's runs with today's limits produces a number that was never anyone's
+verdict.
+
+```text
+092 must never manufacture historical comparison facts by selecting arbitrary
+run pairs, or by re-evaluating today's gate over historical runs.
+```
+
+**If no durable comparison or scenario context exists, the metric is
+unavailable** — not recomputed and relabelled as historical truth. Two roadmap
+items could supply that context: 066 already does for promotions, and
+[078](078-behavioral-scenario-suites.md) may, if persisted scenario executions
+and their results become durable records. Until one of them covers a metric,
+class C stays unavailable and 092's specification says so.
+
+### Enrichment
 
 After 087 exists, optionally latency, errors, tokens and estimated cost —
 **dependent on 087**, never re-derived here, and absent until it ships.
@@ -196,8 +263,17 @@ analytics. This is **behavioral security analytics**, not LLM product analytics.
 
 **Architectural constraints.**
 
-- Analytics consumes authoritative platform evidence. It is a read model, not a
-  second source of truth, and it recomputes no verdict, count or rate.
+- **Analytics may compute bounded aggregate counts and groupings over
+  authoritative stored evidence.** It must **not** recompute domain facts whose
+  historical meaning depends on a decision-time context — gate verdicts, diff
+  classifications, promotion outcomes, or any other historical decision. The
+  line is:
+
+  ```text
+  aggregate existing facts        allowed
+  reconstruct historical decisions forbidden
+  ```
+
 - **The WebUI must not compute platform-level aggregate truth by crawling raw
   observations.** Every number on an analytics surface comes from an
   authoritative server response — criterion 19's rule that no interface carries
@@ -229,7 +305,7 @@ behavior against a sensitive target, evidence becomes incomplete mid-run — and
 nothing tells anyone until someone opens the WebUI.
 
 **Scope.** Platform-level alert rules over platform evidence, reusing the
-existing alert and notification architecture. Candidate conditions, as
+existing delivery and security *principles*. Candidate conditions, as
 illustration only:
 
 ```text
@@ -248,11 +324,55 @@ repeated high-anomaly observation with mature evidence
 choosing a condition vocabulary before the analytics questions are real is how a
 query language ends up on a wire contract.
 
-**Delivery model.** The generic webhook stays the core integration primitive.
-Service adapters may follow, consuming the existing `Sink` boundary — and
-**core packages must not import a service-specific SDK merely to send an
-alert**, which is the same rule ADR 0007 already applies to why `Sink` is
-exported at all.
+**Delivery model, and the boundary 091 deliberately does not decide.**
+
+The generic webhook stays the preferred generic delivery mechanism, and **core
+packages must not import a service-specific SDK merely to send a notification**.
+Both survive whatever 093 chooses.
+
+What 091 must **not** settle is that platform alert rules reuse `alert.Sink`
+directly. The existing boundary is typed on the core alert:
+
+```go
+type Sink interface {
+    Send(ctx context.Context, a Alert) error
+}
+```
+
+and `alert.Alert` describes **one behavioral decision** — `Severity`,
+`Decision`, `Risk`, `TrustScore`, `AnomalyScore`, `Actor`, `Target`,
+`FingerprintID`, `Reasons`. A platform condition such as *evaluation gate
+failed*, *promotion rejected*, *behavior evidence became incomplete* or
+*candidate introduced N behaviors* has no actor, no target, no fingerprint and
+no anomaly score. **Forcing one into that type would require fabricating those
+values**, which is exactly the kind of invented evidence this repository refuses
+everywhere else.
+
+So the correction is a deferral, not a design:
+
+> 093 should reuse existing notification delivery and security principles, and
+> generic webhook mechanics, **where structurally valid**. The semantic
+> notification domain boundary is decided by 093 itself, once a second real
+> notification producer exists.
+
+That is the repository's *no speculative abstraction* rule applied literally —
+an interface arrives with its second implementation, not before it. A future
+design might conceivably look like this, and **091 does not freeze it**:
+
+```text
+core behavioral Alert  ──┐
+                         ├──▶  shared delivery transport
+platform Notification  ──┘
+```
+
+**093 must explicitly evaluate three questions**, and none of them is answered
+here:
+
+- whether `Alert` and `Sink` remain core-specific;
+- whether a shared lower-level delivery abstraction is justified by the second
+  consumer, or whether two producers with their own sinks is simpler;
+- how a platform notification is represented **without fabricating behavioral
+  fields**.
 
 **The semantic distinction that governs this item.** An alert is a
 **notification about evidence**. It must not change a gate verdict, a policy
@@ -316,8 +436,21 @@ OSS boundary already lists.
 ### 095 — Saved Investigations and Shareable Evidence Views
 
 **Placement:** core product, post-`v1.0`. **Depends on:**
-[085](085-evidence-resolution.md); preferably consumed by
-[076](076-behavioral-evidence-explorer.md). **Gate:** none.
+[085](085-evidence-resolution.md). **Gate:** none.
+
+**The dependency runs one way, and the direction matters** because 076 is a
+`v1.0` item and 095 is not:
+
+```text
+085 ──▶ 076
+085 ──▶ 095
+          └──▶ future extension of the Evidence / 076 surface
+```
+
+**076 does not depend on 095**, and 095 is not a `v1.0` prerequisite. After 095
+ships, the existing Evidence surface 076 builds is the natural browser consumer
+of a saved investigation — an extension of something already shipped, never a
+precondition for shipping it.
 
 **Developer problem.** 085 made a finding resolvable and its URL citable. What a
 developer builds during an investigation — this comparison, this failed check,
@@ -351,10 +484,36 @@ contracts**; the machine truth stays `/v1`.
 prompt or completion content. No editable copy of a gate result. No
 browser-generated finding.
 
-**Privacy.** A saved investigation is a set of references. It stores no
-observation and no content, so it introduces no retention surface — and its
-specification should assert that by test, because "stores only references" is
-exactly the kind of claim that erodes.
+**Privacy, and the surface this honestly introduces.**
+
+A saved investigation stores references, not evidence. But it is **persisted
+state**, and calling it "no retention surface" would be wrong:
+
+> **095 introduces a bounded durable metadata and reference surface.** It does
+> not duplicate observations, findings, gate results, behavioral evidence or
+> content.
+
+What it may persist is a project reference, a comparison reference, a finding
+identity, run references, a behavior reference, an observation reference, active
+filters, a view mode, and its own identity and timestamps. That is new durable
+state with its own lifecycle, and the specification owes it the same answers
+every other persisted thing in this repository has had to give.
+
+**095's specification must settle, and 091 deliberately does not:**
+
+- retention and lifetime;
+- a maximum number of saved investigations;
+- a maximum size for stored references and filter state;
+- deletion semantics;
+- behaviour when referenced evidence has aged out;
+- schema and migration behaviour;
+- ownership and access semantics, once authentication exists.
+
+The honesty rule survives all of them: **if referenced evidence has aged out,
+the saved investigation says so.** It does not reconstruct an approximation and
+present it as the original — which is 067's and 085's rule applied one layer up,
+and the reason a saved investigation stores a reference rather than a copy in
+the first place.
 
 ## Existing tasks that already own adjacent work
 
@@ -456,7 +615,8 @@ post-v1 platform depth
    ├─▶ 094  public API contract and typed clients   [independent]
    │
    └─▶ 095  saved investigations
-             depends on 085; preferably consumed by 076
+             depends on 085 only — 076 does not depend on 095;
+             after 095 ships, the Evidence/076 surface may consume it
 
 015  MCP — richer after 085; keeps its existing identity
 090  trace interoperability — independent and optional
@@ -530,7 +690,7 @@ Every item inherits the retention allowlist and adds no content surface:
 | 092 | counts and groupings over retained fields | none — there is no content column to group by |
 | 093 | notification bodies | an export surface; inherits the allowlist, asserted by test |
 | 094 | a description of existing routes | none — describing a route adds no field |
-| 095 | references to evidence | none — stores navigation, not observations |
+| 095 | **a bounded durable metadata and reference surface** | no content, and no duplicated evidence — but it *is* persisted state, with retention, bounds, deletion and migration left to 095's own specification |
 
 **090's direction is unchanged and this task does not amend it.** Its shape is
 already what the interoperability question needs — Trustvian works with no trace
@@ -595,6 +755,16 @@ Complete when:
 6. No new infrastructure dependency is assumed; 068 and 069 keep their
    conditionals.
 7. 092–095 each state scope and explicit non-goals.
+7a. **092 separates stored facts from historical decisions.** Run-native,
+   durable-workflow and comparison/scenario analytics are distinguished, and no
+   metric is presented as historical when its decision context was never
+   recorded.
+7b. **091 does not decide 093's notification domain boundary.** Reuse is stated
+   as principles and mechanics; whether `alert.Sink` is reused is left to 093,
+   with a second producer in hand.
+7c. **095 is described as a durable metadata and reference surface**, not as
+   introducing none, with its retention questions deferred to its own
+   specification.
 8. The dependency order has no cycles and no artificial edges.
 9. The WebUI product model gains behavioral analytics without becoming generic
    LLM analytics.
@@ -609,8 +779,16 @@ Complete when:
 1. **Whether an analytical read model can be served from PostgreSQL at measured
    volume**, which is 068's conditional and 092's first real question. A page
    existing is not a measurement.
+1a. **Whether a durable comparison or scenario context is worth creating at
+   all**, which decides whether 092's class-C metrics ever become available. 066
+   supplies one for promotions; 078 might supply another through persisted
+   scenario executions. Neither is a reason to persist every comparison, and
+   092 must not assume one arrives.
 2. **What a platform alert rule is expressed in** — 093 must choose a condition
    vocabulary without putting a query language on a wire contract.
+2a. **How a platform notification is represented without fabricating behavioral
+   fields**, and whether a shared delivery abstraction is justified once a
+   second producer exists. 093 decides; 091 deliberately does not.
 3. **Whether the realtime stream belongs inside an OpenAPI description**, which
    094 must decide rather than assume.
 4. **Whether a saved investigation survives a schema change to what it

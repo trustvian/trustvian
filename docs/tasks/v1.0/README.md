@@ -111,7 +111,8 @@ document already citing it. `ROADMAP.md` carries the dependency order.
 
 **091 is a planning task in 082's shape, and reserves nothing for `v1.0`.** It
 names the capabilities that become valuable once a developer can already
-observe, retain, explain, compare, gate and review — aggregate questions across
+observe, retain, explain, compare and gate, with finding review scoped by 088 —
+aggregate questions across
 runs (092), rules that notify when a behavioral condition holds (093), a
 described `/v1` contract with typed clients (094), and saved investigation
 context (095). Reserving those numbers authorizes no implementation, and none of
