@@ -31,6 +31,9 @@ Tasks for the `v1.0` milestone.
 | [078 — Behavioral Scenario Suites](078-behavioral-scenario-suites.md) | Specified; not implemented — sequenced after 075, and its k-of-N thresholds await a measurement that can fail |
 | [079 — CI Integration: A GitHub Action](079-ci-integration-github-action.md) | Specified; not implemented |
 | [080 — Metadata-Only Detection Evaluation](080-metadata-only-detection-evaluation.md) | Specified; not implemented |
+| 081 | Approved in [ROADMAP.md](../../ROADMAP.md#milestone-sequence); **no specification written yet** — deferred from 075 |
+| [082 — Agent Inspection and Evaluation Depth](082-agent-inspection-and-evaluation-depth.md) | Specified. Documentation and planning only; implements nothing |
+| 083–090 | Reserved and scoped by [082](082-agent-inspection-and-evaluation-depth.md); **no specification written yet.** 089 is **PROPOSED** rather than approved |
 
 The numbers 067–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
@@ -200,6 +203,42 @@ one whose results reach a reviewer and whose central claim carries a number:
   its license is MIT and it emits no OpenTelemetry today, so whether its *tool
   calls* are observable without modifying it is the feasibility question that
   comes before any number. Not a feature and published as measured.
+
+**Task 082 is a planning task, in 049's shape**, and 083–090 are what it reserves.
+It decomposes one sentence — *inspect what your agent did, understand what changed
+between versions, and make release decisions using evidence* — into
+dependency-ordered items, and it verified the current state against source rather
+than against this file's previous description of it. Two findings shaped
+everything it planned:
+
+- **Nothing links a finding to its evidence.** A gate FAIL names a count and a
+  behavioral delta names a fingerprint; neither says *which observations*. That is
+  the first thing a developer whose gate just failed wants, and it is why they open
+  a second tool — which the Track B gate rules out in the sentence directly
+  beneath its journey. Item 085 owns the capability at the control plane; item
+  076 navigates it in a browser.
+- **The record boundary is narrower than the adapter.** Trustvian reads the
+  agent-oriented conventions well (075), then carries less across
+  `DecisionRecord` than it read: no parent span identity, no duration, no error
+  status, no token counts — even though both adapters already compute duration and
+  error for `features.Extract`. So a timeline with timing and errors is blocked on
+  the *record*, not on the telemetry. Item 084.
+
+And one item is a correction rather than an addition: **083** exists because a
+measurement found a single behavioral change reported as two added behaviors — an
+instrumented tool call and the HTTP request beneath it are two behavioral
+identities, and no rule says which counts. It has to land before 078's threshold
+measurement is re-run.
+
+Two of the eight touch the `v1.0` gate (083 and 084, because they change what
+criteria 12, 14 and 17 already mean) and **no criterion is added, removed or
+weakened**. One — **089**, optional quality evaluation — is **PROPOSED**: it
+contradicts
+[What Trustvian is not becoming](../../ROADMAP.md#what-trustvian-is-not-becoming)
+as written, nothing depends on it, and closing it is a legitimate outcome. One —
+**090** — is an optional integration recorded in
+[ADR 0046](../../adr/0046-trace-backends-are-interoperability-targets-not-dependencies.md),
+which is **Proposed** rather than Accepted.
 
 Taking a number inside 049–072 for any of them would have renamed a milestone
 whose scope is already decided.

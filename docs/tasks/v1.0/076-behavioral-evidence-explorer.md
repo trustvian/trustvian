@@ -4,7 +4,12 @@ Status: specified; not implemented
 Milestone: `v1.0`
 Depends on: [067](README.md) — event-history capability boundary,
 [074](074-zero-input-live-behavior-webui.md),
-[075](075-ai-semantic-telemetry-normalization.md)
+[075](075-ai-semantic-telemetry-normalization.md),
+and — added by [082](082-agent-inspection-and-evaluation-depth.md) —
+084 (parent span, duration, error status) for the timeline, and
+085 (evidence resolution) for what its views navigate.
+**085 does not depend on this task**; the edge runs one way, and 085 ships
+complete without a browser change
 Blocks: [072](README.md) — the OSS `v1.0` release gate
 
 ## Objective
@@ -269,3 +274,100 @@ and why content is excluded by design rather than by omission.
 4. **Whether 067's retention proves sufficient**, which is the one question
    that could narrow this task's scope and must be re-checked once 067 is
    specified.
+
+## Amendment — task 082
+
+[Task 082](082-agent-inspection-and-evaluation-depth.md) planned inspection and
+evaluation depth against this specification and changed three things about it.
+Nothing above is withdrawn; the sections below are additive, and where one
+touches a non-goal it says so explicitly rather than quietly widening it.
+
+### A trace tree and a timeline are in scope, narrowly
+
+The **Non-goals** section above refuses "no span-tree waterfall **for its own
+sake**, no latency flamegraph, no arbitrary attribute search, no cross-service
+dependency map". That refusal stands, and the qualifier was load-bearing: a tree
+*in service of explaining a behavioral verdict* is a different thing from a
+waterfall as a product surface.
+
+So the scope gains two views, and only two:
+
+- **Trace tree** — the parent/child structure of one invocation's observed
+  actions, so a developer can see that `export_customer` issued the HTTP request
+  beneath it rather than inferring it from ordering.
+- **Timeline** — the same actions in time, carrying each one's duration and
+  error status.
+
+Both are blocked on **084**, which is the point of recording this here. `event.Context`
+carries `TraceID` and `SpanID` and no parent; both adapters bridge span duration
+and status into `Event.Attributes` for `features.Extract` and neither reaches
+`DecisionRecord`. A tree drawn without parent identity would be a tree inferred
+from timing, and a timeline without duration would be a list.
+
+What stays refused, unchanged: a flamegraph, arbitrary attribute search, a
+cross-service dependency map, and any view whose purpose is trace exploration
+rather than explaining a recorded decision.
+
+### Trace order is not reasoning, and the view must not imply it is
+
+A new guardrail, and it belongs here because this is the task that renders
+ordering. A trace tree shows what was observed and in what structure. It does
+**not** show why the model chose anything, and a view that presents span order as
+the agent's reasoning, plan or intent is asserting something the telemetry cannot
+support — the same fabrication [075](075-ai-semantic-telemetry-normalization.md)
+refuses for operation names.
+
+Concretely: no label may read "the agent decided to", "then chose", "because", or
+any causal connective between two spans. Sequence *deviation* may be stated
+because the engine recorded it; sequence *intent* may not, because nothing did.
+`CHAIN` spans are unmapped for a related reason — the convention itself calls
+them glue code between steps — and this view must not reconstruct a plan from
+what it does have.
+
+### Version provenance is shown, and absence is shown as absence
+
+A comparison is only interpretable if a developer can see what the two sides
+*were*. `CandidateMetadata` already carries `Label`, `SourceRef`,
+`ArtifactDigest`, `Model`, `ToolsetDigest` and `ConfigDigest`; [086](082-agent-inspection-and-evaluation-depth.md#086--scenario-and-input-versioning)
+adds a prompt reference and scenario/input digests.
+
+This task renders whichever of them the producer supplied, and renders the rest
+as **not stated** — never as blank, never as a default, and never omitted so that
+a reader assumes the two sides matched. An unknown model is materially different
+from a model both sides shared, and a view that cannot tell them apart is worse
+than one that says nothing.
+
+### What this task still does not own
+
+Unchanged and worth restating, because the amendment adds navigation:
+
+- **085 owns resolution**, this task owns presentation. 085 is the authoritative
+  capability and is complete, tested and shippable over `/v1` and the CLI before
+  this task exists; this task *consumes* it. The views navigate resolved evidence
+  and compute nothing — not which observations produced a finding, not a count,
+  not a rate, not a verdict.
+- **067 owns retention.** If 067 retains no parent span identity, the tree
+  narrows and this specification is amended again — it does not add a store.
+- **No content**, and the amendment adds no field. The tripwire test above
+  extends to the tree, the timeline and the provenance panel.
+
+### Amended acceptance criteria
+
+Additional to the nine above, not replacing them:
+
+9. A trace tree is drawn from recorded parent identity, never inferred from
+   timestamps or ordering; with no parent identity retained, the view says so.
+10. A timeline states duration and error status where the telemetry supplied them
+    and "not available" where it did not — never `0` and never "no errors".
+11. No rendering asserts model reasoning, intent or causality between spans.
+12. Version provenance renders every unsupplied field as explicitly not stated.
+13. **From a gate FAIL, a developer reaches the contributing behavioral
+    identities in one step, and from one of those the retained observations,
+    without typing an identifier.** Moved here from 085, which owns the
+    capability: reaching it *in a browser, in one step* is a property of this
+    view, not of the resolution route.
+14. The browser reaches 085's resolution through the control plane and holds no
+    resolution logic of its own, proven by the existing WebUI boundary test.
+15. Resolved evidence renders identically to what `/v1` returned for the same
+    finding; a test compares the rendering's inputs against the route's response
+    rather than trusting the view.

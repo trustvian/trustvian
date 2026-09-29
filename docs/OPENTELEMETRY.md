@@ -323,6 +323,32 @@ A tool *name* is what the agent did; a tool *argument* is what it said. See
 [Privacy](SECURITY.md) for where that boundary binds and what it does **not**
 claim.
 
+### What is neither read nor refused
+
+Three gaps, recorded here because "not in the table" and "deliberately excluded"
+are different statements and a reader cannot tell them apart from silence. None is
+a content attribute; all three are metadata, and each has an owner.
+
+| Gap | State | Owner |
+|---|---|---|
+| **Token usage** — `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `llm.token_count.prompt`/`.completion`/`.total` | Unconsidered: not read, and not on the refused list above | [087](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#087--performance-and-cost-evidence) |
+| **Parent span identity** | Not carried. `event.Context` has `TraceID` and `SpanID` and no parent, so a trace *tree* cannot be reconstructed from retained evidence | [084](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#084--correlation-and-operational-evidence-on-the-record-boundary) |
+| **Duration and error status beyond the feature path** | Bridged onto `Attributes["duration_ms"]`/`["error"]` for `features.Extract`, and **not** carried on `DecisionRecord` — so the platform, the comparison and every view are unaware of timing or errors | [084](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#084--correlation-and-operational-evidence-on-the-record-boundary) |
+
+The bridging is described under
+[Why latency/error are bridged, not mapped](#mapping-table) and is unchanged: it
+feeds the engine's own signals. What it does not do is reach the evidence boundary,
+which is why a timeline with timing is a planned item rather than a rendering
+decision.
+
+**Four OpenInference span kinds stay unmapped**, as stated above — `CHAIN`,
+`GUARDRAIL`, `EVALUATOR` and `PROMPT`. Two of them are worth revisiting on their
+own merits rather than for completeness: `GUARDRAIL` is behavioral security
+evidence a security product could reasonably read, and `PROMPT` would matter to a
+prompt reference. Both are blocked on the same thing — the convention defines no
+identity attribute for either — and no task claims them today. That absence is
+deliberate, and recording it is what stops it being rediscovered as an oversight.
+
 ### Precedence
 
 ```text
