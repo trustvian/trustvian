@@ -89,6 +89,28 @@ Trustvian and to the trace backend. Trustvian exports no span it did not receive
 and adds no exporter of its own; the second destination receives what the
 producer already emitted.
 
+**That last sentence is provenance, not privacy, and the two must not be
+conflated.** The span the producer emitted may carry prompts, completions, tool
+arguments and tool results — the attributes Trustvian refuses to read or store —
+so forwarding it forwards its content. Trustvian's content-free guarantee is about
+Trustvian's own pipeline and durable state; it says nothing about what a separate
+exporter sends elsewhere. Three requirements follow, and item 090 carries them as
+acceptance criteria:
+
+- the second exporter is **off by default**, in every profile and every generated
+  configuration;
+- enabling it **names its destination and its export mode explicitly**, with no
+  permissive default, because the permissive default would be the content-bearing
+  one;
+- a **metadata-only** mode filters before export and proves it with sentinel
+  content asserted absent *at the destination*, while a **full-span** mode is an
+  explicit operator opt-in whose consequence is documented where it is configured.
+
+**No such filter exists today.** The Collector supports fan-out; Trustvian ships
+no filtering or redaction processor, and nothing in this record should be read as
+claiming otherwise. These are requirements for a future integration, in a record
+whose own status is Proposed.
+
 **No backend is a privileged target.** Any OTLP consumer works the same way,
 because the convention is what is shared rather than the vendor. A backend that
 reads the same OpenInference attributes Trustvian reads
@@ -149,11 +171,15 @@ ADR is why that exclusion is comfortable rather than a gap.
 - Trustvian's own inspection surfaces stay narrow on purpose. When a developer
   wants a waterfall, the answer is a trace backend beside Trustvian — and that is
   a supported configuration rather than an admission.
-- **A fan-out sends the operator's raw spans, content included, to the second
-  backend.** Trustvian neither reads nor stores those attributes, so its own
-  posture is unchanged — but the configuration is not privacy-neutral for the
-  operator, and the documentation must say so rather than presenting fan-out as
-  free. This is why interoperability is an opt-in integration and not a default.
+- **A full-span fan-out sends the operator's spans, content included, to the
+  second backend.** Trustvian neither reads nor stores those attributes, so
+  Trustvian's own posture is unchanged — but the *configuration* is not
+  privacy-neutral for the operator, and no document may present fan-out as free.
+  This is why the integration is off by default, why enabling it names its mode,
+  and why a content-free claim belongs only to a metadata-only mode that filters
+  before export and proves it at the destination. A guarantee about Trustvian's
+  persistence is not a guarantee about a second exporter's traffic, and rule 2
+  keeps the two apart.
 - No source-available code enters this repository. The existing module and
   dependency checks already prove it, so the rule needs no new enforcement.
 - This ADR governs the category rather than one implementation. A second backend

@@ -7,7 +7,9 @@ Depends on: [067](README.md) — event-history capability boundary,
 [075](075-ai-semantic-telemetry-normalization.md),
 and — added by [082](082-agent-inspection-and-evaluation-depth.md) —
 084 (parent span, duration, error status) for the timeline, and
-085 (evidence links) for what its views navigate
+085 (evidence resolution) for what its views navigate.
+**085 does not depend on this task**; the edge runs one way, and 085 ships
+complete without a browser change
 Blocks: [072](README.md) — the OSS `v1.0` release gate
 
 ## Objective
@@ -339,8 +341,11 @@ than one that says nothing.
 
 Unchanged and worth restating, because the amendment adds navigation:
 
-- **085 owns resolution**, this task owns presentation. The views navigate
-  evidence links; they do not compute which observations produced a finding.
+- **085 owns resolution**, this task owns presentation. 085 is the authoritative
+  capability and is complete, tested and shippable over `/v1` and the CLI before
+  this task exists; this task *consumes* it. The views navigate resolved evidence
+  and compute nothing — not which observations produced a finding, not a count,
+  not a rate, not a verdict.
 - **067 owns retention.** If 067 retains no parent span identity, the tree
   narrows and this specification is amended again — it does not add a store.
 - **No content**, and the amendment adds no field. The tripwire test above
@@ -356,3 +361,13 @@ Additional to the nine above, not replacing them:
     and "not available" where it did not — never `0` and never "no errors".
 11. No rendering asserts model reasoning, intent or causality between spans.
 12. Version provenance renders every unsupplied field as explicitly not stated.
+13. **From a gate FAIL, a developer reaches the contributing behavioral
+    identities in one step, and from one of those the retained observations,
+    without typing an identifier.** Moved here from 085, which owns the
+    capability: reaching it *in a browser, in one step* is a property of this
+    view, not of the resolution route.
+14. The browser reaches 085's resolution through the control plane and holds no
+    resolution logic of its own, proven by the existing WebUI boundary test.
+15. Resolved evidence renders identically to what `/v1` returned for the same
+    finding; a test compares the rendering's inputs against the route's response
+    rather than trusting the view.

@@ -950,12 +950,12 @@ The **Gate** column says which rows the release actually depends on.
 | 082 | [Agent inspection and evaluation depth](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md) — the planning task for the six-step developer workflow: what is implemented, what is missing, and what a decision would cost. Documentation only | Specified | neither |
 | 083 | Behavioral layer identity and display classification — an explicit rule for when a tool span and the HTTP request beneath it are one behavior, and a non-identity label so a model call, a tool call and an outbound request are distinguishable without changing what a fingerprint is | Not specified | `v1.0` |
 | 084 | Correlation and operational evidence on the record boundary — parent span identity, duration and error status promoted from volatile feature inputs to recorded evidence, additively | Not specified | `v1.0` |
-| 085 | Evidence links — from a gate check or a behavioral delta to the behaviors and observations behind it, as a resolution query rather than a payload inside a fixed-shape verdict | Not specified | `v1.0` (via 17) |
+| 085 | Evidence resolution — from a gate check or a behavioral delta to the behaviors and observations behind it, as a resolution query rather than a payload inside a fixed-shape verdict. Authoritative at the control plane, exercised over `/v1` and the CLI, and **delivered before 076 consumes it** | Not specified | `v1.0` (via 17) |
 | 086 | Scenario and input versioning — a scenario-definition digest and an input digest on the evidence, and a prompt *reference* beside `Model`, so a comparison can state whether both sides ran the same thing | Not specified | neither |
 | 087 | Performance and cost evidence — latency and error comparison from 084, token counts from the conventions, and cost only with an explicit pricing version and provenance | Not specified | neither |
 | 088 | Review decisions and annotations — an append-only note on a resolved finding, and an acknowledgement recorded **beside** the computed verdict rather than replacing it | Not specified | neither |
 | 089 | **PROPOSED** — optional quality evaluation and prompt experimentation. Contradicts [What Trustvian is not becoming](#what-trustvian-is-not-becoming) as written; needs a product-boundary decision, and closing it is a legitimate outcome | Not specified | none |
-| 090 | Trace-backend interoperability — a documented OTLP fan-out to a trace backend beside Trustvian, with no runtime dependency in either direction. Optional integration ([ADR 0046](adr/0046-trace-backends-are-interoperability-targets-not-dependencies.md)) | Not specified | none |
+| 090 | Trace-backend interoperability — a documented OTLP fan-out to a trace backend beside Trustvian, with no runtime dependency in either direction. **Off by default; enabling it names the destination and whether content-bearing attributes may be transmitted.** Optional integration ([ADR 0046](adr/0046-trace-backends-are-interoperability-targets-not-dependencies.md)) | Not specified | none |
 
 **Production history and scale:**
 
@@ -1004,7 +1004,7 @@ The workflow, with who owns each step:
 4  evaluate behavior, task quality, performance, cost     behavior shipped;
                                                           performance and cost 087;
                                                           quality PROPOSED (089)
-5  investigate a regression through linked evidence       nobody  —  085
+5  investigate a regression through linked evidence       nobody  —  085, then 076
 6  apply release criteria and record the decision         066 (shipped), + 088
 ```
 
@@ -1035,9 +1035,11 @@ Three sequencing consequences, each argued in 082:
 - **084 is separated from 083** rather than bundled with it: 084 is purely
   additive and 083 may require a baseline migration. This is the separation 081
   already demonstrates.
-- **085 is specified alongside 067**, not after it. 076 records the mistake that
-  avoids: a presentation task whose storage layer retained too little has to
-  amend itself, and linking has sharper retention needs than presentation.
+- **085 is specified alongside 067 and delivered before 076.** 076 records the
+  mistake the first half avoids: a presentation task whose storage layer retained
+  too little has to amend itself. The second half is a correction — the
+  capability is authoritative at the control plane and ships over `/v1` and the
+  CLI without a browser, and 076 consumes it, so the edge runs one way.
 
 **This section adds nothing to the `v1.0` gate.** 083 and 084 are gate items
 because they change what criteria 12, 14 and 17 already mean; 085 rides on
@@ -1053,7 +1055,12 @@ a planning task does not get to reverse an accepted boundary quietly. See
 
 **090 is an optional integration, not a dependency.** A documented OTLP fan-out
 puts a trace backend beside Trustvian for the waterfall Trustvian deliberately
-does not render.
+does not render. It is **off by default**, and enabling it names the destination
+and the export mode: a `metadata-only` mode must filter before export and prove it
+with sentinel content asserted absent at the destination, while a `full-span` mode
+forwards what the producer emitted — prompts and tool arguments included — and is
+an explicit opt-in. *Trustvian exports no span it did not receive* is provenance,
+not a privacy guarantee, and no filter of this kind exists today.
 [ADR 0046](adr/0046-trace-backends-are-interoperability-targets-not-dependencies.md)
 records why that is interoperability rather than a dependency or a source of
 code — and it is **Proposed**, not Accepted.
@@ -1088,10 +1095,11 @@ Conceptually:
        └──▶ 087  performance and cost evidence
 
 067  event history
-       ├──▶ 076  behavioral evidence explorer   [needs 084 for the timeline]
-       │
-       └──▶ 085  evidence links   [needs 084; specify alongside 067]
-                   │
+       │   specify 085's retention needs alongside 067, not after it
+       └──▶ 085  evidence resolution   [needs 084]
+                   │   control plane + /v1 + CLI; ships without a browser
+                   ├──▶ 076  behavioral evidence explorer
+                   │          navigates 085; needs 084 for the timeline
                    └──▶ 088  review decisions and annotations
                               [needs 066; wants 070 for authorship]
 
@@ -1167,11 +1175,16 @@ Twelve things this diagram says, and one it does not:
   latency to compare. It is kept separate from 083 for the reason 081 was kept
   separate from 075: an additive change should not wait behind a possible
   migration.
-- **085 is drawn beside 067 rather than after it**, the one placement here chosen
-  against the obvious reading. Evidence linking needs a stable, resolvable
-  identity for a finding and for an observation, and 067 should choose its
-  retention contract knowing that — instead of 076-style amendment afterwards,
-  which 076 itself records as the thing to avoid.
+- **085 is *specified* alongside 067 and *delivered* before 076**, which are two
+  different orderings. Evidence resolution needs a stable, resolvable identity for
+  a finding and for an observation, so 067 should choose its retention contract
+  knowing that — instead of 076-style amendment afterwards, which 076 itself
+  records as the thing to avoid. And the capability is authoritative at the
+  control plane: it owns its `/v1` route and CLI access and ships validated with no
+  browser change, after which 076 navigates it and 079 renders a link to it. **The
+  edge is one-way** — an earlier draft had 076 and 085 depending on each other,
+  which is a cycle, and the invariant survives the split unchanged: the control
+  plane owns resolution and no adapter recomputes a finding or a verdict.
 - **089 is absent from the diagram deliberately.** A PROPOSED item has no position
   in a dependency order until the decision that would create it is made, and
   nothing above waits for it.
@@ -1475,7 +1488,7 @@ Evidence      sessions · traces · behavioral sequence
               trace tree · timeline · errors · duration            (076 over 084)
 
 Evaluations   runs · reference and candidate · diff · scorecard · gate
-              every finding links to the observations behind it        (085)
+              every finding links to the observations behind it  (076 over 085)
               which prompt, model, toolset, config and inputs          (086)
               latency · errors · tokens · cost, where telemetry says   (087)
 
@@ -1572,7 +1585,9 @@ Collector fan-out it needs already exists and is already deliberate. A developer
 who wants a waterfall runs a trace backend beside Trustvian, and
 [ADR 0046](adr/0046-trace-backends-are-interoperability-targets-not-dependencies.md)
 records why that is interoperability rather than a dependency or a source of code.
-That ADR is **Proposed**, not Accepted.
+That ADR is **Proposed**, not Accepted, and it is explicit that forwarding a span
+forwards whatever content the producer put in it — so the integration is off by
+default and its export mode is named when it is enabled.
 
 ### Trustvian MCP
 

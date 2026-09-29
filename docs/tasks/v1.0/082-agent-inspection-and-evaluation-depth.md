@@ -346,8 +346,18 @@ ADR 0030 and task 050 both drew. The specification must say so explicitly.
 
 ### 085 — Evidence links: from a finding to the observations behind it
 
-**Placement:** core product. **Depends on:** 067 (durable history), 084,
-076 for presentation. **Gate:** `v1.0` — criterion 17's "and explained".
+**Placement:** core product. **Depends on:** 067 (durable history) and 084 —
+nothing else. **Consumed by** 076 (browser navigation), 079 (pull-request
+comment) and 088 (review decisions), none of which it depends on.
+**Gate:** `v1.0` — criterion 17's "and explained".
+
+**085 completes without 076, and the dependency runs one way.** The capability is
+authoritative at the control plane and is validated over `/v1` and the CLI; a
+browser is one consumer among three, and navigating it is 076's acceptance
+criterion rather than this item's. Stating that explicitly matters because an
+earlier draft of this task had 076 depending on 085 for navigation *and* 085
+depending on 076 for presentation — a cycle, which would have left neither
+completable.
 
 **Developer problem.** The gate failed. A developer sees:
 
@@ -380,8 +390,8 @@ observations made this count 3".
   paginated in the repository's one pagination shape.
 - **Stable finding identity**, so a link can be cited in a pull-request comment
   or a review decision and still resolve later.
-- The same capability reachable from the CLI, the WebUI and a CI comment,
-  computed once in the control plane.
+- A **bounded `/v1` read route** for it, and CLI access to that route, so the
+  capability is exercisable and shippable on its own.
 
 **Non-goals.** **No change to the fixed shape of a gate result or a scorecard.**
 This is the central design constraint: ADR 0028 and ADR 0029 chose closed,
@@ -391,6 +401,11 @@ carried inside a verdict. No re-derivation: the resolver reads what was
 recorded and never recomputes a count, a rate or a verdict — a corrected gate
 may legitimately answer differently from the same evidence, which is why 066
 snapshots rather than re-derives. No storage of its own. No content.
+
+**No user interface.** This item ships a capability and its `/v1` route, not a
+view. 076 owns browser navigation over it, 079 owns rendering a link in a
+pull-request comment, and 088 owns recording a decision against a resolved
+finding. None of those is in this item's scope or its acceptance criteria.
 
 **Dependencies and architectural impact.** Blocked on 067: there is nothing to
 link *to* until per-record or per-behavior history is durable, and this item
@@ -402,13 +417,14 @@ by three adapters, and it puts no evaluation logic in any of them.
 
 **Acceptance criteria.**
 
-1. From a gate FAIL, a developer reaches the contributing behavioral identities
-   in one step, and from one of those the retained observations, without typing
-   an identifier.
-2. Every number a link resolves to equals the number the recorded evidence
+1. Given a comparison and a named gate check that FAILed, the control plane
+   returns the behavioral identities that contributed to it; given a behavioral
+   identity, it returns the retained observations for it. Verified over `/v1` and
+   through the CLI, with no browser involved.
+2. Every number a resolution returns equals the number the recorded evidence
    holds; nothing is recomputed, proven by test.
-3. A finding identity cited in a comment resolves to the same finding on a later
-   read, or reports explicitly that the evidence is gone.
+3. A finding identity resolves to the same finding on a later read, or reports
+   explicitly that the evidence is gone.
 4. Every resolution is bounded, paginated in the established shape, and states
    saturation rather than truncating silently.
 5. No prompt, completion, argument, result, document, body or arbitrary
@@ -416,15 +432,22 @@ by three adapters, and it puts no evaluation logic in any of them.
 6. A run whose history has aged out resolves to an explicit empty state, not an
    error and not a fabricated summary.
 7. Identical results on both persistence backends.
-8. CLI, WebUI and CI reach identical results through the control plane; no
-   adapter holds resolution logic.
+8. **Resolution logic exists only in the control plane.** The CLI reaches it over
+   `/v1` and holds none, proven by the architecture test that already forbids
+   evaluation logic in an adapter. Later consumers inherit the same rule as their
+   own criterion; this item does not wait for them.
+9. **This item is complete with no browser change.** A test exercises the whole
+   path — gate FAIL to contributing behaviors to observations — without the
+   WebUI, so nothing here depends on 076.
 
-**Validation.** A regression fixture reproduces the demo's export-customer
-change end to end and asserts the FAIL resolves to exactly the behaviors and
-observations that caused it. A privacy tripwire injects distinctive content
-values upstream and asserts they appear in no resolution payload. Pagination is
-tested for duplicates and omissions under concurrent writes. An aged-out run is
-tested explicitly.
+**Validation.** At the `/v1` and CLI level, deliberately — **no UI test is
+required for this item to be complete.** A regression fixture reproduces the
+demo's export-customer change end to end and asserts the FAIL resolves to exactly
+the behaviors and observations that caused it. A privacy tripwire injects
+distinctive content values upstream and asserts they appear in no resolution
+payload. Pagination is tested for duplicates and omissions under concurrent
+writes. An aged-out run is tested explicitly. The architecture test covering
+adapter boundaries is extended to the new route.
 
 **Privacy and risks.** This is the item with the largest privacy surface in the
 list, because its whole purpose is to make evidence reachable, and every
@@ -435,10 +458,11 @@ correctness trap — a resolver that recomputes instead of reading would let the
 displayed explanation of a historical FAIL drift from the FAIL itself, which is
 precisely the failure 066 was designed to prevent.
 
-**Relationship to existing tasks.** Needs 067. Presented by 076, which should
-name this capability as the thing its views navigate. Consumed by 079's pull
-request comment, which renders and computes nothing. Recorded against by 088's
-review decisions.
+**Relationship to existing tasks.** Needs 067 and 084, and nothing else.
+**Consumed by** 076, whose views navigate it; by 079's pull-request comment, which
+renders and computes nothing; and by 088's review decisions, which are recorded
+against a resolved finding. Every one of those edges points *into* this item, so
+it can be built, tested and shipped before any of them exists.
 
 ### 086 — Scenario and input versioning
 
@@ -758,11 +782,39 @@ adapted to the other; **no backend is privileged**, and choosing a different one
 costs a paragraph. Documentation of what each side answers, so a reader does not
 expect Trustvian to render a waterfall or a trace backend to produce a gate.
 
+**Export policy is part of the scope, not a footnote.** A fan-out forwards spans,
+and the spans a producer emits may carry prompts, completions, tool arguments and
+tool results — the attributes Trustvian itself refuses to read or store. So the
+integration specifies, as requirements:
+
+- **Disabled by default.** No profile, template or generated Collector
+  configuration enables a second exporter unless an operator turns it on.
+- **Enabling it names the destination explicitly**, and names the export mode.
+  There is no inferred destination and no default-on mode.
+- **Two modes, and the difference is stated where it is configured.** A
+  `metadata-only` mode requires a filtering step *before* export, so
+  content-bearing attributes never reach the destination. A `full-span` mode
+  forwards what the producer emitted, content included, and is an explicit
+  operator opt-in whose privacy consequence is documented at the point of
+  configuration rather than in a separate document.
+- **Neither mode changes Trustvian's own persistence.** What Trustvian reads,
+  fingerprints, records and stores is unaffected by either — that guarantee is
+  about Trustvian's pipeline and durable state, and it is not a guarantee about
+  what a separate exporter sends somewhere else.
+
+**Nothing above exists today.** The Collector supports fan-out; **no Trustvian
+filtering, redaction or metadata-only export processor exists**, and this item
+must not be described as though one does. If `metadata-only` is offered, the
+filter is part of this item's implementation and its tests; if it is not offered,
+the item ships `full-span` only and says so plainly.
+
 **Non-goals.** **No runtime dependency**, nothing bundled, no vendored code, no
 client library, no required configuration, and no behavioral capability that
 degrades when the trace backend is absent. No imported source: the mature backends
 in this category are commonly source-available rather than OSI open source, and
-this repository is Apache-2.0. No claim of feature parity in either direction. See
+this repository is Apache-2.0. No claim of feature parity in either direction.
+**No claim that forwarding previously-received spans is inherently content-free**
+— it is not; the span is whatever the producer emitted. See
 [ADR 0046](../../adr/0046-trace-backends-are-interoperability-targets-not-dependencies.md).
 
 **Dependencies and architectural impact.** None on the engine or the platform. It
@@ -780,20 +832,59 @@ cheap, and nothing depends on it.
    repository, proven by the existing module and dependency checks.
 4. The documentation states which question each side answers and claims parity
    with neither.
-5. No content leaves Trustvian's boundary as a result of the integration:
-   Trustvian exports no span it did not receive, and the second exporter receives
-   what the producer already emitted.
+5. **Off by default.** A default install, a default reference-deployment profile
+   and a `trustvian dev`-generated configuration each produce **no** second
+   exporter, proven by a test asserting the generated configuration declares none.
+6. **Enabling it requires an explicit destination and an explicit mode.** A
+   configuration naming a destination without a mode, or a mode without a
+   destination, is refused with an error naming the missing field — not
+   defaulted, since the permissive default would be the content-bearing one.
+7. **Trustvian's own persistence is unchanged in every mode**, proven by a test
+   that runs the same workload with the exporter off, in `metadata-only` and in
+   `full-span`, and asserts byte-identical Trustvian evidence in all three.
+8. **If `metadata-only` ships, filtering happens before export and is proven by
+   sentinel test.** Distinctive sentinel values are planted in every content
+   attribute `internal/semconv/content.go` enumerates, and a test asserts none
+   reaches the destination — asserted at the destination, not at the filter's
+   own output, and verified to catch a deliberately disabled filter.
+9. **If `full-span` ships, it is opt-in and its consequence is documented where
+   it is configured.** The documentation states that the destination receives
+   prompts, completions, tool arguments and tool results when the producer emits
+   them, and a test asserts the configuration surface carries that statement.
+10. **No filtering or redaction is claimed that does not exist.** Every privacy
+    statement this item makes names either a shipped filter with a passing
+    sentinel test, or a future requirement marked as one.
 
 **Validation.** The reference deployment's existing smoke test is extended to the
-new profile. A test asserts the absence of the second exporter is inert. The
-module and boundary scripts already in CI cover the dependency criterion.
+new profile. A test asserts the absence of the second exporter is inert, and a
+second asserts the default configuration has none. The module and boundary scripts
+already in CI cover the dependency criterion. The sentinel suite for
+`metadata-only`, if that mode ships, follows task 075's pattern: a planted leak
+must fail the test, or the test proves nothing.
 
-**Privacy and risks.** The honest risk statement is the important part here: a
-fan-out sends the operator's spans — **including the prompts, completions and
-tool arguments Trustvian itself refuses** — to the second backend. That is the
-operator's decision about their own telemetry and not a change in Trustvian's
-posture, but the documentation must say it plainly rather than presenting
-fan-out as free. It is also the reason this is an integration and not a default.
+**Privacy and risks.** Stated precisely, because an earlier draft of this item got
+it wrong in the dangerous direction — it claimed "no content leaves Trustvian's
+boundary as a result of the integration" while its own risk paragraph said raw
+spans including prompts and tool arguments reach the second backend. Both cannot
+be true. The accurate statement separates two different guarantees:
+
+| Guarantee | Holds | Scope |
+|---|---|---|
+| Trustvian does not read, fingerprint, record, publish or persist content | **Yes, today** | Trustvian's pipeline and durable state (task 075, ADR 0030) |
+| A second exporter sends no content to another backend | **Only in a `metadata-only` mode that filters before export** | The exporter, which is not Trustvian's pipeline |
+
+"Trustvian exports no span it did not receive" is a true statement about
+provenance and **not** a privacy guarantee: the span is whatever the producer
+emitted, so forwarding it forwards its content. A fan-out is therefore not
+privacy-neutral for the operator, which is precisely why it is off by default, why
+enabling it names its mode, and why the content-bearing mode is an explicit opt-in
+rather than the path of least resistance.
+
+Two further risks. **A `metadata-only` mode is a promise that has to be kept at
+the destination**, not at the filter — an attribute the filter's allowlist missed
+is a leak, so the test asserts at the receiving end. And **a filter is a security
+control that can silently stop working**; the sentinel suite must be verified to
+fail when the filter is disabled, or it is decoration.
 
 ## Delivery order
 
@@ -816,8 +907,10 @@ an existing criterion means.
   phase B — inspection and evidence-linked comparison
     067  event-history capability boundary   [pre-existing, unspecified]
             │   specify 085's needs alongside it, not after it
-            ├──▶ 076  evidence explorer  (extended: tree, timeline, provenance)
-            └──▶ 085  evidence links: findings ─▶ observations
+            └──▶ 085  evidence resolution: findings ─▶ observations
+                      │     control plane + /v1 + CLI; ships without a browser
+                      └──▶ 076  evidence explorer  (extended: tree, timeline,
+                                     provenance, navigation over 085)
 
   phase C — repeatable experiments
     078  behavioral scenario suites   [pre-existing, specified]
@@ -837,6 +930,17 @@ an existing criterion means.
     090  trace-backend interoperability   (documentation + deployment profile)
 ```
 
+**085 precedes 076, and the edge runs one way.** An earlier draft of this task
+had 076 depending on 085 for navigation and 085 depending on 076 for
+presentation, which is a cycle: neither could be completed first. The resolution
+capability is authoritative at the control plane, so it owns its own `/v1` route,
+its CLI access and its validation, and it is shippable before any view consumes
+it. Browser navigation — *reaching a finding's observations in one step, in a
+browser, without typing an identifier* — is 076's acceptance criterion, and the
+pull-request rendering is 079's. The invariant survives the split unchanged: the
+control plane owns resolution, and no adapter recomputes a finding, a count or a
+verdict.
+
 Three deviations from the order the brief suggested, each with its reason:
 
 **083 comes before everything, including the inspection work.** The brief put
@@ -855,11 +959,15 @@ a baseline migration. Task 081 was separated from 075 for exactly this reason, a
 the same separation applies — an additive change should not wait on a migration
 decision.
 
-**085 is specified alongside 067, not after it.** 076 documents the mistake this
-avoids: a presentation task that discovers its storage layer retained too little
-has to amend itself. Evidence linking has sharper retention requirements than
-presentation does — it needs a stable, resolvable identity for a finding and for
-an observation — and 067 should choose its contract knowing them.
+**085 is *specified* alongside 067 and *delivered* before 076.** Two separate
+orderings, and conflating them is what produced the cycle this task corrected.
+Specification: 076 documents the mistake to avoid — a presentation task that
+discovers its storage layer retained too little has to amend itself — and
+evidence resolution has sharper retention requirements than presentation does,
+since it needs a stable, resolvable identity for a finding and for an observation,
+so 067 should choose its contract knowing them. Delivery: 085 is authoritative,
+owns its `/v1` route and CLI access, and ships validated without a browser; 076
+then consumes it. The edge is one-way.
 
 And one thing the diagram deliberately does not say: **it does not extend the
 `v1.0` gate.** Of the eight items, two are gate items (083, 084) because they
@@ -895,10 +1003,14 @@ capability partially.** A quality evaluation that silently degrades to scoring
 nothing, or a replay that silently replays without inputs, is worse than its
 absence.
 
-One consequence worth stating: item 090 fans the operator's raw spans out to a
-second backend, content included. That is not a Trustvian content capability —
-Trustvian neither reads nor stores those attributes — but it is a real disclosure
-obligation, which is why 090's documentation criterion names it.
+One consequence worth stating: item 090's **full-span** mode fans the operator's
+spans out to a second backend, content included. That is not a Trustvian content
+capability — Trustvian neither reads nor stores those attributes — but it is a
+real disclosure obligation, which is why the mode is off by default, why enabling
+it names the destination and the mode explicitly, and why only a
+**metadata-only** mode that filters before export may claim to send no content.
+No such filter exists today; it is one of 090's requirements, not a capability to
+describe as present.
 
 ## Storage, scale and completeness
 
@@ -1032,7 +1144,7 @@ is that each item's specification carries, before implementation:
 - an assertion that no new field reaches `StableFeatures`, a fingerprint or a
   baseline key (083, 084, 086, 087);
 - an assertion that no adapter computes a verdict, count or score the control
-  plane owns (085, 088).
+  plane owns (085, 088), which 076 and 079 inherit as consumers.
 
 ## Documentation
 

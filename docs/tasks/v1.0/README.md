@@ -215,7 +215,8 @@ everything it planned:
   behavioral delta names a fingerprint; neither says *which observations*. That is
   the first thing a developer whose gate just failed wants, and it is why they open
   a second tool — which the Track B gate rules out in the sentence directly
-  beneath its journey. Item 085.
+  beneath its journey. Item 085 owns the capability at the control plane; item
+  076 navigates it in a browser.
 - **The record boundary is narrower than the adapter.** Trustvian reads the
   agent-oriented conventions well (075), then carries less across
   `DecisionRecord` than it read: no parent span identity, no duration, no error
