@@ -55,6 +55,10 @@ func TestSetAttributesFromResult(t *testing.T) {
 		// nothing recorded a fidelity on it and it gets "transport" — the honest
 		// answer rather than a default, since nothing proved a semantic identity.
 		{"trustvian.fidelity", string(event.FidelityTransport)},
+		// Task 083. Same situation, opposite answer: this Result was never
+		// classified, so the layer is empty rather than "transport". See
+		// internal/otel's paired check for why the two indicators differ here.
+		{"trustvian.behavior.layer", string(event.LayerUnspecified)},
 	}
 	for _, c := range checks {
 		v, ok := attrs.Get(c.key)

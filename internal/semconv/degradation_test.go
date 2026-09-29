@@ -153,6 +153,7 @@ func TestMalformedAttributesDegradeToTransport(t *testing.T) {
 				OperationCategory: "tool",
 				OperationName:     "export_customer",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerTool,
 			},
 		},
 	}
@@ -279,6 +280,7 @@ func TestContentAlongsideIdentityIsIgnored(t *testing.T) {
 		OperationCategory: "tool",
 		OperationName:     "export_customer",
 		Fidelity:          semconv.FidelitySemantic,
+		Layer:             semconv.LayerTool,
 	}
 	if got != expected {
 		t.Fatalf("Normalize()\n got  %+v\n want %+v", got, expected)

@@ -33,7 +33,8 @@ Tasks for the `v1.0` milestone.
 | [080 — Metadata-Only Detection Evaluation](080-metadata-only-detection-evaluation.md) | Specified; not implemented |
 | 081 | Approved in [ROADMAP.md](../../ROADMAP.md#milestone-sequence); **no specification written yet** — deferred from 075 |
 | [082 — Agent Inspection and Evaluation Depth](082-agent-inspection-and-evaluation-depth.md) | Specified. Documentation and planning only; implements nothing |
-| 083–090 | Reserved and scoped by [082](082-agent-inspection-and-evaluation-depth.md); **no specification written yet.** 089 is **PROPOSED** rather than approved |
+| [083 — Behavioral Layer Identity and Display Classification](083-behavioral-layer-classification.md) | Specified; **partially implemented** — classification and rendering shipped, the counting correction deferred to 084 |
+| 084–090 | Reserved and scoped by [082](082-agent-inspection-and-evaluation-depth.md); **no specification written yet.** 089 is **PROPOSED** rather than approved |
 
 The numbers 067–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
@@ -239,6 +240,25 @@ as written, nothing depends on it, and closing it is a legitimate outcome. One �
 **090** — is an optional integration recorded in
 [ADR 0046](../../adr/0046-trace-backends-are-interoperability-targets-not-dependencies.md),
 which is **Proposed** rather than Accepted.
+
+**Task 083 is partially implemented, and says so.** It resolved the two design
+questions 082 left open — behavioral identity stays per observation, and there is
+no `model` operation category — and shipped the half that follows from them: a
+non-identity `Layer` classification carried where fidelity is carried, and honest
+rendering of model calls, tool calls, retrievals and transport operations — the
+last of which states no direction, because a transport classification covers
+inbound and outbound spans alike.
+
+**The counting correction is deferred, and the task stays open.** Folding a tool
+observation and the request beneath it into one counted change needs to know they
+are parent and child, and no parent identity reaches the evidence boundary —
+verified, not assumed, by a test that fails when it changes. Identity was
+deliberately *not* folded to work around it: folding drops the destination from
+behavioral identity, so a tool that started posting to another host would stop
+changing the behavioral surface. Five of seven acceptance criteria are met, the
+sixth is the task's point, and
+[ADR 0047](../../adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md)
+records where the fix belongs and what it must not do.
 
 Taking a number inside 049–072 for any of them would have renamed a milestone
 whose scope is already decided.

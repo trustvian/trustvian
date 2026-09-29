@@ -32,6 +32,14 @@ const (
 	// inbound override, because a producer able to claim semantic fidelity would
 	// defeat the guarantee the indicator makes.
 	attrFidelity = event.AttrFidelity
+
+	// attrLayer says which instrumentation layer supplied the identity — a model
+	// call, a named tool call, a retrieval, or the transport. Task 083.
+	//
+	// Outbound only, like attrFidelity, and for the same reason: a producer able
+	// to claim `tool` would defeat the guarantee that a layer reflects what its
+	// telemetry established. It is never behavioral identity; see ADR 0047.
+	attrLayer = event.AttrLayer
 )
 
 // SetAttributesFromResult writes the outbound trustvian.* attributes
@@ -57,6 +65,7 @@ func SetAttributesFromResult(attrs pcommon.Map, result trustvian.Result) {
 	attrs.PutStr(attrDecision, string(result.Decision))
 	attrs.PutStr(attrFingerprintID, result.Fingerprint.ID)
 	attrs.PutStr(attrFidelity, string(fidelityOf(result)))
+	attrs.PutStr(attrLayer, string(layerOf(result)))
 }
 
 // fidelityOf reads back what the inbound mapping recorded on the Event.
@@ -69,4 +78,31 @@ func SetAttributesFromResult(attrs pcommon.Map, result trustvian.Result) {
 func fidelityOf(result trustvian.Result) event.Fidelity {
 	raw, _ := result.Event.Attributes[attrFidelity].(string)
 	return event.Fidelity(raw).OrTransport()
+}
+
+// layerOf reads back the layer the inbound mapping recorded.
+//
+// No transport fallback, unlike fidelityOf, and the asymmetry is deliberate: a
+// Result whose Event never passed through EventFromSpan was never classified, and
+// reporting it as `transport` would assert that its identity came from a protocol
+// when nothing established that. It stays empty, which consumers render as "not
+// classified".
+func layerOf(result trustvian.Result) event.Layer {
+	raw, _ := result.Event.Attributes[attrLayer].(string)
+	layer := event.Layer(raw)
+	if !layer.Valid() {
+		return event.LayerUnspecified
+	}
+	return layer
+}
+
+// layerFor decides the layer for one normalization result.
+//
+// Gated on Matched() so it cannot claim a layer for a row that did not fire — the
+// same guard fidelity uses, applied once rather than per branch.
+func layerFor(n event.Normalization) event.Layer {
+	if n.Matched() && n.Layer.Valid() {
+		return n.Layer
+	}
+	return event.LayerTransport
 }

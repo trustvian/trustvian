@@ -826,11 +826,24 @@ func (h *Handler) ingestRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The behavior layer is a closed vocabulary Trustvian owns too, and is
+	// refused the same way for the same reason. Absent is legitimate and distinct:
+	// it means "not classified", which is what a producer built before task 083
+	// sends and what an Event that never passed through a telemetry adapter
+	// carries.
+	layer := event.Layer(envelope.BehaviorLayer)
+	if envelope.BehaviorLayer != "" && !layer.Valid() {
+		h.writeError(w, apiError{status: http.StatusBadRequest, code: codeInvalidRequest,
+			message: "behavior_layer must be \"model\", \"tool\", \"retrieval\" or \"transport\""})
+		return
+	}
+
 	result, err := h.controlPlane.IngestDecisionRecord(r.Context(), platform.IngestRequest{
 		RunID:             platform.EvaluationRunID(r.PathValue("run_id")),
 		Sequence:          sequence,
 		BehavioralProfile: platform.BehavioralProfileRef(envelope.BehavioralProfile),
 		Fidelity:          fidelity,
+		BehaviorLayer:     layer,
 		Record:            record,
 	})
 	if err != nil {

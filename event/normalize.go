@@ -76,6 +76,35 @@ const (
 	AttrFidelity = semconv.AttrFidelity
 )
 
+// Layer states which instrumentation layer supplied a behavior's operation
+// identity: a model call, a named tool call, a retrieval, or the transport.
+//
+// A closed vocabulary, and never behavioral identity — it exists so a consumer
+// can tell a model call from a document-store query without a sixth
+// OperationCategory value re-fingerprinting every model call a producer had
+// already been emitting. See the type's own documentation and ADR 0047.
+type Layer = semconv.Layer
+
+// The layer vocabulary, and the attribute that carries it outbound.
+const (
+	// LayerUnspecified means nothing classified this behavior. Deliberately not
+	// folded into LayerTransport: an Event built directly by an SDK caller was
+	// not classified, which is a different statement from "its identity came
+	// from the transport".
+	LayerUnspecified = semconv.LayerUnspecified
+
+	LayerModel     = semconv.LayerModel
+	LayerTool      = semconv.LayerTool
+	LayerRetrieval = semconv.LayerRetrieval
+	LayerTransport = semconv.LayerTransport
+
+	// AttrLayer is the outbound span attribute, beside the other trustvian.*
+	// enrichment. There is no inbound override, for the same reason fidelity has
+	// none: a producer able to claim `tool` would defeat the guarantee that a
+	// layer reflects what its telemetry established.
+	AttrLayer = semconv.AttrLayer
+)
+
 // NormalizeSpan reads the agent-oriented conventions one span carries.
 //
 // Pure: no clock, no I/O, and the maps it is given are not modified. Identical

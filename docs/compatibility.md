@@ -71,7 +71,7 @@ reconstructed later. Everything else in this table is already released.
 | Webhook payload envelope | STABLE | `version` field, currently `"1"`; `alert` object field names | Additive fields inside `alert` | New envelope version |
 | Platform `/v1` control-plane route shapes | STABLE | Path, method and path-parameter shape of each documented `/v1` route | New routes; new optional request fields | Major, or a new path version |
 | Platform `/v1` JSON field names | STABLE | A published request or response field name keeps its meaning | New fields — **consumers must tolerate unknown fields** | Major, or a new path version |
-| Platform ingest envelope | STABLE | `version` field, currently `"1"`; `sequence`, `behavioral_profile`, `record` | Additive envelope fields | New envelope version |
+| Platform ingest envelope | STABLE | `version` field, currently `"1"`; `sequence`, `behavioral_profile`, `record` | Additive envelope fields — `fidelity` (075) and `behavior_layer` (083) are both optional | New envelope version |
 | Platform error `code` values and HTTP statuses | STABLE | A code and its status keep the condition they name | New codes | Major |
 | Platform error `message` text | OBSERVATIONAL | The code and status are the contract; wording is diagnostic | Any change | None |
 | Platform ingest sequence semantics | STABLE | Monotonic from 1; expected applies, identical retry of the last replays, gap and stale fail | — | Major |

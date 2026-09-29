@@ -22,6 +22,7 @@ func TestOpenInferenceMapping(t *testing.T) {
 				OperationCategory: "tool",
 				OperationName:     "export_customer",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerTool,
 			},
 		},
 		{
@@ -35,6 +36,7 @@ func TestOpenInferenceMapping(t *testing.T) {
 				OperationName:     "researcher",
 				ActorType:         "ai_agent",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerTool,
 			},
 		},
 		{
@@ -49,6 +51,7 @@ func TestOpenInferenceMapping(t *testing.T) {
 				OperationName:     "gpt-4o",
 				TargetName:        "openai",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerModel,
 			},
 		},
 		{
@@ -63,6 +66,7 @@ func TestOpenInferenceMapping(t *testing.T) {
 				OperationName:     "claude-3",
 				TargetName:        "anthropic",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerModel,
 			},
 		},
 		{
@@ -78,6 +82,7 @@ func TestOpenInferenceMapping(t *testing.T) {
 				OperationName:     "claude-3",
 				TargetName:        "azure",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerModel,
 			},
 		},
 		{
@@ -92,6 +97,7 @@ func TestOpenInferenceMapping(t *testing.T) {
 				OperationName:     "text-embedding-3-small",
 				TargetName:        "openai",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerModel,
 			},
 		},
 		{
@@ -103,6 +109,7 @@ func TestOpenInferenceMapping(t *testing.T) {
 				OperationCategory: "external",
 				OperationName:     "retriever",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerRetrieval,
 			},
 		},
 		{
@@ -115,6 +122,7 @@ func TestOpenInferenceMapping(t *testing.T) {
 				OperationCategory: "external",
 				OperationName:     "cross-encoder/ms-marco",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerRetrieval,
 			},
 		},
 		{
@@ -129,6 +137,7 @@ func TestOpenInferenceMapping(t *testing.T) {
 				OperationName:     "export_customer",
 				SessionID:         "sess-9",
 				Fidelity:          semconv.FidelitySemantic,
+				Layer:             semconv.LayerTool,
 			},
 		},
 	}
@@ -164,6 +173,7 @@ func TestOpenInferenceToolNameNeedsAToolSpan(t *testing.T) {
 			OperationName:     "gpt-4o",
 			TargetName:        "openai",
 			Fidelity:          semconv.FidelitySemantic,
+			Layer:             semconv.LayerModel,
 		})
 	})
 
@@ -212,6 +222,7 @@ func TestGenAIWinsOverOpenInference(t *testing.T) {
 		OperationCategory: "tool",
 		OperationName:     "genai_tool",
 		Fidelity:          semconv.FidelitySemantic,
+		Layer:             semconv.LayerTool,
 	})
 
 	t.Run("OpenInference is used when GenAI declares nothing", func(t *testing.T) {
@@ -222,6 +233,7 @@ func TestGenAIWinsOverOpenInference(t *testing.T) {
 			OperationCategory: "tool",
 			OperationName:     "openinference_tool",
 			Fidelity:          semconv.FidelitySemantic,
+			Layer:             semconv.LayerTool,
 		})
 	})
 

@@ -847,6 +847,17 @@ type IngestRequest struct {
 	// showed is the safe direction. Task 075.
 	Fidelity event.Fidelity
 
+	// BehaviorLayer travels beside the record for the same reason and is the same
+	// kind of fact: which instrumentation layer supplied the identity — a model
+	// call, a named tool call, a retrieval, or the transport.
+	//
+	// It is a classification rather than a category, so it changes no behavioral
+	// identity and resets no baseline; ADR 0047 records why. The zero value means
+	// "not classified", which is deliberately *not* read as transport: a producer
+	// that said nothing classified nothing, and asserting a transport identity on
+	// its behalf would be a claim. Task 083.
+	BehaviorLayer event.Layer
+
 	Record trustvian.DecisionRecord
 }
 
@@ -1047,6 +1058,10 @@ func (c *ControlPlane) publishObservation(
 			// to say whether the telemetry named that tool or Trustvian inferred
 			// a category from a hostname.
 			Fidelity: request.Fidelity.OrTransport(),
+			// Which layer supplied that identity. Carried verbatim, including
+			// empty: "not classified" is a state a live view renders, not one to
+			// substitute a default for.
+			BehaviorLayer: request.BehaviorLayer,
 
 			Decision:       record.Decision,
 			RiskLevel:      record.RiskLevel,

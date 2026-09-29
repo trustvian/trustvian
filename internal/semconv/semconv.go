@@ -114,6 +114,16 @@ type Normalized struct {
 	// FidelityTransport, because transport is what the behavior was derived
 	// from.
 	Fidelity Fidelity
+
+	// Layer says which instrumentation layer supplied the identity — a model
+	// call, a named tool call, a retrieval, or the transport.
+	//
+	// Set exactly when Fidelity is FidelitySemantic, so the two can never
+	// disagree about one span. LayerUnspecified here means the same thing every
+	// other zero value in this struct means: the telemetry did not say, so the
+	// caller keeps its own mapping — and for a caller that mapped from a span,
+	// that mapping is transport.
+	Layer Layer
 }
 
 // Matched reports whether a convention established an operation identity.

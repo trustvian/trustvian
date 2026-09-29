@@ -298,6 +298,12 @@ type ingestEnvelope struct {
 	// task 075 keeps working unchanged. Task 075.
 	Fidelity string `json:"fidelity,omitempty"`
 
+	// BehaviorLayer rides here for the same reason and is the same kind of fact:
+	// which instrumentation layer supplied the identity. Optional — absent means
+	// "not classified", so a producer built before task 083 keeps working
+	// unchanged. Task 083.
+	BehaviorLayer string `json:"behavior_layer,omitempty"`
+
 	Record jsonRaw `json:"record"`
 }
 
@@ -564,6 +570,12 @@ type realtimeObservationDTO struct {
 	// "transport". Always present, so a consumer never has to decide what an
 	// absent field meant. Task 075.
 	Fidelity string `json:"fidelity"`
+
+	// BehaviorLayer says which instrumentation layer supplied that identity:
+	// "model", "tool", "retrieval" or "transport". Always present, and the empty
+	// string is a real value meaning "not classified" — so a consumer renders
+	// three states honestly rather than two. Task 083.
+	BehaviorLayer string `json:"behavior_layer"`
 
 	Decision       string `json:"decision"`
 	RiskLevel      string `json:"risk_level"`

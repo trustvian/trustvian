@@ -270,6 +270,12 @@ type ingestEnvelope struct {
 	// "not stated", which is read as transport.
 	Fidelity string `json:"fidelity,omitempty"`
 
+	// BehaviorLayer rides here for the same reason and is the same kind of fact:
+	// which instrumentation layer supplied the identity, which the engine has no
+	// opinion about. Optional — absent means "not classified", so a producer built
+	// before task 083 keeps working unchanged. Task 083.
+	BehaviorLayer string `json:"behavior_layer,omitempty"`
+
 	Record trustvian.DecisionRecord `json:"record"`
 }
 
@@ -369,13 +375,15 @@ func (c *client) runStatus(ctx context.Context, runID string) (string, error) {
 // cap — is definitive by construction.
 func (c *client) ingest(
 	ctx context.Context, runID string, sequence uint64,
-	profile string, fidelity event.Fidelity, record trustvian.DecisionRecord,
+	profile string, fidelity event.Fidelity, layer event.Layer,
+	record trustvian.DecisionRecord,
 ) (ingestResult, error) {
 	envelope := ingestEnvelope{
 		Version:           wireVersion,
 		Sequence:          formatSequence(sequence),
 		BehavioralProfile: profile,
 		Fidelity:          string(fidelity),
+		BehaviorLayer:     string(layer),
 		Record:            record,
 	}
 	encoded, err := json.Marshal(envelope)

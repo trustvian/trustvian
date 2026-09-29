@@ -138,6 +138,12 @@ func EventFromSpan(span sdktrace.ReadOnlySpan) event.Event {
 	// already puts derived values, and the outbound half reads it from here.
 	attrs[trustviansemconv.AttrFidelity] = string(normalized.Fidelity.OrTransport())
 
+	// The layer, recorded the same way and for the same reason. A span the table
+	// declined to read is LayerTransport rather than unclassified: this adapter
+	// *did* classify it, and the answer is that its identity came from the
+	// transport. Task 083.
+	attrs[trustviansemconv.AttrLayer] = string(layerFor(normalized))
+
 	sc := span.SpanContext()
 
 	return event.Event{

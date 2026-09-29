@@ -123,6 +123,12 @@ func EventFromSpan(resourceAttrs pcommon.Map, span ptrace.Span) event.Event {
 	// derived values, and SetAttributesFromResult reads it back from here.
 	attrs[event.AttrFidelity] = string(normalized.Fidelity.OrTransport())
 
+	// The layer, recorded the same way and for the same reason. A span the table
+	// declined to read is transport rather than unclassified: this adapter *did*
+	// classify it, and the answer is that its identity came from the transport.
+	// Task 083.
+	attrs[event.AttrLayer] = string(layerFor(normalized))
+
 	return event.Event{
 		ID:        span.SpanID().String(),
 		Timestamp: span.StartTimestamp().AsTime(),
