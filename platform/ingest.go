@@ -97,6 +97,17 @@ type EvaluationIngestCommit struct {
 
 	Aggregate EvaluationAggregate
 	Snapshot  BehaviorSnapshot
+
+	// Observation is the per-observation history row this record retains
+	// (task 067). It is written in this same transaction, not beside it: an
+	// observation with no aggregate to belong to, or an aggregate whose
+	// history is short by one and reports itself complete, are exactly the
+	// silent failures this commit exists to prevent.
+	//
+	// Whether it is *actually* retained is the store's decision, taken inside
+	// the transaction where the retained count is known — see
+	// MaxRetainedObservations.
+	Observation Observation
 }
 
 // EvaluationIngestDisposition is what a commit attempt did.
@@ -129,6 +140,11 @@ type EvaluationIngestCommitResult struct {
 	NextSequence     uint64
 	RecordCount      uint64
 	BehaviorComplete bool
+
+	// History is what the run's retained observation history is after this
+	// commit, read in the transaction that decided it for the same reason the
+	// counts above are.
+	History ObservationHistory
 }
 
 // EvaluationIngestStore persists the ingest cursor alongside the evidence it
@@ -157,6 +173,31 @@ type EvaluationIngestStore interface {
 	CommitEvaluationIngest(
 		ctx context.Context, commit EvaluationIngestCommit,
 	) (EvaluationIngestCommitResult, error)
+}
+
+// ObservationStore reads the per-observation history task 067 retains.
+//
+// A separate capability from EvaluationIngestStore, which writes it, and from
+// EvaluationStore, which holds the reductions. The split is the one this
+// package already draws: a backend could reasonably implement bounded evidence
+// without per-observation history, and a reader needs none of the write path.
+type ObservationStore interface {
+	// RunObservations returns one bounded page of a run's retained history,
+	// ordered by sequence ascending, together with what that history is.
+	//
+	// after is exclusive and 0 starts at the beginning. limit is 1..MaxListPage.
+	//
+	// The page and the history come from one transactional read, because a
+	// caller that read them separately could show a full page beside a state
+	// that had meanwhile changed and describe something that never existed —
+	// the same tear EvaluationIngestState removes for the cursor.
+	//
+	// A run with no retained history is an empty page whose History says why,
+	// never an error: "nothing was retained" and "no such run" are different
+	// answers, and only the second is a 404.
+	RunObservations(
+		ctx context.Context, id EvaluationRunID, after uint64, limit int,
+	) (ObservationPage, error)
 }
 
 // ---------------------------------------------------------------------

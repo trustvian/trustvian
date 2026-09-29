@@ -230,14 +230,14 @@ func seedV1Content(t *testing.T, db *sql.DB, runID string, records uint64) {
 // Migration
 // ---------------------------------------------------------------------
 
-func TestFreshDatabaseIsSchemaV6(t *testing.T) {
+func TestFreshDatabaseIsSchemaV7(t *testing.T) {
 	store, _ := testStore(t)
 	version, err := store.storedSchemaVersion(t.Context())
 	if err != nil {
 		t.Fatalf("storedSchemaVersion() error = %v", err)
 	}
-	if version != SchemaVersion || SchemaVersion != 6 {
-		t.Fatalf("version = %d, SchemaVersion = %d, want 6", version, SchemaVersion)
+	if version != SchemaVersion || SchemaVersion != 7 {
+		t.Fatalf("version = %d, SchemaVersion = %d, want 7", version, SchemaVersion)
 	}
 	if err := store.requireTables(t.Context(), SchemaVersion, schemaTables); err != nil {
 		t.Errorf("fresh database is missing tables: %v", err)
@@ -813,6 +813,7 @@ func TestIngestCannotCommitAfterRunBecomesTerminal(t *testing.T) {
 		RecordDigest:         mustDigest(t, internalRecord("evt-1", "fp-1", "op-1")),
 		Aggregate:            staleAggregate,
 		Snapshot:             collector.Snapshot(),
+		Observation:          conformanceObservation(t, beforeState.NextSequence()),
 	})
 	if !errors.Is(err, ErrEvaluationState) {
 		t.Fatalf("commit after completion error = %v, want ErrEvaluationState", err)

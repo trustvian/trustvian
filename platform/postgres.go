@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -856,6 +857,9 @@ func (s *PostgresStore) CommitEvaluationIngest(
 	if err := validatePersistedDigest("record digest", commit.RecordDigest); err != nil {
 		return EvaluationIngestCommitResult{}, err
 	}
+	if err := validateCommitObservation(commit); err != nil {
+		return EvaluationIngestCommitResult{}, err
+	}
 	next, err := nextSequenceAfter(commit.Sequence)
 	if err != nil {
 		return EvaluationIngestCommitResult{}, err
@@ -885,11 +889,16 @@ func (s *PostgresStore) CommitEvaluationIngest(
 			// same logical record already landed, which is the retry contract
 			// working rather than a failure.
 			if current.NextSequence() == next && current.LastDigest() == commit.RecordDigest {
+				history, err := observationHistoryFor(ctx, q, runID)
+				if err != nil {
+					return err
+				}
 				result = EvaluationIngestCommitResult{
 					Disposition:      EvaluationIngestAlreadyCommitted,
 					NextSequence:     current.NextSequence(),
 					RecordCount:      current.RecordCount(),
 					BehaviorComplete: current.BehaviorComplete(),
+					History:          history,
 				}
 				return nil
 			}
@@ -925,6 +934,14 @@ func (s *PostgresStore) CommitEvaluationIngest(
 			return err
 		}
 
+		// Task 067's history row, inside this transaction for the reason
+		// everything else here is: evidence whose history is short by one and
+		// reports itself complete is a silent wrong answer, not a failure.
+		history, err := retainObservationPostgres(ctx, tx, runID, commit.Observation)
+		if err != nil {
+			return err
+		}
+
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO `+tableIngestState+` (run_id, next_sequence, last_digest)
 			 VALUES ($1, $2, $3)
@@ -940,6 +957,7 @@ func (s *PostgresStore) CommitEvaluationIngest(
 			NextSequence:     next,
 			RecordCount:      commit.Aggregate.RecordCount(),
 			BehaviorComplete: commit.Snapshot.Complete(),
+			History:          history,
 		}
 		return nil
 	})
@@ -947,6 +965,66 @@ func (s *PostgresStore) CommitEvaluationIngest(
 		return EvaluationIngestCommitResult{}, err
 	}
 	return result, nil
+}
+
+// retainObservationPostgres writes one observation and advances the run's
+// history row, inside the caller's transaction.
+//
+// The decision is planObservationRetention's, shared with SQLite; only the
+// placeholder syntax and the upsert spelling live here, which is the split
+// querier.go draws.
+func retainObservationPostgres(
+	ctx context.Context, tx pgx.Tx, runID EvaluationRunID, o Observation,
+) (ObservationHistory, error) {
+	q := pgxQuerier{q: tx}
+	present, retained, complete, err := loadObservationHistoryRow(ctx, q, runID)
+	if err != nil {
+		return ObservationHistory{}, err
+	}
+
+	plan := planObservationRetention(present, retained, complete, o.Sequence)
+
+	if plan.Insert {
+		columns := observationInsertColumns()
+		placeholders := make([]string, len(columns))
+		for i := range columns {
+			placeholders[i] = "$" + strconv.Itoa(i+1)
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO `+tableObservations+` (`+strings.Join(columns, ", ")+`)
+			 VALUES (`+strings.Join(placeholders, ", ")+`)`,
+			observationInsertArgs(runID, o)...); err != nil {
+			return ObservationHistory{}, mapPostgresError("observation", string(runID), err)
+		}
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO `+tableObservationHistory+` (run_id, retained_count, complete)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (run_id) DO UPDATE SET
+			retained_count = excluded.retained_count,
+			complete = excluded.complete`,
+		string(runID), uint64Text(plan.Retained), boolInt(plan.Complete)); err != nil {
+		return ObservationHistory{}, mapPostgresError("observation history", string(runID), err)
+	}
+
+	return NewObservationHistory(true, plan.Retained, plan.Complete, 0), nil
+}
+
+// RunObservations returns one bounded page of a run's retained history.
+func (s *PostgresStore) RunObservations(
+	ctx context.Context, id EvaluationRunID, after uint64, limit int,
+) (ObservationPage, error) {
+	var page ObservationPage
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		page, err = runObservationPage(ctx, pgxQuerier{q: tx}, id, after, limit)
+		return err
+	})
+	if err != nil {
+		return ObservationPage{}, err
+	}
+	return page, nil
 }
 
 // ---------------------------------------------------------------------

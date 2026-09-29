@@ -59,6 +59,16 @@ type logicalState struct {
 	// Behaviour entries in the order the store returned them, which is itself
 	// part of the contract — the only ORDER BY in either backend.
 	entries []string
+
+	// Task 067's retained history, rendered field by field and in page order.
+	//
+	// The second domain ordering in this schema, and the one most likely to
+	// diverge: the page key is a zero-padded text column, so PostgreSQL's
+	// default collation would order it differently from SQLite's byte
+	// comparison without COLLATE "C".
+	historyState  string
+	retainedCount string
+	observations  []string
 }
 
 // captureLogicalState reads everything observable about one run.
@@ -77,6 +87,20 @@ func captureLogicalState(t *testing.T, store Store, id EvaluationRunID) logicalS
 	cursor, err := store.EvaluationIngestState(ctx, id)
 	if err != nil {
 		t.Fatalf("EvaluationIngestState() error = %v", err)
+	}
+
+	page, err := store.RunObservations(ctx, id, 0, MaxListPage)
+	if err != nil {
+		t.Fatalf("RunObservations() error = %v", err)
+	}
+	observations := make([]string, 0, len(page.Observations))
+	for _, o := range page.Observations {
+		observations = append(observations, fmt.Sprintf(
+			"%d|%s|%s|%s|%s|%v|%s|%s|%s|%s|%s|%s|%d|%v|%s",
+			o.Sequence, o.EventID, renderInstant(o.Timestamp), o.ActorID,
+			o.FingerprintID, o.NewBehavior, o.Decision, o.RiskLevel,
+			o.TraceID, o.SpanID, o.SessionID, o.ParentSpanID,
+			o.DurationNanos, o.DurationObserved, o.SpanStatus))
 	}
 
 	entries := make([]string, 0, len(snapshot.Entries()))
@@ -113,6 +137,10 @@ func captureLogicalState(t *testing.T, store Store, id EvaluationRunID) logicalS
 		metrics:   aggregateMetrics(aggregate),
 
 		entries: entries,
+
+		historyState:  page.History.State().String(),
+		retainedCount: uint64Text(page.History.RetainedCount()),
+		observations:  observations,
 	}
 }
 
@@ -214,6 +242,7 @@ func driveSequence(t *testing.T, store Store) logicalState {
 			// Deterministic per sequence, so both backends record the same
 			// digest and a differing one is a real divergence.
 			RecordDigest: strings.Repeat(fmt.Sprintf("%d", sequence%10), 64),
+			Observation:  conformanceObservation(t, sequence),
 		}
 		result, err := store.CommitEvaluationIngest(ctx, commit)
 		if err != nil {
@@ -231,6 +260,7 @@ func driveSequence(t *testing.T, store Store) logicalState {
 		Sequence:             4,
 		PreviousNextSequence: 4,
 		RecordDigest:         strings.Repeat("4", 64),
+		Observation:          conformanceObservation(t, 4),
 	}
 	if _, err := store.CommitEvaluationIngest(ctx, retry); err != nil {
 		t.Fatalf("retry error = %v", err)
@@ -330,6 +360,16 @@ func compareLogicalState(t *testing.T, sqlite, postgres logicalState) {
 	for i := range sqlite.metrics {
 		check(fmt.Sprintf("metric %s", aggregateMetricPrefixes()[i]),
 			postgres.metrics[i], sqlite.metrics[i])
+	}
+
+	check("observation history state", postgres.historyState, sqlite.historyState)
+	check("observation retained count", postgres.retainedCount, sqlite.retainedCount)
+	if len(postgres.observations) != len(sqlite.observations) {
+		t.Fatalf("retained observation count diverged: sqlite %d, postgres %d",
+			len(sqlite.observations), len(postgres.observations))
+	}
+	for i := range sqlite.observations {
+		check(fmt.Sprintf("observation %d", i), postgres.observations[i], sqlite.observations[i])
 	}
 
 	// Entry order is part of the contract: `ORDER BY fingerprint_id` is the only

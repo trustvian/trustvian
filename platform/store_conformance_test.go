@@ -24,6 +24,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/trustvian/trustvian/event"
 )
 
 // storeBackend is one implementation under test.
@@ -137,6 +139,10 @@ func TestStoreConformance(t *testing.T) {
 			t.Run("lifecycle", func(t *testing.T) { conformLifecycle(t, backend.open) })
 			t.Run("evidence", func(t *testing.T) { conformEvidence(t, backend.open) })
 			t.Run("ingest", func(t *testing.T) { conformIngest(t, backend.open) })
+			t.Run("observations", func(t *testing.T) { conformObservations(t, backend.open) })
+			t.Run("observation-paging", func(t *testing.T) {
+				conformObservationPaging(t, backend.open)
+			})
 			t.Run("timestamps", func(t *testing.T) { conformTimestamps(t, backend.open) })
 			t.Run("cancellation", func(t *testing.T) { conformCancellation(t, backend.open) })
 		})
@@ -701,6 +707,164 @@ func conformanceCommit(
 		Sequence:             sequence,
 		PreviousNextSequence: previousNext,
 		RecordDigest:         digest,
+		Observation:          conformanceObservation(t, sequence),
+	}
+}
+
+// conformanceObservation builds the history row a commit carries, from the same
+// record conformanceEvidence folds in.
+func conformanceObservation(t testing.TB, sequence uint64) Observation {
+	t.Helper()
+	record := internalRecord("evt-0", "fp-0", "op-0")
+	record.TraceID = "trace-1"
+	record.SpanID = fmt.Sprintf("span-%d", sequence)
+	record.SessionID = "session-1"
+	record.ParentSpanID = "span-root"
+	record.SpanLineage = event.LineageChild
+	record.DurationNanos = "1500"
+	record.SpanStatus = event.StatusOK
+
+	observation, err := ObservationFromRecord(sequence, record, sequence == 1)
+	if err != nil {
+		t.Fatalf("ObservationFromRecord() error = %v", err)
+	}
+	return observation
+}
+
+// ---------------------------------------------------------------------
+// Per-observation history (task 067)
+// ---------------------------------------------------------------------
+
+// conformObservations asserts the retention contract on whichever backend is
+// running: retained with the commit, readable afterwards, field-for-field, and
+// never duplicated by a retry.
+func conformObservations(t *testing.T, open func(testing.TB) Store) {
+	store := open(t)
+	ctx := t.Context()
+	running := startedRun(t, store, "run-1")
+
+	// A run that has ingested nothing has no history to be missing.
+	empty, err := store.RunObservations(ctx, "run-1", 0, MaxListPage)
+	if err != nil {
+		t.Fatalf("RunObservations() on an empty run error = %v", err)
+	}
+	if len(empty.Observations) != 0 {
+		t.Errorf("empty run returned %d observations", len(empty.Observations))
+	}
+	if empty.History.State() != ObservationHistoryComplete {
+		t.Errorf("empty run history = %v, want complete", empty.History.State())
+	}
+
+	commit := conformanceCommit(t, running, 1, 1, strings.Repeat("a", 64))
+	result, err := store.CommitEvaluationIngest(ctx, commit)
+	if err != nil {
+		t.Fatalf("CommitEvaluationIngest() error = %v", err)
+	}
+	if result.History.RetainedCount() != 1 || !result.History.Complete() {
+		t.Errorf("commit reported history %d retained complete=%v, want 1 and true",
+			result.History.RetainedCount(), result.History.Complete())
+	}
+
+	page, err := store.RunObservations(ctx, "run-1", 0, MaxListPage)
+	if err != nil {
+		t.Fatalf("RunObservations() error = %v", err)
+	}
+	if len(page.Observations) != 1 {
+		t.Fatalf("retained %d observations, want 1", len(page.Observations))
+	}
+
+	got, want := page.Observations[0], commit.Observation
+	if !got.Timestamp.Equal(want.Timestamp) {
+		t.Errorf("Timestamp = %v, want %v", got.Timestamp, want.Timestamp)
+	}
+	got.Timestamp, want.Timestamp = time.Time{}, time.Time{}
+	if got != want {
+		t.Errorf("round trip mismatch:\n got = %+v\nwant = %+v", got, want)
+	}
+	if page.History.State() != ObservationHistoryComplete {
+		t.Errorf("history state = %v, want complete", page.History.State())
+	}
+
+	// A retry produces no second row, on either backend.
+	retry, err := store.CommitEvaluationIngest(ctx, commit)
+	if err != nil {
+		t.Fatalf("identical retry error = %v", err)
+	}
+	if retry.Disposition != EvaluationIngestAlreadyCommitted {
+		t.Fatalf("retry Disposition = %v, want already-committed", retry.Disposition)
+	}
+	if retry.History.RetainedCount() != 1 {
+		t.Errorf("retry reported %d retained, want 1", retry.History.RetainedCount())
+	}
+	after, err := store.RunObservations(ctx, "run-1", 0, MaxListPage)
+	if err != nil {
+		t.Fatalf("RunObservations() after retry error = %v", err)
+	}
+	if len(after.Observations) != 1 {
+		t.Errorf("a retry produced %d observations, want 1", len(after.Observations))
+	}
+
+	// A run that does not exist is not found, rather than an empty page.
+	if _, err := store.RunObservations(ctx, "no-such-run", 0, MaxListPage); !errors.Is(
+		err, ErrStoreNotFound) {
+		t.Errorf("RunObservations() on an unknown run = %v, want ErrStoreNotFound", err)
+	}
+}
+
+// conformObservationPaging asserts that keyset paging enumerates every retained
+// observation exactly once, in sequence order, on whichever backend is running.
+//
+// The sort key is a zero-padded text column, so this is where a collation
+// difference between the two backends would show up.
+func conformObservationPaging(t *testing.T, open func(testing.TB) Store) {
+	store := open(t)
+	ctx := t.Context()
+	running := startedRun(t, store, "run-1")
+
+	const total = 11
+	for i := 1; i <= total; i++ {
+		aggregate, snapshot := conformanceEvidence(t, running, i)
+		_, err := store.CommitEvaluationIngest(ctx, EvaluationIngestCommit{
+			Aggregate:            aggregate,
+			Snapshot:             snapshot,
+			Sequence:             uint64(i),
+			PreviousNextSequence: uint64(i),
+			RecordDigest:         strings.Repeat(fmt.Sprintf("%x", i%16), 64),
+			Observation:          conformanceObservation(t, uint64(i)),
+		})
+		if err != nil {
+			t.Fatalf("CommitEvaluationIngest(%d) error = %v", i, err)
+		}
+	}
+
+	for _, limit := range []int{1, 3, MaxListPage} {
+		var seen []uint64
+		after := uint64(0)
+		for {
+			page, err := store.RunObservations(ctx, "run-1", after, limit)
+			if err != nil {
+				t.Fatalf("RunObservations(after=%d, limit=%d) error = %v", after, limit, err)
+			}
+			if len(page.Observations) == 0 {
+				break
+			}
+			if len(page.Observations) > limit {
+				t.Fatalf("page holds %d observations, above the limit of %d",
+					len(page.Observations), limit)
+			}
+			for _, o := range page.Observations {
+				seen = append(seen, o.Sequence)
+			}
+			after = page.Observations[len(page.Observations)-1].Sequence
+		}
+		if len(seen) != total {
+			t.Fatalf("limit=%d paged over %v, want %d observations", limit, seen, total)
+		}
+		for i, sequence := range seen {
+			if sequence != uint64(i+1) {
+				t.Fatalf("limit=%d produced %v, want ascending sequences", limit, seen)
+			}
+		}
 	}
 }
 

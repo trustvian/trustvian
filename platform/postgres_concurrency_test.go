@@ -473,6 +473,7 @@ func runningRunWithCommit(
 		Sequence:             1,
 		PreviousNextSequence: 1,
 		RecordDigest:         digest,
+		Observation:          conformanceObservation(t, 1),
 	}
 }
 

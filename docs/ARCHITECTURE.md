@@ -622,11 +622,20 @@ narrow capabilities — `ControlStore` for projects, agents and candidates, and
 interface; ADR 0023's rule that a store is an adapter expressed in domain
 terms is what the capability shape follows.
 
-It persists what cannot be rebuilt — the entities, the aggregate and the
-behavioral snapshot — and recomputes what can: diff, scorecard and gate result
-are deterministic functions of stored evidence, so storing them too would
-create a second thing that can be true. No table grows per event; raw history
-remains a separate future capability.
+It persists what cannot be rebuilt — the entities, the aggregate, the
+behavioral snapshot and, since [task 067](tasks/v1.0/067-event-history-capability-boundary.md),
+a bounded per-observation history — and recomputes what can: diff, scorecard and
+gate result are deterministic functions of stored evidence, so storing them too
+would create a second thing that can be true.
+
+**One table grows per accepted record, and it is bounded.** Task 067 retains at
+most 4096 observations per run, written inside the transaction that already
+writes the aggregate and the ingest cursor, over an allowlist of columns that
+excludes every content field. Past the bound the run keeps ingesting and reports
+its history as partial. Nothing reads that history back into the engine: a
+retained observation influences no decision, no baseline and no fingerprint.
+[ADR 0048](adr/0048-retained-history-is-sequence-identified-bounded-and-honest-about-absence.md)
+records the reasoning.
 
 The adapter lives inside package `platform` rather than a subpackage, because
 the aggregate and snapshot carry private bound markers and restoring them from
@@ -835,7 +844,7 @@ boundary is affordable. It builds on properties that already exist:
 | `Context.ApprovalStatus`, enforceable by policy | Approval compliance is a gate input |
 | `Result` carries anomaly, confidence, trust, decision, contributors, explanation | A scorecard aggregates evidence that already exists |
 | PostgreSQL persistence; OTel ingestion | The runtime path is already production-shaped |
-| The core retains no raw event history | History is the platform's job, deliberately not the engine's |
+| The core retains no raw event history | History is the platform's job, deliberately not the engine's — and the platform retains bounded *evidence* history (067), never raw events |
 | `Result.DecisionRecord()` — a serializable public projection | The platform persists, streams, and aggregates records without naming an internal type or re-declaring behavioral shapes |
 
 `DecisionRecord` is the read boundary itself: a fixed-shape projection of the
