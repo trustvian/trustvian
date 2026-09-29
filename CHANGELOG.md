@@ -10,6 +10,46 @@ actually depend on.
 
 ### Added
 
+- **Trustvian records what called what, how long it took, and whether it failed**
+  (task 084). The engine already computed two of the three and threw them away at
+  the boundary: `features.Extract` reads `duration_ms` and `error` off
+  `Event.Attributes` because both adapters bridge them there, and neither reached
+  `DecisionRecord`. Parent span identity was never read at all.
+
+  A record now carries four named scalar fields — `parent_span_id`,
+  `span_lineage`, `duration_nanos` and `span_status` — and the platform aggregates
+  duration and status per evaluation run and persists them.
+
+  **Availability is explicit everywhere, because the alternatives are wrong in
+  the reassuring direction.** A span with no end timestamp did not take zero
+  milliseconds, so `duration_nanos` distinguishes `""` (unavailable) from `"0"`
+  (a measured zero). Neither an unset status nor an absent one is success —
+  OpenTelemetry's status defaults to `UNSET` and most instrumentation never sets
+  `OK`, so counting either as success would let an entirely unstatused run report
+  a zero error rate. The aggregate publishes four status counts and no rate, so a
+  caller has to choose and name its own denominator.
+
+  **Parentage is read and never inferred** — not from timing, adjacency, span
+  names or arrival order. A child whose parent was sampled away or has not arrived
+  is still a child, and nothing checks that a named parent exists: a parent span
+  ends *after* the children it started, so a child arriving first is the normal
+  case. Neither OTLP nor the SDK can express "the producer does not know", which
+  is documented rather than worked around.
+
+  **Nothing added is behavioral identity.** Two observations differing only in how
+  long they took share a fingerprint, and a test asserts the whole
+  `StableFeatures` tuple, the fingerprint and the learning path are unchanged
+  across every value. The volatile feature bridge is untouched, with one
+  documented divergence: it still ignores a zero duration because a zero adds
+  nothing to a feature, while the evidence path records it.
+
+  Schema version moves to **6** on both backends, adding nine columns to one
+  table. Existing rows are migrated to say *unknown* rather than *zero*: a run
+  ingested before these fields existed observed no duration and no status for any
+  of its records, and the backfill states exactly that.
+
+  Per-observation history remains task 067's, and this adds none.
+
 - **`trustvian dev` works from a downloaded release** — no checkout, no `make`.
   The macOS and Linux archives now ship the two helpers dev supervises beside
   the CLI:

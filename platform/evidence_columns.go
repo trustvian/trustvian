@@ -40,7 +40,25 @@ func aggregateInsertColumns() []string {
 		columns = append(columns,
 			metric+"_count", metric+"_sum", metric+"_min", metric+"_max")
 	}
-	return columns
+	// Schema 6, task 084. Appended last so every earlier column keeps its
+	// position: both backends bind positionally against this order, and
+	// inserting in the middle would silently shift every metric one place.
+	return append(columns, aggregateOperationalColumns()...)
+}
+
+// aggregateOperationalColumns names the schema-6 operational counters, in
+// storage order.
+//
+// Declared separately because the v5-to-v6 migration adds exactly these and
+// nothing else, and deriving the ALTER TABLE from the same list is what keeps a
+// migrated database column-for-column identical to a freshly created one.
+func aggregateOperationalColumns() []string {
+	return []string{
+		"duration_count", "duration_unobserved",
+		"duration_sum", "duration_min", "duration_max",
+		"span_status_unavailable", "span_status_unset",
+		"span_status_ok", "span_status_error",
+	}
 }
 
 // aggregateMetricPrefixes names the five metric summaries in storage order.
@@ -85,7 +103,14 @@ func aggregateInsertArgs(a EvaluationAggregate) []any {
 	for _, m := range aggregateMetrics(a) {
 		args = append(args, uint64Text(m.Count), m.Sum, m.Min, m.Max)
 	}
-	return args
+	// Schema 6, task 084. Canonical decimal text like every other counter:
+	// a nanosecond sum exceeds what a signed 64-bit column holds.
+	d, st := a.Durations(), a.SpanStatuses()
+	return append(args,
+		uint64Text(d.Count), uint64Text(d.Unobserved),
+		uint64Text(d.Sum), uint64Text(d.Min), uint64Text(d.Max),
+		uint64Text(st.Unavailable), uint64Text(st.Unset),
+		uint64Text(st.OK), uint64Text(st.Error))
 }
 
 // aggregateMetrics returns the five summaries in storage order.
@@ -100,4 +125,41 @@ func aggregateMetrics(a EvaluationAggregate) []MetricSummary {
 // because the caller already knows it and passes it as the predicate.
 func aggregateSelectList() string {
 	return strings.Join(aggregateInsertColumns()[1:], ", ")
+}
+
+// operationalColumnDDL renders the schema-6 column definitions.
+//
+// One definition per column, used by both the CREATE TABLE in each backend and
+// by each backend's ALTER TABLE, so a migrated database and a freshly created
+// one hold column-for-column identical tables. `textType` differs only because
+// PostgreSQL needs an explicit C collation for the byte-ordered text columns
+// this schema compares.
+//
+// DEFAULT '0' is what makes ADD COLUMN work on a table that already has rows.
+// The migration then *replaces* those defaults for existing rows — see
+// operationalBackfillStatement, and task 084 for why zero would be the wrong
+// resting value.
+func operationalColumnDDL(textType string) []string {
+	columns := aggregateOperationalColumns()
+	out := make([]string, 0, len(columns))
+	for _, name := range columns {
+		out = append(out, name+" "+textType+" NOT NULL DEFAULT '0'")
+	}
+	return out
+}
+
+// operationalBackfillStatement makes an existing run say *unknown* rather than
+// *zero*.
+//
+// A row written before schema 6 observed no duration and no status for any of
+// its records, because the fields did not exist. Leaving the DEFAULT '0' would
+// claim the opposite of that: a run whose every observation was instantaneous
+// and unstatused. Setting the two "nothing was observed" counters to
+// record_count states what actually happened, and preserves the invariants
+// Count+Unobserved == RecordCount and Unavailable+Unset+OK+Error == RecordCount
+// that make a migrated run internally consistent.
+func operationalBackfillStatement(table string) string {
+	return `UPDATE ` + table + `
+	           SET duration_unobserved = record_count,
+	               span_status_unavailable = record_count`
 }

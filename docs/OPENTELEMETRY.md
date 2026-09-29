@@ -406,6 +406,48 @@ Missing correlation produces the same fallback rather than a guess. **Nothing is
 inferred from timestamps, adjacency or similar names**, and no transport
 observation is dropped to make a count smaller.
 
+### Correlation and operational evidence
+
+Task 084. Three facts read from span *fields* rather than attributes, and
+carried on `DecisionRecord` as named scalars.
+
+| Field | Read from | Availability |
+|---|---|---|
+| `parent_span_id`, `span_lineage` | the span's own parent reference | `root` or `child`; **never** inferred from timing, adjacency, names or arrival order |
+| `duration_nanos` | start and end timestamps | canonical decimal nanoseconds; `""` is unavailable and `"0"` is a measured zero |
+| `span_status` | the span's status code | `unset`, `ok` or `error` |
+
+**Neither format can say "the producer does not know".** An OTLP span encodes a
+root as an all-zero parent id and the SDK returns an invalid parent context for
+one, so each adapter reports `root` or `child` and never an unspecified lineage.
+That state exists for an `Event` built without a span. The limit belongs to the
+formats and is recorded rather than papered over.
+
+**A child whose parent never arrives is still a child.** Nothing checks that a
+named parent was received. A parent span ends *after* the children it started,
+so a child arriving first is the normal case, and a sampled-away parent is
+ordinary too.
+
+**A duration that was not measured is not a duration of zero.** A span with no
+end timestamp, no start timestamp, an end before its start, or an interval past
+2^63 ns reports unavailable. Only a valid interval reports a measurement, and a
+valid interval of zero reports `"0"`.
+
+**Neither `unset` nor an absent status is success.** OpenTelemetry's status
+defaults to `UNSET` and most instrumentation never sets `OK`, so the platform
+counts the four states separately instead of computing a rate a caller would
+read as an error rate over everything.
+
+**The volatile feature bridge is unchanged**, and diverges from this path in one
+documented case. `Attributes["duration_ms"]` is still written only for a strictly
+positive duration and `Attributes["error"]` only for an explicit `ERROR`; both
+still feed `features.Extract` alone. So a zero-duration span reaches the evidence
+path and not the feature path — correct for each, and asserted by test in both
+adapters rather than left to be discovered.
+
+None of this is behavioral identity: two observations differing only in how long
+they took share a fingerprint.
+
 ### What is neither read nor refused
 
 Three gaps, recorded here because "not in the table" and "deliberately excluded"
@@ -415,14 +457,15 @@ a content attribute; all three are metadata, and each has an owner.
 | Gap | State | Owner |
 |---|---|---|
 | **Token usage** — `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `llm.token_count.prompt`/`.completion`/`.total` | Unconsidered: not read, and not on the refused list above | [087](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#087--performance-and-cost-evidence) |
-| **Parent span identity** | Not carried. `event.Context` has `TraceID` and `SpanID` and no parent, so a trace *tree* cannot be reconstructed from retained evidence **and the counting fold in task 083 is blocked** | [084](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#084--correlation-and-operational-evidence-on-the-record-boundary) |
-| **Duration and error status beyond the feature path** | Bridged onto `Attributes["duration_ms"]`/`["error"]` for `features.Extract`, and **not** carried on `DecisionRecord` — so the platform, the comparison and every view are unaware of timing or errors | [084](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#084--correlation-and-operational-evidence-on-the-record-boundary) |
+| **Per-observation history** | Not retained. The record now *carries* correlation and operational evidence (task 084), and the platform aggregates it per run; storing one row per observation is task 067's, so a trace tree still cannot be reconstructed from retained evidence | [067](ROADMAP.md#milestone-sequence) |
+| **Latency and error *comparison*** | The evidence is carried and aggregated per run (task 084); comparing two runs on it is a separate decision | [087](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#087--performance-and-cost-evidence) |
 
 The bridging is described under
 [Why latency/error are bridged, not mapped](#mapping-table) and is unchanged: it
-feeds the engine's own signals. What it does not do is reach the evidence boundary,
-which is why a timeline with timing is a planned item rather than a rendering
-decision.
+feeds the engine's own signals. Since task 084 a parallel *recorded* path carries
+duration and status to the evidence boundary as well — see
+[Correlation and operational evidence](#correlation-and-operational-evidence)
+for the two readings and where they deliberately differ.
 
 **Four OpenInference span kinds stay unmapped**, as stated above — `CHAIN`,
 `GUARDRAIL`, `EVALUATOR` and `PROMPT`. Two of them are worth revisiting on their

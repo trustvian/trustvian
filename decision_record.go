@@ -1,6 +1,7 @@
 package trustvian
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/trustvian/trustvian/event"
@@ -116,6 +117,60 @@ type DecisionRecord struct {
 	SessionID      string               `json:"session_id,omitempty"`
 	DelegatedFrom  string               `json:"delegated_from,omitempty"`
 	ApprovalStatus event.ApprovalStatus `json:"approval_status,omitempty"`
+
+	// Correlation and operational evidence, task 084. Like every field above,
+	// none of these participates in behavioral identity: two events differing
+	// only in how long they took still share a FingerprintID.
+
+	// ParentSpanID is the span this one was started from, **within TraceID**. A
+	// span id is unique only inside its trace, so this is a trace-scoped
+	// reference and never a standalone key.
+	//
+	// Empty unless SpanLineage is "child". Nothing requires the named parent to
+	// have been received: a child routinely arrives before its parent, because a
+	// parent span ends after the children it started.
+	ParentSpanID string `json:"parent_span_id,omitempty"`
+
+	// SpanLineage distinguishes a stated trace root from a child, and both from
+	// an observation where nothing established either. See event.SpanLineage.
+	SpanLineage event.SpanLineage `json:"span_lineage,omitempty"`
+
+	// DurationNanos is how long the operation took, as canonical decimal text in
+	// nanoseconds.
+	//
+	// Text rather than a JSON number for the reason every other uint64 on this
+	// project's wires is text: a JSON number is a float64 to most parsers, and a
+	// nanosecond count above 2^53 would round.
+	//
+	// **The empty string means unavailable and "0" means a measured zero.** They
+	// are different facts — a span with no end timestamp did not take no time —
+	// and omitempty omits exactly the unavailable case, which is what a consumer
+	// predating this field already treats as absent.
+	DurationNanos string `json:"duration_nanos,omitempty"`
+
+	// SpanStatus is what the producer said about success: "", "unset", "ok" or
+	// "error". Neither "" nor "unset" is success; see event.SpanStatus.
+	SpanStatus event.SpanStatus `json:"span_status,omitempty"`
+}
+
+// DurationNanosValue decodes DurationNanos.
+//
+// Returns the nanosecond count and whether one was recorded, so a caller cannot
+// accidentally read the unavailable state as a zero measurement. A value that is
+// present but not canonical decimal reports false rather than guessing: it was
+// not written by this code.
+func (r DecisionRecord) DurationNanosValue() (uint64, bool) {
+	if r.DurationNanos == "" {
+		return 0, false
+	}
+	v, err := strconv.ParseUint(r.DurationNanos, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	if strconv.FormatUint(v, 10) != r.DurationNanos {
+		return 0, false
+	}
+	return v, true
 }
 
 // ContributorRecord is one signal's contribution to an anomaly score.
@@ -176,6 +231,18 @@ func (r Result) DecisionRecord() DecisionRecord {
 		SessionID:      r.Event.Context.SessionID,
 		DelegatedFrom:  r.Event.Context.DelegatedFrom,
 		ApprovalStatus: r.Event.Context.ApprovalStatus,
+
+		// Task 084. Carried verbatim from the Event: this projection states what
+		// was observed and derives nothing.
+		ParentSpanID: r.Event.Context.ParentSpanID,
+		SpanLineage:  r.Event.Context.SpanLineage,
+		SpanStatus:   r.Event.Execution.Status,
+	}
+
+	// Rendered only when observed, so the unavailable state is the empty string
+	// rather than a "0" that would read as a measurement.
+	if r.Event.Execution.DurationObserved {
+		rec.DurationNanos = strconv.FormatUint(r.Event.Execution.DurationNanos, 10)
 	}
 
 	// Copied, not shared: a record handed to a consumer must not alias a

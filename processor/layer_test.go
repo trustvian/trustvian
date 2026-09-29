@@ -12,8 +12,6 @@ package trustvianprocessor_test
 
 import (
 	"context"
-	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -187,10 +185,15 @@ func TestCountingFoldIsNotImplementedYet(t *testing.T) {
 	}
 }
 
-// TestParentIsUnreachableAtCountingTime is why the fold is deferred. The record
-// the control plane counts from carries no parent identity, so the platform
-// cannot know two records describe one act.
-func TestParentIsUnreachableAtCountingTime(t *testing.T) {
+// TestParentIsCarriedButCountingStillCannotFold replaces the test that asserted
+// no parent identity reached the evidence boundary.
+//
+// Task 084 landed, so it does now: the record carries the parent span id and the
+// lineage. That was the *input* 083's fold was missing, and it is not the fold.
+// Recording a parent id does not decide how two observations become one counted
+// change, and this test pins both halves of that so neither is mistaken for the
+// other.
+func TestParentIsCarriedButCountingStillCannotFold(t *testing.T) {
 	cp := newIngestAPIServer(t)
 	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cp.config(t))
 	if err != nil {
@@ -203,16 +206,34 @@ func TestParentIsUnreachableAtCountingTime(t *testing.T) {
 	if err := proc.ConsumeTraces(context.Background(), td); err != nil {
 		t.Fatalf("ConsumeTraces() error = %v", err)
 	}
-	for _, r := range cp.recorded() {
-		encoded, err := json.Marshal(r)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if strings.Contains(string(encoded), "parent") {
-			t.Errorf("a DecisionRecord now carries a parent field; 084 may have landed "+
-				"and the counting fold is unblocked:\n%s", encoded)
-		}
+
+	records := cp.recorded()
+	if len(records) != 2 {
+		t.Fatalf("got %d records, want 2", len(records))
 	}
+
+	// The input 084 delivers: the transport observation names the tool
+	// observation as its parent, and the tool observation states it is a root.
+	tool, transport := records[0], records[1]
+	if tool.SpanLineage != event.LineageRoot {
+		t.Errorf("tool lineage = %q, want %q", tool.SpanLineage, event.LineageRoot)
+	}
+	if transport.SpanLineage != event.LineageChild {
+		t.Errorf("transport lineage = %q, want %q", transport.SpanLineage, event.LineageChild)
+	}
+	if transport.ParentSpanID != tool.SpanID {
+		t.Errorf("transport parent = %q, want the tool span id %q",
+			transport.ParentSpanID, tool.SpanID)
+	}
+
+	// And the thing 084 does not deliver: the two observations are still two
+	// behavioral identities, and nothing folds them into one counted change.
+	if tool.FingerprintID == transport.FingerprintID {
+		t.Fatal("the two observations now share a fingerprint; identity changed, " +
+			"which ADR 0047 refuses")
+	}
+	t.Log("parent identity is carried; the counting fold is still not implemented " +
+		"\u2014 see TestCountingFoldIsNotImplementedYet")
 }
 
 // TestMissingCorrelationFallsBackToTwoCountedChanges pins the documented

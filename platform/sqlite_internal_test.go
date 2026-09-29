@@ -1237,7 +1237,10 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 	// are told apart by the stamped version alone. Growth is therefore
 	// asserted as monotone rather than strict, and the index-only step is
 	// named so a future reader does not read it as an omission.
-	indexOnly := map[int]bool{SchemaVersion: true}
+	// Versions that add no table. v5 added three indexes (task 074) and v6 added
+	// nine columns to one table (task 084); neither creates or drops one, so the
+	// table list is legitimately unchanged across both.
+	indexOnly := map[int]bool{schemaVersionV5: true, SchemaVersion: true}
 	for version := schemaVersionV1 + 1; version <= SchemaVersion; version++ {
 		previous := schemaTablesByVersion[version-1]
 		current := schemaTablesByVersion[version]

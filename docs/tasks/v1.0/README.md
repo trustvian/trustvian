@@ -34,7 +34,8 @@ Tasks for the `v1.0` milestone.
 | 081 | Approved in [ROADMAP.md](../../ROADMAP.md#milestone-sequence); **no specification written yet** — deferred from 075 |
 | [082 — Agent Inspection and Evaluation Depth](082-agent-inspection-and-evaluation-depth.md) | Specified. Documentation and planning only; implements nothing |
 | [083 — Behavioral Layer Identity and Display Classification](083-behavioral-layer-classification.md) | Specified; **partially implemented** — classification and rendering shipped, the counting correction deferred to 084 |
-| 084–090 | Reserved and scoped by [082](082-agent-inspection-and-evaluation-depth.md); **no specification written yet.** 089 is **PROPOSED** rather than approved |
+| [084 — Correlation and Operational Evidence on the Record Boundary](084-correlation-operational-evidence.md) | Specified and implemented |
+| 085–090 | Reserved and scoped by [082](082-agent-inspection-and-evaluation-depth.md); **no specification written yet.** 089 is **PROPOSED** rather than approved |
 
 The numbers 067–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
@@ -248,6 +249,13 @@ non-identity `Layer` classification carried where fidelity is carried, and hones
 rendering of model calls, tool calls, retrievals and transport operations — the
 last of which states no direction, because a transport classification covers
 inbound and outbound spans alike.
+
+**Task 084 is implemented.** A record now carries parent span identity, span
+lineage, duration in nanoseconds and span status, and the platform aggregates
+duration and status per run and persists them (schema **6**). Availability is
+explicit throughout: an unmeasured duration is not a duration of zero, and
+neither an unset status nor an absent one is success. Nothing it adds touches
+behavioral identity, and the volatile feature bridge is unchanged.
 
 **The counting correction is deferred, and the task stays open.** Folding a tool
 observation and the request beneath it into one counted change needs to know they

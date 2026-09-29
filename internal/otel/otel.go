@@ -145,6 +145,7 @@ func EventFromSpan(span sdktrace.ReadOnlySpan) event.Event {
 	attrs[trustviansemconv.AttrLayer] = string(layerFor(normalized))
 
 	sc := span.SpanContext()
+	parentSpanID, lineage := spanLineage(span)
 
 	return event.Event{
 		ID:        sc.SpanID().String(),
@@ -162,11 +163,74 @@ func EventFromSpan(span sdktrace.ReadOnlySpan) event.Event {
 		Target:     event.Target{Name: target},
 		Attributes: attrs,
 		Context: event.Context{
-			Environment: resourceAttr(span, semconv.DeploymentEnvironmentNameKey),
-			TraceID:     sc.TraceID().String(),
-			SpanID:      sc.SpanID().String(),
-			SessionID:   normalized.SessionID,
+			Environment:  resourceAttr(span, semconv.DeploymentEnvironmentNameKey),
+			TraceID:      sc.TraceID().String(),
+			SpanID:       sc.SpanID().String(),
+			SessionID:    normalized.SessionID,
+			ParentSpanID: parentSpanID,
+			SpanLineage:  lineage,
 		},
+		Execution: executionFrom(span),
+	}
+}
+
+// spanLineage reads the span's own parent reference, and nothing else.
+//
+// The SDK returns a parent SpanContext that is invalid for a root span, which is
+// how root and child are told apart. There is no third answer available: the SDK
+// cannot express "the producer does not know", so this never reports
+// LineageUnspecified — that state belongs to an Event that did not come from a
+// span at all.
+//
+// A child whose parent was sampled away or has not arrived yet is still a child,
+// and nothing here checks that the parent exists. Parentage is read from the
+// reference the producer set; never from timing, adjacency, names or the order
+// spans were exported in.
+func spanLineage(span sdktrace.ReadOnlySpan) (string, event.SpanLineage) {
+	parent := span.Parent()
+	if !parent.IsValid() {
+		return "", event.LineageRoot
+	}
+	return parent.SpanID().String(), event.LineageChild
+}
+
+// executionFrom reads duration and status from the span's own fields.
+//
+// Both are span fields rather than attributes, which is why the volatile bridge
+// exists at all; this is the evidence-side reading of the same two facts, and the
+// two deliberately differ in one case. The bridge writes duration_ms only for a
+// strictly positive duration, because a zero adds nothing to a feature; this
+// records a zero, because "instantaneous" and "not measured" are different
+// evidence. Both readings are correct for their purpose.
+//
+// time.Time's zero value is the unset marker here, which is safe for the SDK
+// because EndTime() returns a real time.Time — unlike pdata's epoch-nanosecond
+// timestamp, where zero converts to 1970 and the processor's own reading says so.
+func executionFrom(span sdktrace.ReadOnlySpan) event.Execution {
+	exec := event.Execution{Status: spanStatus(span.Status().Code)}
+	start, end := span.StartTime(), span.EndTime()
+	if start.IsZero() || end.IsZero() {
+		return exec
+	}
+	nanos, observed := event.DurationFrom(uint64(start.UnixNano()), uint64(end.UnixNano()))
+	exec.DurationNanos, exec.DurationObserved = nanos, observed
+	return exec
+}
+
+// spanStatus translates the SDK's status code.
+//
+// Unset is carried as its own value rather than folded into "no error": the
+// producer expressing no opinion is not the producer reporting success, and
+// collapsing them would let an entirely unstatused run report a clean bill of
+// health. See event.SpanStatus.
+func spanStatus(code codes.Code) event.SpanStatus {
+	switch code {
+	case codes.Ok:
+		return event.StatusOK
+	case codes.Error:
+		return event.StatusError
+	default:
+		return event.StatusUnset
 	}
 }
 

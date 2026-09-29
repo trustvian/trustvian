@@ -129,6 +129,8 @@ func EventFromSpan(resourceAttrs pcommon.Map, span ptrace.Span) event.Event {
 	// Task 083.
 	attrs[event.AttrLayer] = string(layerFor(normalized))
 
+	parentSpanID, lineage := spanLineage(span)
+
 	return event.Event{
 		ID:        span.SpanID().String(),
 		Timestamp: span.StartTimestamp().AsTime(),
@@ -145,11 +147,71 @@ func EventFromSpan(resourceAttrs pcommon.Map, span ptrace.Span) event.Event {
 		Target:     event.Target{Name: target},
 		Attributes: attrs,
 		Context: event.Context{
-			Environment: stringResourceAttr(resourceAttrs, string(semconv.DeploymentEnvironmentNameKey)),
-			TraceID:     span.TraceID().String(),
-			SpanID:      span.SpanID().String(),
-			SessionID:   normalized.SessionID,
+			Environment:  stringResourceAttr(resourceAttrs, string(semconv.DeploymentEnvironmentNameKey)),
+			TraceID:      span.TraceID().String(),
+			SpanID:       span.SpanID().String(),
+			SessionID:    normalized.SessionID,
+			ParentSpanID: parentSpanID,
+			SpanLineage:  lineage,
 		},
+		Execution: executionFrom(span),
+	}
+}
+
+// spanLineage reads the span's own parent reference, and nothing else.
+//
+// OTLP encodes a root as an all-zero parent span id, which is how root and child
+// are told apart. There is no third answer available: the format cannot express
+// "the producer does not know", so this never reports LineageUnspecified — that
+// state belongs to an Event that did not come from a span at all.
+//
+// A child whose parent was sampled away or has not arrived yet is still a child,
+// and nothing here checks that the parent exists — a parent span ends *after* the
+// children it started, so a child arriving first is the normal case rather than
+// an anomaly. Parentage is read from the reference the producer set; never from
+// timing, adjacency, names or batch order.
+func spanLineage(span ptrace.Span) (string, event.SpanLineage) {
+	parent := span.ParentSpanID()
+	if parent.IsEmpty() {
+		return "", event.LineageRoot
+	}
+	return parent.String(), event.LineageChild
+}
+
+// executionFrom reads duration and status from the span's own fields.
+//
+// The evidence-side reading of the two facts bridgeVolatileSignals writes for
+// features.Extract. The two deliberately differ in one case: the bridge writes
+// duration_ms only for a strictly positive duration, because a zero adds nothing
+// to a feature, and this records a zero because "instantaneous" and "not
+// measured" are different evidence. Both are correct for their purpose.
+//
+// pcommon.Timestamp is Unix-epoch nanoseconds, so its zero value is the unset
+// marker and converting to time.Time first would read an unset timestamp as 1970
+// — the same trap bridgeVolatileSignals documents. The arithmetic stays in
+// nanoseconds for that reason.
+func executionFrom(span ptrace.Span) event.Execution {
+	exec := event.Execution{Status: spanStatus(span.Status().Code())}
+	nanos, observed := event.DurationFrom(
+		uint64(span.StartTimestamp()), uint64(span.EndTimestamp()))
+	exec.DurationNanos, exec.DurationObserved = nanos, observed
+	return exec
+}
+
+// spanStatus translates the pipeline's status code.
+//
+// Unset is carried as its own value rather than folded into "no error": the
+// producer expressing no opinion is not the producer reporting success, and
+// collapsing them would let an entirely unstatused run report a clean bill of
+// health. See event.SpanStatus.
+func spanStatus(code ptrace.StatusCode) event.SpanStatus {
+	switch code {
+	case ptrace.StatusCodeOk:
+		return event.StatusOK
+	case ptrace.StatusCodeError:
+		return event.StatusError
+	default:
+		return event.StatusUnset
 	}
 }
 
