@@ -10,6 +10,54 @@ actually depend on.
 
 ### Added
 
+- **A failed gate check now leads to the evidence behind it** (task 085). The gate
+  printed `added_behaviors actual 3 maximum 0 FAIL` and nothing in the platform
+  could answer *which three*, or which observations carried them — `BehaviorDelta`
+  holds no reference to an observation, and a gate result is deliberately closed.
+  The investigation restarted from the run identifier every time.
+
+  Two bounded `GET` routes and a `trustvian evidence` command family now resolve a
+  finding to the behavioral identities that contributed to it, and each identity
+  to the retained observations that carried it.
+
+  **This does not reopen the gate's fixed shape.** Resolution is a query against
+  authoritative state, not a payload inside a verdict: no gate result, scorecard,
+  count or fingerprint changes, and nothing is recomputed — behavioral identities
+  come from the same comparison function over the same persisted snapshots, and
+  recorded counts come from the persisted aggregate.
+
+  **A finding reference is built only from durable values** — two run identifiers
+  and either a gate check name or a fingerprint — so it is stable by construction,
+  needs no finding table, and travels in the query string, which makes the
+  resolution URL itself the citable link.
+
+  **An empty answer is not always the same answer.** A resolution reports
+  `resolved`, `none_found`, `indeterminate` or `aggregate_only`, and the status
+  describes the **finding** rather than the page: a page requested past the last
+  match returns zero rows with `resolved`, because the evidence exists and the
+  caller has read all of it. `none_found` is returned only when nothing matches at
+  all and the history is complete; an empty result over partial or unavailable
+  history is `indeterminate`, because absence there establishes nothing. Page
+  exhaustion is signalled by the continuation cursor being absent.
+
+  **A behavior present in both runs requires an explicit side.** Both runs hold
+  their own observations of it and those two sets are what a developer is
+  comparing, so the control plane refuses to pick one — an added behavior defaults
+  to the candidate and a removed one to the reference, because each exists in one
+  run only. `exhaustive` is true only when the history is complete, so a full set of
+  matches drawn from a bounded history is never labelled as all of them. The
+  recorded count travels beside the rows and is never reconciled with them — a
+  check counts every record a run ingested, while retention is bounded.
+
+  Three of the five gate checks resolve to evidence; `reference_evidence` and
+  `candidate_evidence` report `aggregate_only`, because they fail when a run
+  observed *too little* and an absence has no supporting records to invent.
+
+  Filters are SQL predicates applied before the page limit, the behavioral filter
+  uses task 067's bounded digest index and compares the original value as well as
+  the key, and each page and its history metadata are read from one snapshot.
+  **No schema change.**
+
 - **A decision can now be read back after the run that produced it ended**
   (task 067). The platform retained two reductions per evaluation run — a
   fixed-shape aggregate and a behavior snapshot capped at 512 distinct behaviors

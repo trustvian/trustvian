@@ -310,6 +310,19 @@ func NewObservationHistory(
 type ObservationPage struct {
 	Observations []Observation
 	History      ObservationHistory
+
+	// Matched reports whether **any** retained observation satisfies the read's
+	// filter, independent of the page cursor.
+	//
+	// It exists because an empty page has two unrelated causes that look
+	// identical: nothing matches, or the caller has paged past the last match.
+	// A reader that inferred "no evidence" from a short page would report the
+	// second as the first — and would do so precisely when a developer had just
+	// finished reading all the evidence there is.
+	//
+	// Read in the same transaction as the rows and the history above, so the
+	// three describe one instant.
+	Matched bool
 }
 
 // FormatObservationCursor renders a page cursor.

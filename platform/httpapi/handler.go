@@ -212,6 +212,14 @@ func (h *Handler) routes() {
 
 	h.mux.HandleFunc("POST /v1/evaluations/compare", h.compare)
 
+	// Task 085's evidence resolution. GET rather than POST, although compare
+	// beside it is a POST: a resolution takes no body, and the point of the
+	// capability is that its URL is the citable link 079 renders into a pull
+	// request and 088 records a decision against. A POST would have made the
+	// one thing this route exists to produce unlinkable.
+	h.mux.HandleFunc("GET /v1/evidence/behaviors", h.findingBehaviors)
+	h.mux.HandleFunc("GET /v1/evidence/observations", h.findingObservations)
+
 	h.mux.HandleFunc("GET /v1/realtime", h.realtime)
 }
 
@@ -368,6 +376,11 @@ func classify(err error) (int, string, string) {
 		// distinct from it because a sequence and an identifier fail
 		// differently and deserve different diagnostics.
 		errors.Is(err, platform.ErrObservationCursor),
+		// A finding naming a behavior this comparison never saw, a side its
+		// presence contradicts, or an unknown check. Permanently wrong for this
+		// comparison whatever the state becomes, so it is the request that is
+		// wrong rather than a conflict.
+		errors.Is(err, platform.ErrInvalidFinding),
 		// A retained observation this path could not project. Reachable only
 		// from a record the ingest boundary would also refuse, so it is the
 		// caller's record rather than a server fault.
@@ -1309,4 +1322,88 @@ func (h *Handler) runObservations(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, newObservationListResponse(string(runID), page, nextAfter))
+}
+
+// ---------------------------------------------------------------------
+// Evidence resolution (task 085)
+// ---------------------------------------------------------------------
+
+// findingParam reads the finding a resolution is about.
+//
+// Every component is a query parameter, which is what makes the whole reference
+// live in the URL. Nothing is defaulted: a missing run identifier or a finding
+// naming neither a check nor a behavior is refused by the control plane with a
+// diagnostic naming what is wrong, rather than guessed at here.
+func findingParam(r *http.Request) platform.FindingRef {
+	query := r.URL.Query()
+	return platform.FindingRef{
+		ReferenceRunID: platform.EvaluationRunID(query.Get("reference_run_id")),
+		CandidateRunID: platform.EvaluationRunID(query.Get("candidate_run_id")),
+		Check:          platform.GateCheckName(query.Get("check")),
+		Behavior:       query.Get("behavior"),
+		Side:           platform.ComparisonSide(query.Get("side")),
+	}
+}
+
+// findingBehaviors resolves a finding to the behavioral identities behind it.
+func (h *Handler) findingBehaviors(w http.ResponseWriter, r *http.Request) {
+	limit, err := listLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	finding := findingParam(r)
+	after := r.URL.Query().Get("after")
+
+	resolution, err := h.controlPlane.ResolveFindingBehaviors(r.Context(), finding, after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	nextAfter := ""
+	if len(resolution.Behaviors) == limit {
+		last := resolution.Behaviors[len(resolution.Behaviors)-1].FingerprintID
+		probe, err := h.controlPlane.ResolveFindingBehaviors(r.Context(), finding, last, 1)
+		if err != nil {
+			h.writeError(w, err)
+			return
+		}
+		if len(probe.Behaviors) > 0 {
+			nextAfter = last
+		}
+	}
+	writeJSON(w, http.StatusOK, newFindingBehaviorListResponse(resolution, nextAfter))
+}
+
+// findingObservations resolves a finding to the retained observations behind it.
+func (h *Handler) findingObservations(w http.ResponseWriter, r *http.Request) {
+	limit, err := listLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	finding := findingParam(r)
+	after := r.URL.Query().Get("after")
+
+	resolution, err := h.controlPlane.ResolveFindingObservations(r.Context(), finding, after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	nextAfter := ""
+	if len(resolution.Observations) == limit {
+		last := platform.FormatObservationCursor(
+			resolution.Observations[len(resolution.Observations)-1].Sequence)
+		probe, err := h.controlPlane.ResolveFindingObservations(r.Context(), finding, last, 1)
+		if err != nil {
+			h.writeError(w, err)
+			return
+		}
+		if len(probe.Observations) > 0 {
+			nextAfter = last
+		}
+	}
+	writeJSON(w, http.StatusOK, newFindingObservationListResponse(resolution, nextAfter))
 }

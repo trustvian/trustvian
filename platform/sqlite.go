@@ -3224,6 +3224,15 @@ func retainObservation(
 func (s *SQLiteStore) RunObservations(
 	ctx context.Context, id EvaluationRunID, after uint64, limit int,
 ) (ObservationPage, error) {
+	return s.FindObservations(ctx, id, ObservationFilter{}, after, limit)
+}
+
+// FindObservations returns one bounded page of the observations supporting a
+// finding, filtered in storage and read under the same snapshot.
+func (s *SQLiteStore) FindObservations(
+	ctx context.Context, id EvaluationRunID, filter ObservationFilter,
+	after uint64, limit int,
+) (ObservationPage, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ObservationPage{}, fmt.Errorf("platform: read observations: %w", err)
@@ -3232,7 +3241,7 @@ func (s *SQLiteStore) RunObservations(
 	// already run is a no-op, so the explicit call below is safe to repeat.
 	defer tx.Rollback() //nolint:errcheck // read-only; nothing to lose on rollback
 
-	page, err := runObservationPage(ctx, sqlQuerier{tx}, id, after, limit)
+	page, err := runObservationPage(ctx, sqlQuerier{tx}, id, filter, after, limit)
 	if err != nil {
 		return ObservationPage{}, err
 	}

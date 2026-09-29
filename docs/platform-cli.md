@@ -146,12 +146,95 @@ work; see [task 083](tasks/v1.0/083-behavioral-layer-classification.md) and
 At `--max-added-behaviors 0` none of this is observable. It matters the moment a
 budget is nonzero.
 
+`trustvian evidence` pages like every other collection here: `--limit` 1..64 and
+an exclusive `--after` cursor the previous page printed. It aggregates nothing
+client-side, because the status and exhaustiveness fields describe *one* page
+read at one instant and stitching several together would blur them.
+
 Two collections exist — `env list` and `promotion list` — because two entities
 have a consumer that needs one, and both traverse a project by an immutable key
 in byte order with the server bounding every page. There is no `search`, and no
 `update` or `delete` for a promotion, because the API has no such routes: a
 client-side list would have to invent ordering, paging and scoping nothing has
 decided, and a recorded decision is history rather than a row to edit.
+
+### Following a finding to its evidence
+
+`trustvian evidence` answers the question a failed gate leaves open. The gate
+prints a number; this turns the number into the evidence behind it, in two steps
+— which behavioral identities contributed, and which retained observations
+carried them.
+
+```console
+$ trustvian eval compare --reference-run run-ref --candidate-run run-cand     --max-added-behaviors 0 --max-block-decisions 0     --max-critical-risk-observations 0
+GATE   FAIL
+  added_behaviors        actual 2   maximum 0   FAIL
+
+$ trustvian evidence behaviors --reference-run run-ref --candidate-run run-cand     --check added_behaviors
+STATUS  resolved
+SIDE    candidate
+RECORDED 2
+
+BEHAVIORS (2)
+  fp-delete         added     tool · delete_customer
+  fp-export         added     tool · export_customer → export.localhost
+
+HISTORY complete (4 retained)
+
+$ trustvian evidence observations --reference-run run-ref     --candidate-run run-cand --behavior fp-export
+STATUS  resolved
+SIDE    candidate
+RECORDED 2
+EXHAUSTIVE true
+
+OBSERVATIONS (2)
+  seq 2      2026-03-04T05:06:07Z   block    critical tool · export_customer → export.localhost
+  seq 4      2026-03-04T05:06:09Z   block    low      tool · export_customer → export.localhost
+
+HISTORY complete (4 retained)
+```
+
+`--check` takes the gate's own check names. Three of the five resolve to
+evidence: `added_behaviors` to behaviors and then to each behavior's
+observations, and `block_decisions` and `critical_risk_observations` straight to
+the observations that carried them. `reference_evidence` and
+`candidate_evidence` report `aggregate_only` — they fail when a run observed
+*too little*, and an absence has no supporting records to link to.
+
+**`RECORDED` and the rows below it are different measurements.** The recorded
+count is what the gate counted, across every record the run ingested. The rows
+are what retained history still holds, which is bounded and may be partial. A
+larger recorded count beside a shorter list is bounded retention describing
+itself, not a discrepancy — and `EXHAUSTIVE` says whether paging to the end
+would yield all of them.
+
+**An empty answer is not always the same answer.** `none_found` means the
+history is complete and nothing matched, so nothing happened. `indeterminate`
+means the history is partial or predates retention, so the absence establishes
+nothing. The command prints which, because the two look identical otherwise.
+
+**The status describes the finding, not the page.** Paging past the last match
+prints `STATUS resolved` with no rows and a note saying the evidence is on the
+earlier pages — never "no supporting evidence", which would be the opposite of
+the truth at exactly the moment you finished reading it. Whether more rows
+follow is the `--after` cursor's job, printed as `more: --after <cursor>` and
+absent when there are none.
+
+**A behavior present in both runs needs `--side`.** Both runs hold their own
+observations of it, and those two sets are what you are comparing — so the
+control plane refuses to pick one for you:
+
+```console
+$ trustvian evidence observations --reference-run run-ref     --candidate-run run-cand --behavior fp-shared
+trustvian: behavior "fp-shared" is present in both runs; name the side to
+resolve — reference or candidate
+
+$ trustvian evidence observations --reference-run run-ref     --candidate-run run-cand --behavior fp-shared --side reference
+```
+
+An added or removed behavior needs no `--side`: it exists in one run only, and
+naming the other is refused rather than silently honoured. A `--check` never
+takes one, because a gate check already counts one side.
 
 ### Recording a promotion
 

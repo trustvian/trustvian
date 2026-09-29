@@ -36,7 +36,8 @@ Tasks for the `v1.0` milestone.
 | [082 — Agent Inspection and Evaluation Depth](082-agent-inspection-and-evaluation-depth.md) | Specified. Documentation and planning only; implements nothing |
 | [083 — Behavioral Layer Identity and Display Classification](083-behavioral-layer-classification.md) | Specified; **partially implemented** — classification and rendering shipped, the counting correction deferred to 084 |
 | [084 — Correlation and Operational Evidence on the Record Boundary](084-correlation-operational-evidence.md) | Specified and implemented |
-| 085–090 | Reserved and scoped by [082](082-agent-inspection-and-evaluation-depth.md); **no specification written yet.** 089 is **PROPOSED** rather than approved |
+| [085 — Evidence Resolution](085-evidence-resolution.md) | Specified and implemented |
+| 086–090 | Reserved and scoped by [082](082-agent-inspection-and-evaluation-depth.md); **no specification written yet.** 089 is **PROPOSED** rather than approved |
 
 The numbers 068–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
@@ -164,8 +165,8 @@ one whose results reach a reviewer and whose central claim carries a number:
   span and session correlation that the platform receives and does not retain.
   The explorer presents sessions, traces and behavioral sequence over whatever
   history **067** makes durable — 067 keeps ownership of the storage contract,
-  and now holds it: per-observation retention is implemented and 085 is the next
-  unblocked item.
+  and now holds it. **085 is implemented**, so the explorer's evidence
+  resolution exists and 076 navigates it rather than computing it.
 - **077 — Unified OTLP Local Dev Runtime** is **implemented**. Watching an agent
   used to mean a control plane, a Collector, a processor config, a manually
   created hierarchy and the right OTLP environment. `trustvian dev -- <command>`

@@ -12,6 +12,7 @@ package platform
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 )
 
@@ -39,6 +40,65 @@ func runObservationReadHook() {
 	if hook := testHookInObservationRead.Load(); hook != nil {
 		(*hook)()
 	}
+}
+
+// ObservationFilter narrows a page of retained history to the observations
+// that support one finding.
+//
+// A value rather than free-form criteria: every field maps to one equality
+// predicate over a column task 067 already retains, which is what keeps the
+// filter expressible as a bounded SQL `WHERE` rather than as a scan the caller
+// post-processes. There is deliberately no range, no negation and no
+// disjunction — task 085 needs none, and each would be a query shape nothing
+// has measured.
+//
+// The zero value matches everything, which is what the unfiltered page read
+// passes.
+type ObservationFilter struct {
+	// FingerprintID selects one behavioral identity. Matched through task
+	// 067's bounded digest index **and** against the original value, because a
+	// digest narrows rather than identifies.
+	FingerprintID string
+
+	// Decision and RiskLevel select by recorded outcome, for the gate checks
+	// that count one.
+	Decision  string
+	RiskLevel string
+}
+
+// empty reports whether this filter constrains nothing.
+func (f ObservationFilter) empty() bool {
+	return f.FingerprintID == "" && f.Decision == "" && f.RiskLevel == ""
+}
+
+// predicate renders the filter as SQL and bind arguments.
+//
+// Assembled from compile-time constants only; every caller-supplied value is a
+// bound parameter, which is the rule this package applies to all of its SQL.
+//
+// Applied **before** the page limit, by being part of the same statement. A
+// filter applied to an already-paginated page would return three rows where
+// sixty-four matches exist, and would make the continuation cursor describe the
+// unfiltered stream rather than the answer.
+func (f ObservationFilter) predicate() (string, []any) {
+	var sql strings.Builder
+	args := make([]any, 0, 4)
+
+	if f.FingerprintID != "" {
+		// Both halves, always. The key is what the index can seek on; the value
+		// is what makes a match mean what it says.
+		sql.WriteString(" AND fingerprint_key = ? AND fingerprint_id = ?")
+		args = append(args, observationDigestKey(f.FingerprintID), f.FingerprintID)
+	}
+	if f.Decision != "" {
+		sql.WriteString(" AND decision = ?")
+		args = append(args, f.Decision)
+	}
+	if f.RiskLevel != "" {
+		sql.WriteString(" AND risk_level = ?")
+		args = append(args, f.RiskLevel)
+	}
+	return sql.String(), args
 }
 
 // observationRetention is what retaining one observation should do, decided
@@ -203,7 +263,8 @@ func observationHistoryFor(
 // is an empty page, and collapsing them would make a typo indistinguishable
 // from an answer.
 func runObservationPage(
-	ctx context.Context, q evidenceQuerier, id EvaluationRunID, after uint64, limit int,
+	ctx context.Context, q evidenceQuerier, id EvaluationRunID,
+	filter ObservationFilter, after uint64, limit int,
 ) (ObservationPage, error) {
 	if _, err := loadRun(ctx, q, id); err != nil {
 		return ObservationPage{}, err
@@ -220,13 +281,19 @@ func runObservationPage(
 	// it cannot tell that it never existed.
 	runObservationReadHook()
 
+	filterSQL, filterArgs := filter.predicate()
+	args := make([]any, 0, len(filterArgs)+3)
+	args = append(args, string(id), observationSequenceKey(after))
+	args = append(args, filterArgs...)
+	args = append(args, limit)
+
 	rows, err := q.query(ctx, q.rebind(
 		`SELECT `+observationSelectList()+`
 		   FROM `+tableObservations+`
-		  WHERE run_id = ? AND sequence > ?
+		  WHERE run_id = ? AND sequence > ?`+filterSQL+`
 		  ORDER BY sequence
 		  LIMIT ?`),
-		string(id), observationSequenceKey(after), limit)
+		args...)
 	if err != nil {
 		return ObservationPage{}, fmt.Errorf("platform: load observations: %w", err)
 	}
@@ -248,5 +315,50 @@ func runObservationPage(
 		return ObservationPage{}, fmt.Errorf("platform: load observations: %w", err)
 	}
 
-	return ObservationPage{Observations: observations, History: history}, nil
+	// A non-empty page has obviously matched something; only an empty one needs
+	// asking, which keeps the extra statement off every page read.
+	matched := len(observations) > 0
+	if !matched {
+		matched, err = observationsMatch(ctx, q, id, filter)
+		if err != nil {
+			return ObservationPage{}, err
+		}
+	}
+
+	return ObservationPage{
+		Observations: observations,
+		History:      history,
+		Matched:      matched,
+	}, nil
+}
+
+// observationsMatch reports whether the filter matches anything in the run,
+// ignoring the page cursor.
+//
+// Bounded to one row and issued inside the caller's transaction, so it answers
+// about the same instant the page and the history metadata describe. Asking it
+// outside that snapshot would let a concurrent ingest make "nothing matches"
+// and "here are the matches" both true of one response.
+func observationsMatch(
+	ctx context.Context, q rowQuerier, id EvaluationRunID, filter ObservationFilter,
+) (bool, error) {
+	filterSQL, filterArgs := filter.predicate()
+	args := make([]any, 0, len(filterArgs)+1)
+	args = append(args, string(id))
+	args = append(args, filterArgs...)
+
+	var one int
+	err := q.queryRow(ctx, q.rebind(
+		`SELECT 1
+		   FROM `+tableObservations+`
+		  WHERE run_id = ?`+filterSQL+`
+		  LIMIT 1`),
+		args...).Scan(&one)
+	switch {
+	case q.noRows(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("platform: probe observations: %w", err)
+	}
+	return true, nil
 }

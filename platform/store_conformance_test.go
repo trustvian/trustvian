@@ -146,6 +146,9 @@ func TestStoreConformance(t *testing.T) {
 			t.Run("observation-large-identifiers", func(t *testing.T) {
 				conformObservationLargeIdentifiers(t, backend.open)
 			})
+			t.Run("observation-filters", func(t *testing.T) {
+				conformObservationFilters(t, backend.open)
+			})
 			t.Run("timestamps", func(t *testing.T) { conformTimestamps(t, backend.open) })
 			t.Run("cancellation", func(t *testing.T) { conformCancellation(t, backend.open) })
 		})
@@ -1354,5 +1357,127 @@ func conformObservationLargeIdentifiers(t *testing.T, open func(testing.TB) Stor
 	}
 	if len(after.Observations) != 1 {
 		t.Errorf("a retry produced %d observations, want 1", len(after.Observations))
+	}
+}
+
+// conformObservationFilters is task 085's storage contract on whichever backend
+// is running: the filter is a SQL predicate, it is applied before the limit, and
+// a fingerprint filter matches the digest *and* the original value.
+func conformObservationFilters(t *testing.T, open func(testing.TB) Store) {
+	store := open(t)
+	ctx := t.Context()
+	running := startedRun(t, store, "run-1")
+
+	// Twelve observations, alternating decision and fingerprint, so a filter
+	// that ran after the page limit would return half of what it should.
+	for i := 1; i <= 12; i++ {
+		// Evidence grows with the cursor, as it does in production: a fixed
+		// one-record aggregate beside an advancing sequence is a state the
+		// ingest contract refuses.
+		aggregate, snapshot := conformanceEvidence(t, running, i)
+		commit := EvaluationIngestCommit{
+			Aggregate:            aggregate,
+			Snapshot:             snapshot,
+			Sequence:             uint64(i),
+			PreviousNextSequence: uint64(i),
+			RecordDigest:         strings.Repeat(fmt.Sprintf("%x", i%16), 64),
+			Observation:          conformanceObservation(t, uint64(i)),
+		}
+		if i%2 == 0 {
+			commit.Observation.Decision = "block"
+			commit.Observation.RiskLevel = "critical"
+			commit.Observation.FingerprintID = "fp-even"
+		} else {
+			commit.Observation.Decision = "allow"
+			commit.Observation.RiskLevel = "low"
+			commit.Observation.FingerprintID = "fp-odd"
+		}
+		if _, err := store.CommitEvaluationIngest(ctx, commit); err != nil {
+			t.Fatalf("CommitEvaluationIngest(%d) error = %v", i, err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		filter ObservationFilter
+		want   int
+	}{
+		{"unfiltered", ObservationFilter{}, 12},
+		{"by decision", ObservationFilter{Decision: "block"}, 6},
+		{"by risk level", ObservationFilter{RiskLevel: "critical"}, 6},
+		{"by fingerprint", ObservationFilter{FingerprintID: "fp-odd"}, 6},
+		{"combined", ObservationFilter{FingerprintID: "fp-even", Decision: "block"}, 6},
+		{"contradictory", ObservationFilter{FingerprintID: "fp-odd", Decision: "block"}, 0},
+		{"no such fingerprint", ObservationFilter{FingerprintID: "fp-absent"}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Paged at 4, so a filter applied after the limit would be visible
+			// as short pages and a wrong total.
+			var seen []uint64
+			after := uint64(0)
+			for {
+				page, err := store.FindObservations(ctx, "run-1", tc.filter, after, 4)
+				if err != nil {
+					t.Fatalf("FindObservations(after=%d) error = %v", after, err)
+				}
+				if len(page.Observations) == 0 {
+					break
+				}
+				for _, o := range page.Observations {
+					seen = append(seen, o.Sequence)
+				}
+				after = page.Observations[len(page.Observations)-1].Sequence
+			}
+			if len(seen) != tc.want {
+				t.Fatalf("filter returned %d observations, want %d (%v)",
+					len(seen), tc.want, seen)
+			}
+			for i := 1; i < len(seen); i++ {
+				if seen[i] <= seen[i-1] {
+					t.Fatalf("sequences are not ascending: %v", seen)
+				}
+			}
+		})
+	}
+
+	// Full pages where matches remain: the filter is inside the query, so a
+	// page of 4 holds 4 matches rather than 4 rows of which some matched.
+	page, err := store.FindObservations(ctx, "run-1", ObservationFilter{Decision: "block"}, 0, 4)
+	if err != nil {
+		t.Fatalf("FindObservations() error = %v", err)
+	}
+	if len(page.Observations) != 4 {
+		t.Errorf("filtered page holds %d observations, want a full page of 4",
+			len(page.Observations))
+	}
+	for _, o := range page.Observations {
+		if o.Decision != "block" {
+			t.Errorf("observation %d has decision %q", o.Sequence, o.Decision)
+		}
+	}
+
+	// A planted key collision must not match: the original value is compared too.
+	aggregate, snapshot := conformanceEvidence(t, running, 13)
+	collision := EvaluationIngestCommit{
+		Aggregate:            aggregate,
+		Snapshot:             snapshot,
+		Sequence:             13,
+		PreviousNextSequence: 13,
+		RecordDigest:         strings.Repeat("d", 64),
+		Observation:          conformanceObservation(t, 13),
+	}
+	collision.Observation.FingerprintID = "fp-odd"
+	if _, err := store.CommitEvaluationIngest(ctx, collision); err != nil {
+		t.Fatalf("seed the collision row: %v", err)
+	}
+	collided, err := store.FindObservations(
+		ctx, "run-1", ObservationFilter{FingerprintID: "fp-even"}, 0, MaxListPage)
+	if err != nil {
+		t.Fatalf("FindObservations() error = %v", err)
+	}
+	for _, o := range collided.Observations {
+		if o.FingerprintID != "fp-even" {
+			t.Errorf("filter returned an observation carrying %q", o.FingerprintID)
+		}
 	}
 }

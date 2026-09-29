@@ -1069,10 +1069,19 @@ func retainObservationPostgres(
 func (s *PostgresStore) RunObservations(
 	ctx context.Context, id EvaluationRunID, after uint64, limit int,
 ) (ObservationPage, error) {
+	return s.FindObservations(ctx, id, ObservationFilter{}, after, limit)
+}
+
+// FindObservations returns one bounded page of the observations supporting a
+// finding, filtered in storage and read under the same snapshot.
+func (s *PostgresStore) FindObservations(
+	ctx context.Context, id EvaluationRunID, filter ObservationFilter,
+	after uint64, limit int,
+) (ObservationPage, error) {
 	var page ObservationPage
 	err := s.withReadSnapshot(ctx, func(tx pgx.Tx) error {
 		var err error
-		page, err = runObservationPage(ctx, pgxQuerier{q: tx}, id, after, limit)
+		page, err = runObservationPage(ctx, pgxQuerier{q: tx}, id, filter, after, limit)
 		return err
 	})
 	if err != nil {
