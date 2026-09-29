@@ -13,7 +13,7 @@ Planned in: [082 § item 083](082-agent-inspection-and-evaluation-depth.md#083--
 ## Objective
 
 Make behavioral counting across tool and transport instrumentation **explicit
-and defensible**, and render model calls, tool calls and outbound requests
+and defensible**, and render model calls, tool calls and transport operations
 clearly — without changing what a behavioral identity is.
 
 Two halves, and only one of them can be built today. That is the task's
@@ -135,8 +135,12 @@ two indicators from ever disagreeing about one span.
 
 ### Honest rendering
 
-- A model call, a tool call and an outbound request are distinguishable in the
-  live view and the terminal dashboard without reading attribute names.
+- A model call, a tool call, a retrieval and a transport operation are
+  distinguishable in the live view without reading attribute names.
+- **No rendering claims a direction from the layer.** `transport` covers inbound
+  `SERVER` and `CONSUMER` spans, outbound `CLIENT` and `PRODUCER` spans, and spans
+  whose kind states no direction, so a sentence calling it an "outbound request"
+  asserts something the value does not carry.
 - A behavior with no target renders **without a dangling separator**.
 - An unclassified behavior renders as unclassified, never as `transport` and
   never as blank.
@@ -259,7 +263,7 @@ Against [082's list for this item](082-agent-inspection-and-evaluation-depth.md#
 |---|---|---|
 | 1 | One documented rule decides whether the two layers are one behavior or two, applied in one place | **Met.** The rule is "two, and the counting fold is deferred", stated in `docs/OPENTELEMETRY.md` and derived in `internal/semconv` only |
 | 2 | A single change produces a diff whose added count matches the number of changes a developer would name | **Not met — deferred.** Requires 084; pinned by `TestCountingFoldIsNotImplementedYet` |
-| 3 | Model, tool and outbound request each distinguishable in a rendered view | **Met** |
+| 3 | Model, tool and outbound request each distinguishable in a rendered view | **Met**, with the wording corrected: the layer distinguishes a model call, a tool call, a retrieval and a *transport operation*. It does not say "outbound", because it establishes no direction |
 | 4 | A behavior with no target renders without a dangling separator | **Met** |
 | 5 | No display label reaches `StableFeatures`, a fingerprint or a baseline key | **Met**, proven by test |
 | 6 | A producer emitting no convention sees byte-identical behavior | **Met**, existing suites unmodified |

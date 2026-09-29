@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/collector/pdata/ptrace"
 
 	"github.com/trustvian/trustvian/event"
+	trustvianprocessor "trustvian-processor"
 )
 
 // ---------------------------------------------------------------------
@@ -442,7 +443,7 @@ func TestIngestEnvelopeCarriesTheBehaviorLayer(t *testing.T) {
 				"gen_ai.operation.name": "retrieval",
 				"gen_ai.data_source.id": "handbook",
 			}}}, []string{string(event.LayerRetrieval)}},
-		{"an outbound request", []spanSpec{httpSpan("crm.localhost", [8]byte{1}, [8]byte{})},
+		{"a transport operation", []spanSpec{httpSpan("crm.localhost", [8]byte{1}, [8]byte{})},
 			[]string{string(event.LayerTransport)}},
 	}
 	for _, tt := range tests {
@@ -493,5 +494,79 @@ func TestLayerMatchesTheOutboundSpanAttribute(t *testing.T) {
 	}
 	if onSpan.Str() != string(event.LayerTool) {
 		t.Errorf("layer = %q, want %q", onSpan.Str(), event.LayerTool)
+	}
+}
+
+// TestTransportLayerDoesNotEstablishDirection is why no renderer may call a
+// `transport` behavior an outbound request.
+//
+// Every span kind maps to the same layer and to three different directions. The
+// layer answers "which instrumentation layer supplied the identity"; direction is
+// a separate field, derived from the span kind, and the two are independent.
+func TestTransportLayerDoesNotEstablishDirection(t *testing.T) {
+	tests := []struct {
+		name          string
+		kind          ptrace.SpanKind
+		wantDirection event.OperationDirection
+	}{
+		{"SERVER is inbound", ptrace.SpanKindServer, event.DirectionInbound},
+		{"CONSUMER is inbound", ptrace.SpanKindConsumer, event.DirectionInbound},
+		{"CLIENT is outbound", ptrace.SpanKindClient, event.DirectionOutbound},
+		{"PRODUCER is outbound", ptrace.SpanKindProducer, event.DirectionOutbound},
+		{"INTERNAL states no direction", ptrace.SpanKindInternal, event.DirectionUnspecified},
+		{"UNSPECIFIED states no direction", ptrace.SpanKindUnspecified, event.DirectionUnspecified},
+	}
+
+	directions := map[event.OperationDirection]bool{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			td := tracesFrom("svc", spanSpec{
+				name: "POST", kind: tt.kind, spanID: [8]byte{1},
+				attrs: map[string]string{
+					"http.request.method": "POST",
+					"server.address":      "svc.localhost",
+				},
+			})
+			rs := td.ResourceSpans().At(0)
+			span := rs.ScopeSpans().At(0).Spans().At(0)
+			ev := trustvianprocessor.EventFromSpan(rs.Resource().Attributes(), span)
+
+			if got := ev.Operation.Direction; got != tt.wantDirection {
+				t.Errorf("direction = %q, want %q", got, tt.wantDirection)
+			}
+			directions[ev.Operation.Direction] = true
+
+			layer, _ := ev.Attributes[event.AttrLayer].(string)
+			if layer != string(event.LayerTransport) {
+				t.Errorf("layer = %q, want %q; the layer must not vary with span kind",
+					layer, event.LayerTransport)
+			}
+		})
+	}
+
+	// The point of the table: one layer value spans three different directions,
+	// so the layer cannot be read as a direction.
+	if len(directions) < 3 {
+		t.Fatalf("the fixture produced %d distinct directions, want 3 (inbound, "+
+			"outbound, unspecified); the test proves nothing otherwise", len(directions))
+	}
+}
+
+// TestInboundSpanIsStillClassifiedTransport carries the same property all the way
+// to the control plane, since that is what a live view reads.
+func TestInboundSpanIsStillClassifiedTransport(t *testing.T) {
+	obs := ingest(t, tracesFrom("svc", spanSpec{
+		name: "GET /orders", kind: ptrace.SpanKindServer, spanID: [8]byte{1},
+		attrs: map[string]string{
+			"http.request.method": "GET",
+			"server.address":      "orders.localhost",
+		},
+	}))
+	if len(obs) != 1 {
+		t.Fatalf("got %d observations, want 1", len(obs))
+	}
+	if obs[0].layer != string(event.LayerTransport) {
+		t.Errorf("an inbound server span was classified %q, want %q",
+			obs[0].layer, event.LayerTransport)
 	}
 }

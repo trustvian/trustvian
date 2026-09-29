@@ -622,8 +622,9 @@ actually depend on.
 ### Added
 
 - **Trustvian says which instrumentation layer a behavior came from** (task 083,
-  partial). A model call, a named tool call, a retrieval and an outbound request
-  were all equally anonymous in a rendered view, and two of them shared a category:
+  partial). A model call, a named tool call, a retrieval and a plain transport
+  operation were all equally anonymous in a rendered view, and two of them shared
+  a category:
   `external` meant both "a model was consulted" and "a document store was queried".
 
   A new closed classification — `model`, `tool`, `retrieval`, `transport`, or not

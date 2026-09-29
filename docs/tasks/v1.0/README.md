@@ -245,7 +245,9 @@ which is **Proposed** rather than Accepted.
 questions 082 left open — behavioral identity stays per observation, and there is
 no `model` operation category — and shipped the half that follows from them: a
 non-identity `Layer` classification carried where fidelity is carried, and honest
-rendering of model calls, tool calls, retrievals and outbound requests.
+rendering of model calls, tool calls, retrievals and transport operations — the
+last of which states no direction, because a transport classification covers
+inbound and outbound spans alike.
 
 **The counting correction is deferred, and the task stays open.** Folding a tool
 observation and the request beneath it into one counted change needs to know they

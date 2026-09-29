@@ -18,6 +18,16 @@ import { decisionToken, decisionClass, riskClass, operationLabel } from "./graph
 //
 // A closed map rather than string interpolation, so an unrecognized value from a
 // newer server cannot be rendered as though the browser understood it. Task 083.
+//
+// **No sentence here states a direction.** The layer says which instrumentation
+// layer supplied the operation's identity; it says nothing about which way the
+// call went. `transport` in particular covers inbound SERVER and CONSUMER spans,
+// outbound CLIENT and PRODUCER spans, and spans whose kind establishes no
+// direction at all — every one of them classifies as `transport`, because none
+// of them carried a convention that named the operation. An earlier version of
+// this map called `transport` an "outbound request", which is a claim the value
+// does not support. Direction lives in Operation.Direction, is not published on
+// this payload, and must not be inferred from the layer.
 const LAYER_SENTENCES = {
   model:
     "Model call: the producer named a model or embedding invocation.",
@@ -26,8 +36,8 @@ const LAYER_SENTENCES = {
   retrieval:
     "Retrieval: the producer named a lookup or rerank against a data source.",
   transport:
-    "Outbound request: no convention named the operation, so this is the " +
-    "protocol-level call \u2014 HTTP, database or RPC.",
+    "Transport operation: no supported convention supplied a semantic operation " +
+    "name, so the behavior uses the transport mapping \u2014 HTTP, database or RPC.",
 };
 
 // layerSentence renders the layer, including the two states that are not a layer.

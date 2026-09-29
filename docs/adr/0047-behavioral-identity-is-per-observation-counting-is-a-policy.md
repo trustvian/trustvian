@@ -139,9 +139,14 @@ platform logic, and ADR 0022 keeps that direction fixed.
 
 ## Consequences
 
-- A model call, a tool call, a retrieval and an outbound request are
+- A model call, a tool call, a retrieval and a transport operation are
   distinguishable in a rendered view without a category change and without a
   baseline reset.
+- **The layer establishes no direction.** `transport` is the value for an inbound
+  `SERVER` or `CONSUMER` span as much as for an outbound `CLIENT` one, and for a
+  span whose kind states no direction at all; what they share is that no
+  convention named the operation. Direction is `Operation.Direction`, is not
+  published on the realtime observation, and must not be inferred from the layer.
 - **The double count remains.** This record does not fix it; it decides where the
   fix belongs and what it must not do. `TestCountingFoldIsNotImplementedYet`
   fails the moment it closes, so the deferral cannot quietly become permanent.

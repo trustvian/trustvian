@@ -348,6 +348,13 @@ model call from a document-store query.
 | WebUI inspector | a sentence naming the layer, and a distinct sentence for each of the two non-layer states |
 | `StableFeatures` / the fingerprint | **never** |
 
+**The layer states no direction.** `transport` is the value for an inbound
+`SERVER` or `CONSUMER` span as much as for an outbound `CLIENT` or `PRODUCER`
+one, and for a span whose kind establishes no direction at all — what they share
+is that no convention named the operation. Direction is `Operation.Direction`,
+derived from the span kind, and is a separate field: nothing may present a
+`transport` behavior as an outbound request on the strength of its layer.
+
 **Absent is not transport, and that is the one place this differs from fidelity.**
 A producer that said nothing classified nothing, and calling an unclassified Event
 a transport operation would assert an identity source no telemetry established.

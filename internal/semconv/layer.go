@@ -69,8 +69,15 @@ const (
 	// from the transport: HTTP, DB or RPC, or an explicit operator override.
 	//
 	// Whether such an operation was outbound or inbound is already answered by
-	// Operation.Direction, and is deliberately not duplicated here. A renderer
-	// that wants to say "outbound request" combines the two.
+	// Operation.Direction, and is deliberately not duplicated here.
+	//
+	// So LayerTransport establishes no direction, and nothing may present it as
+	// one. It is the value for an inbound SERVER or CONSUMER span, for an
+	// outbound CLIENT or PRODUCER span, and for a span whose kind states no
+	// direction at all — what they share is that no convention named the
+	// operation, not which way the call went. A renderer wanting to say
+	// "outbound request" must read Operation.Direction and combine the two;
+	// saying it from this value alone is a claim the value does not support.
 	LayerTransport Layer = "transport"
 )
 
