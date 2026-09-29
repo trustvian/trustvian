@@ -257,3 +257,115 @@ func TestEvidenceAPIFailure(t *testing.T) {
 			result.stdout, result.stderr)
 	}
 }
+
+// Both subcommands forward --side.
+func TestEvidenceBothSubcommandsForwardSide(t *testing.T) {
+	for _, tc := range []struct {
+		subcommand string
+		body       string
+		wantPath   string
+	}{
+		{"behaviors", behaviorsBody, "/v1/evidence/behaviors"},
+		{"observations", observationsBody, "/v1/evidence/observations"},
+	} {
+		t.Run(tc.subcommand, func(t *testing.T) {
+			api := newFakeAPI(t)
+			api.reply(200, tc.body)
+
+			result := runPlatformCLI(t, "evidence", tc.subcommand,
+				"--reference-run", "run-ref", "--candidate-run", "run-cand",
+				"--behavior", "fp-shared", "--side", "reference",
+				"--api-url", api.url())
+			result.mustExit(t, exitOK, tc.subcommand)
+
+			request := api.only()
+			if request.escapedPath != tc.wantPath {
+				t.Errorf("path = %s, want %s", request.escapedPath, tc.wantPath)
+			}
+			query, err := url.ParseQuery(request.rawQuery)
+			if err != nil {
+				t.Fatalf("parse query: %v", err)
+			}
+			if got := query.Get("side"); got != "reference" {
+				t.Errorf("side = %q, want reference — the flag was not forwarded", got)
+			}
+			if got := query.Get("behavior"); got != "fp-shared" {
+				t.Errorf("behavior = %q, want fp-shared", got)
+			}
+		})
+	}
+}
+
+// An unrecognized side is the server's to refuse, not the CLI's to interpret:
+// the request goes out and the server's error envelope comes back.
+func TestEvidenceForwardsAnUnrecognizedSide(t *testing.T) {
+	api := newFakeAPI(t)
+	api.reply(400, `{"version":"1","error":{"code":"invalid_request",`+
+		`"message":"platform: invalid finding reference: \"sideways\" is not a comparison side"}}`)
+
+	result := runPlatformCLI(t, "evidence", "observations",
+		"--reference-run", "run-ref", "--candidate-run", "run-cand",
+		"--behavior", "fp-shared", "--side", "sideways",
+		"--api-url", api.url(), "--json")
+	result.mustExit(t, exitOperational, "unrecognized side")
+
+	if len(api.captured()) != 1 {
+		t.Error("the CLI decided the side was invalid itself; side validation is " +
+			"the control plane's")
+	}
+	if !strings.Contains(result.stdout+result.stderr, "invalid_request") {
+		t.Errorf("the server's error did not reach the caller:\n%s\n%s",
+			result.stdout, result.stderr)
+	}
+}
+
+// A shared behavior with no side is refused by the server, and the CLI relays
+// the diagnostic that says what to supply.
+func TestEvidenceRelaysTheSharedBehaviorDiagnostic(t *testing.T) {
+	api := newFakeAPI(t)
+	api.reply(400, `{"version":"1","error":{"code":"invalid_request",`+
+		`"message":"platform: invalid finding reference: behavior \"fp-shared\" is `+
+		`present in both runs; name the side to resolve — reference or candidate"}}`)
+
+	result := runPlatformCLI(t, "evidence", "observations",
+		"--reference-run", "run-ref", "--candidate-run", "run-cand",
+		"--behavior", "fp-shared", "--api-url", api.url())
+	result.mustExit(t, exitOperational, "shared without side")
+
+	if !strings.Contains(result.stdout+result.stderr, "reference or candidate") {
+		t.Errorf("the diagnostic naming the two sides did not reach the caller:\n%s\n%s",
+			result.stdout, result.stderr)
+	}
+}
+
+// An exhausted page must not print that no evidence exists.
+func TestEvidenceRenderingOfAnExhaustedPage(t *testing.T) {
+	for _, subcommand := range []string{"behaviors", "observations"} {
+		t.Run(subcommand, func(t *testing.T) {
+			api := newFakeAPI(t)
+			rows := "observations"
+			if subcommand == "behaviors" {
+				rows = "behaviors"
+			}
+			api.reply(200, `{"version":"1","status":"resolved","side":"candidate",`+
+				`"recorded_count":"2","exhaustive":true,"`+rows+`":[],`+
+				`"history":{"state":"complete","retained_count":"4","complete":true}}`)
+
+			result := runPlatformCLI(t, "evidence", subcommand,
+				"--reference-run", "run-ref", "--candidate-run", "run-cand",
+				"--check", "added_behaviors", "--api-url", api.url())
+			result.mustExit(t, exitOK, subcommand)
+
+			if strings.Contains(result.stdout, "no supporting evidence") {
+				t.Errorf("an exhausted page claims no evidence exists:\n%s", result.stdout)
+			}
+			if !strings.Contains(result.stdout, "no further evidence on this page") {
+				t.Errorf("an exhausted page does not say why it is empty:\n%s",
+					result.stdout)
+			}
+			if !strings.Contains(result.stdout, "STATUS  resolved") {
+				t.Errorf("status is not rendered:\n%s", result.stdout)
+			}
+		})
+	}
+}

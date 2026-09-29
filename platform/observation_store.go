@@ -315,5 +315,50 @@ func runObservationPage(
 		return ObservationPage{}, fmt.Errorf("platform: load observations: %w", err)
 	}
 
-	return ObservationPage{Observations: observations, History: history}, nil
+	// A non-empty page has obviously matched something; only an empty one needs
+	// asking, which keeps the extra statement off every page read.
+	matched := len(observations) > 0
+	if !matched {
+		matched, err = observationsMatch(ctx, q, id, filter)
+		if err != nil {
+			return ObservationPage{}, err
+		}
+	}
+
+	return ObservationPage{
+		Observations: observations,
+		History:      history,
+		Matched:      matched,
+	}, nil
+}
+
+// observationsMatch reports whether the filter matches anything in the run,
+// ignoring the page cursor.
+//
+// Bounded to one row and issued inside the caller's transaction, so it answers
+// about the same instant the page and the history metadata describe. Asking it
+// outside that snapshot would let a concurrent ingest make "nothing matches"
+// and "here are the matches" both true of one response.
+func observationsMatch(
+	ctx context.Context, q rowQuerier, id EvaluationRunID, filter ObservationFilter,
+) (bool, error) {
+	filterSQL, filterArgs := filter.predicate()
+	args := make([]any, 0, len(filterArgs)+1)
+	args = append(args, string(id))
+	args = append(args, filterArgs...)
+
+	var one int
+	err := q.queryRow(ctx, q.rebind(
+		`SELECT 1
+		   FROM `+tableObservations+`
+		  WHERE run_id = ?`+filterSQL+`
+		  LIMIT 1`),
+		args...).Scan(&one)
+	switch {
+	case q.noRows(err):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("platform: probe observations: %w", err)
+	}
+	return true, nil
 }

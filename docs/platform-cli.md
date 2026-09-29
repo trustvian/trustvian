@@ -213,6 +213,29 @@ history is complete and nothing matched, so nothing happened. `indeterminate`
 means the history is partial or predates retention, so the absence establishes
 nothing. The command prints which, because the two look identical otherwise.
 
+**The status describes the finding, not the page.** Paging past the last match
+prints `STATUS resolved` with no rows and a note saying the evidence is on the
+earlier pages — never "no supporting evidence", which would be the opposite of
+the truth at exactly the moment you finished reading it. Whether more rows
+follow is the `--after` cursor's job, printed as `more: --after <cursor>` and
+absent when there are none.
+
+**A behavior present in both runs needs `--side`.** Both runs hold their own
+observations of it, and those two sets are what you are comparing — so the
+control plane refuses to pick one for you:
+
+```console
+$ trustvian evidence observations --reference-run run-ref     --candidate-run run-cand --behavior fp-shared
+trustvian: behavior "fp-shared" is present in both runs; name the side to
+resolve — reference or candidate
+
+$ trustvian evidence observations --reference-run run-ref     --candidate-run run-cand --behavior fp-shared --side reference
+```
+
+An added or removed behavior needs no `--side`: it exists in one run only, and
+naming the other is refused rather than silently honoured. A `--check` never
+takes one, because a gate check already counts one side.
+
 ### Recording a promotion
 
 `trustvian promotion create` records a **decision**. It does not deploy

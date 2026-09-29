@@ -32,10 +32,19 @@ actually depend on.
   resolution URL itself the citable link.
 
   **An empty answer is not always the same answer.** A resolution reports
-  `resolved`, `none_found`, `indeterminate` or `aggregate_only`, and `none_found`
-  is returned only over complete history: an empty result over partial or
-  unavailable history is `indeterminate`, because absence there establishes
-  nothing. `exhaustive` is true only when the history is complete, so a full set of
+  `resolved`, `none_found`, `indeterminate` or `aggregate_only`, and the status
+  describes the **finding** rather than the page: a page requested past the last
+  match returns zero rows with `resolved`, because the evidence exists and the
+  caller has read all of it. `none_found` is returned only when nothing matches at
+  all and the history is complete; an empty result over partial or unavailable
+  history is `indeterminate`, because absence there establishes nothing. Page
+  exhaustion is signalled by the continuation cursor being absent.
+
+  **A behavior present in both runs requires an explicit side.** Both runs hold
+  their own observations of it and those two sets are what a developer is
+  comparing, so the control plane refuses to pick one — an added behavior defaults
+  to the candidate and a removed one to the reference, because each exists in one
+  run only. `exhaustive` is true only when the history is complete, so a full set of
   matches drawn from a bounded history is never labelled as all of them. The
   recorded count travels beside the rows and is never reconciled with them — a
   check counts every record a run ingested, while retention is bounded.

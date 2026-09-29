@@ -98,20 +98,61 @@ Reference-run and candidate-run evidence stay distinct. Every gate check above
 counts something on **one** side, and that side is part of the answer rather
 than left for a caller to assume.
 
-For `behavior=<id>` the side defaults from the delta's own presence — `added`
-resolves on the candidate, `removed` on the reference — and may be stated
-explicitly, which is the only way to ask about a `shared` behavior on a chosen
-side. A stated side that contradicts the delta's presence is refused rather than
-silently honoured.
+For `behavior=<id>` the side is derived from presence **only where presence can
+decide it**:
+
+| Presence | Omitted side |
+|---|---|
+| `added` | candidate — the behavior exists nowhere else |
+| `removed` | reference — the behavior exists nowhere else |
+| `shared` | **refused**: `ErrInvalidFinding`, naming both options |
+
+**A shared behavior has no natural side.** Both runs contain it, both hold their
+own observations of it, and those two sets are exactly what a developer is
+comparing. Defaulting to the candidate would answer a question nobody asked,
+silently, and the answer would be indistinguishable from the one they wanted —
+the reference-side rows would simply never appear. Refusing costs one flag and
+cannot mislead.
+
+A stated side that contradicts an `added` or `removed` presence is refused
+rather than silently honoured, and a gate check never carries a side because it
+already counts one.
 
 ## Status: four outcomes that must not be confused
 
 ```text
-resolved        supporting evidence was found
+resolved        the finding has supporting evidence
 none_found      none exists — and the history is complete, so that is a fact
-indeterminate   none was found, but the history is partial or unavailable
+indeterminate   none exists, but the history is partial or unavailable
 aggregate_only  this check has no per-observation evidence to link to
 ```
+
+### The status describes the finding, not the page
+
+This is the contract, and it is the whole of it:
+
+| Question | Field |
+|---|---|
+| Does this finding have supporting evidence? | `status` |
+| Are there more rows after this page? | `next_after`, present exactly when another row follows |
+| Would paging to the end yield *every* match that ever existed? | `exhaustive` |
+
+**An empty page does not change the status.** Paging past the last match
+returns zero rows with `status: resolved` and no `next_after` — the evidence
+exists and the caller has read all of it. Deriving the status from the page
+length instead reported that a finding with plenty of evidence had none, and
+did so at exactly the moment a developer finished reading it.
+
+So `none_found` and `indeterminate` describe the **finding**: they are returned
+only when no retained observation matches it *at all*, independent of where the
+cursor is. Establishing that costs one bounded existence probe — `LIMIT 1`, no
+cursor predicate — issued inside the same transaction as the page and the
+history metadata, so all three describe one instant.
+
+**The recorded count is never used to infer this.** An aggregate counts records
+the run ingested, and retention may not have kept them; concluding "evidence
+exists" from a non-zero count would claim retained matches that were never
+stored.
 
 **`indeterminate` is the point of the whole status field.** A page of zero
 observations from a run whose history saturated, or from a run that predates
@@ -225,13 +266,15 @@ finding because a field this task filtered on says so.
    in storage before the limit, and states saturation rather than truncating
    silently.
 5. `resolved`, `none_found`, `indeterminate` and `aggregate_only` are
-   distinguished, and an empty result over partial or unavailable history is
-   never reported as `none_found`.
+   distinguished; an empty result over partial or unavailable history is never
+   reported as `none_found`; and a page requested past the last match reports
+   `resolved` rather than either.
 6. `exhaustive` is true only when the side's retained history is complete.
 7. Lookups are scoped to the correct run and side; an identifier repeated across
    runs resolves separately in each.
 8. A reference naming a behavior the comparison does not contain, a side its
-   presence contradicts, or an unknown check is refused with a diagnostic.
+   presence contradicts, a side on a gate check, or an unknown check is refused
+   with a diagnostic — as is a **shared** behavior with no side.
 9. No prompt, completion, argument, result, document, body or arbitrary
    attribute is reachable through any resolution route.
 10. Identical results on both persistence backends.

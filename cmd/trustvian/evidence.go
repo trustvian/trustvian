@@ -24,6 +24,7 @@ import (
 const evidenceUsage = `usage:
   trustvian evidence behaviors    --reference-run <id> --candidate-run <id>
                                   (--check <name> | --behavior <fingerprint>)
+                                  [--side reference|candidate]
                                   [--after <cursor>] [--limit <n>]
                                   [--api-url <url>] [--json]
   trustvian evidence observations --reference-run <id> --candidate-run <id>
@@ -34,7 +35,11 @@ const evidenceUsage = `usage:
 
   --check is one of the gate's own check names, as the gate prints them:
     added_behaviors  block_decisions  critical_risk_observations
-    reference_evidence  candidate_evidence` + apiURLNote
+    reference_evidence  candidate_evidence
+
+  --side is required for a behavior present in both runs, because both hold
+  their own observations of it and neither is the obvious one. An added or
+  removed behavior needs no side. A --check never takes one.` + apiURLNote
 
 func runEvidence(s streams, args []string, timeout time.Duration) int {
 	if len(args) == 0 {
@@ -57,6 +62,7 @@ type findingFlags struct {
 	candidateRun *string
 	check        *string
 	behavior     *string
+	side         *string
 	after        *string
 	limit        *int
 }
@@ -67,6 +73,7 @@ func registerFindingFlags(fs *flag.FlagSet) findingFlags {
 		candidateRun: fs.String("candidate-run", "", "candidate evaluation run (required)"),
 		check:        fs.String("check", "", "gate check name, as the gate prints it"),
 		behavior:     fs.String("behavior", "", "fingerprint id of one behavioral identity"),
+		side:         fs.String("side", "", "which run's evidence: reference or candidate"),
 		after:        fs.String("after", "", "exclusive page cursor"),
 		limit:        fs.Int("limit", 0, "page size, 1..64 (server default when omitted)"),
 	}
@@ -79,7 +86,7 @@ func registerFindingFlags(fs *flag.FlagSet) findingFlags {
 // does **not** check the check/behavior combination or the check name: which
 // findings exist and which of them resolve is the control plane's knowledge,
 // and duplicating it here would be the second place it could be wrong.
-func (f findingFlags) query(extra url.Values) (url.Values, error) {
+func (f findingFlags) query() (url.Values, error) {
 	if err := requireAll(nil, map[string]string{
 		"reference-run": *f.referenceRun,
 		"candidate-run": *f.candidateRun,
@@ -96,16 +103,17 @@ func (f findingFlags) query(extra url.Values) (url.Values, error) {
 	if *f.behavior != "" {
 		query.Set("behavior", *f.behavior)
 	}
+	// Forwarded rather than interpreted. Which behaviors need a side, and which
+	// sides contradict a presence, is the control plane's knowledge — a second
+	// copy here would be a second place it could be wrong.
+	if *f.side != "" {
+		query.Set("side", *f.side)
+	}
 	if *f.after != "" {
 		query.Set("after", *f.after)
 	}
 	if *f.limit != 0 {
 		query.Set("limit", strconv.Itoa(*f.limit))
-	}
-	for key, values := range extra {
-		for _, value := range values {
-			query.Set(key, value)
-		}
 	}
 	return query, nil
 }
@@ -118,7 +126,7 @@ func runEvidenceBehaviors(s streams, args []string, timeout time.Duration) int {
 	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, evidenceUsage, err)
 	}
-	query, err := finding.query(nil)
+	query, err := finding.query()
 	if err != nil {
 		return usageFailure(s, evidenceUsage, err)
 	}
@@ -133,16 +141,11 @@ func runEvidenceObservations(s streams, args []string, timeout time.Duration) in
 	fs := newFlagSet("evidence observations")
 	common := registerCommonFlags(fs)
 	finding := registerFindingFlags(fs)
-	side := fs.String("side", "", "which run's evidence: reference or candidate")
 
 	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, evidenceUsage, err)
 	}
-	extra := url.Values{}
-	if *side != "" {
-		extra.Set("side", *side)
-	}
-	query, err := finding.query(extra)
+	query, err := finding.query()
 	if err != nil {
 		return usageFailure(s, evidenceUsage, err)
 	}
@@ -209,13 +212,21 @@ type findingObservationsDTO struct {
 
 // statusNote turns a resolution status into the sentence a developer needs.
 //
+// The status describes the **finding**, not the page, so an empty page can
+// legitimately arrive with `resolved` — the caller has read all the evidence
+// rather than found none. Those two are the same zero rows on screen, so the
+// note says which, and never prints "no supporting evidence" for a page that
+// simply came after the last one.
+//
 // The empty and none_found cases read almost identically in the payload and
-// mean opposite things, which is the whole reason the status exists. The
-// renderer states the difference rather than leaving it to be inferred from a
-// row count.
-func statusNote(status string, history findingHistoryDTO) string {
+// mean opposite things, which is the whole reason the status exists.
+func statusNote(status string, history findingHistoryDTO, rows int) string {
 	switch status {
 	case "resolved":
+		if rows == 0 {
+			return "no further evidence on this page — the finding's evidence is " +
+				"on the pages before this cursor"
+		}
 		return ""
 	case "none_found":
 		return "no supporting evidence, and the retained history is complete — " +
@@ -242,7 +253,7 @@ func renderFindingBehaviors(w io.Writer, body []byte) error {
 		fmt.Fprintf(w, "SIDE    %s\n", dto.Side)
 	}
 	fmt.Fprintf(w, "RECORDED %s\n", dto.RecordedCount)
-	if note := statusNote(dto.Status, dto.History); note != "" {
+	if note := statusNote(dto.Status, dto.History, len(dto.Behaviors)); note != "" {
 		fmt.Fprintf(w, "NOTE    %s\n", note)
 	}
 
@@ -274,9 +285,11 @@ func renderFindingObservations(w io.Writer, body []byte) error {
 	}
 	fmt.Fprintf(w, "RECORDED %s\n", dto.RecordedCount)
 	// Stated on its own line because it is the difference between "these are
-	// the matches" and "these are some of the matches".
+	// the matches" and "these are some of the matches". It describes the
+	// history, not this page: a page can be empty because it came after the
+	// last match while the history remains complete.
 	fmt.Fprintf(w, "EXHAUSTIVE %t\n", dto.Exhaustive)
-	if note := statusNote(dto.Status, dto.History); note != "" {
+	if note := statusNote(dto.Status, dto.History, len(dto.Observations)); note != "" {
 		fmt.Fprintf(w, "NOTE    %s\n", note)
 	}
 

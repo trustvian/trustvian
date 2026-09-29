@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	trustvian "github.com/trustvian/trustvian"
@@ -290,5 +291,125 @@ func TestEvidenceRoutePaging(t *testing.T) {
 	}
 	if next.NextAfter != "" {
 		t.Errorf("next_after = %q on the last page", next.NextAfter)
+	}
+}
+
+// Paging past the last match must not report that the finding has no evidence.
+//
+// The regression this guards: the status used to be derived from the page
+// length, so the request a developer makes after reading all the evidence said
+// there was none.
+func TestEvidenceRouteExhaustedPageStillReportsResolved(t *testing.T) {
+	a := evidenceAPI(t)
+
+	first := a.do("GET",
+		"/v1/evidence/observations?"+evidenceFinding+"&check=block_decisions", nil)
+	a.mustStatus(first, 200, "all matches")
+
+	var all evidenceObservationsBody
+	decodeInto(t, first, &all)
+	if len(all.Observations) != 2 {
+		t.Fatalf("returned %d observations, want 2", len(all.Observations))
+	}
+	last := all.Observations[len(all.Observations)-1].Sequence
+
+	beyond := a.do("GET", fmt.Sprintf(
+		"/v1/evidence/observations?%s&check=block_decisions&after=%s",
+		evidenceFinding, last), nil)
+	a.mustStatus(beyond, 200, "beyond the last match")
+
+	var page evidenceObservationsBody
+	decodeInto(t, beyond, &page)
+	if len(page.Observations) != 0 {
+		t.Fatalf("page past the last match holds %d rows", len(page.Observations))
+	}
+	if page.Status != "resolved" {
+		t.Errorf("status = %q on an exhausted page, want resolved: the finding's "+
+			"evidence did not stop existing because the cursor moved past it",
+			page.Status)
+	}
+	if page.NextAfter != "" {
+		t.Errorf("next_after = %q on an exhausted page", page.NextAfter)
+	}
+
+	// The same for behaviors.
+	behaviors := a.do("GET",
+		"/v1/evidence/behaviors?"+evidenceFinding+"&check=added_behaviors&after=fp-export", nil)
+	a.mustStatus(behaviors, 200, "beyond the last behavior")
+
+	var behaviorPage evidenceBehaviorsBody
+	decodeInto(t, behaviors, &behaviorPage)
+	if len(behaviorPage.Behaviors) != 0 {
+		t.Fatalf("page past the last behavior holds %d entries",
+			len(behaviorPage.Behaviors))
+	}
+	if behaviorPage.Status != "resolved" {
+		t.Errorf("behaviors status = %q on an exhausted page, want resolved",
+			behaviorPage.Status)
+	}
+}
+
+// A shared behavior with no side is refused by both routes, with the platform's
+// own error envelope.
+func TestEvidenceRouteRequiresASideForSharedBehaviors(t *testing.T) {
+	a := evidenceAPI(t)
+
+	for _, route := range []string{"observations", "behaviors"} {
+		t.Run(route, func(t *testing.T) {
+			response := a.do("GET",
+				"/v1/evidence/"+route+"?"+evidenceFinding+"&behavior=fp-shared", nil)
+			if response.Code != 400 {
+				t.Fatalf("status = %d, want 400; body = %s",
+					response.Code, response.Body.String())
+			}
+			if code := errorCode(t, response); code != "invalid_request" {
+				t.Errorf("error code = %q, want invalid_request", code)
+			}
+			if !strings.Contains(response.Body.String(), "reference or candidate") {
+				t.Errorf("the diagnostic does not say what to supply: %s",
+					response.Body.String())
+			}
+		})
+	}
+
+	// With a side, each returns its own run's evidence.
+	for _, tc := range []struct {
+		side      string
+		wantCount int
+		wantEvent string
+	}{
+		{"reference", 1, "r1"},
+		{"candidate", 1, "c1"},
+	} {
+		t.Run("side="+tc.side, func(t *testing.T) {
+			response := a.do("GET",
+				"/v1/evidence/observations?"+evidenceFinding+
+					"&behavior=fp-shared&side="+tc.side, nil)
+			a.mustStatus(response, 200, tc.side)
+
+			var body evidenceObservationsBody
+			decodeInto(t, response, &body)
+			if body.Side != tc.side {
+				t.Errorf("side = %q, want %q", body.Side, tc.side)
+			}
+			if len(body.Observations) != tc.wantCount {
+				t.Fatalf("returned %d observations, want %d",
+					len(body.Observations), tc.wantCount)
+			}
+			if got := body.Observations[0].EventID; got != tc.wantEvent {
+				t.Errorf("observation = %q, want %q", got, tc.wantEvent)
+			}
+		})
+	}
+
+	// And the behaviors route accepts the side too.
+	behaviors := a.do("GET",
+		"/v1/evidence/behaviors?"+evidenceFinding+"&behavior=fp-shared&side=reference", nil)
+	a.mustStatus(behaviors, 200, "behaviors with a side")
+
+	var body evidenceBehaviorsBody
+	decodeInto(t, behaviors, &body)
+	if body.Side != "reference" {
+		t.Errorf("behaviors side = %q, want reference", body.Side)
 	}
 }

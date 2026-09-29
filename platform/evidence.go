@@ -136,17 +136,29 @@ func (f FindingRef) validate() error {
 
 // ResolutionStatus is what a resolution found, and it has four values because
 // three of them look identical in the payload.
+//
+// **It describes the finding, not the page.** Paging past the last match
+// returns an empty page whose status is still `resolved`, because the evidence
+// exists — the caller has simply read all of it. Deriving the status from the
+// page length instead made a continuation request report that a finding with
+// plenty of evidence had none, which is the opposite of the truth and arrives
+// exactly when a developer has finished reading it.
+//
+// Page exhaustion is reported by the continuation cursor being absent, which is
+// the same signal every other collection in this API uses.
 type ResolutionStatus string
 
 const (
-	// ResolutionResolved means supporting evidence was found.
+	// ResolutionResolved means the finding has supporting evidence — somewhere
+	// in its retained history, not necessarily on this page.
 	ResolutionResolved ResolutionStatus = "resolved"
 
-	// ResolutionNoneFound means none exists — and the retained history is
-	// complete, so that is a fact about the run rather than about storage.
+	// ResolutionNoneFound means no retained observation matches the finding at
+	// all — and the retained history is complete, so that is a fact about the
+	// run rather than about storage or about where the cursor happened to be.
 	ResolutionNoneFound ResolutionStatus = "none_found"
 
-	// ResolutionIndeterminate means none was found and the history is partial
+	// ResolutionIndeterminate means nothing matches and the history is partial
 	// or unavailable, so the absence establishes nothing.
 	//
 	// This value is why the status exists. A zero-row page from a saturated run
@@ -357,20 +369,36 @@ func planForCheck(check GateCheckName, ctx findingContext) (checkPlan, error) {
 
 // sideForDelta picks which run's observations a behavioral delta is about.
 //
-// Presence decides it: a behavior added by the candidate exists only there, and
-// one removed exists only in the reference. A shared behavior exists on both, so
-// a caller must say which it means — and a stated side that contradicts the
-// presence is refused rather than honoured, because silently returning the other
-// run's rows is the one failure this whole task is meant to prevent.
+// Presence decides it where presence *can*: a behavior the candidate added
+// exists only there, and one it removed exists only in the reference. So an
+// omitted side is answerable for those two, and answering it saves a developer
+// restating something the diff already knows.
+//
+// **A shared behavior has no natural side and must name one.** Both runs
+// contain it, both hold their own observations of it, and the two are exactly
+// what a developer is comparing. Defaulting to the candidate would answer a
+// question nobody asked, silently, and look identical to the answer they
+// wanted — the reference-side rows would simply never appear. Refusing costs
+// one flag and cannot mislead.
+//
+// A stated side that contradicts an added or removed presence is refused rather
+// than honoured, because returning the other run's rows is the failure this
+// whole task exists to prevent.
 func sideForDelta(delta BehaviorDelta, requested ComparisonSide) (ComparisonSide, error) {
-	natural := SideCandidate
-	if delta.Presence == BehaviorRemoved {
-		natural = SideReference
+	if requested == "" {
+		switch delta.Presence {
+		case BehaviorAdded:
+			return SideCandidate, nil
+		case BehaviorRemoved:
+			return SideReference, nil
+		default:
+			return "", fmt.Errorf(
+				"%w: behavior %s is present in both runs; name the side to resolve "+
+					"— reference or candidate", ErrInvalidFinding,
+				preview(delta.FingerprintID))
+		}
 	}
 
-	if requested == "" {
-		return natural, nil
-	}
 	switch delta.Presence {
 	case BehaviorAdded:
 		if requested != SideCandidate {
@@ -459,10 +487,14 @@ func (c *ControlPlane) ResolveFindingBehaviors(
 		return BehaviorResolution{}, err
 	}
 
+	// From the whole contributing set, not from the page: asking for the page
+	// after the last fingerprint must not report that the check contributed
+	// nothing. The set is the diff's own, so no second query is needed and no
+	// snapshot question arises.
 	page := pageDeltas(candidates, after, limit)
-	status := ResolutionResolved
-	if len(page) == 0 {
-		status = ResolutionNoneFound
+	status := ResolutionNoneFound
+	if len(candidates) > 0 {
+		status = ResolutionResolved
 	}
 
 	return BehaviorResolution{
@@ -555,7 +587,7 @@ func (c *ControlPlane) ResolveFindingObservations(
 
 	return ObservationResolution{
 		Finding:       finding,
-		Status:        observationStatus(len(page.Observations), page.History),
+		Status:        observationStatus(page.Matched, page.History),
 		Side:          side,
 		RecordedCount: recorded,
 		Exhaustive:    page.History.Complete(),
@@ -564,10 +596,16 @@ func (c *ControlPlane) ResolveFindingObservations(
 	}, nil
 }
 
-// observationStatus separates "nothing happened" from "nothing is known".
-func observationStatus(found int, history ObservationHistory) ResolutionStatus {
+// observationStatus separates "nothing happened" from "nothing is known", and
+// both from "you have read it all".
+//
+// matched is whether the finding has **any** retained supporting observation,
+// asked of storage independently of the cursor — never the length of the page
+// and never derived from RecordedCount, which counts records the run ingested
+// and may include observations retention never kept.
+func observationStatus(matched bool, history ObservationHistory) ResolutionStatus {
 	switch {
-	case found > 0:
+	case matched:
 		return ResolutionResolved
 	case history.Complete():
 		return ResolutionNoneFound

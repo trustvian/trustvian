@@ -118,7 +118,10 @@ func TestSemanticPathLeaksNoContentToAnyV1Payload(t *testing.T) {
 		"GET /v1/evidence/behaviors": a.do("GET",
 			"/v1/evidence/behaviors?reference_run_id=run-1&candidate_run_id=run-1&check=added_behaviors", nil).Body.String(),
 		"GET /v1/evidence/observations": a.do("GET",
-			"/v1/evidence/observations?reference_run_id=run-1&candidate_run_id=run-1&behavior="+record.FingerprintID, nil).Body.String(),
+			// A self-compare makes every behavior shared, so the side is stated: a
+			// shared behavior has no natural side and the control plane refuses to
+			// pick one.
+			"/v1/evidence/observations?reference_run_id=run-1&candidate_run_id=run-1&side=candidate&behavior="+record.FingerprintID, nil).Body.String(),
 		"GET /v1/candidates/cand-1":                 a.do("GET", "/v1/candidates/cand-1", nil).Body.String(),
 		"GET /v1/agents/agent-1/candidates":         a.do("GET", "/v1/agents/agent-1/candidates", nil).Body.String(),
 		"GET /v1/candidates/cand-1/evaluation-runs": a.do("GET", "/v1/candidates/cand-1/evaluation-runs", nil).Body.String(),

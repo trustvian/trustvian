@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -432,52 +433,99 @@ func TestInvalidFindingReferences(t *testing.T) {
 // Availability
 // ---------------------------------------------------------------------
 
-// The four outcomes, and the one that must never be confused with the others.
-func TestResolutionStatusReflectsHistoryAvailability(t *testing.T) {
-	f := newComparisonFixture(t)
-	ctx := t.Context()
+// A genuinely empty result over complete history is none_found.
+//
+// The fixture is consistent storage rather than deleted rows: the candidate
+// really did ingest records, every one of them really is retained, and none of
+// them is critical-risk. Deleting rows while leaving the history row saying
+// "complete, four retained" would have described a database state this code
+// cannot produce, and a test built on an impossible state proves nothing about
+// a reachable one.
+func TestGenuinelyEmptyResolutionOverCompleteHistory(t *testing.T) {
+	store, _, plane, reference := observationPlane(t)
+	candidate := seedSecondRunningRun(t, store, reference)
 
-	// Complete history, no matching observation: that is a fact about the run.
-	empty := f.behaviorFinding("fp-shared")
-	empty.Side = SideCandidate
-	if _, err := f.store.db.ExecContext(ctx,
-		`DELETE FROM `+tableObservations+` WHERE run_id = ? AND fingerprint_id = ?`,
-		string(f.candidate.ID()), "fp-shared"); err != nil {
-		t.Fatalf("remove the matching rows: %v", err)
+	ingestOne(t, plane, reference, 1,
+		evidenceRecord(reference, "r1", "fp-other", "list_invoices", "allow", "low"))
+	// Nothing critical, and nothing blocked.
+	for i := 1; i <= 3; i++ {
+		ingestOne(t, plane, candidate, uint64(i), evidenceRecord(candidate,
+			fmt.Sprintf("c%d", i), "fp-shared", "list_customers", "allow", "low"))
 	}
+	completeRun(t, store, reference)
+	completeRun(t, store, candidate)
 
-	resolution, err := f.plane.ResolveFindingObservations(ctx, empty, "", MaxListPage)
+	f := comparisonFixture{store: store, plane: plane,
+		reference: reference, candidate: candidate}
+
+	resolution, err := plane.ResolveFindingObservations(
+		t.Context(), f.finding(CheckCriticalRiskObservations), "", MaxListPage)
 	if err != nil {
 		t.Fatalf("ResolveFindingObservations() error = %v", err)
 	}
 	if resolution.Status != ResolutionNoneFound {
-		t.Errorf("status = %v, want none_found on complete history", resolution.Status)
+		t.Errorf("status = %v, want none_found: the run is fully retained and "+
+			"observed nothing critical", resolution.Status)
 	}
 	if !resolution.Exhaustive {
 		t.Error("exhaustive = false on complete history")
 	}
-
-	// Now mark the candidate's history partial. The same query must stop
-	// claiming that nothing happened.
-	if _, err := f.store.db.ExecContext(ctx,
-		`UPDATE `+tableObservationHistory+` SET complete = 0 WHERE run_id = ?`,
-		string(f.candidate.ID())); err != nil {
-		t.Fatalf("mark the history partial: %v", err)
+	if resolution.History.State() != ObservationHistoryComplete {
+		t.Errorf("history state = %v, want complete", resolution.History.State())
 	}
+	if resolution.RecordedCount != 0 {
+		t.Errorf("recorded count = %d, want 0", resolution.RecordedCount)
+	}
+}
 
-	partial, err := f.plane.ResolveFindingObservations(ctx, empty, "", MaxListPage)
+// The same empty result over partial history is indeterminate.
+//
+// Partiality is produced the way saturation produces it — the history row says
+// incomplete while its retained count still matches the rows present — so the
+// storage state is one the platform can actually reach.
+func TestEmptyResolutionOverPartialHistoryIsIndeterminate(t *testing.T) {
+	store, _, plane, reference := observationPlane(t)
+	candidate := seedSecondRunningRun(t, store, reference)
+
+	ingestOne(t, plane, reference, 1,
+		evidenceRecord(reference, "r1", "fp-other", "list_invoices", "allow", "low"))
+	for i := 1; i <= 3; i++ {
+		ingestOne(t, plane, candidate, uint64(i), evidenceRecord(candidate,
+			fmt.Sprintf("c%d", i), "fp-shared", "list_customers", "allow", "low"))
+	}
+	completeRun(t, store, reference)
+	completeRun(t, store, candidate)
+
+	markHistoryPartial(t, store, candidate.ID())
+
+	f := comparisonFixture{store: store, plane: plane,
+		reference: reference, candidate: candidate}
+
+	resolution, err := plane.ResolveFindingObservations(
+		t.Context(), f.finding(CheckCriticalRiskObservations), "", MaxListPage)
 	if err != nil {
 		t.Fatalf("ResolveFindingObservations() error = %v", err)
 	}
-	if partial.Status != ResolutionIndeterminate {
+	if resolution.Status != ResolutionIndeterminate {
 		t.Errorf("status = %v, want indeterminate; an empty result over partial "+
-			"history must never read as none_found", partial.Status)
+			"history must never read as none_found", resolution.Status)
 	}
-	if partial.Exhaustive {
+	if resolution.Exhaustive {
 		t.Error("exhaustive = true over partial history")
 	}
-	if partial.History.State() != ObservationHistoryPartial {
-		t.Errorf("history state = %v, want partial", partial.History.State())
+	if resolution.History.State() != ObservationHistoryPartial {
+		t.Errorf("history state = %v, want partial", resolution.History.State())
+	}
+}
+
+// markHistoryPartial puts a run's history into the state saturation produces:
+// incomplete, with the retained count still describing the rows that are there.
+func markHistoryPartial(t *testing.T, store *SQLiteStore, runID EvaluationRunID) {
+	t.Helper()
+	if _, err := store.db.ExecContext(t.Context(),
+		`UPDATE `+tableObservationHistory+` SET complete = 0 WHERE run_id = ?`,
+		string(runID)); err != nil {
+		t.Fatalf("mark the history partial: %v", err)
 	}
 }
 
@@ -946,5 +994,356 @@ func TestResolutionPageIsOneSnapshot(t *testing.T) {
 	}
 	if !resolution.Exhaustive {
 		t.Error("exhaustive = false on complete history")
+	}
+}
+
+// ---------------------------------------------------------------------
+// Exhausted pages are not absent evidence
+// ---------------------------------------------------------------------
+
+// Paging to the end of a finding's observations and then asking for one more
+// page must not report that the finding has no evidence.
+//
+// This is the regression: the status used to come from the page length, so the
+// request a developer makes *after* reading all the evidence reported that
+// there was none — the opposite of the truth, arriving at the worst moment.
+func TestExhaustedObservationPageStillReportsResolved(t *testing.T) {
+	f := newComparisonFixture(t)
+	ctx := t.Context()
+	finding := f.finding(CheckBlockDecisions)
+
+	// Read every page.
+	var seen []uint64
+	after := ""
+	for {
+		page, err := f.plane.ResolveFindingObservations(ctx, finding, after, 1)
+		if err != nil {
+			t.Fatalf("page after %q: %v", after, err)
+		}
+		if page.Status != ResolutionResolved {
+			t.Fatalf("page after %q has status %v, want resolved", after, page.Status)
+		}
+		if len(page.Observations) == 0 {
+			break
+		}
+		for _, o := range page.Observations {
+			seen = append(seen, o.Sequence)
+		}
+		after = FormatObservationCursor(page.Observations[len(page.Observations)-1].Sequence)
+	}
+	if len(seen) != 2 {
+		t.Fatalf("paged over %v, want the run's 2 block decisions", seen)
+	}
+
+	// And explicitly: the page after the final sequence.
+	beyond, err := f.plane.ResolveFindingObservations(
+		ctx, finding, FormatObservationCursor(seen[len(seen)-1]), MaxListPage)
+	if err != nil {
+		t.Fatalf("beyond the last match: %v", err)
+	}
+	if len(beyond.Observations) != 0 {
+		t.Fatalf("a page past the last match holds %d observations",
+			len(beyond.Observations))
+	}
+	if beyond.Status != ResolutionNoneFound && beyond.Status != ResolutionIndeterminate {
+		// Both would be wrong; naming them makes the failure specific.
+		if beyond.Status != ResolutionResolved {
+			t.Fatalf("status = %v, want resolved", beyond.Status)
+		}
+	}
+	if beyond.Status != ResolutionResolved {
+		t.Errorf("status = %v after paging past the last match; the finding's "+
+			"evidence did not stop existing because the cursor moved past it",
+			beyond.Status)
+	}
+
+	// A cursor far beyond anything retained behaves the same way.
+	far, err := f.plane.ResolveFindingObservations(
+		ctx, finding, FormatObservationCursor(999999), MaxListPage)
+	if err != nil {
+		t.Fatalf("far cursor: %v", err)
+	}
+	if far.Status != ResolutionResolved {
+		t.Errorf("status = %v for a cursor beyond every match, want resolved",
+			far.Status)
+	}
+}
+
+// The same rule for added-behavior pagination.
+func TestExhaustedBehaviorPageStillReportsResolved(t *testing.T) {
+	f := newComparisonFixture(t)
+	ctx := t.Context()
+	finding := f.finding(CheckAddedBehaviors)
+
+	var seen []string
+	after := ""
+	for {
+		page, err := f.plane.ResolveFindingBehaviors(ctx, finding, after, 1)
+		if err != nil {
+			t.Fatalf("page after %q: %v", after, err)
+		}
+		if page.Status != ResolutionResolved {
+			t.Fatalf("page after %q has status %v, want resolved", after, page.Status)
+		}
+		if len(page.Behaviors) == 0 {
+			break
+		}
+		for _, b := range page.Behaviors {
+			seen = append(seen, b.FingerprintID)
+		}
+		after = page.Behaviors[len(page.Behaviors)-1].FingerprintID
+	}
+	if len(seen) != 2 {
+		t.Fatalf("paged over %v, want the 2 added behaviors", seen)
+	}
+
+	beyond, err := f.plane.ResolveFindingBehaviors(
+		ctx, finding, seen[len(seen)-1], MaxListPage)
+	if err != nil {
+		t.Fatalf("beyond the last behavior: %v", err)
+	}
+	if len(beyond.Behaviors) != 0 {
+		t.Fatalf("a page past the last behavior holds %d entries", len(beyond.Behaviors))
+	}
+	if beyond.Status != ResolutionResolved {
+		t.Errorf("status = %v after paging past the last behavior, want resolved",
+			beyond.Status)
+	}
+	if beyond.RecordedCount != 2 {
+		t.Errorf("recorded count = %d on an exhausted page, want the check's own 2",
+			beyond.RecordedCount)
+	}
+}
+
+// Partial history with matches before the cursor: the evidence exists, so the
+// answer is resolved rather than indeterminate.
+//
+// This is the case where the two corrections meet. Status must come from
+// whether the finding has retained evidence at all, not from the page and not
+// from the history state alone.
+func TestPartialHistoryWithMatchesBeforeTheCursorIsResolved(t *testing.T) {
+	f := newComparisonFixture(t)
+	ctx := t.Context()
+
+	markHistoryPartial(t, f.store, f.candidate.ID())
+	finding := f.finding(CheckBlockDecisions)
+
+	all, err := f.plane.ResolveFindingObservations(ctx, finding, "", MaxListPage)
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if all.Status != ResolutionResolved {
+		t.Fatalf("status = %v with matches present, want resolved", all.Status)
+	}
+	if all.Exhaustive {
+		t.Error("exhaustive = true over partial history")
+	}
+	last := all.Observations[len(all.Observations)-1].Sequence
+
+	beyond, err := f.plane.ResolveFindingObservations(
+		ctx, finding, FormatObservationCursor(last), MaxListPage)
+	if err != nil {
+		t.Fatalf("beyond: %v", err)
+	}
+	if len(beyond.Observations) != 0 {
+		t.Fatalf("page past the last match holds %d rows", len(beyond.Observations))
+	}
+	if beyond.Status != ResolutionResolved {
+		t.Errorf("status = %v; matches were retained before this cursor, so the "+
+			"answer is neither none_found nor indeterminate", beyond.Status)
+	}
+	if beyond.Exhaustive {
+		t.Error("exhaustive = true over partial history")
+	}
+}
+
+// Status never comes from the recorded count: an aggregate may count records
+// retention never kept.
+func TestStatusIsNotInferredFromRecordedCount(t *testing.T) {
+	f := newComparisonFixture(t)
+	ctx := t.Context()
+
+	// The run really blocked twice, and neither observation is retained. The
+	// aggregate still says 2 — which is the state bounded retention produces.
+	if _, err := f.store.db.ExecContext(ctx,
+		`DELETE FROM `+tableObservations+` WHERE run_id = ? AND decision = ?`,
+		string(f.candidate.ID()), "block"); err != nil {
+		t.Fatalf("drop the retained blocks: %v", err)
+	}
+	markHistoryPartial(t, f.store, f.candidate.ID())
+
+	resolution, err := f.plane.ResolveFindingObservations(
+		ctx, f.finding(CheckBlockDecisions), "", MaxListPage)
+	if err != nil {
+		t.Fatalf("ResolveFindingObservations() error = %v", err)
+	}
+	if resolution.RecordedCount != 2 {
+		t.Fatalf("recorded count = %d, want the aggregate's 2", resolution.RecordedCount)
+	}
+	if resolution.Status != ResolutionIndeterminate {
+		t.Errorf("status = %v; a non-zero recorded count is not evidence that "+
+			"anything was retained", resolution.Status)
+	}
+}
+
+// ---------------------------------------------------------------------
+// A shared behavior must name its side
+// ---------------------------------------------------------------------
+
+// Both resolution methods refuse a shared behavior with no side.
+func TestSharedBehaviorRequiresAnExplicitSide(t *testing.T) {
+	f := newComparisonFixture(t)
+	finding := f.behaviorFinding("fp-shared")
+
+	if _, err := f.plane.ResolveFindingObservations(
+		t.Context(), finding, "", MaxListPage); !errors.Is(err, ErrInvalidFinding) {
+		t.Errorf("observations error = %v, want ErrInvalidFinding", err)
+	} else if !strings.Contains(err.Error(), "reference or candidate") {
+		t.Errorf("the diagnostic does not say what to supply: %v", err)
+	}
+
+	if _, err := f.plane.ResolveFindingBehaviors(
+		t.Context(), finding, "", MaxListPage); !errors.Is(err, ErrInvalidFinding) {
+		t.Errorf("behaviors error = %v, want ErrInvalidFinding", err)
+	}
+}
+
+// Each stated side returns its own run's recorded count and evidence.
+func TestSharedBehaviorResolvesPerSide(t *testing.T) {
+	f := newComparisonFixture(t)
+
+	for _, tc := range []struct {
+		side         ComparisonSide
+		wantRecorded uint64
+		wantEvents   []string
+	}{
+		{SideReference, 2, []string{"r1", "r2"}},
+		{SideCandidate, 1, []string{"c1"}},
+	} {
+		t.Run(string(tc.side), func(t *testing.T) {
+			finding := f.behaviorFinding("fp-shared")
+			finding.Side = tc.side
+
+			observations, err := f.plane.ResolveFindingObservations(
+				t.Context(), finding, "", MaxListPage)
+			if err != nil {
+				t.Fatalf("ResolveFindingObservations() error = %v", err)
+			}
+			if observations.RecordedCount != tc.wantRecorded {
+				t.Errorf("recorded count = %d, want %d — the resolution read the "+
+					"wrong side's delta count",
+					observations.RecordedCount, tc.wantRecorded)
+			}
+			if len(observations.Observations) != len(tc.wantEvents) {
+				t.Fatalf("returned %d observations, want %d",
+					len(observations.Observations), len(tc.wantEvents))
+			}
+			for i, want := range tc.wantEvents {
+				if got := observations.Observations[i].EventID; got != want {
+					t.Errorf("observation %d is %q, want %q", i, got, want)
+				}
+			}
+
+			behaviors, err := f.plane.ResolveFindingBehaviors(
+				t.Context(), finding, "", MaxListPage)
+			if err != nil {
+				t.Fatalf("ResolveFindingBehaviors() error = %v", err)
+			}
+			if behaviors.Side != tc.side {
+				t.Errorf("behaviors side = %v, want %v", behaviors.Side, tc.side)
+			}
+			if behaviors.RecordedCount != tc.wantRecorded {
+				t.Errorf("behaviors recorded count = %d, want %d",
+					behaviors.RecordedCount, tc.wantRecorded)
+			}
+		})
+	}
+}
+
+// An added or removed behavior still needs no side, and a contradicting one is
+// still refused.
+//
+// Its own fixture, because the shared one has nothing removed and adding one
+// there would move the counts every other test in this file asserts.
+func TestPresenceDerivedSidesAreUnchanged(t *testing.T) {
+	store, _, plane, reference := observationPlane(t)
+	candidate := seedSecondRunningRun(t, store, reference)
+
+	// Reference only: removed. Candidate only: added.
+	ingestOne(t, plane, reference, 1,
+		evidenceRecord(reference, "r1", "fp-gone", "list_invoices", "allow", "low"))
+	ingestOne(t, plane, candidate, 1,
+		evidenceRecord(candidate, "c1", "fp-new", "export_customer", "allow", "low"))
+	completeRun(t, store, reference)
+	completeRun(t, store, candidate)
+
+	f := comparisonFixture{store: store, plane: plane,
+		reference: reference, candidate: candidate}
+
+	for _, tc := range []struct {
+		name        string
+		fingerprint string
+		wantSide    ComparisonSide
+		wantEvent   string
+		contradict  ComparisonSide
+	}{
+		{"added defaults to candidate", "fp-new", SideCandidate, "c1", SideReference},
+		{"removed defaults to reference", "fp-gone", SideReference, "r1", SideCandidate},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resolution, err := plane.ResolveFindingObservations(
+				t.Context(), f.behaviorFinding(tc.fingerprint), "", MaxListPage)
+			if err != nil {
+				t.Fatalf("with no side: %v", err)
+			}
+			if resolution.Side != tc.wantSide {
+				t.Errorf("side = %v, want %v", resolution.Side, tc.wantSide)
+			}
+			if len(resolution.Observations) != 1 {
+				t.Fatalf("returned %d observations, want 1", len(resolution.Observations))
+			}
+			if got := resolution.Observations[0].EventID; got != tc.wantEvent {
+				t.Errorf("observation = %q, want %q — the wrong run was read",
+					got, tc.wantEvent)
+			}
+
+			behaviors, err := plane.ResolveFindingBehaviors(
+				t.Context(), f.behaviorFinding(tc.fingerprint), "", MaxListPage)
+			if err != nil {
+				t.Fatalf("behaviors with no side: %v", err)
+			}
+			if behaviors.Side != tc.wantSide {
+				t.Errorf("behaviors side = %v, want %v", behaviors.Side, tc.wantSide)
+			}
+
+			contradiction := f.behaviorFinding(tc.fingerprint)
+			contradiction.Side = tc.contradict
+			if _, err := plane.ResolveFindingObservations(
+				t.Context(), contradiction, "", MaxListPage); !errors.Is(err, ErrInvalidFinding) {
+				t.Errorf("contradicting side = %v, want ErrInvalidFinding", err)
+			}
+		})
+	}
+}
+
+// A gate check still cannot carry a side.
+func TestGateCheckStillRefusesASide(t *testing.T) {
+	f := newComparisonFixture(t)
+	finding := f.finding(CheckBlockDecisions)
+	finding.Side = SideCandidate
+
+	for name, resolve := range map[string]func() error{
+		"observations": func() error {
+			_, err := f.plane.ResolveFindingObservations(t.Context(), finding, "", MaxListPage)
+			return err
+		},
+		"behaviors": func() error {
+			_, err := f.plane.ResolveFindingBehaviors(t.Context(), finding, "", MaxListPage)
+			return err
+		},
+	} {
+		if err := resolve(); !errors.Is(err, ErrInvalidFinding) {
+			t.Errorf("%s: error = %v, want ErrInvalidFinding", name, err)
+		}
 	}
 }
