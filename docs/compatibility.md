@@ -85,6 +85,8 @@ reconstructed later. Everything else in this table is already released.
 | `GET /v1/candidates/{candidate_id}/evaluation-runs` | STABLE | Same | New optional query parameters | Major, or a new path version |
 | `GET /v1/evaluation-runs/{run_id}/observations` | STABLE | Task 067's retained history: same bounded paging, except that the cursor is an **ingest sequence** rather than an identifier — canonical decimal, exclusive, starting at 1, and refused rather than coerced when it is not | New optional query parameters | Major, or a new path version |
 | Retained observation identity and order | STABLE | An observation is `(run_id, sequence)` and pages in ascending sequence — the order the platform accepted records. **Never ordered by timestamp**, which ties, and never keyed on a span id, which is unique only inside its trace | — | Major |
+| Observation page consistency | STABLE | One page is read from one database snapshot. An ingest committing during a read yields the state before it or after it, never a mixture of the two | — | Major |
+| Correlation identifier length | STABLE | `trace_id`, `session_id` and `fingerprint_id` are retained and returned **whole, at any length the request body allows**. Retention imposes no limit of its own: the index keys on a fixed-width digest so a storage detail cannot narrow which records are accepted | A length limit would be a change to the record contract, not to storage | Major |
 | Observation `history_state` values | STABLE | Exactly `complete`, `partial` and `unavailable`, and always present. `unavailable` means the run has records whose history was never retained — **it is not an empty history**; `partial` means the run passed the retention bound or began before schema 7 | — | Major |
 | Collection element shape | STABLE | Each element is the entity's existing detail DTO, field for field; a listing publishes nothing a by-id read does not | New fields, in both places together | Major |
 | Platform environment identity | STABLE | An environment is `(project_id, ref)`; a run keeps recording only the ref, and refs are an open set rather than an enum | New optional environment fields | Major |
@@ -444,6 +446,17 @@ A deployment sharing one PostgreSQL database between processes shares
 authoritative state but **not** realtime notifications; each process keeps its
 own in-process bus. That is a known limitation of task 064, not a defect, and
 task 069 owns cross-node realtime.
+
+**Retained observations index a digest, not the value.** `fingerprint_key`,
+`trace_key` and `session_key` hold hex SHA-256 of the column beside each, and the
+three correlation indexes key on those. PostgreSQL refuses a B-tree entry over
+roughly 2704 bytes at `INSERT`, and none of the three values has a length bound
+the ingest path enforces — so indexing the value would turn a record the platform
+already accepts into a failed ingest, on PostgreSQL and not on SQLite. The key
+columns are derived, never caller-supplied, and are verified against their values
+on read. **Any future lookup through one of these indexes must compare the
+original value as well as the key**, because a digest narrows rather than
+identifies.
 
 **Schema 7 (task 067) adds per-observation history and no row.** The step is
 forward-only on both backends and creates two tables and three run-scoped

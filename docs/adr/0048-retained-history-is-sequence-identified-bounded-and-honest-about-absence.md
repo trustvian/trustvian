@@ -100,6 +100,57 @@ third artefact written outside that transaction reintroduces the same class of
 bug — an observation with no aggregate to belong to, or an aggregate whose
 history is short by one and reports itself complete.
 
+### An index key is a digest; the value is stored whole
+
+The three correlation indexes key on a fixed-width hex SHA-256 of the value,
+never on the value itself.
+
+PostgreSQL refuses a B-tree entry larger than roughly 2704 bytes, at `INSERT`.
+None of the three indexed values has a length bound the ingest path enforces:
+`TraceID` and `SessionID` are validated nowhere at all, and `FingerprintID`'s
+256-byte bound is skipped once a run saturates, because `Observe` returns
+`ErrBehaviorCapacity` before validating and the ingest path deliberately
+swallows that error.
+
+So the platform already accepts records this index could not hold. Indexing the
+value would make **retaining** such a record fail and roll back the whole
+ingest — on PostgreSQL and not on SQLite, which is the backend divergence
+[ADR 0037](0037-postgresql-is-the-shared-platform-persistence-backend.md)'s
+conformance suite exists to prevent.
+
+**The accepted-record contract is not the index's to change.** Truncating the
+identifier would store a value the producer did not send; rejecting the record
+would narrow what the platform accepts to suit a storage detail. Both fix the
+wrong end. The key is bounded instead.
+
+**A lookup through one of these indexes must filter on the key and on the
+original value.** A digest narrows; it does not identify, and a key-only
+predicate would let a collision return another observation's row. The width is
+not the safety property — the comparison beside it is, which is also why the
+digest is not truncated to save bytes it was never spending safety on. Each key
+is verified against its value on read, and a row where they disagree is refused
+rather than repaired: repairing it would leave the index still wrong.
+
+### A page is read from one snapshot
+
+A page is three statements — the history row, the record count, the observation
+rows — and they have to describe one instant. Each backend's `RunObservations`
+opens a transaction that provides one.
+
+Read against a pool, a concurrent ingest committing between any two statements
+returns a retained count of 1 beside two rows: a state the database never held,
+and one nothing in the response marks as composite. SQLite's
+`SetMaxOpenConns(1)` does not supply the property — it serializes the statements
+without joining them, and releases the connection between each.
+
+PostgreSQL needs **`REPEATABLE READ`** rather than the store's default, because
+`READ COMMITTED` takes a fresh snapshot per statement. The raised level is
+confined to this one read-only transaction: every write in that store keeps
+`READ COMMITTED`, their invariants are held by row locks and predicates, and a
+global bump would make serialization failures routine for callers with no retry.
+A guard test pins that exactly one transaction raises isolation and that it is
+read-only, so the exception cannot quietly become the rule.
+
 ### The retained field set is an allowlist expressed as columns
 
 There is no attribute map, no span-event list, no link list and no payload
@@ -138,6 +189,18 @@ task should guess at.
 **Letting saturation fail the ingest.** Rejected on the reasoning above, and it
 would also make a run's verdict depend on how chatty it was.
 
+**Bounding `TraceID` and `SessionID` at ingest so the raw value could be
+indexed.** Rejected: it would reject records the platform accepts today, to suit
+an index that does not yet have a query. A length limit on caller-supplied
+correlation identifiers may still be worth having, but it is a change to the
+record contract and belongs with whoever makes that case — not smuggled in as a
+storage fix.
+
+**Raising the PostgreSQL store's isolation level globally.** Rejected. Every
+write invariant there is held by a row lock or a predicate, none of them needs a
+stronger snapshot, and the cost lands on callers as retryable serialization
+failures they have no handling for.
+
 ## Consequences
 
 Schema **6 → 7** on both backends, forward-only, adding two tables and three
@@ -153,6 +216,11 @@ change invisible to every behavioral outcome.
 
 Task 085 can now link a finding to the observations behind it, and 076 can draw
 a session, a trace and a timeline over them. Neither is delivered here.
+
+Three columns exist only to be index keys — `fingerprint_key`, `trace_key` and
+`session_key` — and are derived on write and verified on read. They are the price
+of keeping an index available to task 085 without letting it constrain what the
+ingest path accepts.
 
 Two stamping defects were found and fixed while landing this, in both backends'
 `v5 → v6` step: each stamped `SchemaVersion` rather than the literal version it

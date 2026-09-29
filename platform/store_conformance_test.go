@@ -143,6 +143,9 @@ func TestStoreConformance(t *testing.T) {
 			t.Run("observation-paging", func(t *testing.T) {
 				conformObservationPaging(t, backend.open)
 			})
+			t.Run("observation-large-identifiers", func(t *testing.T) {
+				conformObservationLargeIdentifiers(t, backend.open)
+			})
 			t.Run("timestamps", func(t *testing.T) { conformTimestamps(t, backend.open) })
 			t.Run("cancellation", func(t *testing.T) { conformCancellation(t, backend.open) })
 		})
@@ -1275,4 +1278,81 @@ func conformEnvironmentContention(t *testing.T, open func(testing.TB) Store) {
 			t.Errorf("final count = %d, want %d", total, cap)
 		}
 	})
+}
+
+// conformObservationLargeIdentifiers is the cross-backend half of the B-tree
+// key-size regression.
+//
+// All three indexed correlation values are larger here than a PostgreSQL B-tree
+// entry can be. Indexed raw, this fails on PostgreSQL with "index row size ...
+// exceeds btree version 4 maximum" and passes on SQLite — a record accepted by
+// one backend and rejected by the other, which is the drift this suite exists to
+// catch. Indexed by digest, both retain it and return it byte for byte.
+//
+// fingerprint_id is included even though validateBehaviorIdentity bounds it at
+// 256 bytes, because that check is skipped once a run saturates at 512 distinct
+// behaviors: Observe returns ErrBehaviorCapacity before validating and the
+// ingest path deliberately swallows that error. This exercises the state
+// saturation produces without spending 512 commits to reach it.
+func conformObservationLargeIdentifiers(t *testing.T, open func(testing.TB) Store) {
+	store := open(t)
+	ctx := t.Context()
+	running := startedRun(t, store, "run-1")
+
+	trace := incompressibleIdentifier(0x243F6A8885A308D3, 4096)
+	session := incompressibleIdentifier(0x13198A2E03707344, 4096)
+	fingerprint := incompressibleIdentifier(0xA4093822299F31D0, 4096)
+
+	commit := conformanceCommit(t, running, 1, 1, strings.Repeat("a", 64))
+	commit.Observation.TraceID = trace
+	commit.Observation.SessionID = session
+	commit.Observation.FingerprintID = fingerprint
+
+	if _, err := store.CommitEvaluationIngest(ctx, commit); err != nil {
+		t.Fatalf("CommitEvaluationIngest() with %d-byte correlation identifiers "+
+			"error = %v; the platform already accepts records carrying these, so "+
+			"retaining one must not be what refuses them", len(trace), err)
+	}
+
+	page, err := store.RunObservations(ctx, "run-1", 0, MaxListPage)
+	if err != nil {
+		t.Fatalf("RunObservations() error = %v", err)
+	}
+	if len(page.Observations) != 1 {
+		t.Fatalf("retained %d observations, want 1", len(page.Observations))
+	}
+
+	got := page.Observations[0]
+	for _, field := range []struct {
+		name      string
+		got, want string
+	}{
+		{"trace id", got.TraceID, trace},
+		{"session id", got.SessionID, session},
+		{"fingerprint id", got.FingerprintID, fingerprint},
+	} {
+		if field.got != field.want {
+			t.Errorf("%s was not preserved: %d bytes back, %d in",
+				field.name, len(field.got), len(field.want))
+		}
+	}
+	if page.History.State() != ObservationHistoryComplete {
+		t.Errorf("history state = %v, want complete", page.History.State())
+	}
+
+	// A retry still replays rather than writing a second row.
+	retry, err := store.CommitEvaluationIngest(ctx, commit)
+	if err != nil {
+		t.Fatalf("retry error = %v", err)
+	}
+	if retry.Disposition != EvaluationIngestAlreadyCommitted {
+		t.Errorf("retry Disposition = %v, want already-committed", retry.Disposition)
+	}
+	after, err := store.RunObservations(ctx, "run-1", 0, MaxListPage)
+	if err != nil {
+		t.Fatalf("RunObservations() after retry error = %v", err)
+	}
+	if len(after.Observations) != 1 {
+		t.Errorf("a retry produced %d observations, want 1", len(after.Observations))
+	}
 }

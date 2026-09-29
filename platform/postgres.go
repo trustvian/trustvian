@@ -236,6 +236,56 @@ func (s *PostgresStore) withTx(ctx context.Context, fn func(tx pgx.Tx) error) er
 	return nil
 }
 
+// withReadSnapshot runs fn inside a read-only REPEATABLE READ transaction.
+//
+// Separate from withTx, and deliberately not a change to it: withTx carries
+// every run-scoped *write* in this store, those writes take row locks and their
+// isolation level is part of a concurrency design that works — see
+// docs/adr/0037-postgresql-is-the-shared-platform-persistence-backend.md — and
+// raising it globally would change how they fail under contention to fix a
+// problem none of them has.
+//
+// READ COMMITTED takes a new snapshot per statement, so a multi-statement read
+// sees a different committed state in each one. That is invisible in a read that
+// asks one question and wrong in a read that has to combine three — which is
+// what a page of observations beside the history describing it is. REPEATABLE
+// READ takes the snapshot once, at first statement, and holds it.
+//
+// ReadOnly is not decoration: it makes the intent enforceable rather than
+// conventional, so a write that ever appears on this path fails here instead of
+// quietly acquiring a different isolation level's semantics. A read-only
+// transaction also cannot hit the serialization failures a REPEATABLE READ
+// writer can, so no retry loop is needed.
+func (s *PostgresStore) withReadSnapshot(ctx context.Context, fn func(tx pgx.Tx) error) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return mapPostgresError("transaction", "", err)
+	}
+	// Rollback after rollback is a no-op, so one deferred call covers the error
+	// paths and a panic. Nothing was written, so there is nothing to commit.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return mapPostgresRollback(tx.Rollback(ctx))
+}
+
+// mapPostgresRollback treats "already finished" as success.
+//
+// A rollback that reports the transaction is done is the deferred call having
+// won the race with the explicit one, which is the arrangement working rather
+// than a failure to report.
+func mapPostgresRollback(err error) error {
+	if err == nil || errors.Is(err, pgx.ErrTxClosed) {
+		return nil
+	}
+	return mapPostgresError("transaction", "", err)
+}
+
 // testHookInRunMutation runs between the in-transaction read and the write in
 // every run-scoped mutation. Nil in production, and the call costs a nil check.
 //
@@ -1012,11 +1062,15 @@ func retainObservationPostgres(
 }
 
 // RunObservations returns one bounded page of a run's retained history.
+//
+// Under withReadSnapshot rather than withTx: the page is three statements and
+// they have to describe one instant. See withReadSnapshot for why the isolation
+// level is raised here and nowhere else.
 func (s *PostgresStore) RunObservations(
 	ctx context.Context, id EvaluationRunID, after uint64, limit int,
 ) (ObservationPage, error) {
 	var page ObservationPage
-	err := s.withTx(ctx, func(tx pgx.Tx) error {
+	err := s.withReadSnapshot(ctx, func(tx pgx.Tx) error {
 		var err error
 		page, err = runObservationPage(ctx, pgxQuerier{q: tx}, id, after, limit)
 		return err

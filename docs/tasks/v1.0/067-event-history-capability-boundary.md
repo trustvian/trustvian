@@ -270,9 +270,9 @@ and none that is not:
 | Index | Serves |
 |---|---|
 | `(run_id, sequence)` — the primary key | run-scoped paging, the only route this task ships |
-| `(run_id, fingerprint_id, sequence)` | 085 resolving a behavioral identity to its observations |
-| `(run_id, trace_id, sequence)` | 085 and 076 resolving a trace |
-| `(run_id, session_id, sequence)` | 076 ordering a session |
+| `(run_id, fingerprint_key, sequence)` | 085 resolving a behavioral identity to its observations |
+| `(run_id, trace_key, sequence)` | 085 and 076 resolving a trace |
+| `(run_id, session_key, sequence)` | 076 ordering a session |
 
 Every index is **run-scoped first**, because every access pattern in 076 and
 085 is scoped to a run and a global index on a trace-scoped identifier would
@@ -281,6 +281,72 @@ invite exactly the cross-run key 084 forbids.
 `ParentSpanID` is **not indexed**, deliberately: 084 states that nothing
 indexes it and *"067 must not either"*, because it is meaningful only beside
 `TraceID` and an index would suggest otherwise.
+
+### The index key is a digest, and the value is stored whole
+
+The three correlation indexes key on a `_key` column holding hex SHA-256 of the
+value beside it, never on the value.
+
+**PostgreSQL refuses a B-tree entry larger than about 2704 bytes, and refuses it
+at `INSERT`.** None of the three indexed values has a length bound the ingest
+path enforces:
+
+| Value | Bound at ingest |
+|---|---|
+| `TraceID` | **none** — validated nowhere; only the 256 KiB request body limits it |
+| `SessionID` | **none** — the same |
+| `FingerprintID` | 256 bytes, **except** once a run saturates: `Observe` returns `ErrBehaviorCapacity` before validating, and the ingest path deliberately swallows that error |
+
+So the platform already accepts records carrying values far larger than a raw
+index key can hold. Indexing the value would make retaining such a record fail,
+roll back the whole ingest, and do it **on PostgreSQL only** — the two backends
+disagreeing about which records are ingestable, which is the drift the
+conformance suite exists to prevent.
+
+The two alternatives were both refused as changing the wrong thing: truncating
+the identifier stores a value the producer did not send, and rejecting the
+record narrows the accepted-record contract to suit an index. **The contract is
+not the index's to change**, so the key is bounded instead and the value is kept
+whole.
+
+**A lookup through one of these indexes must filter on the key *and* on the
+original value.** A digest narrows; it does not identify, and filtering on the
+key alone would let a collision return another observation's row as a match. The
+digest width is not the safety property — the value comparison beside it is.
+That rule belongs to 085, which owns the first such lookup, and is asserted by
+test here so it cannot be inferred wrongly later.
+
+Each key is verified on read: a stored key that disagrees with its value was not
+written by this code, and the row is refused rather than repaired — repairing it
+would leave the index itself still wrong.
+
+An absent value keys as empty rather than as the digest of the empty string.
+Most observations carry no session, so giving absence a 64-byte key would put one
+enormous equal-key run in every index for rows that can never be looked up by it.
+
+## Reads are one snapshot
+
+A page is three statements — the history row, the record count, and the
+observation rows. **They must describe one instant**, so each backend's
+`RunObservations` opens a transaction that provides a consistent snapshot and
+the shared page function runs inside it.
+
+Read against a pool instead, a concurrent ingest committing between any two of
+them produces a page describing a state that never existed: a retained count of
+1 beside two rows, or completeness metadata from before a saturation the rows
+already show. Nothing in the page's values reveals that it is a composite, which
+is what makes this worth stating rather than leaving to be noticed.
+
+| Backend | How |
+|---|---|
+| SQLite | a read transaction, rolled back. `SetMaxOpenConns(1)` does **not** supply this: it serializes the statements without joining them, and the connection is released between each one |
+| PostgreSQL | a **read-only `REPEATABLE READ`** transaction. `READ COMMITTED` takes a fresh snapshot per statement, which is invisible in a read that asks one question and wrong in a read that combines three |
+
+The raised isolation level is confined to this read. Every write in the
+PostgreSQL store keeps `READ COMMITTED`, because their invariants are held by row
+locks and predicates and a global bump would make serialization failures routine
+for callers that have no retry — a guard test pins that exactly one transaction
+raises isolation and that it is read-only.
 
 ## Acceptance criteria
 
@@ -301,13 +367,18 @@ indexes it and *"067 must not either"*, because it is meaningful only beside
    from schema 6 reports `Unavailable` rather than an empty `Complete`; a
    migrated run that resumes ingesting reports `Partial` rather than `Complete`.
 8. Every read is bounded and keyset-paginated in the established shape, with no
-   duplicate and no omission across page boundaries.
+   duplicate and no omission across page boundaries, and **each page is read
+   from one database snapshot** — an ingest committing mid-read yields the state
+   before it or the state after it, never a mixture.
 9. Runs are isolated: one run's history never appears in another's page.
 10. Identical behaviour on SQLite and PostgreSQL, including the migration.
 11. No prompt, completion, argument, result, document, body or arbitrary
     attribute is reachable through storage or any response, proven by a
     tripwire test.
-12. Behavioral fingerprints, policy decisions, baseline learning and the
+12. A record carrying correlation identifiers larger than a B-tree key is
+    retained on both backends and returned byte for byte. Retention never
+    narrows which records the platform accepts.
+13. Behavioral fingerprints, policy decisions, baseline learning and the
     existing observation counting are unchanged.
 
 ## Validation

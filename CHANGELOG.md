@@ -53,6 +53,24 @@ actually depend on.
   is *duration*, which is why the existing tripwire sweep was extended to the new
   route and the new rows rather than trusted to the contract.
 
+  **A page is read from one database snapshot**, so an ingest committing during a
+  read yields the state before it or the state after it and never a mixture. The
+  read is three statements, and against a pool a concurrent commit between any two
+  of them returns a retained count of 1 beside two rows — a state the database
+  never held, and one nothing in the response marks as composite. SQLite reads in
+  a transaction; PostgreSQL reads in a read-only `REPEATABLE READ` transaction,
+  and every write in that store keeps `READ COMMITTED`.
+
+  **Correlation identifiers are retained whole, at any length the request body
+  allows.** `trace_id` and `session_id` are validated nowhere on the ingest path
+  and `fingerprint_id`'s 256-byte bound is skipped once a run saturates, so the
+  platform already accepts values larger than a PostgreSQL B-tree key can hold.
+  The three correlation indexes therefore key on a fixed-width digest stored
+  beside each value, rather than on the value — indexing the value would have made
+  retaining an already-accepted record fail and roll back its whole ingest, on
+  PostgreSQL and not on SQLite. Storage does not get to narrow what the platform
+  accepts.
+
   Schema **6 → 7** on both backends, forward-only: two tables and three
   run-scoped indexes, and no row.
   [ADR 0048](docs/adr/0048-retained-history-is-sequence-identified-bounded-and-honest-about-absence.md)

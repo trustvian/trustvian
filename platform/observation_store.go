@@ -12,7 +12,34 @@ package platform
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 )
+
+// testHookInObservationRead runs inside a page read, between the history
+// metadata and the observation rows. Nil in production, and the call costs a
+// nil check.
+//
+// The same seam testHookInRunMutation opens for the write path, for the same
+// reason and with the same reasoning about why an atomic rather than a plain
+// variable: a page read is three statements, they complete in microseconds, and
+// two goroutines released together will almost always run in series. A test that
+// relied on winning that race would pass against a torn read as readily as
+// against a consistent one — which is the defect it was written to catch.
+//
+// With this hook a test can commit an ingest *at* the one instant that matters,
+// and the snapshot either holds across it or it does not.
+var testHookInObservationRead atomic.Pointer[func()]
+
+// runObservationReadHook invokes the hook if a test installed one.
+//
+// Nil in production: nothing outside this package's tests can reach the
+// variable above, no non-test code path writes it, and no configuration can
+// install behaviour into it.
+func runObservationReadHook() {
+	if hook := testHookInObservationRead.Load(); hook != nil {
+		(*hook)()
+	}
+}
 
 // observationRetention is what retaining one observation should do, decided
 // from durable state and applied by whichever backend asked.
@@ -161,6 +188,17 @@ func observationHistoryFor(
 // beginning; ordering is by the zero-padded sequence key, which is byte order
 // and numeric order at the same time on both backends.
 //
+// **The caller must pass a querier bound to a transaction that provides a
+// consistent snapshot**, because this reads the history row, the record count
+// and the observation rows as three separate statements. Run against a pool, a
+// concurrent ingest committing between any two of them produces a page that
+// describes no moment that ever existed — a retained count of 1 beside two rows,
+// or completeness metadata from before a saturation the rows already show. Each
+// backend's RunObservations is what supplies the snapshot, and the difference
+// between "these three reads agree" and "these three reads each happened" is not
+// visible in the values themselves, which is why it is stated here rather than
+// left to be noticed.
+//
 // The run must exist: "no such run" is a 404 and "that run retained nothing"
 // is an empty page, and collapsing them would make a typo indistinguishable
 // from an answer.
@@ -175,6 +213,12 @@ func runObservationPage(
 	if err != nil {
 		return ObservationPage{}, err
 	}
+
+	// The window this function's caller must close. Everything above and
+	// everything below has to describe one instant: a retained count of 1 beside
+	// two observation rows is a state that never existed, and a caller reading
+	// it cannot tell that it never existed.
+	runObservationReadHook()
 
 	rows, err := q.query(ctx, q.rebind(
 		`SELECT `+observationSelectList()+`

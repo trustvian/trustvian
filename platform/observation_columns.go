@@ -9,6 +9,8 @@ package platform
 // spelling stay in each backend's file.
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -61,6 +63,65 @@ func parseObservationSequenceKey(field, s string) (uint64, error) {
 	return v, nil
 }
 
+// observationCorrelationColumns names the three correlation values that are
+// **indexed by digest rather than by value**, paired with the key column each
+// one is indexed through.
+//
+// PostgreSQL refuses a B-tree entry larger than about 2704 bytes, and refuses it
+// at INSERT time. None of these three values has a length bound the ingest path
+// enforces:
+//
+//   - trace_id and session_id are validated nowhere at all — the only limit they
+//     meet is the 256 KiB HTTP request body;
+//   - fingerprint_id is bounded at 256 bytes by validateBehaviorIdentity, but
+//     only when the collector actually validates it. Once a run saturates at 512
+//     distinct behaviors, Observe returns ErrBehaviorCapacity *before* that
+//     check and the ingest path deliberately swallows it, so a saturated run can
+//     carry an unbounded fingerprint id into this table.
+//
+// Indexing the raw values would therefore let a record the platform already
+// accepted fail on insert, roll back the whole ingest, and do it on PostgreSQL
+// only — the two backends disagreeing about which records are ingestable, which
+// is exactly what the conformance suite exists to prevent. Truncating or
+// rejecting the identifier instead would change the accepted-record contract to
+// suit an index, which is the wrong way round.
+//
+// So the index key is a fixed-width digest and the value is stored whole.
+//
+// **A lookup through one of these indexes must filter on the key *and* on the
+// original value.** A digest narrows; it does not identify. Filtering on the key
+// alone would let a collision return another observation's row as a match, and
+// no amount of digest width makes that a safe assumption to bake into a query.
+func observationCorrelationColumns() [][2]string {
+	return [][2]string{
+		{"fingerprint_id", "fingerprint_key"},
+		{"trace_id", "trace_key"},
+		{"session_id", "session_key"},
+	}
+}
+
+// observationDigestLength is the width of a key column: hex SHA-256.
+const observationDigestLength = 64
+
+// observationDigestKey renders the bounded index key for a correlation value.
+//
+// **Empty maps to empty, not to the digest of the empty string.** Most
+// observations carry no session and many carry no trace, so an absent value is
+// the common case: giving it a 64-byte key would put one enormous equal-key run
+// in every index for rows that can never be looked up by it. Empty also stays
+// readable as "there is nothing here".
+//
+// SHA-256 rather than a shorter hash, and untruncated: the width is not the
+// safety property — the value comparison beside it is — so there is no reason to
+// spend reasoning on how many bits are enough.
+func observationDigestKey(value string) string {
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
 // observationInsertColumns is the authoritative column order.
 //
 // run_id and sequence lead because together they are the primary key, and both
@@ -95,6 +156,11 @@ func observationInsertColumns() []string {
 		// position — both backends bind positionally against this order.
 		"parent_span_id", "span_lineage", "duration_nanos",
 		"duration_observed", "span_status",
+
+		// The bounded index keys, derived from three columns above. Appended
+		// last for the same positional reason, and derived rather than
+		// caller-supplied — see observationCorrelationColumns.
+		"fingerprint_key", "trace_key", "session_key",
 	}
 }
 
@@ -125,6 +191,10 @@ func observationInsertArgs(runID EvaluationRunID, o Observation) []any {
 
 		o.ParentSpanID, string(o.SpanLineage), uint64Text(o.DurationNanos),
 		boolInt(o.DurationObserved), string(o.SpanStatus),
+
+		observationDigestKey(o.FingerprintID),
+		observationDigestKey(o.TraceID),
+		observationDigestKey(o.SessionID),
 	}
 }
 
@@ -156,6 +226,10 @@ type observationScan struct {
 	durationObserved int
 	spanStatus       string
 
+	fingerprintKey string
+	traceKey       string
+	sessionKey     string
+
 	out Observation
 }
 
@@ -184,6 +258,8 @@ func (s *observationScan) targets() []any {
 
 		&s.out.ParentSpanID, &s.spanLineage, &s.durationNanos,
 		&s.durationObserved, &s.spanStatus,
+
+		&s.fingerprintKey, &s.traceKey, &s.sessionKey,
 	}
 }
 
@@ -242,6 +318,26 @@ func (s *observationScan) observation() (Observation, error) {
 		return Observation{}, fmt.Errorf(
 			"%w: observation records duration %d with no observation flag",
 			ErrStoreCorrupt, duration)
+	}
+
+	// The key columns are derived, so a stored one that does not match the
+	// value beside it was not written by this code. Refused rather than
+	// recomputed: a row whose index key disagrees with its value is reachable
+	// through an index under an identity it does not have, and silently fixing
+	// it on read would leave the index itself still wrong. The same restore-time
+	// invariant validateRestoredOperational applies to task 084's counters.
+	for _, pair := range []struct {
+		column, stored, value string
+	}{
+		{"fingerprint_key", s.fingerprintKey, s.out.FingerprintID},
+		{"trace_key", s.traceKey, s.out.TraceID},
+		{"session_key", s.sessionKey, s.out.SessionID},
+	} {
+		if want := observationDigestKey(pair.value); pair.stored != want {
+			return Observation{}, fmt.Errorf(
+				"%w: observation %s does not match the value it indexes",
+				ErrStoreCorrupt, pair.column)
+		}
 	}
 
 	out := s.out

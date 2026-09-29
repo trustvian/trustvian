@@ -99,8 +99,16 @@ const (
 // Every one is **run-scoped first**, because every access pattern in those two
 // is scoped to a run: a trace id and a session id are producer-supplied and a
 // global index on either would invite the cross-run key task 084 forbids. Each
-// ends in `sequence` so the page order is the index order and a resolution
-// scan never sorts.
+// ends in `sequence` so the page order is the index order and a resolution scan
+// never sorts.
+//
+// **The middle column is a digest, not the value.** PostgreSQL refuses a B-tree
+// entry over roughly 2704 bytes at INSERT time, and none of the three indexed
+// values has a length bound the ingest path enforces — see
+// observationCorrelationColumns. Indexing the raw value would let an already
+// accepted record fail on insert and roll back its whole ingest, on PostgreSQL
+// and not on SQLite. The digest is bounded, so the key is bounded, and the value
+// is stored whole beside it. A lookup filters on both.
 //
 // The (run_id, sequence) pattern needs no index of its own — it is the primary
 // key. `parent_span_id` gets none deliberately: task 084 states that nothing
@@ -1150,11 +1158,11 @@ func observationSchemaStatements(textType, realType string) []string {
 		)`,
 
 		`CREATE INDEX ` + indexObservationsByFingerprint + ` ON ` + tableObservations +
-			` (run_id, fingerprint_id, sequence)`,
+			` (run_id, fingerprint_key, sequence)`,
 		`CREATE INDEX ` + indexObservationsByTrace + ` ON ` + tableObservations +
-			` (run_id, trace_id, sequence)`,
+			` (run_id, trace_key, sequence)`,
 		`CREATE INDEX ` + indexObservationsBySession + ` ON ` + tableObservations +
-			` (run_id, session_id, sequence)`,
+			` (run_id, session_key, sequence)`,
 	}
 }
 
@@ -3201,8 +3209,35 @@ func retainObservation(
 }
 
 // RunObservations returns one bounded page of a run's retained history.
+//
+// Inside a transaction, although it only reads. The page is three statements —
+// the history row, the record count and the observation rows — and run against
+// the pool the connection is released between each one, so a concurrent ingest
+// can commit into the gap and the page ends up describing no moment that ever
+// existed. SetMaxOpenConns(1) does not prevent this: it serializes the
+// statements without joining them.
+//
+// A SQLite read transaction holds its snapshot for its whole life, which is the
+// property being bought here. It is rolled back rather than committed because
+// nothing was written and a rollback says so; committing a read would work
+// identically and read as though something had changed.
 func (s *SQLiteStore) RunObservations(
 	ctx context.Context, id EvaluationRunID, after uint64, limit int,
 ) (ObservationPage, error) {
-	return runObservationPage(ctx, sqlQuerier{s.db}, id, after, limit)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ObservationPage{}, fmt.Errorf("platform: read observations: %w", err)
+	}
+	// Covers the error paths and a panic. A rollback after the deferred one has
+	// already run is a no-op, so the explicit call below is safe to repeat.
+	defer tx.Rollback() //nolint:errcheck // read-only; nothing to lose on rollback
+
+	page, err := runObservationPage(ctx, sqlQuerier{tx}, id, after, limit)
+	if err != nil {
+		return ObservationPage{}, err
+	}
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return ObservationPage{}, fmt.Errorf("platform: read observations: %w", err)
+	}
+	return page, nil
 }
