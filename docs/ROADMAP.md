@@ -950,7 +950,7 @@ The **Gate** column says which rows the release actually depends on.
 | 082 | [Agent inspection and evaluation depth](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md) — the planning task for the six-step developer workflow: what is implemented, what is missing, and what a decision would cost. Documentation only | Specified | neither |
 | 083 | [Behavioral layer identity and display classification](tasks/v1.0/083-behavioral-layer-classification.md) — an explicit rule for when a tool span and the HTTP request beneath it are one behavior, and a non-identity label so a model call, a tool call and an outbound request are distinguishable without changing what a fingerprint is | **Partially implemented** — classification and rendering shipped; the counting correction deferred to 084 ([ADR 0047](adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md)) | `v1.0` |
 | 084 | [Correlation and operational evidence on the record boundary](tasks/v1.0/084-correlation-operational-evidence.md) — parent span identity, duration and error status promoted from volatile feature inputs to recorded evidence, additively | **Implemented** — carried, aggregated per run and persisted at schema 6; per-observation history is 067's and is now implemented | `v1.0` |
-| 085 | Evidence resolution — from a gate check or a behavioral delta to the behaviors and observations behind it, as a resolution query rather than a payload inside a fixed-shape verdict. Authoritative at the control plane, exercised over `/v1` and the CLI, and **delivered before 076 consumes it** | Not specified — **unblocked**, 067 has landed | `v1.0` (via 17) |
+| 085 | [Evidence resolution](tasks/v1.0/085-evidence-resolution.md) — from a gate check or a behavioral delta to the behaviors and observations behind it, as a resolution query rather than a payload inside a fixed-shape verdict. Authoritative at the control plane, exercised over `/v1` and the CLI, and **delivered before 076 consumes it** | **Implemented** — two `GET` routes and a CLI family, no schema change; three checks resolve and the two evidence checks are aggregate-only by construction | `v1.0` (via 17) |
 | 086 | Scenario and input versioning — a scenario-definition digest and an input digest on the evidence, and a prompt *reference* beside `Model`, so a comparison can state whether both sides ran the same thing | Not specified | neither |
 | 087 | Performance and cost evidence — latency and error comparison from 084, token counts from the conventions, and cost only with an explicit pricing version and provenance | Not specified | neither |
 | 088 | Review decisions and annotations — an append-only note on a resolved finding, and an acknowledgement recorded **beside** the computed verdict rather than replacing it | Not specified | neither |
@@ -1004,7 +1004,7 @@ The workflow, with who owns each step:
 4  evaluate behavior, task quality, performance, cost     behavior shipped;
                                                           performance and cost 087;
                                                           quality PROPOSED (089)
-5  investigate a regression through linked evidence       nobody  —  085, then 076
+5  investigate a regression through linked evidence       085 (shipped), 076
 6  apply release criteria and record the decision         066 (shipped), + 088
 ```
 
@@ -1096,9 +1096,9 @@ Conceptually:
 
 067  event history   [implemented, schema 7]
        │   085's retention needs were specified alongside it, not after it
-       └──▶ 085  evidence resolution   [needs 084]   ← NEXT
-                   │   control plane + /v1 + CLI; ships without a browser
-                   ├──▶ 076  behavioral evidence explorer
+       └──▶ 085  evidence resolution   [implemented, no schema step]
+                   │   control plane + /v1 + CLI; shipped without a browser
+                   ├──▶ 076  behavioral evidence explorer   ← NEXT
                    │          navigates 085; needs 084 for the timeline
                    └──▶ 088  review decisions and annotations
                               [needs 066; wants 070 for authorship]

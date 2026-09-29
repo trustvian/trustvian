@@ -81,6 +81,14 @@ var forbiddenIdentifiers = []string{
 	"EvaluationScorecard",
 	"NewEvaluationScorecard",
 	"BehaviorCollector",
+	// Task 085's resolution. The CLI names a finding and renders an answer; it
+	// must never decide which observations support one, which side a check
+	// belongs to, or whether a history makes an absence meaningful.
+	"ResolveFindingBehaviors",
+	"ResolveFindingObservations",
+	"ObservationFilter",
+	"FindingRef",
+	"planForCheck",
 }
 
 // TestCLIImportsNothingFromThePlatform walks the package's own source.

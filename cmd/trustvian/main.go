@@ -83,6 +83,8 @@ func runPlatform(s streams, args []string, timeout time.Duration) (int, bool) {
 		return runPromotion(s, args[1:], timeout), true
 	case "eval":
 		return runEval(s, args[1:], timeout), true
+	case "evidence":
+		return runEvidence(s, args[1:], timeout), true
 	case "tui":
 		return runTUI(s, args[1:], timeout), true
 	case "dev":
@@ -114,6 +116,10 @@ Control-plane commands (see docs/platform-cli.md):
   trustvian promotion  create|get|list
   trustvian eval       create|get|start|complete|fail|cancel|
                        progress|ingest-state|ingest|compare
+  trustvian evidence   behaviors|observations
+      Resolve a gate check or a behavioral delta to the evidence behind
+      it: which behavioral identities contributed, and which retained
+      observations carried them.
       Drive a local control plane over its /v1 HTTP API. Each supports
       --json, which writes the API's own response to stdout, and takes an
       optional --api-url; without one, a runtime started by 'make local'

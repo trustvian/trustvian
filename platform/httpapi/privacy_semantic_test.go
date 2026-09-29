@@ -112,10 +112,17 @@ func TestSemanticPathLeaksNoContentToAnyV1Payload(t *testing.T) {
 		// first that survives the run that produced it — which is exactly why
 		// it is swept here rather than trusted to its own contract.
 		"GET /v1/evaluation-runs/run-1/observations": a.do("GET", "/v1/evaluation-runs/run-1/observations", nil).Body.String(),
-		"GET /v1/candidates/cand-1":                  a.do("GET", "/v1/candidates/cand-1", nil).Body.String(),
-		"GET /v1/agents/agent-1/candidates":          a.do("GET", "/v1/agents/agent-1/candidates", nil).Body.String(),
-		"GET /v1/candidates/cand-1/evaluation-runs":  a.do("GET", "/v1/candidates/cand-1/evaluation-runs", nil).Body.String(),
-		"POST /v1/evaluations/compare":               comparison.Body.String(),
+		// Task 085. Resolution is the route whose whole purpose is to make
+		// evidence reachable, so it is the one most worth sweeping rather than
+		// trusting to the allowlist it inherits.
+		"GET /v1/evidence/behaviors": a.do("GET",
+			"/v1/evidence/behaviors?reference_run_id=run-1&candidate_run_id=run-1&check=added_behaviors", nil).Body.String(),
+		"GET /v1/evidence/observations": a.do("GET",
+			"/v1/evidence/observations?reference_run_id=run-1&candidate_run_id=run-1&behavior="+record.FingerprintID, nil).Body.String(),
+		"GET /v1/candidates/cand-1":                 a.do("GET", "/v1/candidates/cand-1", nil).Body.String(),
+		"GET /v1/agents/agent-1/candidates":         a.do("GET", "/v1/agents/agent-1/candidates", nil).Body.String(),
+		"GET /v1/candidates/cand-1/evaluation-runs": a.do("GET", "/v1/candidates/cand-1/evaluation-runs", nil).Body.String(),
+		"POST /v1/evaluations/compare":              comparison.Body.String(),
 	}
 
 	for key, canary := range canaries {
@@ -124,6 +131,13 @@ func TestSemanticPathLeaksNoContentToAnyV1Payload(t *testing.T) {
 				t.Errorf("content attribute %q reached %s\n  value: %s", key, name, canary)
 			}
 		}
+	}
+
+	// The resolution route must have returned the behavior it was asked about,
+	// or its silence proves nothing either.
+	if !strings.Contains(bodies["GET /v1/evidence/observations"], "export_customer") {
+		t.Errorf("the evidence resolution holds no behavior, so its absence of "+
+			"canaries proves nothing:\n%s", bodies["GET /v1/evidence/observations"])
 	}
 
 	// The observation route must have returned the behavior, or its silence

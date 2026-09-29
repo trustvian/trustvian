@@ -982,3 +982,142 @@ func newObservationDTO(o platform.Observation) observationDTO {
 		SpanStatus:         string(o.SpanStatus),
 	}
 }
+
+// ---------------------------------------------------------------------
+// Evidence resolution — task 085
+// ---------------------------------------------------------------------
+
+// findingDTO echoes the finding a resolution answered, so a stored response is
+// self-describing and a link can be reconstructed from it.
+type findingDTO struct {
+	ReferenceRunID string `json:"reference_run_id"`
+	CandidateRunID string `json:"candidate_run_id"`
+	Check          string `json:"check,omitempty"`
+	Behavior       string `json:"behavior,omitempty"`
+}
+
+// historyDTO is the retained-history state of the side a resolution read.
+//
+// Always present, never omitempty: a resolution whose availability field
+// vanished would be read as one whose history was fine.
+type historyDTO struct {
+	State         string `json:"state"`
+	RetainedCount string `json:"retained_count"`
+	Complete      bool   `json:"complete"`
+}
+
+func newHistoryDTO(h platform.ObservationHistory) historyDTO {
+	return historyDTO{
+		State:         h.State().String(),
+		RetainedCount: u64(h.RetainedCount()),
+		Complete:      h.Complete(),
+	}
+}
+
+// findingBehaviorListResponse is one bounded page of contributing behavioral
+// identities.
+type findingBehaviorListResponse struct {
+	Version string     `json:"version"`
+	Finding findingDTO `json:"finding"`
+
+	Status string `json:"status"`
+	Side   string `json:"side,omitempty"`
+
+	// RecordedCount is what the recorded evidence holds — the gate's own
+	// actual. Never derived from the page below.
+	RecordedCount string `json:"recorded_count"`
+
+	Behaviors []findingBehaviorDTO `json:"behaviors"`
+	History   historyDTO           `json:"history"`
+
+	NextAfter string `json:"next_after,omitempty"`
+}
+
+type findingBehaviorDTO struct {
+	FingerprintID  string                `json:"fingerprint_id"`
+	Behavior       behaviorDescriptorDTO `json:"behavior"`
+	Presence       string                `json:"presence"`
+	ReferenceCount string                `json:"reference_count"`
+	CandidateCount string                `json:"candidate_count"`
+}
+
+func newFindingDTO(f platform.FindingRef) findingDTO {
+	return findingDTO{
+		ReferenceRunID: string(f.ReferenceRunID),
+		CandidateRunID: string(f.CandidateRunID),
+		Check:          string(f.Check),
+		Behavior:       f.Behavior,
+	}
+}
+
+func newFindingBehaviorListResponse(
+	resolution platform.BehaviorResolution, nextAfter string,
+) findingBehaviorListResponse {
+	behaviors := make([]findingBehaviorDTO, 0, len(resolution.Behaviors))
+	for _, d := range resolution.Behaviors {
+		behaviors = append(behaviors, findingBehaviorDTO{
+			FingerprintID:  d.FingerprintID,
+			Behavior:       newBehaviorDescriptorDTO(d.Behavior),
+			Presence:       string(d.Presence),
+			ReferenceCount: u64(d.ReferenceCount),
+			CandidateCount: u64(d.CandidateCount),
+		})
+	}
+	return findingBehaviorListResponse{
+		Version:       WireVersion,
+		Finding:       newFindingDTO(resolution.Finding),
+		Status:        string(resolution.Status),
+		Side:          string(resolution.Side),
+		RecordedCount: u64(resolution.RecordedCount),
+		Behaviors:     behaviors,
+		History:       newHistoryDTO(resolution.History),
+		NextAfter:     nextAfter,
+	}
+}
+
+// findingObservationListResponse is one bounded page of supporting
+// observations.
+type findingObservationListResponse struct {
+	Version string     `json:"version"`
+	Finding findingDTO `json:"finding"`
+
+	Status string `json:"status"`
+	Side   string `json:"side,omitempty"`
+
+	// RecordedCount is what the evidence holds, and is **not** a count of the
+	// observations below. A block or critical-risk check counts every record
+	// the run ingested, while retained history is bounded and may be partial —
+	// so a larger recorded count beside a shorter page is bounded retention
+	// describing itself, not a discrepancy.
+	RecordedCount string `json:"recorded_count"`
+
+	// Exhaustive reports whether paging to the end yields every matching
+	// observation that ever existed. False whenever the history is not
+	// complete, however many matches this page holds.
+	Exhaustive bool `json:"exhaustive"`
+
+	Observations []observationDTO `json:"observations"`
+	History      historyDTO       `json:"history"`
+
+	NextAfter string `json:"next_after,omitempty"`
+}
+
+func newFindingObservationListResponse(
+	resolution platform.ObservationResolution, nextAfter string,
+) findingObservationListResponse {
+	observations := make([]observationDTO, 0, len(resolution.Observations))
+	for _, o := range resolution.Observations {
+		observations = append(observations, newObservationDTO(o))
+	}
+	return findingObservationListResponse{
+		Version:       WireVersion,
+		Finding:       newFindingDTO(resolution.Finding),
+		Status:        string(resolution.Status),
+		Side:          string(resolution.Side),
+		RecordedCount: u64(resolution.RecordedCount),
+		Exhaustive:    resolution.Exhaustive,
+		Observations:  observations,
+		History:       newHistoryDTO(resolution.History),
+		NextAfter:     nextAfter,
+	}
+}

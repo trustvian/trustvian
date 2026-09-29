@@ -198,6 +198,23 @@ type ObservationStore interface {
 	RunObservations(
 		ctx context.Context, id EvaluationRunID, after uint64, limit int,
 	) (ObservationPage, error)
+
+	// FindObservations is the same read, narrowed to the observations that
+	// support one finding (task 085).
+	//
+	// A separate method rather than a widened RunObservations, so the
+	// unfiltered page keeps the signature every existing caller uses and the
+	// filter cannot be passed by accident. Both run the same query builder, so
+	// the two cannot drift.
+	//
+	// **The filter is applied in storage, before the limit.** That is the whole
+	// point of taking it here instead of letting a caller post-process a page:
+	// filtering a page that has already been truncated returns fewer rows than
+	// match and makes the continuation cursor describe the wrong stream.
+	FindObservations(
+		ctx context.Context, id EvaluationRunID, filter ObservationFilter,
+		after uint64, limit int,
+	) (ObservationPage, error)
 }
 
 // ---------------------------------------------------------------------
