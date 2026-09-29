@@ -71,8 +71,8 @@ const payload = JSON.parse(process.argv[2]);
 process.stdout.write(JSON.stringify(payload.observations.map(observationRow)));
 `
 
-// renderObservations runs the shipped row projection over one route's response.
-func renderObservations(t *testing.T, payload []byte) []renderedRow {
+// runShippedDriver executes one driver against the shipped browser assets.
+func runShippedDriver(t *testing.T, driver string, arg string) []byte {
 	t.Helper()
 	nodeBin, err := exec.LookPath("node")
 	if err != nil {
@@ -89,22 +89,28 @@ func renderObservations(t *testing.T, payload []byte) []renderedRow {
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(dir, "driver.mjs"), []byte(rowDriver), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "driver.mjs"), []byte(driver), 0o600); err != nil {
 		t.Fatalf("write driver: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, nodeBin, "driver.mjs", string(payload))
+	cmd := exec.CommandContext(ctx, nodeBin, "driver.mjs", arg)
 	cmd.Dir = dir
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("running the shipped renderer under node: %v\n%s", err, stderr.String())
+		t.Fatalf("running the shipped assets under node: %v\n%s", err, stderr.String())
 	}
+	return stdout
+}
 
+// renderObservations runs the shipped row projection over one route's response.
+func renderObservations(t *testing.T, payload []byte) []renderedRow {
+	t.Helper()
 	var rows []renderedRow
+	stdout := runShippedDriver(t, rowDriver, string(payload))
 	if err := json.Unmarshal(stdout, &rows); err != nil {
 		t.Fatalf("decode rendered rows: %v\n%s", err, stdout)
 	}
@@ -343,6 +349,204 @@ func TestCorrelatedHistoryRendersWhatTheRouteReturned(t *testing.T) {
 			payload := response.Body.Bytes()
 			compareRendering(t, tc.label,
 				decodeAuthoritative(t, payload), renderObservations(t, payload))
+		})
+	}
+}
+
+// ---------------------------------------------------------------------
+// Aggregate-only results describe applicability, not retained history
+// ---------------------------------------------------------------------
+
+// headerDriver reports what the shipped header rule would render for a payload,
+// together with the sentences it would have used.
+//
+// The sentences are returned as well as the flags, so the assertions can be
+// about the words a developer reads rather than about a boolean somebody could
+// rename.
+const headerDriver = `
+import { findingPresentation, statusSentence, historySentence, EXHAUSTIVE_CAVEAT }
+  from "./evidence.js";
+const payload = JSON.parse(process.argv[2]);
+const shape = findingPresentation(payload);
+const history = payload.history === undefined || payload.history === null
+  ? {} : payload.history;
+process.stdout.write(JSON.stringify({
+  shape,
+  status: payload.status,
+  recordedCount: payload.recorded_count,
+  statusSentence: statusSentence(payload.status),
+  // What the header *would* have said had it rendered the history block. Not
+  // rendered when shape.showHistory is false; returned here so a test can show
+  // what the unconditional rendering was claiming.
+  historySentenceIfShown: historySentence(history.state),
+  exhaustiveCaveat: EXHAUSTIVE_CAVEAT,
+}));
+`
+
+type headerRendering struct {
+	Shape struct {
+		DescribesRetainedHistory bool   `json:"describesRetainedHistory"`
+		ShowHistory              bool   `json:"showHistory"`
+		ShowExhaustiveCaveat     bool   `json:"showExhaustiveCaveat"`
+		ShowRows                 bool   `json:"showRows"`
+		CountNote                string `json:"countNote"`
+	} `json:"shape"`
+	Status                 string `json:"status"`
+	RecordedCount          string `json:"recordedCount"`
+	StatusSentence         string `json:"statusSentence"`
+	HistorySentenceIfShown string `json:"historySentenceIfShown"`
+	ExhaustiveCaveat       string `json:"exhaustiveCaveat"`
+}
+
+func renderHeader(t *testing.T, payload []byte) headerRendering {
+	t.Helper()
+	var out headerRendering
+	stdout := runShippedDriver(t, headerDriver, string(payload))
+	if err := json.Unmarshal(stdout, &out); err != nil {
+		t.Fatalf("decode header rendering: %v\n%s", err, stdout)
+	}
+	return out
+}
+
+// TestAggregateOnlyFindingsClaimNothingAboutRetainedHistory is the second review
+// finding.
+//
+// `reference_evidence` and `candidate_evidence` are minimum-count checks: they
+// fail when a run observed *too little*, so the control plane reports
+// `aggregate_only` and returns **without reading any history at all**. The
+// history and exhaustiveness fields on that response are therefore the zero
+// value — `unavailable`, `retained_count: "0"`, `complete: false`,
+// `exhaustive: false`.
+//
+// Rendered unconditionally, those defaults told a developer that a run whose
+// retained history is **complete** had none of it retained, and that a result
+// with no rows at all was "a sample". Both runs here are seeded to completeness
+// on purpose, so the payload's defaults and the run's actual state disagree — and
+// the test asserts the header believes the run rather than the zero value.
+func TestAggregateOnlyFindingsClaimNothingAboutRetainedHistory(t *testing.T) {
+	a := newAPI(t)
+	seedComparisonWithHistory(a)
+
+	// Both sides really do have complete retained history, or the whole premise
+	// of this test is wrong.
+	for _, runID := range []string{"run-ref", "run-cand"} {
+		response := a.do("GET", "/v1/evaluation-runs/"+runID+"/observations", nil)
+		a.mustStatus(response, 200, "history of "+runID)
+		var body struct {
+			HistoryState string `json:"history_state"`
+			Complete     bool   `json:"complete"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode history of %s: %v", runID, err)
+		}
+		if body.HistoryState != "complete" || !body.Complete {
+			t.Fatalf("%s reports history %q (complete=%v); this test needs a run "+
+				"whose retained history is complete", runID, body.HistoryState, body.Complete)
+		}
+	}
+
+	for _, check := range []string{"reference_evidence", "candidate_evidence"} {
+		for _, route := range []string{"behaviors", "observations"} {
+			t.Run(check+"/"+route, func(t *testing.T) {
+				response := a.do("GET", fmt.Sprintf(
+					"/v1/evidence/%s?reference_run_id=run-ref&candidate_run_id=run-cand&check=%s",
+					route, check), nil)
+				a.mustStatus(response, 200, check)
+				payload := response.Body.Bytes()
+				got := renderHeader(t, payload)
+
+				if got.Status != "aggregate_only" {
+					t.Fatalf("status = %q, want aggregate_only; this fixture no longer "+
+						"exercises the case", got.Status)
+				}
+
+				// The applicability answer and the authoritative count both stay.
+				if !strings.Contains(got.StatusSentence, "no observation that caused it") {
+					t.Errorf("the aggregate-only explanation is %q", got.StatusSentence)
+				}
+				if got.RecordedCount == "" || got.RecordedCount == "0" {
+					t.Errorf("recorded count = %q; the gate's own actual must stay "+
+						"visible", got.RecordedCount)
+				}
+
+				// And nothing about retained history is claimed.
+				if got.Shape.ShowHistory {
+					t.Errorf("the header would render the history block, which for "+
+						"this result says %q — about a run whose retained history is "+
+						"complete", got.HistorySentenceIfShown)
+				}
+				if got.Shape.ShowExhaustiveCaveat {
+					t.Errorf("the header would render %q, about a result with no "+
+						"observations at all", got.ExhaustiveCaveat)
+				}
+				if got.Shape.DescribesRetainedHistory || got.Shape.ShowRows {
+					t.Errorf("the header would describe retained observations: %+v",
+						got.Shape)
+				}
+				for _, claim := range []string{
+					"Retained history is bounded", "sample", "not complete", "retained",
+				} {
+					if strings.Contains(got.Shape.CountNote, claim) {
+						t.Errorf("the count note claims %q: %s", claim, got.Shape.CountNote)
+					}
+				}
+
+				// The premise, stated: the payload really does carry the defaults
+				// that the old rendering was reading as facts.
+				if !strings.Contains(string(payload), `"state":"unavailable"`) {
+					t.Errorf("the aggregate-only payload no longer carries an "+
+						"unavailable history default, so this guard would pass for "+
+						"the wrong reason:\n%s", payload)
+				}
+			})
+		}
+	}
+}
+
+// TestApplicableResolutionsStillDescribeTheirRetainedHistory is the other half.
+//
+// Narrowing what an aggregate-only result may claim must not narrow what a result
+// that actually read history says. This drives the two resolutions that do read
+// it, through the real routes.
+//
+// The partial and unavailable *states* are asserted at the presentation layer in
+// platform/webui's controller test rather than here: reaching either through this
+// API needs a run of 4096 observations or a schema-6 migration fixture, and the
+// property under test is which block the header renders for a given state.
+func TestApplicableResolutionsStillDescribeTheirRetainedHistory(t *testing.T) {
+	a := newAPI(t)
+	seedComparisonWithHistory(a)
+
+	for name, path := range map[string]string{
+		"behaviors": "/v1/evidence/behaviors?reference_run_id=run-ref&" +
+			"candidate_run_id=run-cand&check=added_behaviors",
+		"observations": "/v1/evidence/observations?reference_run_id=run-ref&" +
+			"candidate_run_id=run-cand&behavior=fp-export",
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := a.do("GET", path, nil)
+			a.mustStatus(response, 200, name)
+			got := renderHeader(t, response.Body.Bytes())
+
+			if got.Status != "resolved" {
+				t.Fatalf("status = %q, want resolved", got.Status)
+			}
+			if !got.Shape.ShowHistory || !got.Shape.ShowRows ||
+				!got.Shape.DescribesRetainedHistory {
+				t.Errorf("a resolution that read history would render %+v", got.Shape)
+			}
+			if !strings.Contains(got.HistorySentenceIfShown, "Every accepted record") {
+				t.Errorf("the history sentence for a complete run is %q",
+					got.HistorySentenceIfShown)
+			}
+			// Complete history, so nothing here is a sample.
+			if got.Shape.ShowExhaustiveCaveat {
+				t.Error("a resolution over complete history claims to be a sample")
+			}
+			if !strings.Contains(got.Shape.CountNote, "Retained history is bounded") {
+				t.Errorf("the count note lost its retained-history caveat: %s",
+					got.Shape.CountNote)
+			}
 		})
 	}
 }

@@ -427,6 +427,16 @@ answers apart because three of them look identical in a payload:
 | `indeterminate` | Nothing matches and the history is partial or unavailable, so the absence establishes nothing |
 | `aggregate_only` | The check counts an absence — it fails when a run observed *too little* — so there is no observation to link and none is invented |
 
+**`aggregate_only` is an applicability answer, not a history answer.** The two
+minimum-count checks have no per-observation evidence to attribute, so the
+control plane reports that and returns **without reading any retained history at
+all**. Their history and exhaustiveness fields are therefore the zero value, and
+the page shows neither: no retained-history block, no sampling caveat, no empty
+table and no page control. What it does show is the explanation above and the
+recorded count, which is the gate's own actual read from the run's aggregate.
+Rendering those defaults would tell you a run whose retained history is complete
+had none of it retained.
+
 **The status describes the finding, not the page.** Paging past the last match
 shows zero rows and still reports `resolved`, because the evidence exists and
 you have read all of it. "End of results" is worded as a statement about the
@@ -535,9 +545,18 @@ same shape the promotion history uses. There is no previous-page control,
 because reverse traversal is not something `/v1` offers.
 
 Changing the run, view, side, finding or identifier resets the cursor and
-abandons whatever is in flight: a response that lands after the question changed
-is discarded rather than drawn. Nothing about which finding you were reading
-survives a reload, and nothing is stored in the browser.
+abandons whatever is in flight **for that surface**: a response that lands after
+the question changed is discarded rather than drawn.
+
+**Finding, Run history and Provenance cancel only themselves.** They answer three
+unrelated questions, so each keeps its own request token and its own page
+position. Loading provenance while a run-history page is still arriving leaves
+that page to land, and leaves its page number where it was — a shared token
+discarded the response and left the panel on a loading notice that nothing would
+replace, because selecting a subtab starts no read.
+
+Nothing about which finding you were reading survives a reload, and nothing is
+stored in the browser.
 
 ## Recording a promotion
 

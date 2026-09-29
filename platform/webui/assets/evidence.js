@@ -179,6 +179,58 @@ export const EXHAUSTIVE_CAVEAT =
   "existed, because this side's retained history is not complete. What is here " +
   "is a sample.";
 
+// AGGREGATE_ONLY_COUNT_NOTE describes the one number an aggregate-only
+// resolution holds.
+//
+// Deliberately says nothing about retained history. RECORDED_COUNT_CAVEAT
+// contrasts the recorded count with the rows beneath it, and an aggregate-only
+// result has no rows and read no history to contrast it with.
+export const AGGREGATE_ONLY_COUNT_NOTE =
+  "The recorded count is the number this check counted, read from the run's " +
+  "aggregate. It is the gate's own actual.";
+
+// findingPresentation decides which blocks a resolution's header may render.
+//
+// **`aggregate_only` is an applicability statement, not a history statement.**
+// The two minimum-count checks fail when a run observed *too little*, so the
+// control plane reports that they have no per-observation evidence to link to
+// and returns without reading any history at all. The history and exhaustiveness
+// fields on that response are therefore the zero value — `unavailable`,
+// `retained_count: "0"`, `complete: false`, `exhaustive: false` — and they
+// describe nothing that was measured.
+//
+// Rendered unconditionally, those defaults said "this run has records and none
+// of their history was retained" and "what is here is a sample" about runs whose
+// retained history is complete. Both are claims the response never made. So the
+// header asks this first, and shows only what the result established.
+//
+// Nothing here is a second query: not reading history for a check that has none
+// to attribute is the control plane's decision, and asking for it separately
+// just to fill a panel would add a read to produce a number that still would not
+// describe this finding.
+export function findingPresentation(response) {
+  const status = response === null || response === undefined ? "" : response.status;
+  if (status === "aggregate_only") {
+    return Object.freeze({
+      describesRetainedHistory: false,
+      showHistory: false,
+      showExhaustiveCaveat: false,
+      showRows: false,
+      countNote: AGGREGATE_ONLY_COUNT_NOTE,
+    });
+  }
+  return Object.freeze({
+    describesRetainedHistory: true,
+    showHistory: true,
+    // Only the observation resolution publishes `exhaustive`; the behaviors
+    // route has no such field, so an absent one states nothing and shows
+    // nothing.
+    showExhaustiveCaveat: response.exhaustive === false,
+    showRows: true,
+    countNote: RECORDED_COUNT_CAVEAT,
+  });
+}
+
 // PROVENANCE_UNSPECIFIED is how an unsupplied provenance field renders.
 //
 // Never blank, never a default, and never omitted. An unknown model is
@@ -283,48 +335,85 @@ export function needsExplicitSide(presence) {
 // The controller
 // ---------------------------------------------------------------------
 
+// RequestSurface is one independently-cancellable read and its page position.
+//
+// **One per surface, never one for the page.** A single shared counter made
+// every surface cancel every other: opening Provenance while a run-history page
+// was in flight discarded that page's response, and the panel kept the "Reading…"
+// it had already drawn — because selecting a subtab does not start a read. The
+// same counter also reset an unrelated surface's page number while its rendered
+// rows and continuation control stayed on screen, so the footer claimed page 1 of
+// a page 2 that was still visible.
+//
+// The fix is that these are separate questions. Finding resolution, run history
+// and provenance each own a token and, where they page, a cursor and a page
+// number; a read on one invalidates only reads on the same one.
+class RequestSurface {
+  constructor() {
+    // The generation token. The browser cannot cancel an in-flight promise, so a
+    // late response is discarded by comparing the token it was issued under
+    // against the current one.
+    this.generation = 0;
+    this.cursor = "";
+    this.page = 0;
+  }
+
+  // restart begins a new question: the previous read on this surface is
+  // abandoned and pagination returns to the start.
+  //
+  // Resetting the cursor is not a courtesy. A cursor is a position in one
+  // ordered stream, and carrying it into a different stream would page into the
+  // middle of an unrelated answer.
+  restart() {
+    this.generation += 1;
+    this.cursor = "";
+    this.page = 0;
+    return this.generation;
+  }
+
+  // paginate continues the same question: the previous read on this surface is
+  // still abandoned — two clicks of a continuation control must not race — but
+  // the page position is kept.
+  paginate(after) {
+    this.generation += 1;
+    this.cursor = after;
+    return this.generation;
+  }
+
+  // stale reports whether a response issued under `token` has been superseded.
+  stale(token) {
+    return token !== this.generation;
+  }
+
+  // advance records that a page rendered, and returns its number.
+  advance() {
+    this.page += 1;
+    return this.page;
+  }
+}
+
 // EvidenceSurface drives every read this surface makes.
 //
-// Two independent questions live here, each with its own cursor: which finding
-// is open, and which run view is open. They page separately because they are
-// separate reads, and they share one generation counter because either one
-// changing makes an in-flight response for the other stale in the same way.
+// Three independent surfaces, because they answer three unrelated questions:
+// which finding is open, which run view is open, and which two candidates'
+// provenance is being read. Reading one leaves the other two exactly as they
+// were — their in-flight responses still land, and their page positions do not
+// move.
 export class EvidenceSurface {
   constructor(deps, view) {
     this.deps = deps;
     this.view = view;
 
-    // The generation token. The browser cannot cancel an in-flight promise, so a
-    // late response is discarded by comparing the token it was issued under
-    // against the current one. Every await below is followed immediately by that
-    // comparison — "immediately" is load-bearing, because anything happening in
-    // between is a place a stale response gets used.
-    this.generation = 0;
-
     this.finding = null;
     this.findingRoute = "";
-    this.findingCursor = "";
-    this.findingPage = 0;
+    this.findingRequest = new RequestSurface();
 
     this.runID = "";
     this.viewKey = "";
     this.identifier = "";
-    this.runCursor = "";
-    this.runPage = 0;
-  }
+    this.runRequest = new RequestSurface();
 
-  // invalidate abandons every in-flight read and resets pagination.
-  //
-  // Called whenever the question changes — a different run, side, finding, view
-  // or identifier. Resetting the cursor is not a courtesy: a cursor is a position
-  // in one ordered stream, and carrying it into a different stream would page
-  // into the middle of an unrelated answer.
-  invalidate() {
-    this.generation += 1;
-    this.findingCursor = "";
-    this.findingPage = 0;
-    this.runCursor = "";
-    this.runPage = 0;
+    this.provenanceRequest = new RequestSurface();
   }
 
   // ------------------------------------------------------------------
@@ -338,49 +427,9 @@ export class EvidenceSurface {
   // from the caller for a behavior. It selects a URL and decides nothing about
   // the answer.
   async openFinding(finding, route) {
-    this.invalidate();
     this.finding = finding;
     this.findingRoute = route;
-    await this.loadFindingPage("");
-  }
-
-  // loadFindingPage reads one bounded page of the open finding.
-  async loadFindingPage(after) {
-    if (this.finding === null) {
-      return;
-    }
-    const generation = this.generation;
-    const finding = this.finding;
-    const route = this.findingRoute;
-    this.view.findingLoading(finding, route);
-
-    try {
-      let response;
-      if (route === "observations") {
-        response = await this.deps.resolveFindingObservations(finding, after);
-        if (generation !== this.generation) {
-          return;
-        }
-      } else {
-        response = await this.deps.resolveFindingBehaviors(finding, after);
-        if (generation !== this.generation) {
-          return;
-        }
-      }
-      this.findingCursor = after;
-      this.findingPage += 1;
-      this.view.findingPage({
-        finding,
-        route,
-        response,
-        pageNumber: this.findingPage,
-      });
-    } catch (error) {
-      if (generation !== this.generation) {
-        return;
-      }
-      this.view.findingError(error);
-    }
+    await this.readFinding("", this.findingRequest.restart());
   }
 
   // nextFindingPage follows the cursor the last page published.
@@ -390,7 +439,48 @@ export class EvidenceSurface {
   // offers, and keeping every visited page in order to walk backwards is the
   // unbounded accumulation this shape exists to avoid.
   async nextFindingPage(after) {
-    await this.loadFindingPage(after);
+    await this.readFinding(after, this.findingRequest.paginate(after));
+  }
+
+  // readFinding reads one bounded page of the open finding under one token.
+  //
+  // The token is taken by the caller rather than here, because only the caller
+  // knows whether this is a new question or the next page of the current one —
+  // and those differ in exactly one respect, which is whether the page position
+  // survives.
+  async readFinding(after, token) {
+    if (this.finding === null) {
+      return;
+    }
+    const finding = this.finding;
+    const route = this.findingRoute;
+    this.view.findingLoading(finding, route);
+
+    try {
+      let response;
+      if (route === "observations") {
+        response = await this.deps.resolveFindingObservations(finding, after);
+        if (this.findingRequest.stale(token)) {
+          return;
+        }
+      } else {
+        response = await this.deps.resolveFindingBehaviors(finding, after);
+        if (this.findingRequest.stale(token)) {
+          return;
+        }
+      }
+      this.view.findingPage({
+        finding,
+        route,
+        response,
+        pageNumber: this.findingRequest.advance(),
+      });
+    } catch (error) {
+      if (this.findingRequest.stale(token)) {
+        return;
+      }
+      this.view.findingError(error);
+    }
   }
 
   // ------------------------------------------------------------------
@@ -399,11 +489,14 @@ export class EvidenceSurface {
 
   // openRunView reads one run view from its first page.
   async openRunView(runID, viewKey, identifier) {
-    this.invalidate();
     this.runID = runID;
     this.viewKey = viewKey;
     this.identifier = identifier;
-    await this.loadRunPage("");
+    await this.readRun("", this.runRequest.restart());
+  }
+
+  async nextRunPage(after) {
+    await this.readRun(after, this.runRequest.paginate(after));
   }
 
   // scopeForView renders the current view's narrowing.
@@ -420,10 +513,16 @@ export class EvidenceSurface {
     return scope;
   }
 
-  // loadRunPage reads one bounded page of the open run view.
-  async loadRunPage(after) {
+  // readRun reads one bounded page of the open run view under one token.
+  //
+  // **Every path through here renders something.** A read that returns without
+  // drawing would leave whatever was on screen — which, after a loading notice,
+  // is a panel that says "Reading…" forever and has no control that would start
+  // another read.
+  async readRun(after, token) {
     const spec = viewFor(this.viewKey);
     if (this.runID === "" || spec === null) {
+      this.view.runNeedsRun();
       return;
     }
     if (spec.param !== "" && this.identifier === "") {
@@ -431,35 +530,28 @@ export class EvidenceSurface {
       return;
     }
 
-    const generation = this.generation;
     const runID = this.runID;
     const scope = this.scopeForView();
     this.view.runLoading(spec, runID, this.identifier);
 
     try {
       const response = await this.deps.runObservations(runID, scope, after);
-      if (generation !== this.generation) {
+      if (this.runRequest.stale(token)) {
         return;
       }
-      this.runCursor = after;
-      this.runPage += 1;
       this.view.runObservationPage({
         spec,
         runID,
         identifier: this.identifier,
         response,
-        pageNumber: this.runPage,
+        pageNumber: this.runRequest.advance(),
       });
     } catch (error) {
-      if (generation !== this.generation) {
+      if (this.runRequest.stale(token)) {
         return;
       }
       this.view.runError(error);
     }
-  }
-
-  async nextRunPage(after) {
-    await this.loadRunPage(after);
   }
 
   // ------------------------------------------------------------------
@@ -471,26 +563,29 @@ export class EvidenceSurface {
   // Two runs and four reads, because provenance lives on the candidate a run
   // evaluated and a run names it. Nothing is cached between calls: the control
   // plane is authoritative and a stale label is worse than a second request.
+  //
+  // Four awaits and four checks. The token is this surface's own, so starting
+  // this read abandons an earlier provenance read and nothing else — a run-history
+  // page in flight still lands, and its page number does not move.
   async loadProvenance(referenceRunID, candidateRunID) {
-    this.invalidate();
-    const generation = this.generation;
+    const token = this.provenanceRequest.restart();
     this.view.provenanceLoading();
 
     try {
       const referenceRun = await this.deps.getRun(referenceRunID);
-      if (generation !== this.generation) {
+      if (this.provenanceRequest.stale(token)) {
         return;
       }
       const candidateRun = await this.deps.getRun(candidateRunID);
-      if (generation !== this.generation) {
+      if (this.provenanceRequest.stale(token)) {
         return;
       }
       const referenceCandidate = await this.deps.getCandidate(referenceRun.candidate_id);
-      if (generation !== this.generation) {
+      if (this.provenanceRequest.stale(token)) {
         return;
       }
       const candidateCandidate = await this.deps.getCandidate(candidateRun.candidate_id);
-      if (generation !== this.generation) {
+      if (this.provenanceRequest.stale(token)) {
         return;
       }
       this.view.provenancePair({
@@ -498,7 +593,7 @@ export class EvidenceSurface {
         candidate: { run: candidateRun, candidate: candidateCandidate },
       });
     } catch (error) {
-      if (generation !== this.generation) {
+      if (this.provenanceRequest.stale(token)) {
         return;
       }
       this.view.provenanceError(error);

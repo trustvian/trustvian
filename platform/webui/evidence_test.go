@@ -544,7 +544,7 @@ func TestNoRenderedSentenceAssertsReasoningIntentOrCausality(t *testing.T) {
 // ---------------------------------------------------------------------
 
 const controllerDriver = `
-import { EvidenceSurface, needsExplicitSide } from "./evidence.js";
+import { EvidenceSurface, needsExplicitSide, findingPresentation } from "./evidence.js";
 
 // A recording view. It draws nothing; it records what it was asked to draw,
 // which is what makes "a stale response was discarded" observable.
@@ -556,6 +556,7 @@ function recorder() {
     findingLoading: () => { calls.push({ kind: "findingLoading" }); },
     findingPage: push("findingPage"),
     findingError: push("findingError"),
+    runNeedsRun: () => { calls.push({ kind: "runNeedsRun" }); },
     runNeedsIdentifier: push("runNeedsIdentifier"),
     runLoading: () => { calls.push({ kind: "runLoading" }); },
     runObservationPage: push("runObservationPage"),
@@ -714,6 +715,147 @@ results.sides = {
     }));
 }
 
+// 8. An unrelated surface's read discards nothing and moves no page position.
+//    This is the defect a single shared token caused: opening Provenance while a
+//    run-history page was in flight threw that page away and left the panel on
+//    the loading notice it had already drawn.
+{
+  const view = recorder();
+  let releaseRun;
+  const runGate = new Promise((resolve) => { releaseRun = resolve; });
+  const surface = new EvidenceSurface({
+    runObservations: async () => { await runGate; return page([1, 2], ""); },
+    getRun: async (id) => ({ id, candidate_id: "cand-" + id }),
+    getCandidate: async (id) => ({ id, metadata: { label: id } }),
+  }, view);
+
+  const pendingRun = surface.openRunView("run-1", "sequence", "");
+  await surface.loadProvenance("ref", "cand");
+  releaseRun();
+  await pendingRun;
+
+  results.provenanceDuringRun = {
+    kinds: view.calls.map((c) => c.kind),
+    runPages: view.calls.filter((c) => c.kind === "runObservationPage")
+      .map((c) => c.payload.pageNumber),
+  };
+}
+
+// 9. The same, the other way round: a finding read in flight survives an
+//    unrelated run-history read.
+{
+  const view = recorder();
+  let releaseFinding;
+  const findingGate = new Promise((resolve) => { releaseFinding = resolve; });
+  const surface = new EvidenceSurface({
+    resolveFindingBehaviors: async () => {
+      await findingGate;
+      return { finding: {}, status: "resolved", side: "candidate", recorded_count: "2",
+        behaviors: [{ fingerprint_id: "fp-1" }],
+        history: { state: "complete", retained_count: "2", complete: true },
+        next_after: "" };
+    },
+    runObservations: async () => page([1], ""),
+  }, view);
+
+  const pendingFinding = surface.openFinding(
+    { referenceRunID: "ref", candidateRunID: "cand", check: "added_behaviors" }, "behaviors");
+  await surface.openRunView("run-1", "sequence", "");
+  releaseFinding();
+  await pendingFinding;
+
+  results.runDuringFinding = {
+    kinds: view.calls.map((c) => c.kind),
+    findingPages: view.calls.filter((c) => c.kind === "findingPage")
+      .map((c) => c.payload.pageNumber),
+  };
+}
+
+// 10. An unrelated surface's read does not reset a page counter that is still on
+//     screen beside its continuation control.
+{
+  const view = recorder();
+  const surface = new EvidenceSurface({
+    runObservations: async (runID, scope, after) => page([1], after === "2" ? "" : "next"),
+    getRun: async (id) => ({ id, candidate_id: "c" }),
+    getCandidate: async (id) => ({ id, metadata: {} }),
+  }, view);
+
+  await surface.openRunView("run-1", "timeline", "");
+  await surface.nextRunPage("1");
+  await surface.loadProvenance("ref", "cand");
+  await surface.nextRunPage("2");
+
+  results.pagePreserved = view.calls.filter((c) => c.kind === "runObservationPage")
+    .map((c) => c.payload.pageNumber);
+}
+
+// 11. Changing the question inside one surface still discards its older response.
+{
+  const view = recorder();
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  let call = 0;
+  const surface = new EvidenceSurface({
+    resolveFindingObservations: async (finding) => {
+      call += 1;
+      if (call === 1) {
+        await firstGate;
+      }
+      return { finding: { behavior: finding.behavior }, status: "resolved",
+        side: finding.side, recorded_count: "1", exhaustive: true,
+        observations: [{ sequence: "1", span_id: "a" }],
+        history: { state: "complete", retained_count: "1", complete: true },
+        next_after: "" };
+    },
+  }, view);
+
+  const first = surface.openFinding(
+    { referenceRunID: "r", candidateRunID: "c", behavior: "fp-old", side: "candidate" },
+    "observations");
+  const second = surface.openFinding(
+    { referenceRunID: "r", candidateRunID: "c", behavior: "fp-new", side: "reference" },
+    "observations");
+  await second;
+  releaseFirst();
+  await first;
+
+  results.sameSurfaceStale = view.calls.filter((c) => c.kind === "findingPage")
+    .map((c) => c.payload.finding.behavior);
+}
+
+// 12. Every read path renders something, so no panel can be left on a loading
+//     notice with nothing that would start another read.
+{
+  const view = recorder();
+  let reads = 0;
+  const surface = new EvidenceSurface({
+    runObservations: async () => { reads += 1; return page([1], ""); },
+  }, view);
+  await surface.openRunView("", "sequence", "");
+  results.noRun = { reads, kinds: view.calls.map((c) => c.kind) };
+}
+
+// 13. What each resolution status lets the header claim.
+{
+  const shapes = {};
+  for (const sample of [
+    { name: "aggregate_only", response: { status: "aggregate_only", exhaustive: false,
+      history: { state: "unavailable", retained_count: "0", complete: false } } },
+    { name: "resolved_complete", response: { status: "resolved", exhaustive: true,
+      history: { state: "complete", retained_count: "6", complete: true } } },
+    { name: "indeterminate_partial", response: { status: "indeterminate", exhaustive: false,
+      history: { state: "partial", retained_count: "4096", complete: false } } },
+    { name: "none_found", response: { status: "none_found", exhaustive: true,
+      history: { state: "complete", retained_count: "3", complete: true } } },
+    { name: "behaviors_no_exhaustive", response: { status: "resolved",
+      history: { state: "complete", retained_count: "2", complete: true } } },
+  ]) {
+    shapes[sample.name] = findingPresentation(sample.response);
+  }
+  results.presentation = shapes;
+}
+
 process.stdout.write(JSON.stringify(results));
 `
 
@@ -753,6 +895,27 @@ func TestEvidenceSurfaceControllerBehavior(t *testing.T) {
 			Rows      int    `json:"rows"`
 			NextAfter string `json:"nextAfter"`
 		} `json:"emptyContinuation"`
+		ProvenanceDuringRun struct {
+			Kinds    []string `json:"kinds"`
+			RunPages []int    `json:"runPages"`
+		} `json:"provenanceDuringRun"`
+		RunDuringFinding struct {
+			Kinds        []string `json:"kinds"`
+			FindingPages []int    `json:"findingPages"`
+		} `json:"runDuringFinding"`
+		PagePreserved    []int    `json:"pagePreserved"`
+		SameSurfaceStale []string `json:"sameSurfaceStale"`
+		NoRun            struct {
+			Reads int      `json:"reads"`
+			Kinds []string `json:"kinds"`
+		} `json:"noRun"`
+		Presentation map[string]struct {
+			DescribesRetainedHistory bool   `json:"describesRetainedHistory"`
+			ShowHistory              bool   `json:"showHistory"`
+			ShowExhaustiveCaveat     bool   `json:"showExhaustiveCaveat"`
+			ShowRows                 bool   `json:"showRows"`
+			CountNote                string `json:"countNote"`
+		} `json:"presentation"`
 	}
 	decodeDriver(t, runDriver(t, controllerDriver), &got)
 
@@ -850,6 +1013,101 @@ func TestEvidenceSurfaceControllerBehavior(t *testing.T) {
 			"side and this page must not pick one", got.Sides)
 	}
 
+	// 8. A provenance read leaves a pending run-history read alone.
+	if len(got.ProvenanceDuringRun.RunPages) != 1 {
+		t.Errorf("a run-history read in flight when Provenance loaded produced %d "+
+			"rendered page(s), want 1 — a response discarded here leaves the panel "+
+			"on a loading notice that nothing will replace, because selecting a "+
+			"subtab starts no read", len(got.ProvenanceDuringRun.RunPages))
+	} else if got.ProvenanceDuringRun.RunPages[0] != 1 {
+		t.Errorf("the surviving run-history page reported page %d, want 1",
+			got.ProvenanceDuringRun.RunPages[0])
+	}
+	if !containsKind(got.ProvenanceDuringRun.Kinds, "provenancePair") {
+		t.Errorf("the provenance read did not render: %v", got.ProvenanceDuringRun.Kinds)
+	}
+
+	// 9. And the other way round.
+	if len(got.RunDuringFinding.FindingPages) != 1 {
+		t.Errorf("a finding read in flight when the run history loaded produced %d "+
+			"rendered page(s), want 1", len(got.RunDuringFinding.FindingPages))
+	}
+	if !containsKind(got.RunDuringFinding.Kinds, "runObservationPage") {
+		t.Errorf("the run-history read did not render: %v", got.RunDuringFinding.Kinds)
+	}
+
+	// 10. An unrelated read moves no page position.
+	wantPages := []int{1, 2, 3}
+	if len(got.PagePreserved) != len(wantPages) {
+		t.Fatalf("page numbers were %v, want %v", got.PagePreserved, wantPages)
+	}
+	for i := range wantPages {
+		if got.PagePreserved[i] != wantPages[i] {
+			t.Fatalf("page numbers were %v, want %v — a provenance read reset a "+
+				"counter belonging to rows still on screen beside their "+
+				"continuation control", got.PagePreserved, wantPages)
+		}
+	}
+
+	// 11. Changing the question inside one surface still discards the older one.
+	if len(got.SameSurfaceStale) != 1 || got.SameSurfaceStale[0] != "fp-new" {
+		t.Errorf("the finding surface rendered %v; only the current question's "+
+			"response may reach the view", got.SameSurfaceStale)
+	}
+
+	// 12. No read path returns without rendering.
+	if got.NoRun.Reads != 0 {
+		t.Errorf("a view with no run issued %d read(s)", got.NoRun.Reads)
+	}
+	if len(got.NoRun.Kinds) == 0 || got.NoRun.Kinds[0] != "runNeedsRun" {
+		t.Errorf("a view with no run rendered %v; a path that renders nothing "+
+			"leaves whatever was there, which after a loading notice is a panel "+
+			"nothing recovers", got.NoRun.Kinds)
+	}
+
+	// 13. What each status lets the header claim.
+	aggregate, ok := got.Presentation["aggregate_only"]
+	if !ok {
+		t.Fatal("findingPresentation returned nothing for aggregate_only")
+	}
+	if aggregate.ShowHistory || aggregate.ShowExhaustiveCaveat || aggregate.ShowRows ||
+		aggregate.DescribesRetainedHistory {
+		t.Errorf("an aggregate-only result would render %+v; the control plane read "+
+			"no history for it, so its history and exhaustiveness fields are the "+
+			"zero value and describe nothing", aggregate)
+	}
+	if !strings.Contains(aggregate.CountNote, "aggregate") {
+		t.Errorf("the aggregate-only count note is %q; it must describe the count "+
+			"without describing retained history", aggregate.CountNote)
+	}
+	for _, claim := range []string{"Retained history is bounded", "sample", "not complete"} {
+		if strings.Contains(aggregate.CountNote, claim) {
+			t.Errorf("the aggregate-only count note claims %q", claim)
+		}
+	}
+	for _, name := range []string{
+		"resolved_complete", "indeterminate_partial", "none_found", "behaviors_no_exhaustive",
+	} {
+		shape, ok := got.Presentation[name]
+		if !ok {
+			t.Fatalf("findingPresentation returned nothing for %s", name)
+		}
+		if !shape.ShowHistory || !shape.ShowRows {
+			t.Errorf("%s would render %+v; a result that read history must keep "+
+				"showing it", name, shape)
+		}
+	}
+	if !got.Presentation["indeterminate_partial"].ShowExhaustiveCaveat {
+		t.Error("a partial-history resolution no longer explains that it is a sample")
+	}
+	if got.Presentation["resolved_complete"].ShowExhaustiveCaveat {
+		t.Error("a complete-history resolution claims to be a sample")
+	}
+	if got.Presentation["behaviors_no_exhaustive"].ShowExhaustiveCaveat {
+		t.Error("the behaviors route publishes no exhaustive field, so an absent " +
+			"one must state nothing")
+	}
+
 	// 7. An empty continuation keeps the finding's status.
 	if len(got.EmptyContinuation) != 2 {
 		t.Fatalf("the view drew %d finding pages, want 2", len(got.EmptyContinuation))
@@ -886,16 +1144,44 @@ func TestEvidenceSurfaceDecidesNothing(t *testing.T) {
 		t.Error("nothing reads response.status; the displayed status must be the server's")
 	}
 
-	// Each status literal exists exactly once, as the key of the sentence map
-	// that explains it. A second occurrence is where one would be minted.
-	for _, status := range []string{"none_found", "indeterminate", "aggregate_only"} {
-		if count := strings.Count(evidence, status); count != 1 {
-			t.Errorf("evidence.js names %q %d times; once, as the key of the "+
-				"sentence that explains it, is the only reason to name it at all — "+
-				"a second is where the browser starts deciding one", status, count)
+	// A status literal may be **compared against** — branching on the server's
+	// answer is what a renderer does — and may be the key of the sentence that
+	// explains it. It may not be produced: an assignment, a property value or a
+	// returned literal is where a browser would start deciding one.
+	//
+	// So each occurrence is checked in context rather than counted. Counting
+	// forbade `status === "aggregate_only"`, which is a read of the server's
+	// answer and the opposite of minting it.
+	for _, status := range []string{"none_found", "indeterminate", "aggregate_only", "resolved"} {
+		occurrences := 0
+		for _, source := range map[string]string{"evidence.js": evidence, "app.js": app} {
+			literal := `"` + status + `"`
+			for index := 0; ; {
+				at := strings.Index(source[index:], literal)
+				if at < 0 {
+					break
+				}
+				at += index
+				index = at + len(literal)
+				occurrences++
+				before := strings.TrimRight(source[:at], " \t\n")
+				switch {
+				case strings.HasSuffix(before, "["), // a key of the sentence map
+					strings.HasSuffix(before, "==="),
+					strings.HasSuffix(before, "!=="):
+					continue
+				default:
+					line := strings.Count(source[:at], "\n") + 1
+					t.Errorf("line %d produces the status literal %q rather than "+
+						"comparing against one; the status is the control plane's "+
+						"answer, and a browser that writes one has decided it",
+						line, status)
+				}
+			}
 		}
-		if strings.Contains(app, status) {
-			t.Errorf("app.js names %q; the status is the control plane's answer", status)
+		if occurrences == 0 {
+			t.Errorf("neither asset names %q at all; this guard would be vacuous "+
+				"for it", status)
 		}
 	}
 
@@ -1089,7 +1375,8 @@ func TestEvidenceGenerationTokenGuardsEveryAsyncContinuation(t *testing.T) {
 	source := stripJSNoise(readAsset(t, "evidence.js"))
 
 	readThenGuard := regexp.MustCompile(
-		`await this\.deps\.\w+\([^)]*\);\s*\n\s*if \(generation !== this\.generation\)`)
+		`await this\.deps\.\w+\([^)]*\);\s*
+\s*if \(this\.\w+\.stale\(token\)\)`)
 	reads := regexp.MustCompile(`await this\.deps\.\w+\(`)
 
 	total := len(reads.FindAllString(source, -1))
@@ -1107,16 +1394,70 @@ func TestEvidenceGenerationTokenGuardsEveryAsyncContinuation(t *testing.T) {
 	// Every catch must check too, since a rejection from an abandoned read would
 	// otherwise replace the current view with an old error.
 	catches := strings.Count(source, "} catch (")
-	if guards := strings.Count(source, "generation !== this.generation"); guards < total+catches {
+	if guards := strings.Count(source, ".stale(token)"); guards < total+catches {
 		t.Errorf("evidence.js has %d reads and %d catch blocks but only %d "+
 			"generation checks", total, catches, guards)
 	}
 
-	// And the cursor is reset where the generation is bumped, so a new question
-	// cannot page into the middle of the old answer.
-	if !regexp.MustCompile(`this\.generation \+= 1;[\s\S]{0,400}?this\.runCursor = ""`).
+	// Restarting a question clears the page position with the token, so a new
+	// question cannot page into the middle of the old answer.
+	if !regexp.MustCompile(
+		`restart\(\) \{\s*
+\s*this\.generation \+= 1;\s*
+\s*this\.cursor = "";\s*
+\s*this\.page = 0;`).
 		MatchString(source) {
-		t.Error("invalidating the surface does not reset the run cursor")
+		t.Error("restarting a request surface does not reset its cursor and page")
+	}
+	// Continuing one keeps it, because a continuation is the same question.
+	if !regexp.MustCompile(
+		`paginate\(after\) \{\s*
+\s*this\.generation \+= 1;\s*
+\s*this\.cursor = after;`).
+		MatchString(source) {
+		t.Error("continuing a request surface does not keep its page position")
+	}
+}
+
+// TestEvidenceSurfacesCancelOnlyThemselves is the defect a single shared token
+// caused.
+//
+// One counter for three unrelated questions meant reading any surface abandoned
+// every other. Opening Provenance while a run-history page was in flight
+// discarded that page's response and left the panel on the "Reading…" it had
+// already drawn — and selecting a subtab starts no read, so nothing recovered
+// it. The same counter reset an unrelated surface's page number while its rows
+// and continuation control stayed on screen.
+//
+// Structural half: there is no counter on the surface itself, and there are
+// three separate request objects. The behavioral half is in the controller
+// driver below.
+func TestEvidenceSurfacesCancelOnlyThemselves(t *testing.T) {
+	source := stripJSNoise(readAsset(t, "evidence.js"))
+
+	if regexp.MustCompile(`this\.generation = 0;`).FindAllString(source, -1) == nil {
+		t.Fatal("no generation counter found at all; this guard would be vacuous")
+	}
+	// Exactly one declaration, and it is the per-surface one.
+	if count := strings.Count(source, "this.generation = 0;"); count != 1 {
+		t.Errorf("%d generation counters are declared; one belongs to RequestSurface "+
+			"and each surface holds its own instance", count)
+	}
+	if !strings.Contains(source, "class RequestSurface") {
+		t.Fatal("evidence.js declares no RequestSurface")
+	}
+
+	surfaces := regexp.MustCompile(`this\.\w+Request = new RequestSurface\(\);`).
+		FindAllString(source, -1)
+	if len(surfaces) != 3 {
+		t.Errorf("EvidenceSurface holds %d request surfaces, want three — finding, "+
+			"run history and provenance are independent questions", len(surfaces))
+	}
+
+	// And no method resets more than its own.
+	if strings.Contains(source, "invalidate()") {
+		t.Error("evidence.js still has a page-wide invalidate(); cancelling is a " +
+			"property of one surface, not of the page")
 	}
 }
 
@@ -1306,4 +1647,14 @@ func TestProvenanceShowsAbsenceAsAbsence(t *testing.T) {
 		t.Fatalf("CANDIDATE_METADATA_FIELDS holds %d fields, want the six "+
 			"CandidateMetadata already carries", len(metadata))
 	}
+}
+
+// containsKind reports whether a recorded view call of that kind happened.
+func containsKind(kinds []string, want string) bool {
+	for _, kind := range kinds {
+		if kind == want {
+			return true
+		}
+	}
+	return false
 }

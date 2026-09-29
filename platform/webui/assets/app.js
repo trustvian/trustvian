@@ -1223,18 +1223,31 @@ function findingHeader(host, response) {
 
   host.append(evidence.statusBanner(response.status));
 
-  const history = response.history === undefined || response.history === null
-    ? {}
-    : response.history;
-  host.append(evidence.historyBox(history.state, history.retained_count, history.complete));
+  // What this result actually established. An aggregate-only check read no
+  // history, so its history and exhaustiveness fields are the zero value and
+  // describe nothing — rendering them claimed a run's retained history was
+  // missing and sampled when it was complete.
+  const shape = evidence.findingPresentation(response);
+
+  if (shape.showHistory) {
+    const history = response.history === undefined || response.history === null
+      ? {}
+      : response.history;
+    host.append(evidence.historyBox(history.state, history.retained_count, history.complete));
+  }
 
   host.append(render.element("p", "note",
-    `Recorded count: ${render.displayValue(response.recorded_count)}. ${evidence.RECORDED_COUNT_CAVEAT}`));
-  if (response.exhaustive === false) {
+    `Recorded count: ${render.displayValue(response.recorded_count)}. ${shape.countNote}`));
+  if (shape.showExhaustiveCaveat) {
     host.append(render.element("p", "note", evidence.EXHAUSTIVE_CAVEAT));
   }
-  host.append(render.element("p", "note", evidence.FIDELITY_NOTE));
-  host.append(render.element("p", "note", evidence.SEQUENCE_NOTE));
+  // Both notes are about how retained observations are rendered. An
+  // aggregate-only result renders none, so neither applies to it.
+  if (shape.describesRetainedHistory) {
+    host.append(render.element("p", "note", evidence.FIDELITY_NOTE));
+    host.append(render.element("p", "note", evidence.SEQUENCE_NOTE));
+  }
+  return shape;
 }
 
 // The Evidence surface's renderer.
@@ -1253,11 +1266,19 @@ const evidenceView = {
 
   findingPage({ response, route, pageNumber }) {
     render.clear(evidenceFindingResult);
-    findingHeader(evidenceFindingResult, response);
+    const shape = findingHeader(evidenceFindingResult, response);
 
     const finding = response.finding === undefined || response.finding === null
       ? {}
       : response.finding;
+
+    // An aggregate-only check has nothing to page through and nothing to link
+    // to. The status banner above is the whole answer, and an empty table with a
+    // page footer under it would read as "we looked and found none".
+    if (!shape.showRows) {
+      clearProblem();
+      return;
+    }
 
     if (route === "observations") {
       const rows = Array.isArray(response.observations) ? response.observations : [];
@@ -1304,6 +1325,12 @@ const evidenceView = {
 
   findingError(error) {
     report(evidenceFindingResult, error);
+  },
+
+  runNeedsRun() {
+    render.clear(evidenceRunResult);
+    evidenceRunResult.append(render.emptyState(
+      "This view needs an evaluation run. Open an observation from a finding, or type the run identifier."));
   },
 
   runNeedsIdentifier(spec) {

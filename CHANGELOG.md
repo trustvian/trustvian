@@ -45,7 +45,15 @@ actually depend on.
   absent status is never "no errors"; `resolved`, `none_found`, `indeterminate`
   and `aggregate_only` each carry the sentence that keeps it apart from the other
   three. The status describes the **finding**, so a continuation page that comes
-  back empty still reports `resolved`.
+  back empty still reports `resolved`. `aggregate_only` is an applicability
+  answer rather than a history one: the two minimum-count checks are resolved
+  without reading any retained history, so the page shows their explanation and
+  recorded count and makes no claim about availability, retention or sampling.
+
+  **The three sub-surfaces cancel only themselves.** Finding, run history and
+  provenance each hold their own request token and page position, so reading one
+  neither discards a response the others are waiting for nor moves their page
+  numbers.
 
   **The browser decides nothing.** Every status, side, recorded count and
   exhaustiveness flag is a value `/v1` returned; a test asserts each status
