@@ -38,6 +38,8 @@ Tasks for the `v1.0` milestone.
 | [084 — Correlation and Operational Evidence on the Record Boundary](084-correlation-operational-evidence.md) | Specified and implemented |
 | [085 — Evidence Resolution](085-evidence-resolution.md) | Specified and implemented |
 | 086–090 | Reserved and scoped by [082](082-agent-inspection-and-evaluation-depth.md); **no specification written yet.** 089 is **PROPOSED** rather than approved |
+| [091 — Platform Analytics and Developer Ecosystem](091-platform-analytics-and-developer-ecosystem.md) | Specified. Documentation and planning only; implements nothing |
+| 092–095 | Reserved and scoped by [091](091-platform-analytics-and-developer-ecosystem.md); **no specification written yet.** Post-`v1.0` platform depth — none is a release gate |
 
 The numbers 068–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist
@@ -106,6 +108,16 @@ gate while now depending on several tasks numbered above it. That is correct
 rather than untidy: a number records when a milestone entered the plan, and
 renumbering one would break every specification, ADR, commit message and
 document already citing it. `ROADMAP.md` carries the dependency order.
+
+**091 is a planning task in 082's shape, and reserves nothing for `v1.0`.** It
+names the capabilities that become valuable once a developer can already
+observe, retain, explain, compare and gate, with finding review scoped by 088 —
+aggregate questions across
+runs (092), rules that notify when a behavioral condition holds (093), a
+described `/v1` contract with typed clients (094), and saved investigation
+context (095). Reserving those numbers authorizes no implementation, and none of
+them is a `v1.0` blocker. MCP stays [015](../015-trustvian-mcp.md) and trace
+interoperability stays 090; 091 creates no duplicate of either.
 
 **Not every task here is a release gate.** 079 belongs to the
 [developer preview](../../ROADMAP.md#v0100--developer-preview), and 080 is a
