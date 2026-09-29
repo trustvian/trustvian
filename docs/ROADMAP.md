@@ -955,6 +955,11 @@ The **Gate** column says which rows the release actually depends on.
 | 087 | Performance and cost evidence — latency and error comparison from 084, token counts from the conventions, and cost only with an explicit pricing version and provenance | Not specified | neither |
 | 088 | Review decisions and annotations — an append-only note on a resolved finding, and an acknowledgement recorded **beside** the computed verdict rather than replacing it | Not specified | neither |
 | 089 | **PROPOSED** — optional quality evaluation and prompt experimentation. Contradicts [What Trustvian is not becoming](#what-trustvian-is-not-becoming) as written; needs a product-boundary decision, and closing it is a legitimate outcome | Not specified | none |
+| 091 | [Platform analytics and developer ecosystem](tasks/v1.0/091-platform-analytics-and-developer-ecosystem.md) — the planning task for what becomes valuable once a developer can already observe, retain, explain, compare, gate and review. Documentation only | Specified | none |
+| 092 | Behavioral analytics — a bounded analytical read model over authoritative evidence, answering questions that span more than one run | Not specified | none |
+| 093 | Behavioral alert rules — platform-level conditions over that evidence, reusing the existing generic webhook sink. Notification, never enforcement | Not specified | none |
+| 094 | Public control-plane API contract and typed clients — an OpenAPI description of `/v1`, machine-validated, with generated or contract-tested clients | Not specified | none |
+| 095 | Saved investigations — shareable investigation context that references authoritative evidence rather than copying it | Not specified | none |
 | 090 | Trace-backend interoperability — a documented OTLP fan-out to a trace backend beside Trustvian, with no runtime dependency in either direction. **Off by default; enabling it names the destination and whether content-bearing attributes may be transmitted.** Optional integration ([ADR 0046](adr/0046-trace-backends-are-interoperability-targets-not-dependencies.md)) | Not specified | none |
 
 **Production history and scale:**
@@ -1065,6 +1070,52 @@ not a privacy guarantee, and no filter of this kind exists today.
 records why that is interoperability rather than a dependency or a source of
 code — and it is **Proposed**, not Accepted.
 
+### Platform analytics and developer ecosystem
+
+**091 is a planning task, 092–095 are what it reserves, and none of them is a
+`v1.0` gate.** The planning is in
+[task 091](tasks/v1.0/091-platform-analytics-and-developer-ecosystem.md), which
+follows 082's shape: each item carries its developer problem, verified current
+state, scope, non-goals, dependencies, architectural constraints and privacy
+implications, and authorizes no code.
+
+It answers a question the investigation chain above leaves open. Once 085 can
+explain one finding completely, nothing can answer a question that spans **more
+than one run**:
+
+```text
+Which agents are introducing new behaviors most often?
+Which targets appeared for the first time this week?
+Which environments are producing gate failures?
+Which agents have incomplete behavioral evidence?
+```
+
+| Task | What it reserves |
+|---|---|
+| 092 | **Behavioral analytics** — a bounded analytical read model over authoritative evidence. Counts and groupings of new, added and removed behaviors, gate failures, block decisions, critical-risk observations, incomplete evidence and promotion outcomes, by project, agent, environment, profile, decision, risk, layer and time window |
+| 093 | **Behavioral alert rules** — platform-level conditions over that evidence, reusing the existing `alert` package and its generic webhook `Sink`. An alert is a *notification about evidence* and never changes a verdict, a decision or a promotion |
+| 094 | **Public control-plane API contract and typed clients** — an OpenAPI description of `/v1`, machine-validated against the implementation, and generated or contract-tested clients. Python matters most, as *tooling*, never as instrumentation |
+| 095 | **Saved investigations** — bounded, shareable investigation context that references authoritative evidence rather than copying it, and states when referenced evidence has aged out |
+
+**This is behavioral security analytics, not LLM product analytics.** A prompt
+registry, a playground, a dataset platform, LLM-as-a-judge, hallucination,
+groundedness and RAG scoring, model and provider leaderboards and generic
+product analytics are **not** new roadmap items — they answer *is this output
+good*, which
+[§ What Trustvian is not becoming](#what-trustvian-is-not-becoming) already
+excludes. 089 stays `PROPOSED`.
+
+**No infrastructure is adopted by imitation.** Reserving these numbers creates
+no dependency on an analytical store, an object store, a queue or an
+orchestrator. 068 keeps the conditional analytical-store decision and 069 keeps
+load and multi-node validation; if PostgreSQL satisfies measured requirements,
+nothing is added.
+
+**MCP stays [task 015](tasks/015-trustvian-mcp.md)** and trace interoperability
+stays 090. 091 duplicates neither — it records only that 015 becomes materially
+more useful once 085 exposes stable finding resolution, with read-only as the
+strong default for a first slice.
+
 ### Execution order, rather than numeric order
 
 What is built next is a dependency question, and the numbers do not answer it.
@@ -1110,6 +1161,14 @@ Conceptually:
 072  v1.0 release gate
 
 068  ClickHouse — only if measured volume justifies it
+
+═══════════ v1.0 ships here ═══════════
+
+091  platform analytics and developer ecosystem   [planning only]
+       ├──▶ 092  behavioral analytics        [optional enrichment from 087]
+       ├──▶ 093  behavioral alert rules      [independent of 092]
+       ├──▶ 094  public API contract and typed clients   [independent]
+       └──▶ 095  saved investigations        [needs 085; consumed by 076]
 ```
 
 **075 now precedes 078, and that edge was added by a measurement.** It used to
@@ -1501,6 +1560,9 @@ Evaluations   runs · reference and candidate · diff · scorecard · gate
 Review        annotations on findings · acknowledgements
               recorded beside the verdict, never replacing it          (088)
 
+Analytics     behavior · risk · gate and change trends
+              over authoritative evidence, server-computed        (092, post-v1)
+
 Promotions    environment advancement decisions                        (066)
 
 Manage        projects · agents · candidates · environments
@@ -1514,6 +1576,13 @@ Manage is not the landing page. Live behavioral understanding is.
 Today the shipped WebUI opens on Manage, in effect — a form asking for an
 identifier. That inversion is the gap task 074 closes, and everything above it in
 the list is what 074–078 and 083–088 add.
+
+**Analytics is a view like every other row**, and the rule below binds it hardest:
+a browser that crawled raw observations to compute a platform-level aggregate
+would be a second engine that is also wrong about a page boundary. Every number
+it shows comes from an authoritative server response. Saved investigations (095)
+support Evidence, Evaluations and Review rather than becoming a navigation row of
+their own.
 
 **Two properties of this list are load-bearing, not incidental.** Every row is a
 *view* — criterion 19 holds throughout, and no interface carries its own copy of
