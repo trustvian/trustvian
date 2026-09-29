@@ -9,7 +9,10 @@ Depends on: [054](054-behavioral-diff.md),
 [075](075-ai-semantic-telemetry-normalization.md) — added after the
 [measurement](#measurement-before-implementation); see
 [Sequencing](#sequencing-078-follows-075),
-[077](077-unified-otlp-local-dev-runtime.md)
+[077](077-unified-otlp-local-dev-runtime.md),
+[083](082-agent-inspection-and-evaluation-depth.md#083--behavioral-layer-identity-and-display-classification)
+— added by [082](082-agent-inspection-and-evaluation-depth.md); see
+[the amendment](#amendment--task-082)
 
 The engine's sequence-aware signals — transition and n-gram deviation and
 rarity, from the `v0.6` sequence work — are consumed as existing authoritative
@@ -1420,3 +1423,70 @@ a future reader will ask "why not the obvious thing":
    `N` is a cost-versus-evidence choice rather than a threshold, and the
    measurement supports stating `10` as a usable figure: forty runs at `N = 10`
    completed in roughly two hours of model time on a laptop.
+
+## Amendment — task 082
+
+[Task 082](082-agent-inspection-and-evaluation-depth.md) planned inspection and
+evaluation depth around this specification. **None of this task's non-goals
+change.** Three relationships are recorded, and one new dependency.
+
+### 083 is a new dependency, and it is ahead of this task
+
+This task's central mechanism is a k-of-N threshold over *how many runs showed a
+behavior*. A measurement against the reference workload found that one behavioral
+change produces **two** added behaviors, because an instrumented tool call and the
+HTTP request beneath it are two behavioral identities and no rule says which one
+counts:
+
+```text
+BEHAVIORAL DIFF: added 2
+    + POST  → export.localhost
+    + export_customer →
+```
+
+At `max_added_behaviors: 0` that is invisible. The moment a team sets a nonzero
+budget they are allowing half of a change and cannot know it. And because this
+task counts behaviors, re-running
+[its own threshold measurement](#the-section-stays-with-two-re-run-conditions)
+before the counting rule exists would measure the double count and then write the
+resulting `k` down as guidance.
+
+So **083 joins 075 as a prerequisite for the re-run**, not for the runner. The two
+exempt slices — the run-scoped behavior route and the additive
+`--behavioral-profile` flag — are unaffected and can still land first.
+
+### 086 owns scenario and input versioning, and this task's non-goals stand
+
+The **Non-goals** section above refuses a dataset platform: "no dataset entity, no
+versioning, no splits, no labelling, no curation and no dataset API", and refuses
+a prompt registry. [086](082-agent-inspection-and-evaluation-depth.md#086--scenario-and-input-versioning)
+**does not reverse any of that.** It records a *digest* of the scenario definition
+and of its declared inputs on the evidence a scenario execution produces, plus a
+prompt *reference* on `CandidateMetadata`, so that a comparison can state whether
+both sides ran the same thing.
+
+The distinction is the whole of it: versioning stays git's, and Trustvian records
+which version was used rather than becoming a place to keep versions. No dataset
+entity, no dataset API, no golden outputs, no prompt text.
+
+### 087 owns performance and cost, and this task's non-goal is unchanged
+
+"No cost or token accounting" above remains a non-goal **of this task**: this
+runner accounts for neither, and adding either to it would put evidence
+computation in a runner that
+[computes nothing](078-design-notes.md#it-computes-nothing-and-that-is-enforced-three-ways).
+[087](082-agent-inspection-and-evaluation-depth.md#087--performance-and-cost-evidence)
+is a separate item on the control-plane side, and it depends on 084 rather than on
+anything here.
+
+### The minimum-evidence rule generalizes, and 082 says so
+
+This task establishes that
+[minimum-evidence gates cannot be configured away](078-design-notes.md#minimum-evidence-gates-cannot-be-configured-away),
+because fewer observations push every maximum-count gate toward PASS.
+[082](082-agent-inspection-and-evaluation-depth.md#storage-scale-and-completeness)
+adopts that rule for every new comparison and summary it plans, and adds two
+consequences this task should also hold to when it is implemented: a deployment
+that samples its trace pipeline records the ratio or declares it unknown, and an
+incomplete run stays a distinct state from a clean run with a small behavioral
+surface.

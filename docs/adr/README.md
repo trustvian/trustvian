@@ -69,6 +69,12 @@ as long as its own decision holds.
 | [0043](0043-dev-provisions-the-local-hierarchy-from-the-repository.md) | `trustvian dev` provisions the local hierarchy from the repository | Accepted |
 | [0044](0044-instrumentation-ownership-requires-positive-evidence.md) | Instrumentation ownership requires positive evidence | Accepted |
 | [0045](0045-conventions-are-read-frameworks-are-not.md) | Conventions are read, frameworks are not | Accepted |
+| [0046](0046-trace-backends-are-interoperability-targets-not-dependencies.md) | Trace backends are interoperability targets, not dependencies | **Proposed** |
+
+**0046 is the first record here carried as Proposed.** Its reasoning is
+complete and no maintainer has ratified it, which is exactly what this status
+means; the record itself says what would make it Accepted. Read it as a
+position argued rather than a rule in force.
 
 No ADR is currently Superseded or Deprecated. Several later ADRs build on
 earlier ones — 0006 and 0018 on 0004's narrow port, 0007/0008/0017 on 0002's
@@ -81,7 +87,8 @@ realtime model 0032 pinned, 0042 on the module separation 0022 and 0023
 established and the text contract 0035 chose, 0043 on the caller-owned identity
 0025 requires and the learning scope 0024 defined, 0044 on the endpoint 0042
 composes, 0045 on the adapter boundary 0003 drew and the public surface 0002
-bounded — and each cites the earlier decision as still governing rather than
+bounded, 0046 on the consumer-of-observability position 0003 and 0022 together
+establish — and each cites the earlier decision as still governing rather than
 replacing it.
 
 ## Writing one

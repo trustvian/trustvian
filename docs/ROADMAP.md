@@ -22,7 +22,16 @@ Status vocabulary:
 | **CURRENT** | The stable line today |
 | **NEXT** | The milestone being worked toward |
 | **PLANNED** | Approved and decomposed into tasks, not implemented |
+| **PROPOSED** | Written down for a decision, and **not approved**. A proposal that contradicts or extends an accepted boundary says so, and closing it is a legitimate outcome |
 | **FUTURE** | A direction, not scoped, designed, committed, or dated |
+
+**PROPOSED is not a weaker PLANNED.** PLANNED means the decision is made and the
+work is not done. PROPOSED means the decision is not made, and the entry exists so
+it can be made deliberately rather than drifted into. Exactly one item carries it
+today — item 089, optional quality evaluation, inside
+[task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md) — and it
+carries it because it contradicts
+[What Trustvian is not becoming](#what-trustvian-is-not-becoming) as written.
 
 `v0.10.0` — the [developer preview](#v0100--developer-preview) — is NEXT, and
 `v1.0` is the release gate beyond it. Track B is **partly implemented**: the
@@ -30,7 +39,9 @@ evaluation foundation, local persistence, the local control-plane API and
 realtime, the developer CLI, the TUI, the WebUI, the PostgreSQL backend, the
 environment model and promotion (tasks 051–066, 073 and 074) exist, while
 076 and 078–080 are specified, 075 and 077 are implemented, and 067–072 are
-still PLANNED.
+still PLANNED. [Task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md)
+is a planning task, in 049's shape: it reserves and scopes 083–090 — inspection
+and evaluation depth — and implements nothing.
 What exists is not usable end to end on its own. Everything under
 [Beyond v1.0](#beyond-v10) is FUTURE.
 
@@ -207,6 +218,17 @@ behavior.
 
 Also not implemented: multi-tenancy, access control, an MCP server surface, a
 machine-learning detection path, and prompt- or content-level analysis.
+
+**And not implemented, newly scoped:** the depth a developer needs to *inspect*
+what an agent did and to *investigate* why a gate failed. Trustvian reads
+agent-oriented telemetry well; what crosses `DecisionRecord` into the platform is
+narrower than what it read (no parent span, no duration, no error status, no token
+counts), and nothing links a gate check or a behavioral delta to the observations
+behind it.
+[Task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md) is the
+planning task that verified this against source and reserved 083–090 for it;
+[the roadmap section](#agent-inspection-and-evaluation-depth) is the summary. None
+of it is implemented, and one item (089) is PROPOSED rather than approved.
 
 ## Released Milestones
 
@@ -909,8 +931,10 @@ lost.
 **Closing unplanned gaps.** None of these was in the reserved 049–072
 sequence. 073–078 each close a concrete gap found by running the product end to
 end — an instrumented agent, a browser, and a developer who has not read the
-source. 079 and 080 close two gaps of a different kind, and the **Gate** column
-says which rows the release actually depends on.
+source. 079 and 080 close two gaps of a different kind. 082 is a planning task
+and 083–090 are what it reserves — see
+[inspection and evaluation depth](#agent-inspection-and-evaluation-depth) below.
+The **Gate** column says which rows the release actually depends on.
 
 | Task | Milestone | Status | Gate |
 |---|---|---|---|
@@ -923,6 +947,15 @@ says which rows the release actually depends on.
 | 079 | [CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md) — the 078 verdict rendered on the pull request, exit codes passed through, no `pull_request_target` with an untrusted checkout | Specified | preview only |
 | 080 | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md) — precision, recall and false-positive rate for the existing signals against a public agent prompt-injection benchmark | Specified | neither |
 | 081 | Persist behavior fidelity, so a comparison delta reports whether a behavior was named by telemetry or inferred from transport — a forward-only schema step in both backends, deferred from 075 | Not specified | neither |
+| 082 | [Agent inspection and evaluation depth](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md) — the planning task for the six-step developer workflow: what is implemented, what is missing, and what a decision would cost. Documentation only | Specified | neither |
+| 083 | Behavioral layer identity and display classification — an explicit rule for when a tool span and the HTTP request beneath it are one behavior, and a non-identity label so a model call, a tool call and an outbound request are distinguishable without changing what a fingerprint is | Not specified | `v1.0` |
+| 084 | Correlation and operational evidence on the record boundary — parent span identity, duration and error status promoted from volatile feature inputs to recorded evidence, additively | Not specified | `v1.0` |
+| 085 | Evidence links — from a gate check or a behavioral delta to the behaviors and observations behind it, as a resolution query rather than a payload inside a fixed-shape verdict | Not specified | `v1.0` (via 17) |
+| 086 | Scenario and input versioning — a scenario-definition digest and an input digest on the evidence, and a prompt *reference* beside `Model`, so a comparison can state whether both sides ran the same thing | Not specified | neither |
+| 087 | Performance and cost evidence — latency and error comparison from 084, token counts from the conventions, and cost only with an explicit pricing version and provenance | Not specified | neither |
+| 088 | Review decisions and annotations — an append-only note on a resolved finding, and an acknowledgement recorded **beside** the computed verdict rather than replacing it | Not specified | neither |
+| 089 | **PROPOSED** — optional quality evaluation and prompt experimentation. Contradicts [What Trustvian is not becoming](#what-trustvian-is-not-becoming) as written; needs a product-boundary decision, and closing it is a legitimate outcome | Not specified | none |
+| 090 | Trace-backend interoperability — a documented OTLP fan-out to a trace backend beside Trustvian, with no runtime dependency in either direction. Optional integration ([ADR 0046](adr/0046-trace-backends-are-interoperability-targets-not-dependencies.md)) | Not specified | none |
 
 **Production history and scale:**
 
@@ -946,6 +979,85 @@ arrived at. `TestFidelityIsNotPersistedYet` records the gap in the suite and fai
 the moment it closes. See
 [ADR 0045](adr/0045-conventions-are-read-frameworks-are-not.md)'s consequences.
 
+### Agent inspection and evaluation depth
+
+**082 is a planning task, 083–090 are what it reserves, and none of them is
+implemented.** The planning is in
+[task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md), which carries
+each item's developer problem, verified current state, scope, non-goals,
+dependencies, acceptance criteria, validation strategy, privacy implications,
+risks and placement. This section is the roadmap-level reading of it.
+
+It decomposes one sentence:
+
+> **Inspect what your agent did, understand what changed between versions, and
+> make release decisions using evidence.**
+
+That is not a new direction. It is the [Track B journey](#v10-exit-criteria) read
+from the developer's side, and every clause already has an owner — except two.
+The workflow, with who owns each step:
+
+```text
+1  run an agent against a versioned set of scenarios      078, + 086
+2  inspect model calls, tool calls, requests, errors      076 over 067, +083, 084
+3  compare a reference version with a candidate           054 055 056  (shipped)
+4  evaluate behavior, task quality, performance, cost     behavior shipped;
+                                                          performance and cost 087;
+                                                          quality PROPOSED (089)
+5  investigate a regression through linked evidence       nobody  —  085
+6  apply release criteria and record the decision         066 (shipped), + 088
+```
+
+**Step 5 is the gap that matters most.** A gate FAIL today names a count and a
+delta names a fingerprint; neither says *which observations*, and that is the
+first thing a developer whose gate just failed wants. It is also the reason a
+developer opens a second tool — which the [Track B gate](#v10-exit-criteria)
+rules out in the sentence directly beneath its journey.
+
+**Step 2 is blocked lower down than it looks.** Trustvian reads the conventions
+well (075). What crosses `DecisionRecord` into the platform is narrower than what
+it read: no parent span, no duration, no error status, no token counts. So a
+timeline with errors and timing is blocked on the *record* boundary (084), not on
+the adapter.
+
+**And one item is a correction rather than an addition.** 083 exists because a
+measurement found one behavioral change reported as two — an instrumented tool
+call and the HTTP request beneath it are two behavioral identities, and no rule
+says what should happen. At `max_added_behaviors: 0` that is invisible; the first
+team to allow one added behavior would be allowing half of one. It has to land
+before 078's threshold measurement is re-run, or the re-run measures the double
+count.
+
+Three sequencing consequences, each argued in 082:
+
+- **083 precedes the inspection work**, because it changes what a behavior *is*,
+  and therefore what a diff counts and what an evidence link resolves to.
+- **084 is separated from 083** rather than bundled with it: 084 is purely
+  additive and 083 may require a baseline migration. This is the separation 081
+  already demonstrates.
+- **085 is specified alongside 067**, not after it. 076 records the mistake that
+  avoids: a presentation task whose storage layer retained too little has to
+  amend itself, and linking has sharper retention needs than presentation.
+
+**This section adds nothing to the `v1.0` gate.** 083 and 084 are gate items
+because they change what criteria 12, 14 and 17 already mean; 085 rides on
+criterion 17's *"and explained"*, which 076 already carries. The rest is
+post-preview work, one proposal and one documentation item. No criterion is added,
+removed or weakened.
+
+**089 is PROPOSED and that is the whole of its status.** Optional quality
+evaluation contradicts
+[What Trustvian is not becoming](#what-trustvian-is-not-becoming) as written, and
+a planning task does not get to reverse an accepted boundary quietly. See
+[the proposal that is not approved](#the-proposal-that-is-not-approved).
+
+**090 is an optional integration, not a dependency.** A documented OTLP fan-out
+puts a trace backend beside Trustvian for the waterfall Trustvian deliberately
+does not render.
+[ADR 0046](adr/0046-trace-backends-are-interoperability-targets-not-dependencies.md)
+records why that is interoperability rather than a dependency or a source of
+code — and it is **Proposed**, not Accepted.
+
 ### Execution order, rather than numeric order
 
 What is built next is a dependency question, and the numbers do not answer it.
@@ -958,17 +1070,30 @@ Conceptually:
                                           │
 075  AI semantic telemetry ───────────────┤
        │                                  ↓
+       │                         083  behavioral layer identity
+       │                                  ↓
        │                         078  behavioral scenario suites
        │                                  ↓
        │                         079  CI integration (GitHub Action)
+       │                                  ↓
+       │                         086  scenario and input versioning
        │
        └──────────▶ 080  detection evaluation
                              │        (measurement; gates nothing)
+
+084  correlation and operational evidence   [additive, no migration, anytime]
+       │      parent span · duration · error status
      ═══════════ v0.10.0 developer preview ships here ═══════════
-                             ↓
-                     067  event history
-                             ↓
-                     076  behavioral evidence explorer
+       │
+       └──▶ 087  performance and cost evidence
+
+067  event history
+       ├──▶ 076  behavioral evidence explorer   [needs 084 for the timeline]
+       │
+       └──▶ 085  evidence links   [needs 084; specify alongside 067]
+                   │
+                   └──▶ 088  review decisions and annotations
+                              [needs 066; wants 070 for authorship]
 
 069  multi-node and load validation
 070  platform security hardening
@@ -988,7 +1113,7 @@ Two pieces of 078 are not blocked by it and can proceed: a run-scoped behavior
 route that 079 and 080 both need, and an additive `--behavioral-profile` flag on
 `trustvian dev`.
 
-Six things this diagram says, and one it does not:
+Twelve things this diagram says, and one it does not:
 
 - **074 and 075 were independent of each other** and both are implemented.
   076 needs both, plus whatever history 067 makes durable.
@@ -1028,6 +1153,30 @@ Six things this diagram says, and one it does not:
 - **068 remains conditional**, exactly as its row says: an analytical backend
   arrives if measured volume justifies one, and not otherwise. It is not a
   release-gate prerequisite, and this restructuring does not make it one.
+- **083 joins the 078 thread ahead of 078**, and that edge is the second one here
+  added by a measurement rather than by design. One behavioral change was reported
+  as two added behaviors, because a tool span and the HTTP request beneath it are
+  two behavioral identities and no rule says which wins. 078's k-of-N presence
+  counts are counts of *behaviors*, so re-running its threshold measurement before
+  the counting rule is fixed would measure the double count and then write the
+  number down.
+- **084 hangs off nothing and blocks three things.** Parent span identity,
+  duration and error status are additive to `event.Context` and `DecisionRecord`,
+  so it can land at any time — and until it does, 076 cannot draw a timeline with
+  timing or errors, 085 cannot link a finding to a slow call, and 087 has no
+  latency to compare. It is kept separate from 083 for the reason 081 was kept
+  separate from 075: an additive change should not wait behind a possible
+  migration.
+- **085 is drawn beside 067 rather than after it**, the one placement here chosen
+  against the obvious reading. Evidence linking needs a stable, resolvable
+  identity for a finding and for an observation, and 067 should choose its
+  retention contract knowing that — instead of 076-style amendment afterwards,
+  which 076 itself records as the thing to avoid.
+- **089 is absent from the diagram deliberately.** A PROPOSED item has no position
+  in a dependency order until the decision that would create it is made, and
+  nothing above waits for it.
+- **090 is absent for the opposite reason**: it depends on nothing, blocks
+  nothing, and is a documented configuration plus a deployment profile.
 
 What it does not say is that a lower number comes first. 066 is a prerequisite
 for nothing in the gap-closing set beyond a shared migration chain, and 074
@@ -1266,6 +1415,49 @@ management and playgrounds, LLM-as-a-judge, hallucination and groundedness
 scoring, RAG relevance metrics, model benchmarking, prompt or completion
 warehousing, generic dataset platforms, and provider marketplaces.
 
+#### The proposal that is not approved
+
+One roadmap item asks to move the line above, and it is recorded rather than
+acted on. Item 089 — optional quality evaluation, and a prompt playground after
+it — is **PROPOSED**: written down so the decision can be made deliberately
+instead of drifted into. It is not approved, nothing depends on it, and **closing
+it is a legitimate outcome that costs nothing already built**. See
+[task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md).
+
+Naming it here is the point. The paragraphs above are a decision with reasoning,
+and a planning task does not get to reverse one quietly by adding a row to a
+table. Five things would have to be decided first, and three of them are
+prerequisites rather than preferences:
+
+- **Whether the boundary moves at all.** If it does not, the item closes.
+- **Whether a quality score may ever reach a gate.** If it may,
+  [ADR 0029](adr/0029-hard-gates-use-explicit-integer-evidence.md)'s
+  integer-evidence reasoning has to be revisited for a number that is inherently
+  a float. If it may not, the item shrinks to reporting only, which is a far
+  smaller and safer thing.
+- **Content availability.** A model judge needs the prompt, the completion or the
+  tool result, and Trustvian refuses all three at every durable and published
+  surface. The
+  [privacy prerequisites](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#privacy-prerequisites)
+  — collection-time filtering, redaction, retention, access control, deletion and
+  in-product disclosure — are their own reviewed capability, not a paragraph
+  inside a feature. Until they exist, a content-based capability is not "later",
+  it is unspecifiable, and it must never be presented as partially available.
+- **Judge fallibility.** A model judge's output is evidence from a fallible
+  instrument and would have to be recorded as one — with its model, version,
+  configuration and prompt digest — never as a measurement.
+- **Replay side effects.** Replaying a recorded execution re-issues what it did.
+  Replaying `send_email` sends email. No replay may be specified before its mocked
+  or sandboxed boundary is, and "the developer will be careful" is not a boundary.
+
+What is **not** in that proposal, and is ordinary planned work: reading what the
+conventions already carry. Token counts are metadata a producer emits, latency and
+error status are properties of an observed action, and a cost figure computed from
+an operator's own declared pricing is arithmetic over both. Item 087 does those and
+crosses none of the lines above — it compares a candidate against its reference
+and ranks no model against another, which is the distinction task 080's own
+paragraph already draws.
+
 No message broker is planned. No analytical store is a dependency of the
 engine. Neither becomes one without a measurement behind it.
 
@@ -1280,8 +1472,15 @@ Live          active actors · animated behavior topology · new behavior
 
 Evidence      sessions · traces · behavioral sequence
               correlation and explanation                              (076)
+              trace tree · timeline · errors · duration            (076 over 084)
 
 Evaluations   runs · reference and candidate · diff · scorecard · gate
+              every finding links to the observations behind it        (085)
+              which prompt, model, toolset, config and inputs          (086)
+              latency · errors · tokens · cost, where telemetry says   (087)
+
+Review        annotations on findings · acknowledgements
+              recorded beside the verdict, never replacing it          (088)
 
 Promotions    environment advancement decisions                        (066)
 
@@ -1294,8 +1493,17 @@ Manage is not the landing page. Live behavioral understanding is.
 ```
 
 Today the shipped WebUI opens on Manage, in effect — a form asking for an
-identifier. That inversion is the gap task 074 closes, and everything above it
-in the list is what 074–078 add.
+identifier. That inversion is the gap task 074 closes, and everything above it in
+the list is what 074–078 and 083–088 add.
+
+**Two properties of this list are load-bearing, not incidental.** Every row is a
+*view* — criterion 19 holds throughout, and no interface carries its own copy of
+evaluation, scoring, policy, diff, gate, promotion or link-resolution logic; a
+browser that recomputed a number would be a second engine. And no row renders
+content: the fields each one shows are named by the retention contract behind it,
+enforced by a tripwire test rather than by review. Review is a new row and the
+first place a human writes free text into durable state, which its own item
+addresses directly.
 
 ## Beyond v1.0
 
@@ -1357,6 +1565,14 @@ no chosen target among the three. "First candidate" orders a queue; it does not
 approve work. The opening sentence of
 [Beyond v1.0](#beyond-v10) governs this paragraph exactly as it governs the
 rest of the section.
+
+**Trace-backend interoperability is not in this section**, and the distinction is
+worth one sentence: it is scoped, cheap and numbered (item 090), because the
+Collector fan-out it needs already exists and is already deliberate. A developer
+who wants a waterfall runs a trace backend beside Trustvian, and
+[ADR 0046](adr/0046-trace-backends-are-interoperability-targets-not-dependencies.md)
+records why that is interoperability rather than a dependency or a source of code.
+That ADR is **Proposed**, not Accepted.
 
 ### Trustvian MCP
 
