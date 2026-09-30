@@ -136,12 +136,26 @@ tool  · export_customer                 one identity
 http  · POST → export.localhost      another identity
 ```
 
-So one act can consume two of this budget. That is a known gap with a deliberate
-cause: identity is *not* folded, because folding would drop the destination from
-behavioral identity and a tool that started posting somewhere else would stop
-changing the behavioral surface. The counting correction is deferred to its own
-work; see [task 083](tasks/v1.0/083-behavioral-layer-classification.md) and
-[ADR 0047](adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md).
+So one act can consume two of this budget, and `trustvian compare` now prints
+both units so the difference is visible:
+
+```text
+Behaviors: +2 / -0 / 3 shared
+Counted changes: 1 (policy 1)
+```
+
+A **counted change** is an added identity that is not the recorded child of
+another added identity, so the tool and its transport child are two identities
+and one change. Where the correlation is not complete — a run that predates
+retention, or one whose retained history saturated — the line reads
+`correlation partial: counted changes equal added behaviors`, because without
+recorded parentage nothing may fold.
+
+`--max-added-behaviors` still bounds **identities** and is unchanged, so no
+existing pipeline's verdict moves. Identity itself is still not folded: that is
+what keeps a tool changing destination detectable. See
+[ADR 0052](adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)
+and [ADR 0047](adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md).
 
 At `--max-added-behaviors 0` none of this is observable. It matters the moment a
 budget is nonzero.

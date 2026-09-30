@@ -270,9 +270,17 @@ type gateDTO struct {
 }
 
 type behaviorDiffDTO struct {
+	// AddedCount counts added behavioral identities; AddedChangeCount counts
+	// the changes those identities amount to once recorded parentage is
+	// applied (task 083, ADR 0052). Both are the server's. This command
+	// computes neither.
 	AddedCount   int `json:"added_count"`
 	RemovedCount int `json:"removed_count"`
 	SharedCount  int `json:"shared_count"`
+
+	AddedChangeCount      int    `json:"added_change_count"`
+	CorrelationState      string `json:"correlation_state"`
+	CountingPolicyVersion string `json:"counting_policy_version"`
 }
 
 type compareDTO struct {
@@ -392,6 +400,21 @@ func renderComparison(w io.Writer, c compareDTO) error {
 
 	fmt.Fprintf(w, "Behaviors: +%d / -%d / %d shared\n",
 		c.Diff.AddedCount, c.Diff.RemovedCount, c.Diff.SharedCount)
+
+	// The two units are printed together and named, because the whole point
+	// of the correction is that "2 added behaviors" and "1 change" can both
+	// be true of one act. Printing one without the other is what made the
+	// original number confusing.
+	//
+	// The correlation state is printed whenever it is not complete, because
+	// then the change count is the identity count and a reader who did not
+	// know that would read agreement as a fold that happened.
+	fmt.Fprintf(w, "Counted changes: %d (policy %s)\n",
+		c.Diff.AddedChangeCount, c.Diff.CountingPolicyVersion)
+	if c.Diff.CorrelationState != "complete" {
+		fmt.Fprintf(w, "  correlation %s: counted changes equal added behaviors\n",
+			c.Diff.CorrelationState)
+	}
 	fmt.Fprintln(w)
 
 	fmt.Fprintln(w, "Gate checks:")

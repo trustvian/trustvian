@@ -1288,6 +1288,55 @@ func (c *ControlPlane) FindEvaluationRunObservations(
 	return store.FindObservations(ctx, runID, filter, cursor, limit)
 }
 
+// retainedHistory reads one run's whole retained history, for the counting
+// fold.
+//
+// Bounded twice over and by construction: retention itself stops at
+// MaxRetainedObservations, and the loop below refuses to run longer than that
+// many pages could require. A backend that paged forever would be a corrupt
+// cursor, not a large run, and this returns what it has with the history
+// saying it is partial rather than looping.
+//
+// A store with no observation capability is not an error. It retained
+// nothing, and "nothing was retained" is the honest answer a schema-6 run
+// gets too — the fold reports correlation unavailable and counts identities.
+func (c *ControlPlane) retainedHistory(
+	ctx context.Context, runID EvaluationRunID,
+) ([]Observation, ObservationHistory, error) {
+	store, ok := c.ingest.(ObservationStore)
+	if !ok {
+		return nil, ObservationHistory{}, nil
+	}
+
+	const maxPages = (MaxRetainedObservations / MaxListPage) + 1
+
+	observations := make([]Observation, 0, MaxListPage)
+	var history ObservationHistory
+	var after uint64
+	for page := 0; page < maxPages; page++ {
+		got, err := store.RunObservations(ctx, runID, after, MaxListPage)
+		if err != nil {
+			return nil, ObservationHistory{}, err
+		}
+		// The history comes from the same transactional read as the rows, so
+		// the last page's is the one describing the whole set.
+		history = got.History
+		if len(got.Observations) == 0 {
+			return observations, history, nil
+		}
+		observations = append(observations, got.Observations...)
+		next := got.Observations[len(got.Observations)-1].Sequence
+		if next <= after {
+			// A cursor that cannot advance. Returning what was read with the
+			// history attached keeps the fold conservative; following it
+			// would be an unbounded loop over a corrupt sequence.
+			return observations, history, nil
+		}
+		after = next
+	}
+	return observations, history, nil
+}
+
 // EvaluationProgressReport is what an evaluation has observed so far.
 //
 // Facts only. No pass, fail, promotable or safety field: a running evaluation
@@ -1409,6 +1458,25 @@ func (c *ControlPlane) CompareEvaluations(
 	// policy and not an unsafe candidate — it is a measurement that did not
 	// finish, and manufacturing a scorecard from it would claim otherwise.
 	diff, err := CompareBehaviorSnapshots(referenceSnapshot, candidateSnapshot)
+	if err != nil {
+		return EvaluationComparison{}, err
+	}
+
+	// Task 083's counting correction (ADR 0052). The fold needs the
+	// candidate's recorded parentage, which lives in its retained
+	// observations; a run that retained none reports correlation unavailable
+	// and its change count equals its added identity count, which is the
+	// number this platform has always reported.
+	//
+	// Derived here rather than stored: schema 7 already persists every
+	// column the fold reads, so the same durable rows produce the same edges
+	// after a restart, and a completed comparison is reproducible without a
+	// migration or a second copy of the relation.
+	candidateObservations, candidateHistory, err := c.retainedHistory(ctx, candidate.ID())
+	if err != nil {
+		return EvaluationComparison{}, err
+	}
+	diff, err = diff.WithCorrelation(candidateObservations, candidateHistory)
 	if err != nil {
 		return EvaluationComparison{}, err
 	}

@@ -168,32 +168,41 @@ func TestOneActProducesTwoObservationsAndTwoIdentities(t *testing.T) {
 	}
 }
 
-// TestCountingFoldIsNotImplementedYet records the gap in the suite and fails the
-// moment it closes, so the deferral cannot be forgotten.
+// TestOneActStaysTwoIdentitiesForTheFoldToCount replaces
+// TestCountingFoldIsNotImplementedYet, which recorded 083's deferral and was
+// written to fail when it closed. It has closed: ADR 0052 defines the
+// counting rule and platform implements it.
 //
-// Replace it with the positive assertion — one act, one counted change — when the
-// counting policy lands on top of 084.
-func TestCountingFoldIsNotImplementedYet(t *testing.T) {
+// What this asserts now is the half that lives here. The fold counts *added
+// identities with no added parent*, so it needs the two spans to remain two
+// identities — folding them here would destroy the transport target and with
+// it the ability to notice a tool changing destination, which is exactly what
+// ADR 0047 refused. The counting itself is platform's and is tested in
+// platform/counting_test.go.
+func TestOneActStaysTwoIdentitiesForTheFoldToCount(t *testing.T) {
 	obs := ingest(t, tracesFrom("support-agent",
 		toolSpan("export_customer", [8]byte{1}, [8]byte{}),
 		httpSpan("export.localhost", [8]byte{2}, [8]byte{1}),
 	))
-	if distinctFingerprints(obs) == 1 {
-		t.Error("one act now produces one behavioral identity: the counting fold has " +
-			"landed. Update task 083's status, replace this test with the positive " +
-			"assertion, and re-check 078's k-of-N guidance.")
+	if got := distinctFingerprints(obs); got != 2 {
+		t.Errorf("one act produced %d behavioral identities, want 2. The counting "+
+			"correction is a counting policy (ADR 0052) and must not become an "+
+			"identity fold: collapsing these two would drop the transport target "+
+			"and hide a tool that started posting somewhere else", got)
 	}
 }
 
-// TestParentIsCarriedButCountingStillCannotFold replaces the test that asserted
-// no parent identity reached the evidence boundary.
+// TestTheRecordCarriesWhatTheCountingFoldConsumes pins this module's side of
+// the contract in ADR 0052.
 //
-// Task 084 landed, so it does now: the record carries the parent span id and the
-// lineage. That was the *input* 083's fold was missing, and it is not the fold.
-// Recording a parent id does not decide how two observations become one counted
-// change, and this test pins both halves of that so neither is mistaken for the
-// other.
-func TestParentIsCarriedButCountingStillCannotFold(t *testing.T) {
+// The fold resolves a parent reference through the pair (TraceID, SpanID),
+// within one run, and never from timing, adjacency or name similarity. That
+// only works if the exporter puts the right values on the record: the
+// transport observation must name the tool observation's span as its parent,
+// and the tool must state that it is a root. Everything downstream is
+// platform's; if this drifts, the fold silently stops folding and every act
+// counts twice again.
+func TestTheRecordCarriesWhatTheCountingFoldConsumes(t *testing.T) {
 	cp := newIngestAPIServer(t)
 	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cp.config(t))
 	if err != nil {
@@ -226,14 +235,22 @@ func TestParentIsCarriedButCountingStillCannotFold(t *testing.T) {
 			transport.ParentSpanID, tool.SpanID)
 	}
 
-	// And the thing 084 does not deliver: the two observations are still two
-	// behavioral identities, and nothing folds them into one counted change.
+	// The two observations stay two behavioral identities. The fold counts
+	// them as one change; it does not merge them, and merging them here
+	// would be the identity change ADR 0047 refuses.
 	if tool.FingerprintID == transport.FingerprintID {
 		t.Fatal("the two observations now share a fingerprint; identity changed, " +
 			"which ADR 0047 refuses")
 	}
-	t.Log("parent identity is carried; the counting fold is still not implemented " +
-		"\u2014 see TestCountingFoldIsNotImplementedYet")
+
+	// Both records must also share a trace, because the fold resolves a
+	// parent only within one trace. A parent reference that pointed across
+	// traces would resolve to nothing and the act would count twice.
+	if tool.TraceID == "" || tool.TraceID != transport.TraceID {
+		t.Errorf("tool trace = %q, transport trace = %q; the fold resolves a parent "+
+			"through (TraceID, SpanID) and needs both on one trace",
+			tool.TraceID, transport.TraceID)
+	}
 }
 
 // TestMissingCorrelationFallsBackToTwoCountedChanges pins the documented

@@ -106,6 +106,13 @@ export const DIFF_FIELDS = Object.freeze([
   "added_count",
   "removed_count",
   "shared_count",
+  // Task 083's counting correction (ADR 0052). Two units, both named:
+  // added_count is behavioral identities and added_change_count is the
+  // changes they amount to. correlation_state says whether the fold was
+  // available, and a reader needs it to tell "one act" from "no parentage".
+  "added_change_count",
+  "correlation_state",
+  "counting_policy_version",
 ]);
 
 export const DELTA_FIELDS = Object.freeze([
