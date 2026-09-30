@@ -10,6 +10,38 @@ actually depend on.
 
 ### Added
 
+- **An optional gate limit over counted behavioral changes:
+  `max_added_behavior_changes`** ([issue 131](https://github.com/trustvian/trustvian/issues/131),
+  [ADR 0052](docs/adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)).
+
+  The comparison already reported `added_change_count`; nothing gated on it.
+  `POST /v1/evaluations/compare` and `POST /v1/promotions` now accept
+  `gate_limits.max_added_behavior_changes`, `trustvian eval compare` and
+  `trustvian promotion create` accept `--max-added-behavior-changes`, and the
+  browser's comparison and promotion forms carry an optional field for it.
+
+  **Absent is not zero.** Omitted (or `null`), the check is not evaluated and
+  the verdict is the other five checks alone — exactly what it was before.
+  `"0"` is the strictest limit. The gate reports a sixth check,
+  `added_behavior_changes`, with a `state` of `evaluated`, `not_evaluated` or
+  `not_recorded`; only an evaluated check carries `actual`, `maximum`,
+  `passed`, and the `correlation_state` and `counting_policy_version` its count
+  rested on. When both behavior limits are supplied **both** are enforced.
+  Under a `partial` or `unavailable` correlation the counted-change count is the
+  identity count, so the check errs strict.
+
+  **Schema 8** adds six nullable columns to `platform_promotions` on SQLite and
+  PostgreSQL. Existing promotions migrate with the check `not_recorded`, no
+  threshold and no outcome, and their stored verdicts and outcomes are
+  untouched — no historical decision is re-evaluated or backfilled as a passed
+  zero-valued check. The migration is forward-only; a schema-8 database is
+  refused by an older binary.
+
+  `max_added_behaviors` is unchanged and still counts identities. The evidence
+  routes refuse `check=added_behavior_changes` with directions to the
+  comparison's `added_changes` instead of resolving it, and the browser offers
+  no evidence control on that row.
+
 - **A comparison now reports how many behavioral *changes* its added
   behaviors amount to** (task 083, [ADR 0052](docs/adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)).
 
@@ -36,9 +68,10 @@ actually depend on.
 
   **`max_added_behaviors` is unchanged and still counts identities.** No
   stored promotion, existing pipeline or historical run changed meaning, and
-  no verdict moved. The optional limit over the new unit is specified in ADR
-  0052 and deliberately not built here: it needs promotion-table columns, a
-  migration and both backends, which is separable work with its own risk.
+  no verdict moved. The optional limit over the new unit, specified in ADR
+  0052, was deferred from this change because it needed promotion-table
+  columns, a migration and both backends — separable work with its own risk.
+  It is the entry above.
 
   The rule is structural — it asks only who is whose recorded parent, never
   what instrumentation layer an observation came from — so it is evaluable

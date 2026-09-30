@@ -158,6 +158,21 @@ export const GATE_CHECKS = Object.freeze([
   Object.freeze({ key: "critical_risk_observations", label: "Critical risk observations", bound: "maximum" }),
 ]);
 
+// CHANGE_COUNT_CHECK is the optional sixth check (ADR 0052, issue 131). Kept out
+// of GATE_CHECKS because it has a state the five do not: it may not have been
+// evaluated at all, and then it has no actual, bound or result to show.
+export const CHANGE_COUNT_CHECK = Object.freeze({
+  key: "added_behavior_changes",
+  label: "Added behavior changes",
+});
+
+// CHANGE_COUNT_STATES maps the server's state onto what this page says for a
+// check with no outcome. Anything else is shown as the unrecognized value it is.
+const CHANGE_COUNT_STATES = Object.freeze({
+  not_evaluated: "not evaluated",
+  not_recorded: "not recorded",
+});
+
 // EVIDENCE_OBSERVATION_FIELDS is what task 076's views may show of one retained
 // observation.
 //
@@ -612,7 +627,49 @@ export function renderGate(target, gate, options = {}) {
     }
     rows.push(row);
   }
+  rows.push(changeCountRow(gate[CHANGE_COUNT_CHECK.key], resolve !== null));
   target.append(table(headers, rows, "Gate checks"));
+}
+
+// changeCountCells projects the optional counted-change check onto the three
+// cells a gate row shows after its label: actual, bound, result.
+//
+// Pure, and exported so the cross-layer suite can run it over a real /v1
+// response under node. Every word comes from the response. "not evaluated" is
+// the server's `not_evaluated` state, not an inference from a missing bound; a
+// pass or fail is the server's `passed`, not a comparison made here.
+export function changeCountCells(value) {
+  if (value === undefined || value === null || typeof value !== "object") {
+    // A server older than issue 131 publishes no such check.
+    return ["—", "—", "—"];
+  }
+  if (value.state === "evaluated") {
+    const correlation = typeof value.correlation_state === "string" &&
+        value.correlation_state !== "complete"
+      ? ` (correlation ${value.correlation_state})`
+      : "";
+    return [
+      display(value.actual) + correlation,
+      display(value.maximum),
+      value.passed === true ? "pass" : "fail",
+    ];
+  }
+  const word = Object.prototype.hasOwnProperty.call(CHANGE_COUNT_STATES, value.state)
+    ? CHANGE_COUNT_STATES[value.state]
+    : `unrecognized: ${display(value.state)}`;
+  return ["—", "not set", word];
+}
+
+// changeCountRow is the gate-table row for that check. It never gets an
+// evidence control: the control plane does not resolve this check through the
+// finding route (it counts changes, and its evidence is the diff's
+// added_changes), so a button would be a link to a refusal.
+function changeCountRow(value, withEvidence) {
+  const row = [CHANGE_COUNT_CHECK.label, ...changeCountCells(value)];
+  if (withEvidence) {
+    row.push("see counted changes");
+  }
+  return row;
 }
 
 export function renderDiff(target, diff, options = {}) {

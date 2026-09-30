@@ -51,6 +51,7 @@ const evalUsage = `usage:
   trustvian eval compare      --reference-run <id> --candidate-run <id>
                               --max-added-behaviors <n> --max-block-decisions <n>
                               --max-critical-risk-observations <n>
+                              [--max-added-behavior-changes <n>]
                               [--api-url <url>] [--json]` + apiURLNote
 
 func runEval(s streams, args []string, timeout time.Duration) int {
@@ -345,6 +346,10 @@ func runEvalCompare(s streams, args []string, timeout time.Duration) int {
 	fs.Var(&blockDecisions, "max-block-decisions", "maximum block decisions (required)")
 	fs.Var(&criticalRisk, "max-critical-risk-observations",
 		"maximum critical-risk observations (required)")
+	var addedChanges optionalUint64
+	fs.Var(&addedChanges, "max-added-behavior-changes",
+		"maximum counted behavioral changes (optional); a tool and the transport\n"+
+			"			child it calls count as one. Omitted: the check is not evaluated")
 
 	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, evalUsage, err)
@@ -388,6 +393,7 @@ func runEvalCompare(s streams, args []string, timeout time.Duration) int {
 			MaxAddedBehaviors:           addedBehaviors.canonical(),
 			MaxBlockDecisions:           blockDecisions.canonical(),
 			MaxCriticalRiskObservations: criticalRisk.canonical(),
+			MaxAddedBehaviorChanges:     addedChanges.optional(),
 		},
 	}, "evaluations", "compare")
 	if err != nil {
@@ -469,10 +475,16 @@ func gateExitCode(verdict string) (int, error) {
 	}
 }
 
+// gateLimitsBody is the wire form of the limits, request and response.
+//
+// MaxAddedBehaviorChanges is optional: nil is omitted from a request, which
+// asks the server not to evaluate the check, and a response's null decodes to
+// nil. It is never "0" unless the caller said 0.
 type gateLimitsBody struct {
-	MaxAddedBehaviors           string `json:"max_added_behaviors"`
-	MaxBlockDecisions           string `json:"max_block_decisions"`
-	MaxCriticalRiskObservations string `json:"max_critical_risk_observations"`
+	MaxAddedBehaviors           string  `json:"max_added_behaviors"`
+	MaxBlockDecisions           string  `json:"max_block_decisions"`
+	MaxCriticalRiskObservations string  `json:"max_critical_risk_observations"`
+	MaxAddedBehaviorChanges     *string `json:"max_added_behavior_changes,omitempty"`
 }
 
 type compareBody struct {

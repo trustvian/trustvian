@@ -230,12 +230,13 @@ existing caller, stored promotion and historical run is unaffected.
 it. A future rule change increments it rather than silently reinterpreting
 stored results.
 
-### The gate limit is new, separate and optional — specified here, not yet built
+### The gate limit is new, separate and optional
 
 `max_added_behaviors` continues to bound added *identities*.
 
-A second limit, `max_added_behavior_changes`, bounds counted *changes*. It is
-**optional**: absent means the gate is not evaluated, and a result says so.
+A second limit, `max_added_behavior_changes`, bounds counted *changes* — the
+diff's `AddedChangeCount`, exactly as the control plane's fold produced it. It is
+**optional**: absent means the check is not evaluated, and a result says so.
 
 This is the one place the platform's "zero is a legitimate maximum, so there is
 no unset" rule (`EvaluationGateLimits`) is departed from, and the reason is
@@ -243,22 +244,76 @@ compatibility rather than taste. The existing three limits have no absent state
 because none was ever needed. A fourth mandatory limit would default to zero for
 every existing caller and fail every candidate that added anything — a silent,
 retroactive policy change of exactly the kind this ADR exists to avoid. So the
-new limit is a pointer, its absence is a documented state, and the other three
-are untouched.
+new limit has an absent state, and the other three are untouched.
 
 **A limit whose unit depends on a flag is a limit nobody can read** — 083's
 fourth open question. The answer here is that there is no flag: two limits, two
 fixed units, both named for what they count.
 
-**This limit is specified and not yet implemented.** Counting, reporting and the
-evidence links ship first; the limit needs new columns on `platform_promotions`
-for its threshold and outcome, a schema migration, both backends and a
-historical-data rule for promotions recorded before it existed. That is a
-separable piece of work with its own persistence risk, and bundling it would
-mix a counting correction with a storage migration in one review. Until it
-lands, `max_added_behaviors` is the only gate over behavioral change, it counts
-identities exactly as it always has, and a counted-change count is reported as
-evidence a caller can read. Tracked as [issue 131](https://github.com/trustvian/trustvian/issues/131).
+Built by [issue 131](https://github.com/trustvian/trustvian/issues/131). The
+contract:
+
+**Absent, zero and set are three different requests.** In the domain the limit
+is an `OptionalGateLimit` — a `uint64` and a set marker, whose zero value is
+absent — rather than a `*uint64`, because a limit is copied into policies,
+results and promotions and a shared pointer would let one holder change what
+another recorded. `NewOptionalGateLimit(0)` is the strictest limit. On the wire
+the field may be omitted or `null` (absent) or a canonical decimal string, under
+the same rule as the other three; anything else is `400`. The CLI flag
+`--max-added-behavior-changes` is omitted from the request when not given, never
+sent as `"0"`.
+
+**The check has a state, and only an evaluated check has an outcome.**
+
+| State | Meaning | `actual`, `maximum`, `passed`, counting context |
+|---|---|---|
+| `evaluated` | The caller supplied the limit; the outcome is part of the verdict | present |
+| `not_evaluated` | The caller omitted it; the verdict is the five task 056 checks alone, exactly as before the limit existed | absent |
+| `not_recorded` | A promotion stored before schema 8, when nobody could supply the limit | absent |
+
+A `passed: false` beside a check that never ran would read as a failure that did
+not happen, and a `passed: true` as a limit nobody set, so the outcome fields are
+absent rather than zero.
+
+**Both limits are enforced when both are supplied.** The verdict is PASS only
+when the five task 056 checks pass *and*, if evaluated, the counted-change check
+passes. Neither limit replaces the other: an act of two identities and one change
+fails `max_added_behaviors = 1` whatever `max_added_behavior_changes` says.
+
+**Correlation is consumed as § correlation completeness defines it.** The check
+reads `AddedChangeCount` in every correlation state and never refuses: under
+`partial` or `unavailable` that count *is* the identity count, so a change limit
+chosen on the assumption of folding fails rather than passes. The check records
+the correlation state and the counting policy version it read, so a stored
+decision explains its own number. Before gating, the count is checked against the
+fold's arithmetic — never negative, never above the identity count, never zero
+over a positive one, equal to the identity count unless correlation is complete —
+and a violation is refused as invalid evidence rather than gated. That check runs
+only when the limit is supplied, so a caller who omits it has no new error path.
+
+**Evidence resolution does not resolve this check.** The finding routes answer
+checks that count behaviors or records; this one counts changes, and resolving
+it to the added identities would report a contributing set whose size is not the
+count the check consumed. The comparison already carries the evidence —
+`added_changes`, each change naming its root and contributing identities, each of
+which resolves as a behavior. So `check=added_behavior_changes` is refused with a
+message saying so, rather than as an unknown name, and the browser renders no
+evidence control on that row.
+
+**Promotions persist the check; history is not rewritten.** Schema 8 adds six
+columns to `platform_promotions` on both backends: the threshold, the state, the
+actual count, the passed flag, and the correlation state and policy version it
+rested on. Every column but the state is nullable with no default, and NULL is
+the meaning — an absent threshold, and no outcome for a check that did not run.
+The state defaults to `not_recorded`, which is what `ADD COLUMN` writes into rows
+that already exist: a statement about when the row was written, not an outcome.
+No historical row gains a threshold, a flag or a count; its stored verdict and
+outcome are untouched; and a restored check's flag is taken as written and never
+recomputed, like every other stored gate flag. A row whose shape contradicts its
+state is refused as corrupt.
+
+Only the control plane evaluates the limit. The HTTP API, the CLI and the browser
+render the state and outcome the server returned and compute neither.
 
 ## Alternatives considered
 
@@ -311,13 +366,18 @@ that is correct and merely stricter than it could be.
 Counting stays authoritative in the control plane. `BehaviorDiff` is where the
 fold happens, the adapters render what it reports, and no adapter recomputes it.
 
-Gate behaviour is unchanged by this decision as implemented: `max_added_behaviors`
-still bounds added identities, so a known tool changing destination still reaches
-the gate through the identity count, and no existing verdict moves.
+Existing gate behaviour is unchanged: `max_added_behaviors` still bounds added
+identities, so a known tool changing destination still reaches the gate through
+the identity count, and no verdict moves for a caller who does not supply the new
+limit. A caller who does gets a sixth check over counted changes, enforced beside
+the identity limit rather than instead of it.
 
-No schema change, no migration and no backfill. Correlation is derived from rows
-schema 7 already stores, which also makes a completed comparison reproducible
-after a restart for free: the same durable rows produce the same edges.
+Counting needs no schema change, migration or backfill. Correlation is derived
+from rows schema 7 already stores, which also makes a completed comparison
+reproducible after a restart for free: the same durable rows produce the same
+edges. The optional limit's *promotion evidence* is the one persistence change —
+schema 8's columns — and it backfills nothing: historical promotions read back
+with the check `not_recorded`.
 
 Fingerprints, `StableFeatures`, baselines and every retained observation are
 untouched. A test asserts identity did not move.

@@ -93,14 +93,21 @@ func statementVersion(stmt string) (int, bool) {
 		//
 		// v7: task 067's per-observation history — two tables and the three
 		// run-scoped indexes its access patterns need.
-		{tableObservations, SchemaVersion},
-		{tableObservationHistory, SchemaVersion},
-		{indexObservationsByFingerprint, SchemaVersion},
-		{indexObservationsByTrace, SchemaVersion},
-		{indexObservationsBySession, SchemaVersion},
+		{tableObservations, schemaVersionV7},
+		{tableObservationHistory, schemaVersionV7},
+		{indexObservationsByFingerprint, schemaVersionV7},
+		{indexObservationsByTrace, schemaVersionV7},
+		{indexObservationsBySession, schemaVersionV7},
 	}
 
 	trimmed := strings.TrimSpace(stmt)
+	// v8: issue 131's optional counted-change columns on the promotion
+	// history. Unlike v6's columns they ship as ALTER statements on a fresh
+	// database too, so an older fixture excludes them by version like any
+	// other object.
+	if strings.HasPrefix(trimmed, `ALTER TABLE `+tablePromotions+` ADD COLUMN `) {
+		return schemaVersionV8, true
+	}
 	for _, entry := range introduced {
 		if strings.HasPrefix(trimmed, `CREATE TABLE `+entry.object+` (`) ||
 			strings.HasPrefix(trimmed, `CREATE INDEX `+entry.object+` `) {
@@ -779,8 +786,12 @@ func TestPostgresMigratesV4ForwardAddingIndexesAndOperationalColumns(t *testing.
 		}
 		slices.Sort(addedColumns)
 		wantColumns := []string(nil)
-		if table == tableAggregates {
+		switch table {
+		case tableAggregates:
 			wantColumns = operational
+		case tablePromotions:
+			// v8, issue 131: the optional counted-change check.
+			wantColumns = promotionChangeGateColumnNames()
 		}
 		if !slices.Equal(addedColumns, wantColumns) {
 			t.Errorf("%s gained columns %v, want exactly %v", table, addedColumns, wantColumns)

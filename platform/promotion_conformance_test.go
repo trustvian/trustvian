@@ -54,8 +54,20 @@ func seedPromotionFixture(t testing.TB, store Store, projectID string) Promotion
 	return promotionFor(t, store, projectID, "promo-1")
 }
 
-// promotionFor builds one storable decision against the seeded environments.
+// promotionFor builds one storable decision against the seeded environments,
+// with the counted-change check not evaluated — the shape every decision had
+// before issue 131, and still the shape of one whose caller omits the limit.
 func promotionFor(t testing.TB, store Store, projectID, id string) Promotion {
+	t.Helper()
+	return promotionWithChangeGate(t, store, projectID, id,
+		ChangeCountGate{State: GateCheckNotEvaluated}, GateVerdictPass)
+}
+
+// promotionWithChangeGate builds one storable decision carrying the given
+// counted-change check and verdict.
+func promotionWithChangeGate(
+	t testing.TB, store Store, projectID, id string, changes ChangeCountGate, verdict GateVerdict,
+) Promotion {
 	t.Helper()
 	ctx := context.Background()
 
@@ -77,7 +89,8 @@ func promotionFor(t testing.TB, store Store, projectID, id string) Promotion {
 		MaximumCountGate{Actual: 5, Maximum: math.MaxUint64, Passed: true},
 		MaximumCountGate{Actual: 0, Maximum: 0, Passed: true},
 		MaximumCountGate{Actual: 0, Maximum: 0, Passed: true},
-		GateVerdictPass,
+		changes,
+		verdict,
 	)
 	if err != nil {
 		t.Fatalf("restoreEvaluationGateResult() error = %v", err)
@@ -136,6 +149,60 @@ func conformPromotions(t *testing.T, open func(testing.TB) Store) {
 	// A missing promotion is not found rather than empty.
 	if _, err := store.Promotion(ctx, "promo-absent"); !errors.Is(err, ErrStoreNotFound) {
 		t.Errorf("Promotion(absent) error = %v, want ErrStoreNotFound", err)
+	}
+}
+
+// The optional counted-change check round-trips in each of its states, and
+// absent stays distinct from zero (issue 131).
+//
+// Proven on both backends because the distinction lives in NULL, which is
+// exactly where two dialects can quietly differ: a driver that read NULL as
+// '0' would turn an absent limit into the strictest one on one backend only.
+func conformPromotionChangeGate(t *testing.T, open func(testing.TB) Store) {
+	ctx := context.Background()
+	store := open(t)
+	seedPromotionFixture(t, store, "proj-1")
+
+	cases := []struct {
+		id      string
+		changes ChangeCountGate
+		verdict GateVerdict
+	}{
+		{"promo-absent", ChangeCountGate{State: GateCheckNotEvaluated}, GateVerdictPass},
+		{"promo-zero-pass", ChangeCountGate{
+			State: GateCheckEvaluated, Actual: 0, Maximum: 0, Passed: true,
+			CorrelationState: CorrelationComplete, CountingPolicyVersion: "1",
+		}, GateVerdictPass},
+		{"promo-zero-fail", ChangeCountGate{
+			State: GateCheckEvaluated, Actual: 2, Maximum: 0, Passed: false,
+			CorrelationState: CorrelationPartial, CountingPolicyVersion: "1",
+		}, GateVerdictFail},
+		{"promo-max", ChangeCountGate{
+			State: GateCheckEvaluated, Actual: 1, Maximum: math.MaxUint64, Passed: true,
+			CorrelationState: CorrelationUnavailable, CountingPolicyVersion: "1",
+		}, GateVerdictPass},
+	}
+	for _, tc := range cases {
+		promotion := promotionWithChangeGate(t, store, "proj-1", tc.id, tc.changes, tc.verdict)
+		if err := store.CreatePromotion(ctx, promotion); err != nil {
+			t.Fatalf("CreatePromotion(%s) error = %v", tc.id, err)
+		}
+		stored, err := store.Promotion(ctx, PromotionID(tc.id))
+		if err != nil {
+			t.Fatalf("Promotion(%s) error = %v", tc.id, err)
+		}
+		if got := stored.GateResult().AddedBehaviorChanges(); got != tc.changes {
+			t.Errorf("%s: check = %+v, want %+v verbatim", tc.id, got, tc.changes)
+		}
+		maximum, set := stored.GateLimits().MaxAddedBehaviorChanges.Maximum()
+		if set != tc.changes.Evaluated() || maximum != tc.changes.Maximum {
+			t.Errorf("%s: limit = (%d, %v), want (%d, %v); absent must not read back as zero",
+				tc.id, maximum, set, tc.changes.Maximum, tc.changes.Evaluated())
+		}
+		if stored.GateResult().Verdict() != tc.verdict || stored.Outcome() != promotion.Outcome() {
+			t.Errorf("%s: verdict %q outcome %q, want %q %q", tc.id,
+				stored.GateResult().Verdict(), stored.Outcome(), tc.verdict, promotion.Outcome())
+		}
 	}
 }
 

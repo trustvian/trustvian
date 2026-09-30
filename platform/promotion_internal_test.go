@@ -36,6 +36,8 @@ func storedGateRow() promotionRow {
 
 		verdict: "fail", outcome: "rejected",
 		decidedAt: restoreEpoch.Format(time.RFC3339Nano),
+
+		changesState: string(GateCheckNotEvaluated),
 	}
 }
 

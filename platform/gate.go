@@ -38,7 +38,9 @@ var (
 type GateVerdict string
 
 const (
-	// GateVerdictPass means exactly: all five task 056 hard gates passed.
+	// GateVerdictPass means exactly: all five task 056 hard gates passed,
+	// and — when the caller supplied one — the optional counted-change limit
+	// of ADR 0052 passed too.
 	//
 	// It does not mean safe, secure, approved, deployable or promotable. No
 	// field carries those names, and nothing acts on this value.
@@ -72,7 +74,44 @@ type EvaluationGateLimits struct {
 	// A risk classification, not a critical policy violation and not a
 	// security incident.
 	MaxCriticalRiskObservations uint64
+
+	// MaxAddedBehaviorChanges optionally limits counted behavioral changes —
+	// ADR 0052's unit, the diff's AddedChangeCount — alongside
+	// MaxAddedBehaviors, which keeps counting identities.
+	//
+	// The one optional limit, and the one departure from "zero is never
+	// unset" above. The three limits before it are mandatory because they
+	// always were; this one arrived after callers and stored promotions
+	// already existed, and a mandatory limit would default every one of them
+	// to a maximum of zero and fail any candidate that added anything. Its
+	// zero value is therefore *absent*, and absent means the check is not
+	// evaluated — which the result reports as not evaluated, never as passed.
+	// An explicit zero is NewOptionalGateLimit(0) and is the strictest limit.
+	MaxAddedBehaviorChanges OptionalGateLimit
 }
+
+// OptionalGateLimit is a maximum a caller may leave unset.
+//
+// A value type with a set marker rather than a *uint64: a limit is copied
+// into policies, results and promotions, and a shared pointer would let one
+// holder change what another recorded. The zero value is unset.
+type OptionalGateLimit struct {
+	maximum uint64
+	set     bool
+}
+
+// NewOptionalGateLimit returns a set limit. Every uint64 is a legitimate
+// maximum, 0 and MaxUint64 included.
+func NewOptionalGateLimit(maximum uint64) OptionalGateLimit {
+	return OptionalGateLimit{maximum: maximum, set: true}
+}
+
+// Maximum reports the limit and whether one was set. An unset limit reports
+// 0 and false, and the 0 means nothing.
+func (l OptionalGateLimit) Maximum() (uint64, bool) { return l.maximum, l.set }
+
+// IsSet reports whether the caller supplied this limit.
+func (l OptionalGateLimit) IsSet() bool { return l.set }
 
 // EvaluationGatePolicy is a validated set of caller-owned limits.
 //
@@ -98,6 +137,65 @@ func NewEvaluationGatePolicy(limits EvaluationGateLimits) EvaluationGatePolicy {
 
 // Limits reports the configured maximums.
 func (p EvaluationGatePolicy) Limits() EvaluationGateLimits { return p.limits }
+
+// GateCheckState says whether an optional check contributed to a verdict.
+//
+// Only the counted-change check has one; the five task 056 checks are always
+// evaluated and carry no state.
+type GateCheckState string
+
+const (
+	// GateCheckEvaluated means the caller supplied the limit and the check's
+	// outcome is part of the verdict.
+	GateCheckEvaluated GateCheckState = "evaluated"
+
+	// GateCheckNotEvaluated means the caller did not supply the limit. The
+	// check did not run, did not pass and did not fail, and the verdict is
+	// the five task 056 checks alone — exactly what it was before the limit
+	// existed.
+	GateCheckNotEvaluated GateCheckState = "not_evaluated"
+
+	// GateCheckNotRecorded means the result was recorded before this check
+	// existed: a promotion stored under schema 7 or earlier. Nobody could
+	// supply the limit, so nothing is known about it and nothing is invented.
+	// Only a restored result can carry this state.
+	GateCheckNotRecorded GateCheckState = "not_recorded"
+)
+
+func (s GateCheckState) valid() bool {
+	switch s {
+	case GateCheckEvaluated, GateCheckNotEvaluated, GateCheckNotRecorded:
+		return true
+	default:
+		return false
+	}
+}
+
+// ChangeCountGate is the optional check of counted behavioral changes against
+// MaxAddedBehaviorChanges (ADR 0052, issue 131).
+//
+// Actual, Maximum and Passed mean something only when State is
+// GateCheckEvaluated, and are zero otherwise — a check that did not run has
+// no outcome, and a false Passed there would read as a failure that never
+// happened.
+//
+// CorrelationState and CountingPolicyVersion record what the count rested on
+// when it was evaluated, so a stored decision explains itself: a `partial`
+// count is the unfolded identity count (ADR 0052), and the policy version
+// names the rule that produced it.
+type ChangeCountGate struct {
+	State GateCheckState
+
+	Actual  uint64
+	Maximum uint64
+	Passed  bool
+
+	CorrelationState      CorrelationState
+	CountingPolicyVersion string
+}
+
+// Evaluated reports whether this check contributed to the verdict.
+func (g ChangeCountGate) Evaluated() bool { return g.State == GateCheckEvaluated }
 
 // MinimumCountGate is a check that an observed count met a required minimum.
 type MinimumCountGate struct {
@@ -150,6 +248,10 @@ type EvaluationGateResult struct {
 	blockDecisions           MaximumCountGate
 	criticalRiskObservations MaximumCountGate
 
+	// addedBehaviorChanges is the optional sixth check. Always populated with
+	// a state, so "not evaluated" is said rather than implied by a zero.
+	addedBehaviorChanges ChangeCountGate
+
 	verdict GateVerdict
 }
 
@@ -184,7 +286,14 @@ func (r EvaluationGateResult) CriticalRiskObservations() MaximumCountGate {
 	return r.criticalRiskObservations
 }
 
-// Verdict is GateVerdictPass only when all five checks passed.
+// AddedBehaviorChanges reports the optional counted-change check. Its State
+// says whether it was evaluated; see ChangeCountGate.
+func (r EvaluationGateResult) AddedBehaviorChanges() ChangeCountGate {
+	return r.addedBehaviorChanges
+}
+
+// Verdict is GateVerdictPass only when all five checks passed and the
+// counted-change check, if evaluated, passed too.
 func (r EvaluationGateResult) Verdict() GateVerdict { return r.verdict }
 
 // EvaluateEvaluationGate applies a gate policy to a scorecard.
@@ -229,12 +338,31 @@ func EvaluateEvaluationGate(
 	criticalRisk := maximumGate(
 		scorecard.Risks().Critical.Candidate().Count(), limits.MaxCriticalRiskObservations)
 
+	changes := ChangeCountGate{State: GateCheckNotEvaluated}
+	if maximum, set := limits.MaxAddedBehaviorChanges.Maximum(); set {
+		// Validated only when used, so a caller who omits the limit gets
+		// exactly the evaluation that existed before it — no new error path.
+		if err := validateChangeCountEvidence(behavior); err != nil {
+			return EvaluationGateResult{}, err
+		}
+		actual := uint64(behavior.AddedChangeCount)
+		changes = ChangeCountGate{
+			State:                 GateCheckEvaluated,
+			Actual:                actual,
+			Maximum:               maximum,
+			Passed:                actual <= maximum,
+			CorrelationState:      behavior.CorrelationState,
+			CountingPolicyVersion: behavior.CountingPolicyVersion,
+		}
+	}
+
 	verdict := GateVerdictFail
 	if referenceEvidence.Passed &&
 		candidateEvidence.Passed &&
 		addedBehaviors.Passed &&
 		blockDecisions.Passed &&
-		criticalRisk.Passed {
+		criticalRisk.Passed &&
+		(!changes.Evaluated() || changes.Passed) {
 		verdict = GateVerdictPass
 	}
 
@@ -254,8 +382,51 @@ func EvaluateEvaluationGate(
 		blockDecisions:           blockDecisions,
 		criticalRiskObservations: criticalRisk,
 
+		addedBehaviorChanges: changes,
+
 		verdict: verdict,
 	}, nil
+}
+
+// validateChangeCountEvidence defends the counted-change check the way
+// validateBehaviorSummaryArithmetic defends the other conversions.
+//
+// ADR 0052's arithmetic, restated at the point a limit consumes it: the fold
+// may only lower a count, never to zero over a positive added count, and a
+// correlation that is not complete means the unfolded identity count. A
+// summary breaking any of these came from somewhere other than the fold, and a
+// wrong count here errs in whichever direction the corruption points — so it
+// is refused rather than gated.
+func validateChangeCountEvidence(s BehaviorSummary) error {
+	changes, added := s.AddedChangeCount, s.AddedCount
+	switch {
+	case changes < 0:
+		return fmt.Errorf("%w: counted change count %d is negative",
+			ErrInvalidGateEvidence, changes)
+	case changes > added:
+		return fmt.Errorf("%w: %d counted changes over %d added identities",
+			ErrInvalidGateEvidence, changes, added)
+	case added > 0 && changes == 0:
+		return fmt.Errorf("%w: %d added identities counted as zero changes",
+			ErrInvalidGateEvidence, added)
+	}
+	switch s.CorrelationState {
+	case CorrelationComplete:
+	case CorrelationPartial, CorrelationUnavailable:
+		if changes != added {
+			return fmt.Errorf("%w: correlation %s reports %d changes over %d added "+
+				"identities; an incomplete correlation is the identity count",
+				ErrInvalidGateEvidence, s.CorrelationState, changes, added)
+		}
+	default:
+		return fmt.Errorf("%w: correlation state %q is not a known state",
+			ErrInvalidGateEvidence, preview(string(s.CorrelationState)))
+	}
+	if s.CountingPolicyVersion == "" {
+		return fmt.Errorf("%w: counted change count names no counting policy",
+			ErrInvalidGateEvidence)
+	}
+	return nil
 }
 
 // validateBehaviorSummaryArithmetic defends the int-to-uint64 conversion.
@@ -316,12 +487,16 @@ func restoreEvaluationGateResult(
 	environment EnvironmentRef,
 	referenceEvidence, candidateEvidence MinimumCountGate,
 	addedBehaviors, blockDecisions, criticalRisk MaximumCountGate,
+	changes ChangeCountGate,
 	verdict GateVerdict,
 ) (EvaluationGateResult, error) {
 	if verdict != GateVerdictPass && verdict != GateVerdictFail {
 		return EvaluationGateResult{}, fmt.Errorf(
 			"%w: stored gate verdict %q is not a known verdict",
 			ErrInvalidGateEvidence, preview(string(verdict)))
+	}
+	if err := validateStoredChangeGate(changes); err != nil {
+		return EvaluationGateResult{}, err
 	}
 	return EvaluationGateResult{
 		bound: true,
@@ -339,6 +514,41 @@ func restoreEvaluationGateResult(
 		blockDecisions:           blockDecisions,
 		criticalRiskObservations: criticalRisk,
 
+		addedBehaviorChanges: changes,
+
 		verdict: verdict,
 	}, nil
+}
+
+// validateStoredChangeGate checks a restored counted-change check for shape
+// only, never for arithmetic: a stored Passed flag is taken as written, like
+// every other stored flag (see restoreEvaluationGateResult).
+//
+// Shape is what separates the three states. An evaluated check carries its
+// counting context; a check that was not evaluated or not recorded carries
+// nothing, because an outcome beside a check that never ran would be an
+// outcome nobody produced.
+func validateStoredChangeGate(g ChangeCountGate) error {
+	if !g.State.valid() {
+		return fmt.Errorf("%w: stored counted-change check state %q is not a known state",
+			ErrInvalidGateEvidence, preview(string(g.State)))
+	}
+	if g.Evaluated() {
+		switch g.CorrelationState {
+		case CorrelationComplete, CorrelationPartial, CorrelationUnavailable:
+		default:
+			return fmt.Errorf("%w: stored counted-change correlation state %q is not a known state",
+				ErrInvalidGateEvidence, preview(string(g.CorrelationState)))
+		}
+		if g.CountingPolicyVersion == "" {
+			return fmt.Errorf("%w: stored counted-change check names no counting policy",
+				ErrInvalidGateEvidence)
+		}
+		return nil
+	}
+	if g != (ChangeCountGate{State: g.State}) {
+		return fmt.Errorf("%w: counted-change check is %s but carries an outcome",
+			ErrInvalidGateEvidence, g.State)
+	}
+	return nil
 }

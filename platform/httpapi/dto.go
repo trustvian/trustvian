@@ -349,10 +349,15 @@ type progressResponse struct {
 // Zero is a legitimate strict limit — MaxBlockDecisions of 0 accepts no block
 // decision at all — so collapsing omitted into zero would silently apply the
 // strictest possible policy to a caller who forgot a field.
+//
+// max_added_behavior_changes is the one optional limit (ADR 0052, issue 131):
+// omitted — or null — means the check is not evaluated, and "0" is the
+// strictest limit. The pointer is what keeps those two apart.
 type gateLimitsDTO struct {
 	MaxAddedBehaviors           *string `json:"max_added_behaviors"`
 	MaxBlockDecisions           *string `json:"max_block_decisions"`
 	MaxCriticalRiskObservations *string `json:"max_critical_risk_observations"`
+	MaxAddedBehaviorChanges     *string `json:"max_added_behavior_changes"`
 }
 
 type compareRequest struct {
@@ -530,16 +535,40 @@ type maximumGateDTO struct {
 	Passed  bool   `json:"passed"`
 }
 
-// gateResultDTO carries all five checks, always. Task 056 evaluates every
-// gate on every call so a FAIL shows everything measured, and truncating that
-// here would throw away the property.
+// changeCountGateDTO is the optional counted-change check.
+//
+// `state` is always present: "evaluated", "not_evaluated" (the caller omitted
+// the limit) or "not_recorded" (a promotion stored before the check existed).
+// The outcome fields are present **only** when evaluated. A check that did
+// not run has no actual, bound or result, and a `"passed": false` there would
+// read as a failure that never happened — so the fields are absent rather
+// than zero.
+type changeCountGateDTO struct {
+	State string `json:"state"`
+
+	Actual  *string `json:"actual,omitempty"`
+	Maximum *string `json:"maximum,omitempty"`
+	Passed  *bool   `json:"passed,omitempty"`
+
+	// What the count rested on when it was evaluated: a `partial` or
+	// `unavailable` correlation means the count is the unfolded identity
+	// count (ADR 0052), which is the conservative direction.
+	CorrelationState      *string `json:"correlation_state,omitempty"`
+	CountingPolicyVersion *string `json:"counting_policy_version,omitempty"`
+}
+
+// gateResultDTO carries all five checks, always, and the optional sixth with
+// its state. Task 056 evaluates every gate on every call so a FAIL shows
+// everything measured, and truncating that here would throw away the
+// property.
 type gateResultDTO struct {
-	ReferenceEvidence        minimumGateDTO `json:"reference_evidence"`
-	CandidateEvidence        minimumGateDTO `json:"candidate_evidence"`
-	AddedBehaviors           maximumGateDTO `json:"added_behaviors"`
-	BlockDecisions           maximumGateDTO `json:"block_decisions"`
-	CriticalRiskObservations maximumGateDTO `json:"critical_risk_observations"`
-	Verdict                  string         `json:"verdict"`
+	ReferenceEvidence        minimumGateDTO     `json:"reference_evidence"`
+	CandidateEvidence        minimumGateDTO     `json:"candidate_evidence"`
+	AddedBehaviors           maximumGateDTO     `json:"added_behaviors"`
+	BlockDecisions           maximumGateDTO     `json:"block_decisions"`
+	CriticalRiskObservations maximumGateDTO     `json:"critical_risk_observations"`
+	AddedBehaviorChanges     changeCountGateDTO `json:"added_behavior_changes"`
+	Verdict                  string             `json:"verdict"`
 }
 
 type compareResponse struct {
@@ -695,15 +724,18 @@ type promotionResponse struct {
 	DecidedAt string `json:"decided_at"`
 }
 
-// gateLimitsResponseDTO is the response form of the three limits.
+// gateLimitsResponseDTO is the response form of the limits.
 //
-// Plain strings rather than gateLimitsDTO's pointers: on a request a nil
-// distinguishes "omitted" from "0", and on a response every limit is present
-// by construction.
+// Plain strings for the three mandatory limits: on a request a nil
+// distinguishes "omitted" from "0", and on a response those are present by
+// construction. The optional counted-change limit is the exception and is
+// `null` when the decision was made without it — never "0", which would claim
+// the strictest limit was applied.
 type gateLimitsResponseDTO struct {
-	MaxAddedBehaviors           string `json:"max_added_behaviors"`
-	MaxBlockDecisions           string `json:"max_block_decisions"`
-	MaxCriticalRiskObservations string `json:"max_critical_risk_observations"`
+	MaxAddedBehaviors           string  `json:"max_added_behaviors"`
+	MaxBlockDecisions           string  `json:"max_block_decisions"`
+	MaxCriticalRiskObservations string  `json:"max_critical_risk_observations"`
+	MaxAddedBehaviorChanges     *string `json:"max_added_behavior_changes"`
 }
 
 // promotionListResponse is one bounded page of a project's history.

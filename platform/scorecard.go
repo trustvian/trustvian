@@ -189,6 +189,15 @@ type BehaviorSummary struct {
 	AddedCount   int
 	RemovedCount int
 	SharedCount  int
+
+	// AddedChangeCount is ADR 0052's counted behavioral changes: the unit
+	// MaxAddedBehaviorChanges bounds, as the control plane's fold produced
+	// it. Never recomputed here. CorrelationState and CountingPolicyVersion
+	// are what that count rested on, carried so the gate can record them
+	// beside the check.
+	AddedChangeCount      int
+	CorrelationState      CorrelationState
+	CountingPolicyVersion string
 }
 
 // AddedCandidateRate is the share of the candidate's distinct behaviors that
@@ -389,6 +398,10 @@ func NewEvaluationScorecard(
 			AddedCount:             diff.AddedCount(),
 			RemovedCount:           diff.RemovedCount(),
 			SharedCount:            diff.SharedCount(),
+
+			AddedChangeCount:      diff.AddedChangeCount(),
+			CorrelationState:      diff.CorrelationState(),
+			CountingPolicyVersion: diff.CountingPolicyVersion(),
 		},
 	}, nil
 }

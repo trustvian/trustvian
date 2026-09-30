@@ -1250,7 +1250,12 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 	// Named by their own constants rather than by SchemaVersion: this set used
 	// to include SchemaVersion, which silently meant "whatever is newest" and
 	// stopped being true the moment task 067 added two tables at v7.
-	indexOnly := map[int]bool{schemaVersionV5: true, schemaVersionV6: true}
+	//
+	// v8 is the same kind of step: issue 131 adds six columns to the promotion
+	// table and no table.
+	indexOnly := map[int]bool{
+		schemaVersionV5: true, schemaVersionV6: true, schemaVersionV8: true,
+	}
 	for version := schemaVersionV1 + 1; version <= SchemaVersion; version++ {
 		previous := schemaTablesByVersion[version-1]
 		current := schemaTablesByVersion[version]
@@ -1272,3 +1277,7 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 		}
 	}
 }
+
+// schemaVersionV8 is issue 131's schema, named for the guards that list
+// column-only steps by version rather than by "whatever is newest".
+const schemaVersionV8 = 8

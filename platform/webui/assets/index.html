@@ -375,7 +375,12 @@
           <label for="compare-max-critical">Max critical risk observations</label>
           <input type="text" id="compare-max-critical" inputmode="numeric" autocomplete="off" required>
         </div>
+        <div class="field">
+          <label for="compare-max-changes">Max added behavior changes <span class="optional">(optional)</span></label>
+          <input type="text" id="compare-max-changes" inputmode="numeric" autocomplete="off" aria-describedby="compare-max-changes-hint">
+        </div>
       </div>
+      <p class="hint" id="compare-max-changes-hint">Max added behavior changes counts a tool and the request it makes once. Leave it empty and that check is not evaluated — which is not the same as <code>0</code>.</p>
     </fieldset>
     <button type="submit" id="compare-submit" disabled>Compare runs</button>
     <p class="hint" id="compare-ready">Choose a reference and a candidate to enable this.</p>
@@ -571,7 +576,12 @@
             <label for="promotion-max-critical">Max critical risk observations</label>
             <input type="text" id="promotion-max-critical" inputmode="numeric" autocomplete="off" required>
           </div>
+          <div class="field">
+            <label for="promotion-max-changes">Max added behavior changes <span class="optional">(optional)</span></label>
+            <input type="text" id="promotion-max-changes" inputmode="numeric" autocomplete="off" aria-describedby="promotion-max-changes-hint">
+          </div>
         </div>
+        <p class="hint" id="promotion-max-changes-hint">Leave max added behavior changes empty and that check is not evaluated — which is not the same as <code>0</code>.</p>
       </fieldset>
       <button type="submit">Record promotion</button>
     </form>

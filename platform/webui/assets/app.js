@@ -2147,6 +2147,10 @@ const LIMIT_INPUTS = Object.freeze([
   Object.freeze({ id: "compare-max-added", key: "maxAddedBehaviors", label: "Max added behaviors" }),
   Object.freeze({ id: "compare-max-block", key: "maxBlockDecisions", label: "Max block decisions" }),
   Object.freeze({ id: "compare-max-critical", key: "maxCriticalRiskObservations", label: "Max critical risk observations" }),
+  // Optional (ADR 0052, issue 131): empty means the check is not evaluated,
+  // which is not the same request as 0 — so an empty field is omitted, never
+  // sent as "0".
+  Object.freeze({ id: "compare-max-changes", key: "maxAddedBehaviorChanges", label: "Max added behavior changes", optional: true }),
 ]);
 
 byID("form-compare").addEventListener("submit", async (event) => {
@@ -2164,6 +2168,9 @@ byID("form-compare").addEventListener("submit", async (event) => {
     const limits = {};
     for (const input of LIMIT_INPUTS) {
       const text = value(input.id);
+      if (input.optional === true && text === "") {
+        continue;
+      }
       // Validated as canonical decimal text, never parsed. 0 is valid, and the
       // uint64 maximum must reach the server intact — Number() would round it.
       if (!api.isCanonicalUint64(text)) {
@@ -2656,6 +2663,7 @@ const PROMOTION_LIMIT_INPUTS = Object.freeze([
   Object.freeze({ id: "promotion-max-added", key: "maxAddedBehaviors", label: "Max added behaviors" }),
   Object.freeze({ id: "promotion-max-block", key: "maxBlockDecisions", label: "Max block decisions" }),
   Object.freeze({ id: "promotion-max-critical", key: "maxCriticalRiskObservations", label: "Max critical risk observations" }),
+  Object.freeze({ id: "promotion-max-changes", key: "maxAddedBehaviorChanges", label: "Max added behavior changes", optional: true }),
 ]);
 
 // Loading the target list is a convenience, not a filter.
@@ -2696,6 +2704,9 @@ byID("form-promotion-create").addEventListener("submit", async (event) => {
     const limits = {};
     for (const input of PROMOTION_LIMIT_INPUTS) {
       const text = value(input.id);
+      if (input.optional === true && text === "") {
+        continue;
+      }
       // Canonical decimal text, never parsed. 0 is valid and the uint64
       // maximum must reach the server intact — Number() would round it.
       if (!api.isCanonicalUint64(text)) {
