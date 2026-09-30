@@ -229,10 +229,13 @@ target, in the timeline, and in the inspector. It is never labelled dangerous
 or unsafe — `NEW` means new, and any stronger reading would be a judgement the
 platform did not make.
 
-If nothing is running, **Investigate** browses what exists: one bounded page of
-projects at startup, then Projects → Agents → Candidates → Runs a page at a
-time, when you ask. The control-plane forms live under **Manage** and are not
-needed to watch anything. See [the web interface guide](webui.md).
+If nothing is running, **Projects** lists what exists and **Runs** takes you
+from there to a run's workspace — one bounded page at a time, when you ask.
+Clicking a run opens its observations and behaviors, and selecting an
+observation opens its detail beside the table, with its session, trace and
+behavior as controls you can follow. The control-plane forms live under
+**Manage** and are not needed to watch or investigate anything. See
+[the web interface guide](webui.md).
 
 The reference end-to-end workflow is the companion repository
 `trustvian/trustvian-python-agent-demo`: a Python agent driven by Ollama,

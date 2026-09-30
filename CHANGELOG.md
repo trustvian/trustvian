@@ -8,6 +8,151 @@ actually depend on.
 
 ## Unreleased
 
+### Changed
+
+- **The browser surface is now an admin console, and no journey through it
+  requires typing an identifier** (task 096). Task 074 removed the identifier
+  form from the front door and ADR 0041 made the durable hierarchy
+  discoverable, but every surface *behind* Live was still built out of inputs:
+  Compare asked for two run identifiers through two menus, Evidence asked for a
+  run and a narrowing, Promotions asked for a project before it listed
+  anything. The identifiers had become discoverable without the surfaces ever
+  becoming browsable.
+
+  **A persistent sidebar, tables as the primary surface, and a contextual panel
+  beside them.** Destinations are Live, Projects, Runs, Compare, Evidence,
+  Promotions and Manage — one per capability `/v1` actually serves, and none
+  for anything that does not exist yet. The sidebar always says which project
+  the console is scoped to, and changes it by going to a searchable project
+  table rather than by opening a menu.
+
+  **Rows are the navigation.** Projects, runs, observations and behaviors are
+  each a table of what the server returned, and clicking a row opens that
+  record. A run's workspace carries its authoritative counts on a compact strip
+  and three tabs — overview, observations, behaviors. Selecting an observation
+  opens its recorded decision, scores, timing and correlation references
+  alongside the table, without redrawing it; closing the panel returns focus to
+  the row it came from.
+
+  **Every identifier is a control that goes somewhere.** Session, trace and
+  behavior references narrow the observation table to that view — a new bounded
+  request with the narrowing applied in storage before the page bound, at most
+  one at a time because the server accepts at most one.
+
+  **A comparison's two sides are assigned from rows.** Every run in the table
+  carries a `Reference` and a `Candidate` control; both chosen runs are then
+  shown in full in labelled panels, and the submit stays disabled until two
+  different runs are chosen. There is no identifier field for either side and
+  no menu standing in for one. Shared-behavior evidence keeps its visible
+  reference and candidate controls.
+
+  **Nothing about the bounds changed.** One page per action, the continuation
+  is still an explicit control, the startup budget is still one page of
+  `GET /v1/projects`, and narrowing still happens in storage. The filter boxes
+  narrow the rows already on screen and say so; a table always states whether
+  it is showing the whole collection or one page of it. No figure on a summary
+  strip is counted from the rows on screen — a strip reports what the run
+  observed, not how much the page drew — and there is no decorative metric,
+  invented chart or placeholder destination anywhere in the shell.
+
+  Menus survive only where the choice is a setting rather than navigation: the
+  promotion form's target environment and its run pickers, filled from a
+  comparison already made. Every form, lifecycle control and result target that
+  existed still exists, under Manage.
+
+  Content-Security-Policy is unchanged and still carries no `unsafe-inline`,
+  so there is still no web font, no CDN and no build step. See
+  [ADR 0050](docs/adr/0050-the-browser-surface-is-a-record-first-admin-console.md).
+
+- **The browser bundle is a layered design system** (task 096, second pass).
+  The console reorganised the *information* architecture and left the bundle
+  as it was: fifteen modules in one flat directory and a 1,400-line
+  stylesheet. Three costs followed, each visible on screen — values were
+  named wherever they were used and light and dark drifted apart; loading and
+  empty rendered identically, so a reader could not tell "wait" from "there
+  is nothing here"; and a `block`/`critical` observation was the same weight
+  as an `allow`/`low` one, so finding the row that matters meant reading
+  every line.
+
+  **Five layers, dependencies only downward.** `core/` (DOM and formatting,
+  no Trustvian at all) → `v1/` (the control-plane contract) and `ui/` (the
+  design system), `live/` (the realtime observatory), `views/` (one module
+  per destination), and `app.js` as the only composition root. `ui/` may not
+  import `v1/`: the moment a component can read a route, presentation stops
+  being a layer.
+
+  **Only `styles/tokens.css` names a raw value.** Colour, size, space, radius
+  and duration are each declared once with the dark-mode counterpart beside
+  it; a hex literal in any other sheet now fails a test. The accent is blue
+  by elimination — green, amber and red carry verdict and risk, violet
+  carries "new", and an accent sharing any of those would make *selected*
+  read as *severe*.
+
+  **Four states, kept apart.** A fetching table draws a static skeleton in
+  the shape of the rows that are coming; an empty one states the absence and
+  names the next action; a refusal is shown as the refusal it is. The
+  skeleton does not shimmer, because nothing on this page loops.
+
+  **Severity as three carriers.** A gutter down the row's leading edge, a
+  tint behind the row, and a mark beside the word — and the word, which is
+  the server's, still carries the meaning alone.
+
+  Also: a grouped sidebar with inline-SVG icons (built through
+  `createElementNS`, never parsed, never a font) and counts where the console
+  holds one; the scope chooser collapses once it has chosen, since the strip
+  below already states the agent and candidate; and lifecycle transitions and
+  refusals report through a short-lived status region instead of changing one
+  word in a panel nobody is looking at.
+
+  Four new guards hold it together, each verified to fail when its property
+  is broken. Test helpers now name a module rather than a file path, and two
+  harnesses that copied assets to a temporary directory reproduce the tree
+  instead of flattening it. Nothing about the bounds, the privacy allowlists
+  or the Content-Security-Policy changed. See
+  [ADR 0051](docs/adr/0051-the-browser-bundle-is-a-layered-design-system.md).
+
+### Fixed
+
+- **Three state defects in the browser console, found in review.** All three
+  were invisible to a source scan, because what was wrong was which of two
+  responses arrived last and what a boolean meant after the reader had moved.
+
+  **Run-scoped state survived a change of run.** Opening run B after viewing
+  run A's Behaviors tab left the tab marked loaded, so it rendered A's rows
+  and fetched nothing — and its paging cursor would have asked for the next
+  page of A's collection under B. The same shape applied to the observation
+  page, the narrowing, the selected row and the strip's counts. All of it is
+  now cleared in one step when the run changes.
+
+  **A stale response could overwrite the current view.** `openRunDetail`,
+  the observation loader and the behavior loader committed whatever came
+  back. A response for a run or a filter the reader had left would repopulate
+  the surface, clear a newer error, close the current detail panel, or stop a
+  newer loading indicator. Each read now takes a ticket before awaiting and
+  presents it back before touching anything; the level browser checks its
+  own generation before assigning, because the commit happens inside the
+  awaited call and a guard in the caller would run after the clobber.
+
+  **Project-scoped state survived a change of project.** Compare and
+  Promotions decided whether to fetch by asking "have I loaded before?",
+  which is still true after switching from project A to B — so B showed A's
+  agents, A's assigned comparison sides and A's promotion history, under B's
+  name in the sidebar. Cache validity is now project identity, and a change
+  of project abandons what is in flight and clears what is held.
+
+  This is **not** built on cancellation: an abort can lose the race with a
+  response already queued, and a surface whose correctness depended on the
+  abort winning would be right almost always. Surfaces are independent — the
+  three reads of a run workspace, Compare's three lists and Promotions each
+  hold their own ticket, so fetching one never abandons another's work. One
+  further defect fell out of that: Compare's loading flags were the ones the
+  Runs destination reads, so fetching on either drew a skeleton over the
+  other.
+
+  Ten behavioural regression tests drive the real modules under node with
+  deliberately out-of-order promises, rather than asserting on source
+  strings. Every one was verified to fail against the defect it covers.
+
 ### Added
 
 - **The browser now follows a finding to the evidence behind it** (task 076). A

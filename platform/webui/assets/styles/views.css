@@ -1,0 +1,548 @@
+/*
+ * View-specific surfaces: the Live observatory, the evidence explorer and the
+ * trace tree.
+ *
+ * These are the parts that are not reusable — a behavior graph is not a
+ * component anybody else composes. Everything a second view could want lives
+ * in components.css instead.
+ */
+
+/* ---------------------------------------------------------------------
+   Live view (task 074)
+   --------------------------------------------------------------------- */
+
+/* Scope cards. Selection is carried by a border weight, a marker and
+   aria-pressed — never by colour alone. */
+.cards { display: flex; flex-wrap: wrap; gap: 0.5rem; list-style: none; margin: 0 0 0.8rem; padding: 0; }
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font: inherit;
+  gap: 0.1rem;
+  min-width: 13rem;
+  padding: 0.5rem 0.6rem;
+  text-align: left;
+}
+.card:hover { border-color: var(--accent); }
+.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.card-selected { border-color: var(--accent); border-left-width: 4px; }
+/* A text marker, so which card is drawn does not depend on seeing a border. */
+.card-selected::before { content: "▶ drawing"; color: var(--accent); font-size: 0.74rem; }
+.card-line { font-size: 0.8rem; }
+.card-key { color: var(--muted); }
+.card-value { font-family: var(--mono); }
+.card-seen { color: var(--muted); font-size: 0.74rem; margin-top: 0.2rem; }
+.card-state { font-size: 0.74rem; }
+
+/* The behavior graph. */
+.graph { display: block; max-width: 100%; height: auto; }
+.node-box { fill: var(--panel); stroke: var(--line); }
+.node-label { fill: var(--ink); font-family: var(--mono); font-size: 12px; }
+.node-new .node-box { stroke: var(--accent); stroke-width: 2; }
+.node-badge { fill: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: 0.06em; }
+.edge-line { stroke: var(--line); stroke-width: 1.5; }
+.edge-new .edge-line { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 3; }
+.edge-label { fill: var(--ink); font-size: 11px; }
+.edge-state { fill: var(--muted); font-size: 10px; }
+.edge-pulse { fill: var(--accent); }
+.edge:focus-visible { outline: 2px solid var(--accent); }
+
+/* Saturation and evidence notices. Marked with text as well as a tint. */
+.notice {
+  background: var(--warn-bg);
+  border-left: 3px solid var(--accent);
+  font-size: 0.86rem;
+  margin: 0 0 0.5rem;
+  padding: 0.4rem 0.6rem;
+}
+.notice-mark { font-weight: 700; }
+
+/* Hierarchy browser: four bounded levels side by side. */
+.hierarchy-columns {
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+}
+.hierarchy { list-style: none; margin: 0 0 0.4rem; padding: 0; }
+.hierarchy li { font-size: 0.84rem; padding: 0.1rem 0; }
+.hierarchy-detail { color: var(--muted); }
+
+/* prefers-reduced-motion: movement is removed, information is not.
+
+   The pulse element is not even created when the query matches (see app.js),
+   and this rule is the belt to that braces: a browser that changes the
+   preference mid-session, or a pulse already in flight, stops moving here.
+   Every fact the animation carried — which edge fired, the decision, the risk,
+   the NEW badge, the connection state — is text or a badge and is unaffected. */
+@media (prefers-reduced-motion: reduce) {
+  .edge-pulse { display: none; }
+  .graph * { animation: none !important; transition: none !important; }
+  * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}
+
+/* =========================================================================
+   The Live Observatory
+   =========================================================================
+   Three regions and a timeline. The canvas is the centre of the product, so
+   it gets the space; the rail and the inspector are fixed, readable columns
+   beside it. On a narrow screen the columns stack in reading order — selected
+   agent, canvas, inspector, timeline — rather than shrinking three columns
+   until none is legible.
+ */
+
+.observatory {
+  display: grid;
+  grid-template-columns: minmax(13rem, 17rem) minmax(0, 1fr) minmax(15rem, 20rem);
+  gap: 0.9rem;
+  align-items: start;
+}
+
+.rail,
+.inspector,
+.canvas-region,
+.timeline-region {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  padding: 0.85rem 0.95rem;
+}
+
+.timeline-region { margin-top: 0.9rem; }
+.canvas-foot { margin: 0.7rem 0 0; }
+.canvas-head { display: flex; flex-direction: column; }
+
+@media (max-width: 1100px) {
+  .observatory { grid-template-columns: minmax(12rem, 15rem) minmax(0, 1fr); }
+  .inspector { grid-column: 1 / -1; }
+}
+
+@media (max-width: 760px) {
+  .observatory { grid-template-columns: 1fr; }
+  .inspector { grid-column: auto; }
+}
+
+/* ------------------------------ active rail ------------------------------- */
+
+.rail-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+
+.rail-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  background: var(--sunken);
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid transparent;
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rail-card:hover { border-color: var(--line); }
+.rail-card-selected {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
+}
+.rail-head { display: flex; align-items: baseline; gap: 0.4rem; min-width: 0; }
+.rail-mark { color: var(--state-calm); font-size: 0.7rem; flex: none; }
+.rail-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-context { color: var(--muted); font-size: 0.74rem; font-family: var(--mono); }
+.rail-state { color: var(--muted); font-size: 0.74rem; }
+.rail-follow {
+  margin: 0.6rem 0 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.76rem;
+}
+.rail-follow-state { color: var(--muted); }
+
+.rail-empty { color: var(--muted); font-size: 0.82rem; line-height: 1.5; }
+.rail-empty-title { margin: 0 0 0.35rem; color: var(--ink); font-weight: 600; }
+.rail-empty p { margin: 0 0 0.5rem; }
+
+/* ------------------------------ the canvas -------------------------------- */
+
+/* Tall enough for a graph, short enough that an idle console is not mostly
+   empty box. The canvas grows with what it draws. */
+.canvas-host { min-height: 5.5rem; }
+.canvas { display: block; width: 100%; height: auto; }
+.canvas-empty { color: var(--muted); font-size: var(--t-body); padding: var(--s-5) 0; text-align: center; }
+
+.node-box { fill: var(--sunken); stroke: var(--line); }
+.node-title { fill: var(--ink); font-size: 13px; font-weight: 600; }
+.node-sub { fill: var(--muted); font-size: 10.5px; }
+.node-label { fill: var(--ink); font-family: var(--mono); font-size: 12px; }
+.node-agent .node-box { fill: var(--accent-soft); stroke: var(--accent); }
+.node-new .node-box { stroke: var(--state-new); stroke-width: 2; }
+.node-badge { fill: var(--state-new); font-size: 9.5px; font-weight: 700; letter-spacing: 0.07em; }
+
+.edge-line { stroke: var(--line); stroke-width: 1.5; transition: stroke 200ms, stroke-width 200ms; }
+.edge-op { fill: var(--ink); font-size: 11px; }
+.edge-state { fill: var(--muted); font-size: 9.5px; letter-spacing: 0.03em; }
+
+/* Observed state on an edge. Reinforcement only — the same words are printed
+   in .edge-state and in the timeline row. */
+.edge.d-alert .edge-line,
+.edge.r-high .edge-line { stroke: var(--state-warn); }
+.edge.d-block .edge-line,
+.edge.r-critical .edge-line { stroke: var(--state-stop); stroke-width: 2; }
+.edge.edge-new .edge-line { stroke: var(--state-new); stroke-width: 2; stroke-dasharray: 6 3; }
+.edge.edge-selected .edge-line { stroke: var(--accent); stroke-width: 2.5; }
+.edge { cursor: pointer; }
+.edge:focus-visible { outline: 2px solid var(--accent); }
+
+/* One observation, one pulse. Brightening the edge for the duration of the
+   traversal, then releasing it: nothing loops and nothing idles. */
+.edge-firing .edge-line { stroke: var(--accent); stroke-width: 3; }
+.pulse { fill: var(--accent); }
+.edge-new.edge-firing .edge-line { stroke: var(--state-new); }
+
+/* ------------------------------- inspector -------------------------------- */
+
+.inspect-heading {
+  margin: 0.9rem 0 0.4rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.inspect-heading:first-child { margin-top: 0; }
+.inspect-operation { margin: 0; font-size: 1.05rem; font-weight: 600; }
+.inspect-target { margin: 0.1rem 0 0.5rem; font-family: var(--mono); font-size: 0.88rem; word-break: break-all; }
+.inspect-new {
+  margin: 0.6rem 0;
+  padding: 0.5rem 0.6rem;
+  background: var(--accent-soft);
+  border-left: 3px solid var(--state-new);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.badge-new {
+  display: inline-block;
+  padding: 0.05rem 0.35rem;
+  margin-right: 0.35rem;
+  border: 1px solid var(--state-new);
+  border-radius: 3px;
+  color: var(--state-new);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+}
+
+.inspect-state { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
+.chip {
+  display: flex;
+  flex-direction: column;
+  padding: 0.3rem 0.55rem;
+  background: var(--sunken);
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--line);
+  border-radius: 5px;
+  min-width: 6rem;
+}
+.chip-label { color: var(--muted); font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; }
+.chip-value { font-size: 0.92rem; font-weight: 600; }
+.chip.d-allow, .chip.r-low { border-left-color: var(--state-calm); }
+.chip.d-observe_only { border-left-color: var(--state-calm); }
+.chip.d-alert, .chip.r-medium { border-left-color: var(--state-note); }
+.chip.d-challenge, .chip.d-require_approval, .chip.r-high { border-left-color: var(--state-warn); }
+.chip.d-block, .chip.r-critical { border-left-color: var(--state-stop); }
+
+.metrics { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 0.7rem; margin: 0 0 0.6rem; align-items: center; }
+.metrics dt { color: var(--muted); font-size: 0.78rem; }
+.metrics dd { margin: 0; display: flex; align-items: center; gap: 0.5rem; }
+.metric-value { font-family: var(--mono); font-size: 0.85rem; min-width: 2.4rem; }
+.metric-track { flex: 1; height: 0.3rem; background: var(--sunken); border-radius: 2px; overflow: hidden; }
+.metric-fill { display: block; height: 100%; background: var(--accent); }
+
+.fields { display: grid; grid-template-columns: auto 1fr; gap: 0.15rem 0.7rem; margin: 0 0 0.5rem; }
+.fields dt { color: var(--muted); font-size: 0.76rem; }
+.fields dd { margin: 0; font-size: 0.8rem; word-break: break-all; }
+.fields.mono dd { font-family: var(--mono); font-size: 0.75rem; }
+
+/* -------------------------------- timeline -------------------------------- */
+
+.timeline-scroll { overflow-x: auto; max-height: 20rem; overflow-y: auto; }
+.timeline { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.timeline caption {
+  caption-side: top;
+  text-align: left;
+  color: var(--muted);
+  font-size: 0.76rem;
+  padding-bottom: 0.4rem;
+}
+.timeline th {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  text-align: left;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+  padding: 0.3rem 0.5rem;
+}
+.timeline td { padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--line-soft); }
+.timeline td:first-child { font-family: var(--mono); color: var(--muted); }
+.timeline-row { cursor: pointer; }
+.timeline-row:hover td { background: var(--sunken); }
+.timeline-selected td { background: var(--accent-soft); }
+.timeline-new td { font-weight: 500; }
+
+.timeline .d-alert, .timeline .r-medium { color: var(--state-note); }
+.timeline .d-challenge, .timeline .d-require_approval, .timeline .r-high { color: var(--state-warn); }
+.timeline .d-block, .timeline .r-critical { color: var(--state-stop); font-weight: 600; }
+.timeline .d-allow, .timeline .r-low { color: var(--state-calm); }
+
+/* ------------------------------ manage subtabs ---------------------------- */
+
+.subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+  margin: 0 0 1rem;
+  border-bottom: 1px solid var(--line);
+}
+.subtab {
+  padding: 0.3rem 0.7rem;
+  background: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 5px 5px 0 0;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.subtab:hover { color: var(--ink); }
+.subtab[aria-selected="true"] {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--ink);
+  margin-bottom: -1px;
+  padding-bottom: calc(0.3rem + 1px);
+}
+
+/* Inline help on a form field. The reason a developer no longer has to guess
+   what an arbitrary identifier is for. */
+.hint {
+  margin: 0.2rem 0 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+  max-width: 44rem;
+}
+fieldset > .hint { margin-bottom: 0.6rem; }
+
+
+/* ---------------------------------------------------------------------
+ * Evidence (task 076)
+ *
+ * Reference and candidate stay visibly distinct, and every state that uses a
+ * colour also carries a word — the rule this whole file follows, and it matters
+ * more here than anywhere: the four resolution statuses look identical in a
+ * payload, and three of them mean "do not read this as no evidence".
+ * ------------------------------------------------------------------ */
+
+.evidence-section { margin-top: 0.5rem; }
+
+/* Side. A chip, a border and a word: the word is what survives monochrome. */
+.side {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  margin-left: 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.side-reference { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.side-candidate { border-color: var(--state-new); color: var(--state-new); background: var(--sunken); }
+.side-none { color: var(--muted); background: var(--sunken); font-weight: 500; }
+
+/* Status. The chip carries the server's word verbatim. */
+.status-box {
+  margin: 0.6rem 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+.status-line { margin: 0 0 0.35rem; }
+.status-chip {
+  display: inline-block;
+  padding: 0.12rem 0.55rem;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.status-resolved { color: var(--pass); border-color: var(--pass); }
+.status-none_found { color: var(--muted); }
+.status-indeterminate { color: var(--state-warn); border-color: var(--state-warn); }
+.status-aggregate_only { color: var(--state-note); border-color: var(--state-note); }
+.status-why { margin: 0; color: var(--muted); font-size: 0.86rem; }
+
+/* Retained history. The same shape, because it is the same kind of statement. */
+.history-box {
+  margin: 0.6rem 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--panel);
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+}
+.history-line { margin: 0 0 0.3rem; font-family: var(--mono); font-size: 0.82rem; }
+.history-why { margin: 0; color: var(--muted); font-size: 0.86rem; }
+
+/* Page navigation. "End of results" is about the page and says so. */
+.page-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.8rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--line-soft);
+}
+.page-state { margin: 0; color: var(--muted); font-size: 0.82rem; font-family: var(--mono); }
+.page-end { margin: 0; color: var(--muted); font-size: 0.84rem; max-width: 52ch; }
+
+/* Row controls. Buttons, because they act; styled quietly, because a table of
+   loud buttons is unreadable. */
+.row-actions { display: inline-flex; flex-wrap: wrap; gap: 0.3rem; }
+.link-button {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.78rem;
+  background: var(--panel);
+  color: var(--accent);
+  border: 1px solid var(--line);
+}
+.muted { color: var(--muted); font-size: 0.8rem; font-style: italic; }
+
+/* Trace structure.
+ *
+ * A flat ordered list with a per-depth indent class rather than nested markup or
+ * an inline style. Depth comes from a producer-controlled parent chain, so it is
+ * bounded in trace.js and there is exactly one rule per allowed depth here —
+ * which also keeps the policy's ban on inline style intact.
+ */
+.trace-tree { list-style: none; margin: 0.6rem 0 0; padding: 0; }
+.trace-node {
+  padding: 0.45rem 0.6rem;
+  margin-bottom: 0.3rem;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--line);
+  border-radius: 4px;
+}
+.trace-node.depth-0 { margin-left: 0.00rem; }
+.trace-node.depth-1 { margin-left: 1.15rem; }
+.trace-node.depth-2 { margin-left: 2.30rem; }
+.trace-node.depth-3 { margin-left: 3.45rem; }
+.trace-node.depth-4 { margin-left: 4.60rem; }
+.trace-node.depth-5 { margin-left: 5.75rem; }
+.trace-node.depth-6 { margin-left: 6.90rem; }
+.trace-node.depth-7 { margin-left: 8.05rem; }
+.trace-node.depth-8 { margin-left: 9.20rem; }
+.trace-node.depth-9 { margin-left: 10.35rem; }
+.trace-node.depth-10 { margin-left: 11.50rem; }
+.trace-node.depth-11 { margin-left: 12.65rem; }
+.trace-node.depth-12 { margin-left: 13.80rem; }
+.trace-node.depth-13 { margin-left: 14.95rem; }
+.trace-node.depth-14 { margin-left: 16.10rem; }
+.trace-node.depth-15 { margin-left: 17.25rem; }
+.trace-node.depth-16 { margin-left: 18.40rem; }
+.trace-node.depth-17 { margin-left: 19.55rem; }
+.trace-node.depth-18 { margin-left: 20.70rem; }
+.trace-node.depth-19 { margin-left: 21.85rem; }
+.trace-node.depth-20 { margin-left: 23.00rem; }
+.trace-node.depth-21 { margin-left: 24.15rem; }
+.trace-node.depth-22 { margin-left: 25.30rem; }
+.trace-node.depth-23 { margin-left: 26.45rem; }
+.trace-node.depth-24 { margin-left: 27.60rem; }
+
+.trace-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem; margin: 0 0 0.25rem; }
+.trace-seq { font-family: var(--mono); font-size: 0.78rem; color: var(--muted); }
+.trace-action { font-weight: 600; font-size: 0.9rem; overflow-wrap: anywhere; }
+.trace-status { font-size: 0.76rem; font-family: var(--mono); }
+.status-ok { color: var(--state-calm); }
+.status-error { color: var(--state-stop); font-weight: 600; }
+.status-unset { color: var(--state-note); }
+.status-unavailable { color: var(--muted); }
+.trace-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.9rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.trace-meta span { overflow-wrap: anywhere; }
+.trace-warn {
+  margin: 0.3rem 0 0;
+  padding: 0.3rem 0.5rem;
+  background: var(--warn-bg);
+  border-radius: 4px;
+  font-size: 0.78rem;
+}
+
+/* Provenance. Two columns on a wide screen, stacked on a narrow one, and the
+   side border is the same vocabulary the chips above use. */
+.provenance { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; }
+.provenance-side {
+  padding: 0.7rem 0.85rem;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+.provenance-side.side-reference { border-top: 3px solid var(--accent); }
+.provenance-side.side-candidate { border-top: 3px solid var(--state-new); }
+.provenance-side h4 { margin: 0 0 0.3rem; font-size: 0.92rem; }
+
+@media (max-width: 720px) {
+  .provenance { grid-template-columns: 1fr; }
+}
+
+/* Evidence tables size to their content and scroll rather than breaking short
+ * words across lines.
+ *
+ * The shared rule is `width: 100%` plus `overflow-wrap: anywhere`, which is
+ * right for a two-column detail table and wrong here: these tables carry a
+ * recorded action beside several one-word cells, and squeezing them turned
+ * "critical" into "critic al". Columns take their natural width, the long
+ * recorded action wraps at a readable measure, and the existing .scroll wrapper
+ * does the rest.
+ */
+#panel-evidence td { white-space: nowrap; padding-right: 1rem; }
+/* The one cell that should wrap, marked by the renderer rather than guessed at
+   from a column index — the column order differs per view. */
+.cell-wrap {
+  display: inline-block;
+  max-width: 46ch;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+/* The row controls stack rather than widening the table past its container:
+   three navigation controls on one line pushed the last one off the edge. */
+#panel-evidence .row-actions { flex-direction: column; align-items: flex-start; }

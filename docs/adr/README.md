@@ -73,6 +73,8 @@ as long as its own decision holds.
 | [0047](0047-behavioral-identity-is-per-observation-counting-is-a-policy.md) | Behavioral identity is per observation; counting is a control-plane policy | Accepted |
 | [0048](0048-retained-history-is-sequence-identified-bounded-and-honest-about-absence.md) | Retained observation history is sequence-identified, bounded, and honest about its own absence | Accepted |
 | [0049](0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md) | The evidence explorer narrows retained history, and answers a behavioral question rather than a trace question | Accepted |
+| [0050](0050-the-browser-surface-is-a-record-first-admin-console.md) | The browser surface is a record-first admin console, and an identifier is never a prerequisite | Accepted |
+| [0051](0051-the-browser-bundle-is-a-layered-design-system.md) | The browser bundle is a layered design system, not a directory of scripts | Accepted |
 
 **0046 is the first record here carried as Proposed.** Its reasoning is
 complete and no maintainer has ratified it, which is exactly what this status
@@ -96,8 +98,10 @@ reasoning 0024 applied to a baseline key, 0048 on the retention boundary 0026, 0
 0030, 0031 and 0032 each deferred to it and the atomic ingest contract 0031 drew,
 0049 on the retention contract 0048 established, the trace-scoped correlation
 0047 refused to make a global key, and the no-authority browser boundary 0036
-drew — and each cites the earlier decision as still governing rather than
-replacing it.
+drew, 0050 on the bounded discovery 0041 made possible and the same 0036
+boundary, and 0051 on the console 0050 established and the no-build-step
+constraint 0036 set — and each cites the earlier decision as still governing
+rather than replacing it.
 
 ## Writing one
 

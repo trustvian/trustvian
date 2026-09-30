@@ -598,12 +598,44 @@ capabilities — putting the run collection on `ControlStore` would oblige a
 control-only backend to serve evaluation runs it does not store. No fifth
 interface was added.
 
-Its browser surface is organized as an observability cockpit rather than a CRUD
-console — Live, Investigate, Compare, Promotions, Manage — built from vanilla
-ES modules split by responsibility (`graph.js`, `rail.js`, `timeline.js`,
-`inspector.js`, `discovery.js`, `live.js`) over the same static same-origin
-`/v1` and SSE. No framework, no npm, no CDN, no build step: the information
-model changed, the technology did not.
+Its browser surface is an observability cockpit and a record-first admin
+console rather than a CRUD form set — a persistent sidebar of destinations
+(Live, Projects, Runs, Compare, Evidence, Promotions, Manage), a workspace
+whose primary surface is a table of what `/v1` returned, and a contextual panel
+beside it. Rows are the navigation and identifiers are the controls that follow
+them, so no journey through it requires typing one
+([ADR 0050](adr/0050-the-browser-surface-is-a-record-first-admin-console.md)).
+
+It is built from vanilla ES modules over the same static same-origin `/v1`
+and SSE, laid out as five layers whose dependencies only point downward
+([ADR 0051](adr/0051-the-browser-bundle-is-a-layered-design-system.md)):
+
+```text
+assets/
+  index.html                the shell
+  app.js                    composition root: navigation, wiring, startup
+  core/     → nothing       DOM construction, value formatting
+  v1/       → core          the control-plane contract: routes, allowlists, renderers
+  ui/       → core          the design system; reaches no API
+  live/     → live          the realtime observatory
+  views/    → core v1 ui    one module per destination
+  styles/                   tokens, base, layout, components, views
+```
+
+`ui/` may not import `v1/`: the moment a component can read a route,
+presentation stops being a layer. Only `styles/tokens.css` names a raw value,
+and it declares both colour schemes, so light and dark cannot drift apart.
+
+Asynchronous state is owned by `views/run-state.js` and
+`views/project-scope.js` rather than by the view that draws it. Both hold the
+rule that their contents belong to one subject — a run, a project — and both
+refuse a response that arrived for a subject the reader has left, using the
+ticket primitive in `core/ownership.js`. The same rule `internal` realtime
+applies to the stream: take a token before the await, check it immediately
+after, and never depend on a cancellation winning a race.
+
+No framework, no npm, no CDN, no build step, and no web font — the policy's
+`font-src 'none'` is honest because nothing asks for one.
 
 The WebUI gained no capability, import or authority: `webui.NewHandler()` still
 takes no arguments. It gained server routes to call, which the CLI or any
