@@ -31,6 +31,7 @@ here, not moved or rewritten.
 | Shared PostgreSQL backend keeps credentials and internals off every surface | `TestPostgresErrorsNeverCarryTheDSN`, `TestPostgresIdentifierOrderingIsByteOrder`, `TestPostgresBuildsNoSQLFromNonConstants`, `TestPostgresRunScopedWritesTakeTheRowLock`, `TestPostgresUsesReadCommitted`, `TestPostgresRefusesANewerSchema`, `TestPostgresRefusesTablesWithoutAVersionRow`, `TestPostgresConcurrentInitializationYieldsOneSchema`, `TestPostgresMigrationDoesNotBlockOnTheEngineLock` in [`platform/postgres_internal_test.go`](../platform/postgres_internal_test.go), [`postgres_concurrency_test.go`](../platform/postgres_concurrency_test.go) and [`postgres_schema_test.go`](../platform/postgres_schema_test.go); `TestRuntimeErrorsNeverCarryTheDSN`, `TestUnknownBackendFailsClosed`, `TestPostgresBackendWithoutDSNFailsBeforeTheListener`, `TestDiscoveryNeverCarriesBackendConfiguration`, `TestRuntimeOnPostgresServesTheRealAPI`, `TestBackendSelectionDoesNotLeakAboveComposition` in [`platform/localruntime/backend_test.go`](../platform/localruntime/backend_test.go) and [`architecture_test.go`](../platform/localruntime/architecture_test.go) |
 | Recorded promotion decisions cannot be forged, rewritten, or re-derived | `TestRestorePreservesAHistoricallyInconsistentCheck`, `TestRestoreDoesNotRecomputeTheVerdictFromTheFlags`, `TestGateRestoreEvaluatesNothing`, `TestPromotionDeclaresNoDeploymentOrApprovalField`, `TestPromotionTypesAreTheOnesTask066Specified` in [`platform/promotion_test.go`](../platform/promotion_test.go), [`promotion_internal_test.go`](../platform/promotion_internal_test.go) and [`gate_internal_test.go`](../platform/gate_internal_test.go); `TestPostgresPromotionCommitWindowIsMutuallyExclusive`, `TestPostgresPromotionWaitsForTheLockAndSeesTheNewState`, `TestPostgresPromotionLocksEnvironmentsInByteOrder`, `TestPostgresPromotionLocksTwoEnvironmentRowsAndNothingElse` in [`platform/postgres_concurrency_test.go`](../platform/postgres_concurrency_test.go); `TestPostgresMigratesV3ToV4AddingAnEmptyHistory` in [`platform/postgres_schema_test.go`](../platform/postgres_schema_test.go), `TestSchemaV3MigratesToV4PreservingContent` in [`platform/promotion_migration_test.go`](../platform/promotion_migration_test.go); `TestPromotionUIDecidesNothing`, `TestPromotionUIClaimsNoDeployment` in [`platform/webui/assets_test.go`](../platform/webui/assets_test.go) |
 | Browser control plane renders untrusted text inertly | `TestShippedScriptsUseNoDangerousRenderingPrimitive`, `TestShippedScriptsDoNotEnumerateServerObjects`, `TestFieldAllowlistsExcludeEverySensitiveField`, `TestPrivacyFixtureFieldsAreUnreachable`, `TestContentSecurityPolicyForbidsEveryEscapeHatch`, `TestNoBrowserPersistenceOfPlatformState`, `TestUint64CountersAreNeverParsedAsNumbers`, `TestGateVerdictComesFromTheServer` in [`platform/webui/assets_test.go`](../platform/webui/assets_test.go) and [`handler_test.go`](../platform/webui/handler_test.go); `TestHandlerConstructorTakesNoControlPlane`, `TestDependencyGraphContainsNoPlatformOrStoreCode` in [`platform/webui/architecture_test.go`](../platform/webui/architecture_test.go); `TestUnknownAPIRoutesNeverReturnTheShell`, `TestWebUIResponsesCarryNoCORSHeader` in [`platform/localruntime/runtime_test.go`](../platform/localruntime/runtime_test.go); `TestHostileServerStringsSurviveTheAPIAsData` in [`platform/localruntime/endtoend_test.go`](../platform/localruntime/endtoend_test.go) |
+| Browser evidence views decide nothing and reach no content | `TestEvidenceSurfaceDecidesNothing`, `TestEvidenceRenderingHoldsNoRetainedFieldItMustNotShow`, `TestHistoricalViewsStateThatFidelityWasNotRetained`, `TestParentageIsNeverInferredFromTimeOrAdjacency`, `TestNoRenderedSentenceAssertsReasoningIntentOrCausality`, `TestEvidenceGenerationTokenGuardsEveryAsyncContinuation`, `TestEvidenceSurfaceControllerBehavior` in [`platform/webui/evidence_test.go`](../platform/webui/evidence_test.go); `TestResolvedEvidenceRendersWhatTheRouteReturned`, `TestCorrelatedHistoryRendersWhatTheRouteReturned` in [`platform/httpapi/webui_evidence_render_test.go`](../platform/httpapi/webui_evidence_render_test.go); `TestSemanticPathLeaksNoContentToAnyV1Payload` in [`platform/httpapi/privacy_semantic_test.go`](../platform/httpapi/privacy_semantic_test.go) |
 | Identity confusion (cross-actor isolation) | `TestAnalyzeCrossActorIsolation` in [`engine_test.go`](../engine_test.go) |
 | Baseline poisoning | `TestObserveLearnsOnlyFromEligibleDecisions`, `TestAnalyzeSensitiveTargetFloorEndToEnd` in [`engine_test.go`](../engine_test.go); `TestFingerprintStatsIgnoresNonPositiveInterval`, `TestFingerprintStatsOutOfOrderObservationDoesNotDistortNextInterval` in [`internal/baseline/baseline_test.go`](../internal/baseline/baseline_test.go); `TestScoreFrequencyDeviation` (negative-interval subtests) in [`internal/anomaly/anomaly_test.go`](../internal/anomaly/anomaly_test.go) |
 | Malicious agents / privilege escalation | `TestAnalyzeSensitiveTargetFloorEndToEnd` in [`engine_test.go`](../engine_test.go) |
@@ -520,6 +521,13 @@ prompt, completion, tool argument, tool result, retrieved document, HTTP body
 or arbitrary attribute cannot be written through one. What changed is how long
 those fields live, which is why the content tripwire sweep was extended to the
 retained rows and the route that reads them rather than left to the contract.
+
+Task 076 added three narrowings of that route — by session, trace or behavioral
+identity — and no column, so the sentence still holds. Each narrowing is a bound
+parameter filtered in storage, matched through 067's digest index **and** against
+the original value beside it, so a digest collision cannot return another
+session's or another trace's rows. The tripwire sweep covers each narrowed read
+individually rather than assuming it inherits the unnarrowed page's result.
 
 ### An evaluation run cannot name an environment nobody registered
 
@@ -1174,6 +1182,24 @@ a second source of truth that disagrees with the database.
   a test scans for the comparison shapes that would constitute recomputation.
   Lifecycle legality is the server's — the page shows the actions and renders
   the refusal. An operational failure is never presented as a gate FAIL.
+- **The evidence surface resolves nothing and retains nothing.**
+  [Task 076](tasks/v1.0/076-behavioral-evidence-explorer.md) added a view over
+  retained history and task 085's resolution, and the boundary is the same one:
+  every status, side, recorded count and exhaustiveness flag is a value `/v1`
+  returned, and a test asserts each resolution status literal appears in shipped
+  source exactly once — as the key of the sentence explaining it — so none can
+  be minted in a browser. It holds one page at a time, discards a response that
+  arrives after the question changed, and stores nothing in `localStorage`,
+  `sessionStorage`, `IndexedDB` or a cookie.
+- **Content is unreachable because no column holds it.** The evidence views
+  render an explicit allowlist of the fields task 067 retains. No prompt,
+  completion, reasoning trace, tool argument, tool result, retrieved document,
+  HTTP body or arbitrary attribute has a retained column, so none reaches a
+  payload and none can be displayed; a tripwire plants distinctive content
+  upstream and asserts it reaches none of the three narrowed reads. The one
+  retained field the browser declines to render is `policy_reason`, the single
+  free-text producer-supplied value on the row — `policy_rule`, an identifier,
+  is shown instead.
 
 **Not claimed:** CSP is browser hardening, not authentication. It bounds what
 the page may do and says nothing about who may open it. The runtime remains

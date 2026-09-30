@@ -19,6 +19,7 @@ import { renderRail, renderCanvasNotices } from "./rail.js";
 import { TimelineFeed, renderTimeline } from "./timeline.js";
 import { renderInspector } from "./inspector.js";
 import { LabelCache, HierarchyBrowser, renderLevel, renderOptions } from "./discovery.js";
+import * as evidence from "./evidence.js";
 
 const byID = (id) => document.getElementById(id);
 
@@ -86,8 +87,15 @@ const selectTab = setupTabs();
 // "Candidate" and "Evaluation" in the primary navigation of a product whose
 // job is watching an agent work. They are advanced controls: still here, still
 // working, and one level down.
-function setupManageSections() {
-  const subtabs = Array.from(document.querySelectorAll(".subtab"));
+// Scoped to one panel, because there are two sets of sub-sections now.
+//
+// A document-wide `.subtab` query worked while Manage was the only panel with
+// sub-sections; with Evidence beside it, one query would wire every button to
+// both switchers and hide one panel's sections whenever the other's were shown.
+// The scope is the fix, and it is the whole of it.
+function setupSubtabs(panelID, defaultSection) {
+  const panel = byID(panelID);
+  const subtabs = Array.from(panel.querySelectorAll(".subtab"));
   const show = (id) => {
     for (const tab of subtabs) {
       const active = tab.dataset.section === id;
@@ -113,17 +121,25 @@ function setupManageSections() {
       }
     });
   }
-  show("manage-open");
+  show(defaultSection);
   return show;
 }
 
-const showManageSection = setupManageSections();
+const showManageSection = setupSubtabs("panel-manage", "manage-open");
+const showEvidenceSection = setupSubtabs("panel-evidence", "evidence-finding");
 
 // openManage reveals one Manage subsection, for the create-then-show flows
 // that used to jump to a top-level tab.
 function openManage(sectionID) {
   selectTab(byID("tab-manage"));
   showManageSection(sectionID);
+}
+
+// openEvidence reveals one Evidence subsection, for the navigation that starts
+// in Compare and lands here.
+function openEvidence(sectionID) {
+  selectTab(byID("tab-evidence"));
+  showEvidenceSection(sectionID);
 }
 
 // busy disables a control for the duration of one request.
@@ -1012,7 +1028,18 @@ byID("form-compare").addEventListener("submit", async (event) => {
       );
       // The verdict inside is the server's. This call renders it; it does not
       // recompute it from the limits above.
-      render.renderComparison(compareResult, response);
+      //
+      // The evidence controls are passed in here rather than built in the
+      // renderer, because a finding reference needs the two run identifiers this
+      // comparison actually used — and they are the server's echo of them, not
+      // the form's contents.
+      evidenceComparison = {
+        referenceRunID: response.reference_run_id,
+        candidateRunID: response.candidate_run_id,
+      };
+      byID("evidence-provenance-reference").value = response.reference_run_id;
+      byID("evidence-provenance-candidate").value = response.candidate_run_id;
+      render.renderComparison(compareResult, response, comparisonEvidenceControls());
       clearProblem();
     } catch (error) {
       // A refused comparison is rendered as the refusal it is. Insufficient
@@ -1022,6 +1049,432 @@ byID("form-compare").addEventListener("submit", async (event) => {
     }
   });
 });
+
+// ---------------------------------------------------------------------
+// Evidence (task 076)
+// ---------------------------------------------------------------------
+
+const evidenceFindingResult = byID("evidence-finding-result");
+const evidenceRunResult = byID("evidence-run-result");
+const evidenceProvenanceResult = byID("evidence-provenance-result");
+const evidenceViewSelect = byID("evidence-view");
+const evidenceViewBlurb = byID("evidence-view-blurb");
+const evidenceIdentifierField = byID("evidence-identifier-field");
+const evidenceIdentifierLabel = byID("evidence-identifier-label");
+
+// The comparison the Evidence surface is currently about.
+//
+// Set by a successful comparison and by nothing else. A finding reference is two
+// run identifiers plus what inside the comparison is being asked about, and both
+// identifiers have to come from a comparison that actually succeeded — inventing
+// a pair here would produce a citable link to a finding nobody resolved.
+let evidenceComparison = { referenceRunID: "", candidateRunID: "" };
+
+for (const view of evidence.RUN_VIEWS) {
+  const option = render.element("option", null, view.label);
+  option.value = view.key;
+  evidenceViewSelect.append(option);
+}
+
+// syncEvidenceViewFields shows the identifier field only for a view that needs
+// one, and names what it wants.
+//
+// Three of the five views read a narrowing; two read the run's whole history a
+// page at a time. Leaving an unused identifier box on screen for the latter two
+// would suggest the view ignores something it was given.
+function syncEvidenceViewFields() {
+  const spec = evidence.viewFor(evidenceViewSelect.value);
+  if (spec === null) {
+    return;
+  }
+  evidenceViewBlurb.textContent = spec.blurb;
+  const needed = spec.param !== "";
+  evidenceIdentifierField.hidden = !needed;
+  if (needed) {
+    evidenceIdentifierLabel.textContent = spec.identifierLabel;
+  }
+}
+
+evidenceViewSelect.addEventListener("change", () => {
+  syncEvidenceViewFields();
+});
+
+// evidenceRunFor picks which run a resolution's rows belong to.
+//
+// The side is the server's answer, and it is what decides the run: reading a
+// candidate-side observation's session out of the reference run would be the
+// cross-side mistake task 085 exists to prevent, arriving one layer later.
+function evidenceRunFor(response) {
+  const finding = response.finding === undefined || response.finding === null
+    ? {}
+    : response.finding;
+  if (response.side === "reference") {
+    return typeof finding.reference_run_id === "string" ? finding.reference_run_id : "";
+  }
+  if (response.side === "candidate") {
+    return typeof finding.candidate_run_id === "string" ? finding.candidate_run_id : "";
+  }
+  return "";
+}
+
+// openRunView fills the run-history form and loads it, with nothing typed.
+async function openRunView(runID, viewKey, identifier) {
+  byID("evidence-run-id").value = runID;
+  evidenceViewSelect.value = viewKey;
+  byID("evidence-identifier").value = identifier;
+  syncEvidenceViewFields();
+  openEvidence("evidence-run");
+  await evidenceSurface.openRunView(runID, viewKey, identifier);
+}
+
+// observationNavigation offers the three correlated views an observation can be
+// read in, and offers each only when the observation recorded the identifier it
+// needs.
+//
+// A control for a session the observation does not carry would resolve to an
+// empty page and read as "this session is empty" rather than "this action
+// belonged to no session".
+function observationNavigation(runID, observation) {
+  const box = render.element("span", "row-actions");
+  if (runID === "") {
+    return box;
+  }
+  const targets = [
+    { label: "Session", view: "session", value: observation.session_id },
+    { label: "Trace", view: "trace", value: observation.trace_id },
+    { label: "Behavior", view: "behavior", value: observation.fingerprint_id },
+  ];
+  for (const target of targets) {
+    if (typeof target.value !== "string" || target.value === "") {
+      continue;
+    }
+    const button = render.element("button", "link-button", target.label);
+    button.type = "button";
+    button.addEventListener("click", () => {
+      void openRunView(runID, target.view, target.value);
+    });
+    box.append(button);
+  }
+  if (box.childElementCount === 0) {
+    box.append(render.element("span", "muted", "no correlation recorded"));
+  }
+  return box;
+}
+
+// behaviorObservationControls offers the observation resolution for one resolved
+// behavioral identity.
+//
+// **A shared behavior gets one control per side and no default.** Both runs hold
+// their own observations of it and those two sets are what a developer is
+// comparing; choosing one silently would answer a question nobody asked with an
+// answer indistinguishable from the one they wanted. For an added or removed
+// behavior presence decides the side, so no side is sent and the server derives
+// it — which keeps one rule in one place.
+function behaviorObservationControls(finding, delta) {
+  const box = render.element("span", "row-actions");
+  const presence = delta.presence;
+  const open = (side, label) => {
+    const button = render.element("button", "link-button", label);
+    button.type = "button";
+    button.addEventListener("click", () => {
+      void evidenceSurface.openFinding({
+        referenceRunID: finding.reference_run_id,
+        candidateRunID: finding.candidate_run_id,
+        behavior: delta.fingerprint_id,
+        side,
+      }, "observations");
+    });
+    return button;
+  };
+
+  if (evidence.needsExplicitSide(presence)) {
+    box.append(open("reference", "Reference observations"));
+    box.append(open("candidate", "Candidate observations"));
+    return box;
+  }
+  box.append(open("", "Observations"));
+  return box;
+}
+
+// findingHeader renders everything a resolution says about the finding itself.
+//
+// Drawn identically on every page of the same resolution, because all of it
+// describes the finding rather than the page — including the status, which stays
+// `resolved` on a continuation that came back empty.
+function findingHeader(host, response) {
+  const finding = response.finding === undefined || response.finding === null
+    ? {}
+    : response.finding;
+
+  const context = render.element("p", "note-inline");
+  context.append(render.element("span", null,
+    `Reference ${render.displayValue(finding.reference_run_id)} → candidate ${render.displayValue(finding.candidate_run_id)}`));
+  host.append(context);
+
+  const asking = render.element("p", "note-inline");
+  if (typeof finding.check === "string" && finding.check !== "") {
+    asking.append(render.element("span", null, `Gate check: ${finding.check}`));
+  }
+  if (typeof finding.behavior === "string" && finding.behavior !== "") {
+    asking.append(render.element("span", null, `Behavior: ${finding.behavior}`));
+  }
+  asking.append(evidence.sideBadge(response.side));
+  host.append(asking);
+
+  host.append(evidence.statusBanner(response.status));
+
+  // What this result actually established. An aggregate-only check read no
+  // history, so its history and exhaustiveness fields are the zero value and
+  // describe nothing — rendering them claimed a run's retained history was
+  // missing and sampled when it was complete.
+  const shape = evidence.findingPresentation(response);
+
+  if (shape.showHistory) {
+    const history = response.history === undefined || response.history === null
+      ? {}
+      : response.history;
+    host.append(evidence.historyBox(history.state, history.retained_count, history.complete));
+  }
+
+  host.append(render.element("p", "note",
+    `Recorded count: ${render.displayValue(response.recorded_count)}. ${shape.countNote}`));
+  if (shape.showExhaustiveCaveat) {
+    host.append(render.element("p", "note", evidence.EXHAUSTIVE_CAVEAT));
+  }
+  // Both notes are about how retained observations are rendered. An
+  // aggregate-only result renders none, so neither applies to it.
+  if (shape.describesRetainedHistory) {
+    host.append(render.element("p", "note", evidence.FIDELITY_NOTE));
+    host.append(render.element("p", "note", evidence.SEQUENCE_NOTE));
+  }
+  return shape;
+}
+
+// The Evidence surface's renderer.
+//
+// Every method here draws a value the control plane returned. None of them
+// decides a status, a side, a count or a verdict, and none of them accumulates:
+// a page replaces what was on screen.
+const evidenceView = {
+  findingLoading(finding, route) {
+    render.clear(evidenceFindingResult);
+    evidenceFindingResult.append(render.element("p", "empty",
+      route === "observations"
+        ? "Resolving the observations behind this finding…"
+        : "Resolving the behaviors behind this finding…"));
+  },
+
+  findingPage({ response, route, pageNumber }) {
+    render.clear(evidenceFindingResult);
+    const shape = findingHeader(evidenceFindingResult, response);
+
+    const finding = response.finding === undefined || response.finding === null
+      ? {}
+      : response.finding;
+
+    // An aggregate-only check has nothing to page through and nothing to link
+    // to. The status banner above is the whole answer, and an empty table with a
+    // page footer under it would read as "we looked and found none".
+    if (!shape.showRows) {
+      clearProblem();
+      return;
+    }
+
+    if (route === "observations") {
+      const rows = Array.isArray(response.observations) ? response.observations : [];
+      const runID = evidenceRunFor(response);
+      if (rows.length === 0) {
+        evidenceFindingResult.append(render.emptyState(
+          "No rows on this page. What that means is the status above, not this line."));
+      } else {
+        evidence.renderObservationTable(
+          evidenceFindingResult, rows, evidence.OBSERVATION_COLUMNS.resolution,
+          (observation) => observationNavigation(runID, observation),
+        );
+      }
+    } else {
+      const rows = Array.isArray(response.behaviors) ? response.behaviors : [];
+      if (rows.length === 0) {
+        evidenceFindingResult.append(render.emptyState(
+          "No behavioral identities on this page. What that means is the status above."));
+      } else {
+        const body = rows.map((delta) => {
+          const values = evidence.behaviorRow(delta);
+          return [
+            values.fingerprint,
+            values.behavior,
+            values.presence,
+            values.referenceCount,
+            values.candidateCount,
+            behaviorObservationControls(finding, delta),
+          ];
+        });
+        evidenceFindingResult.append(render.table(
+          ["Fingerprint", "Behavior, as recorded", "Presence", "Reference", "Candidate", "Evidence"],
+          body, `${body.length} row(s) on this page`,
+        ));
+      }
+    }
+
+    evidenceFindingResult.append(evidence.pageFooter(
+      pageNumber, response.next_after,
+      (after) => { void evidenceSurface.nextFindingPage(after); },
+    ));
+    clearProblem();
+  },
+
+  findingError(error) {
+    report(evidenceFindingResult, error);
+  },
+
+  runNeedsRun() {
+    render.clear(evidenceRunResult);
+    evidenceRunResult.append(render.emptyState(
+      "This view needs an evaluation run. Open an observation from a finding, or type the run identifier."));
+  },
+
+  runNeedsIdentifier(spec) {
+    render.clear(evidenceRunResult);
+    evidenceRunResult.append(render.emptyState(
+      `This view needs a ${spec.identifierLabel}. Open one from a row, or type the value the observation recorded.`));
+  },
+
+  runLoading(spec) {
+    render.clear(evidenceRunResult);
+    evidenceRunResult.append(render.element("p", "empty", `Reading ${spec.label}…`));
+  },
+
+  runObservationPage({ spec, runID, response, pageNumber }) {
+    render.clear(evidenceRunResult);
+    evidenceRunResult.append(render.element("p", "note-inline",
+      `${spec.label} · run ${render.displayValue(runID)}`));
+    evidenceRunResult.append(render.element("p", "note", spec.blurb));
+    evidenceRunResult.append(evidence.historyBox(
+      response.history_state, response.retained_count, response.complete));
+    evidenceRunResult.append(render.element("p", "note", evidence.FIDELITY_NOTE));
+    if (spec.key === "sequence") {
+      evidenceRunResult.append(render.element("p", "note", evidence.SEQUENCE_NOTE));
+    }
+
+    const rows = Array.isArray(response.observations) ? response.observations : [];
+    if (rows.length === 0) {
+      evidenceRunResult.append(render.emptyState(
+        "No rows on this page. The retained-history state above is what says whether that means anything."));
+    } else if (spec.key === "trace") {
+      evidence.renderTraceTree(evidenceRunResult, rows);
+    } else {
+      evidence.renderObservationTable(
+        evidenceRunResult, rows, evidence.OBSERVATION_COLUMNS[spec.key],
+        (observation) => observationNavigation(runID, observation),
+      );
+    }
+
+    evidenceRunResult.append(evidence.pageFooter(
+      pageNumber, response.next_after,
+      (after) => { void evidenceSurface.nextRunPage(after); },
+    ));
+    clearProblem();
+  },
+
+  runError(error) {
+    report(evidenceRunResult, error);
+  },
+
+  provenanceLoading() {
+    render.clear(evidenceProvenanceResult);
+    evidenceProvenanceResult.append(render.element("p", "empty", "Reading supplied provenance…"));
+  },
+
+  provenancePair(pair) {
+    evidence.renderProvenancePanel(evidenceProvenanceResult, pair);
+    clearProblem();
+  },
+
+  provenanceError(error) {
+    report(evidenceProvenanceResult, error);
+  },
+};
+
+// The surface, wired to the /v1 client and to the renderer above.
+//
+// Injected rather than reached for, which is what lets the controller's real
+// properties — that changing the question resets the cursor, and that a response
+// arriving after it changed is discarded — be tested without a browser.
+const evidenceSurface = new evidence.EvidenceSurface({
+  resolveFindingBehaviors: (finding, after) => api.resolveFindingBehaviors(finding, after),
+  resolveFindingObservations: (finding, after) => api.resolveFindingObservations(finding, after),
+  runObservations: (runID, scope, after) => api.runObservations(runID, scope, after),
+  getRun: (runID) => api.getRun(runID),
+  getCandidate: (candidateID) => api.getCandidate(candidateID),
+}, evidenceView);
+
+syncEvidenceViewFields();
+
+byID("form-evidence-run").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await busy(event.submitter, async () => {
+    await evidenceSurface.openRunView(
+      value("evidence-run-id"), evidenceViewSelect.value, value("evidence-identifier"),
+    );
+  });
+});
+
+byID("form-evidence-provenance").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await busy(event.submitter, async () => {
+    await evidenceSurface.loadProvenance(
+      value("evidence-provenance-reference"), value("evidence-provenance-candidate"),
+    );
+  });
+});
+
+// comparisonEvidenceControls is what makes a gate FAIL one click from its
+// evidence.
+//
+// The route a check resolves through is navigation metadata declared in
+// render.js; the answer is entirely the control plane's, including whether a
+// check has per-observation evidence at all.
+function comparisonEvidenceControls() {
+  return {
+    onResolveCheck(checkKey) {
+      const button = render.element("button", "link-button", "Evidence");
+      button.type = "button";
+      button.addEventListener("click", () => {
+        openEvidence("evidence-finding");
+        void evidenceSurface.openFinding({
+          referenceRunID: evidenceComparison.referenceRunID,
+          candidateRunID: evidenceComparison.candidateRunID,
+          check: checkKey,
+        }, render.evidenceRouteFor(checkKey));
+      });
+      return button;
+    },
+    deltaControls(delta) {
+      const box = render.element("span", "row-actions");
+      const open = (side, label) => {
+        const button = render.element("button", "link-button", label);
+        button.type = "button";
+        button.addEventListener("click", () => {
+          openEvidence("evidence-finding");
+          void evidenceSurface.openFinding({
+            referenceRunID: evidenceComparison.referenceRunID,
+            candidateRunID: evidenceComparison.candidateRunID,
+            behavior: delta.fingerprint_id,
+            side,
+          }, "observations");
+        });
+        return button;
+      };
+      if (evidence.needsExplicitSide(delta.change)) {
+        box.append(open("reference", "Reference observations"));
+        box.append(open("candidate", "Candidate observations"));
+        return box;
+      }
+      box.append(open("", "Observations"));
+      return box;
+    },
+  };
+}
 
 // ---------------------------------------------------------------------
 // Promotion

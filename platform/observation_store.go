@@ -64,11 +64,30 @@ type ObservationFilter struct {
 	// that count one.
 	Decision  string
 	RiskLevel string
+
+	// SessionID and TraceID select one correlated group of actions, for task
+	// 076's session and trace views. Matched through task 067's remaining two
+	// bounded digest indexes and, like FingerprintID, against the original
+	// value beside the key.
+	//
+	// **Both are run-scoped and neither is a standalone key.** Every read
+	// carrying one already names a run, so the predicate narrows inside that
+	// run and an identifier repeated across runs resolves separately in each.
+	// A correlation identifier is trace- or producer-scoped, and treating one
+	// as globally unique is the cross-run key task 084 forbids.
+	//
+	// There is deliberately no ParentSpanID field. Task 084 states that nothing
+	// indexes it and that a parent reference is meaningful only beside a trace
+	// id, so a parent is reached by reading its trace rather than by querying
+	// for it — which is also what keeps a tree drawn from one bounded page.
+	SessionID string
+	TraceID   string
 }
 
 // empty reports whether this filter constrains nothing.
 func (f ObservationFilter) empty() bool {
-	return f.FingerprintID == "" && f.Decision == "" && f.RiskLevel == ""
+	return f.FingerprintID == "" && f.Decision == "" && f.RiskLevel == "" &&
+		f.SessionID == "" && f.TraceID == ""
 }
 
 // predicate renders the filter as SQL and bind arguments.
@@ -97,6 +116,19 @@ func (f ObservationFilter) predicate() (string, []any) {
 	if f.RiskLevel != "" {
 		sql.WriteString(" AND risk_level = ?")
 		args = append(args, f.RiskLevel)
+	}
+	// The same two halves, for the same reason: the digest is what the index
+	// seeks on and the original value is what makes a match mean what it says.
+	// A collision that reached a caller here would put another session's or
+	// another trace's actions into a correlated view, which is the one failure
+	// a correlation view cannot survive.
+	if f.SessionID != "" {
+		sql.WriteString(" AND session_key = ? AND session_id = ?")
+		args = append(args, observationDigestKey(f.SessionID), f.SessionID)
+	}
+	if f.TraceID != "" {
+		sql.WriteString(" AND trace_key = ? AND trace_id = ?")
+		args = append(args, observationDigestKey(f.TraceID), f.TraceID)
 	}
 	return sql.String(), args
 }

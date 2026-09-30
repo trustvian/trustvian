@@ -1227,7 +1227,38 @@ func (c *ControlPlane) EvaluationRunBehaviors(
 func (c *ControlPlane) EvaluationRunObservations(
 	ctx context.Context, runID EvaluationRunID, after string, limit int,
 ) (ObservationPage, error) {
+	return c.FindEvaluationRunObservations(ctx, runID, ObservationScope{}, after, limit)
+}
+
+// FindEvaluationRunObservations is the same read, narrowed to one correlated
+// view of the run (task 076).
+//
+// The three views that need narrowing — a session's actions, a trace's actions,
+// and one behavioral identity's observations inside one run — differ from the
+// unfiltered read in exactly one respect: a predicate applied **in storage,
+// before the limit**. Applied afterwards it would return three rows where
+// sixty-four match and make the continuation cursor describe the unfiltered
+// stream, which is the defect task 085 already documented for its own filters.
+//
+// **The scope narrows inside the run; it never widens beyond it.** The run is
+// loaded and the predicate is run-scoped by the primary key, so a session or
+// trace identifier that appears in two runs resolves separately in each. That
+// is what keeps a correlation identifier from becoming the cross-run key task
+// 084 forbids.
+//
+// Nothing here resolves a parent span. Task 084 leaves ParentSpanID unindexed
+// and trace-scoped on purpose, so a parent is reached by reading its trace —
+// which is also why a tree is drawn from one bounded page rather than by
+// following references outward.
+func (c *ControlPlane) FindEvaluationRunObservations(
+	ctx context.Context, runID EvaluationRunID, scope ObservationScope,
+	after string, limit int,
+) (ObservationPage, error) {
 	if err := validateID("evaluation run observation run id", string(runID)); err != nil {
+		return ObservationPage{}, err
+	}
+	filter, err := scope.filter()
+	if err != nil {
 		return ObservationPage{}, err
 	}
 	if err := validateObservationPage(after, limit); err != nil {
@@ -1254,7 +1285,7 @@ func (c *ControlPlane) EvaluationRunObservations(
 	if !ok {
 		return ObservationPage{History: ObservationHistory{}}, nil
 	}
-	return store.RunObservations(ctx, runID, cursor, limit)
+	return store.FindObservations(ctx, runID, filter, cursor, limit)
 }
 
 // EvaluationProgressReport is what an evaluation has observed so far.

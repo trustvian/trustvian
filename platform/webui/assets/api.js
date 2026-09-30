@@ -564,3 +564,98 @@ export const listCandidateRuns = (candidateID, after) => {
   const query = after ? `?after=${encodeURIComponent(after)}` : "";
   return request("GET", `/v1/candidates/${segment(candidateID)}/evaluation-runs${query}`);
 };
+
+// ---------------------------------------------------------------------
+// Retained evidence (tasks 067, 076 and 085)
+// ---------------------------------------------------------------------
+
+// Every call below is a GET the server already publishes. This module adds no
+// capability, no traversal and no accumulation: one call is one bounded page,
+// and following a continuation is the caller's decision rather than something a
+// helper here does on its behalf. That is the same rule the hierarchy
+// collections above follow, for the reason ADR 0041 gives — a bounded route
+// does not make an unbounded workflow bounded.
+
+// pageQuery renders the two parameters every bounded collection shares.
+//
+// Built field by field rather than by walking an object, which is the privacy
+// rule this file shares with the renderer: a parameter reaches a URL because
+// somebody named it here.
+function pageQuery(params, after, limit) {
+  if (after !== undefined && after !== null && after !== "") {
+    params.set("after", after);
+  }
+  if (limit !== undefined && limit !== null) {
+    params.set("limit", String(limit));
+  }
+  const text = params.toString();
+  return text === "" ? "" : `?${text}`;
+}
+
+// runObservations reads one bounded page of a run's retained history, optionally
+// narrowed to one correlated view.
+//
+// The scope is at most one of session, trace or behavior — the server refuses
+// more than one, and this passes through whatever it is given rather than
+// deciding for it. Narrowing happens in storage before the page bound, which is
+// why it is a parameter here and not a filter applied to a page after it
+// arrives.
+export const runObservations = (runID, scope, after) => {
+  const params = new URLSearchParams();
+  const narrowing = scope === undefined || scope === null ? {} : scope;
+  if (narrowing.sessionID) {
+    params.set("session_id", narrowing.sessionID);
+  }
+  if (narrowing.traceID) {
+    params.set("trace_id", narrowing.traceID);
+  }
+  if (narrowing.fingerprintID) {
+    params.set("fingerprint_id", narrowing.fingerprintID);
+  }
+  const query = pageQuery(params, after, null);
+  return request("GET", `/v1/evaluation-runs/${segment(runID)}/observations${query}`);
+};
+
+// runBehaviors reads one bounded page of a run's distinct behavioral identities,
+// with the authoritative observation count each carries.
+//
+// The count comes from here and never from a rendered page: a view that counted
+// its own rows would report how much it drew rather than how much the run
+// observed, and retained history is bounded where this count is not.
+export const runBehaviors = (runID, after) => {
+  const query = pageQuery(new URLSearchParams(), after, null);
+  return request("GET", `/v1/evaluation-runs/${segment(runID)}/behaviors${query}`);
+};
+
+// findingParams renders task 085's finding reference into the query string.
+//
+// The reference travels in the URL because that is what makes a resolution
+// citable — 085 chose GET over POST for exactly that reason. Side is sent only
+// when the caller states one: a shared behavior has no natural side and the
+// server refuses to pick, which is a refusal worth surfacing rather than
+// papering over with a default.
+function findingParams(finding) {
+  const params = new URLSearchParams();
+  params.set("reference_run_id", finding.referenceRunID);
+  params.set("candidate_run_id", finding.candidateRunID);
+  if (finding.check) {
+    params.set("check", finding.check);
+  }
+  if (finding.behavior) {
+    params.set("behavior", finding.behavior);
+  }
+  if (finding.side) {
+    params.set("side", finding.side);
+  }
+  return params;
+}
+
+// resolveFindingBehaviors resolves a finding to the behavioral identities that
+// contributed to it.
+export const resolveFindingBehaviors = (finding, after) =>
+  request("GET", `/v1/evidence/behaviors${pageQuery(findingParams(finding), after, null)}`);
+
+// resolveFindingObservations resolves a finding to the retained observations
+// that carried it.
+export const resolveFindingObservations = (finding, after) =>
+  request("GET", `/v1/evidence/observations${pageQuery(findingParams(finding), after, null)}`);

@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"fmt"
 	"math"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -112,6 +113,19 @@ func TestSemanticPathLeaksNoContentToAnyV1Payload(t *testing.T) {
 		// first that survives the run that produced it — which is exactly why
 		// it is swept here rather than trusted to its own contract.
 		"GET /v1/evaluation-runs/run-1/observations": a.do("GET", "/v1/evaluation-runs/run-1/observations", nil).Body.String(),
+		// Task 076's three correlated narrowings of the same route. Swept
+		// individually rather than assumed to inherit the unnarrowed page's
+		// result: each is a distinct payload — it echoes the scope it applied —
+		// and "it is the same handler" is the reasoning a tripwire exists to
+		// avoid trusting.
+		"GET …/observations?session_id": a.do("GET",
+			"/v1/evaluation-runs/run-1/observations?session_id=conv-1", nil).Body.String(),
+		"GET …/observations?trace_id": a.do("GET",
+			"/v1/evaluation-runs/run-1/observations?trace_id="+url.QueryEscape(record.TraceID),
+			nil).Body.String(),
+		"GET …/observations?fingerprint_id": a.do("GET",
+			"/v1/evaluation-runs/run-1/observations?fingerprint_id="+
+				url.QueryEscape(record.FingerprintID), nil).Body.String(),
 		// Task 085. Resolution is the route whose whole purpose is to make
 		// evidence reachable, so it is the one most worth sweeping rather than
 		// trusting to the allowlist it inherits.
@@ -148,6 +162,18 @@ func TestSemanticPathLeaksNoContentToAnyV1Payload(t *testing.T) {
 	if !strings.Contains(bodies["GET /v1/evaluation-runs/run-1/observations"], "export_customer") {
 		t.Errorf("the observation page holds no behavior, so its absence of canaries "+
 			"proves nothing:\n%s", bodies["GET /v1/evaluation-runs/run-1/observations"])
+	}
+
+	// And so must each narrowed one: a correlated read that matched nothing is
+	// an empty page, and an empty page carries no canaries for trivial reasons.
+	for _, name := range []string{
+		"GET …/observations?session_id",
+		"GET …/observations?fingerprint_id",
+	} {
+		if !strings.Contains(bodies[name], "export_customer") {
+			t.Errorf("%s matched no observation, so its absence of canaries proves "+
+				"nothing:\n%s", name, bodies[name])
+		}
 	}
 
 	// Absence must not have been achieved by losing the behavior with it.

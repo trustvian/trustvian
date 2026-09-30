@@ -149,6 +149,9 @@ func TestStoreConformance(t *testing.T) {
 			t.Run("observation-filters", func(t *testing.T) {
 				conformObservationFilters(t, backend.open)
 			})
+			t.Run("observation-correlation", func(t *testing.T) {
+				conformObservationCorrelation(t, backend.open)
+			})
 			t.Run("timestamps", func(t *testing.T) { conformTimestamps(t, backend.open) })
 			t.Run("cancellation", func(t *testing.T) { conformCancellation(t, backend.open) })
 		})
@@ -1480,4 +1483,148 @@ func conformObservationFilters(t *testing.T, open func(testing.TB) Store) {
 			t.Errorf("filter returned an observation carrying %q", o.FingerprintID)
 		}
 	}
+}
+
+// conformObservationCorrelation asserts task 076's two correlation predicates
+// behave identically on both backends.
+//
+// Session and trace are the two narrowings the explorer's views need, and they
+// are the two whose index key is a digest of an unbounded value — so the
+// properties worth pinning across backends are that the predicate runs inside
+// the query, that it is scoped to the run, and that a planted key collision is
+// excluded by the original-value comparison rather than by luck.
+func conformObservationCorrelation(t *testing.T, open func(testing.TB) Store) {
+	store := open(t)
+	ctx := t.Context()
+
+	// Two runs, each with the same session and trace identifiers, because an
+	// identifier repeated across runs is exactly the cross-run key task 084
+	// forbids and the property a run-scoped index exists to hold.
+	for index, runID := range []EvaluationRunID{"run-1", "run-2"} {
+		// The first call seeds the hierarchy; the second reuses it, because
+		// seedParents creates rather than upserts.
+		var running EvaluationRun
+		if index == 0 {
+			running = startedRun(t, store, runID)
+		} else {
+			running = startedSiblingRun(t, store, runID)
+		}
+		for i := 1; i <= 8; i++ {
+			aggregate, snapshot := conformanceEvidence(t, running, i)
+			observation := conformanceObservation(t, uint64(i))
+			// Alternating, so a predicate applied after the page limit would
+			// show up as a short page rather than as a wrong filter.
+			if i%2 == 0 {
+				observation.SessionID = "session-even"
+				observation.TraceID = "trace-even"
+			} else {
+				observation.SessionID = "session-odd"
+				observation.TraceID = "trace-odd"
+			}
+			commit := EvaluationIngestCommit{
+				Aggregate:            aggregate,
+				Snapshot:             snapshot,
+				Sequence:             uint64(i),
+				PreviousNextSequence: uint64(i),
+				RecordDigest:         strings.Repeat(fmt.Sprintf("%x", i%16), 64),
+				Observation:          observation,
+			}
+			if _, err := store.CommitEvaluationIngest(ctx, commit); err != nil {
+				t.Fatalf("CommitEvaluationIngest(%s, %d) error = %v", runID, i, err)
+			}
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		run    EvaluationRunID
+		filter ObservationFilter
+		want   int
+	}{
+		{"session in run 1", "run-1", ObservationFilter{SessionID: "session-odd"}, 4},
+		{"session in run 2", "run-2", ObservationFilter{SessionID: "session-odd"}, 4},
+		{"trace in run 1", "run-1", ObservationFilter{TraceID: "trace-even"}, 4},
+		{"absent session", "run-1", ObservationFilter{SessionID: "session-absent"}, 0},
+		{"absent trace", "run-1", ObservationFilter{TraceID: "trace-absent"}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Paged at 3 so a predicate outside the query would produce short
+			// pages and a wrong total rather than a clean failure.
+			var seen []uint64
+			after := uint64(0)
+			for {
+				page, err := store.FindObservations(ctx, tc.run, tc.filter, after, 3)
+				if err != nil {
+					t.Fatalf("FindObservations(after=%d) error = %v", after, err)
+				}
+				if len(page.Observations) == 0 {
+					break
+				}
+				for _, o := range page.Observations {
+					seen = append(seen, o.Sequence)
+				}
+				after = page.Observations[len(page.Observations)-1].Sequence
+			}
+			if len(seen) != tc.want {
+				t.Fatalf("correlated read returned %d observations, want %d (%v)",
+					len(seen), tc.want, seen)
+			}
+			for i := 1; i < len(seen); i++ {
+				if seen[i] <= seen[i-1] {
+					t.Fatalf("sequences are not ascending: %v", seen)
+				}
+			}
+		})
+	}
+
+	// A digest narrows; it does not identify. Both predicates compare the
+	// original value beside the key, and this is the assertion that says so
+	// rather than leaving it to be inferred from the SQL.
+	for _, tc := range []struct {
+		name   string
+		filter ObservationFilter
+		field  func(Observation) string
+		want   string
+	}{
+		{"session", ObservationFilter{SessionID: "session-even"},
+			func(o Observation) string { return o.SessionID }, "session-even"},
+		{"trace", ObservationFilter{TraceID: "trace-even"},
+			func(o Observation) string { return o.TraceID }, "trace-even"},
+	} {
+		t.Run("original value is compared: "+tc.name, func(t *testing.T) {
+			page, err := store.FindObservations(ctx, "run-1", tc.filter, 0, MaxListPage)
+			if err != nil {
+				t.Fatalf("FindObservations() error = %v", err)
+			}
+			if len(page.Observations) == 0 {
+				t.Fatal("no observations matched; the assertion would be vacuous")
+			}
+			for _, o := range page.Observations {
+				if got := tc.field(o); got != tc.want {
+					t.Errorf("observation %d carries %q, want %q", o.Sequence, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// startedSiblingRun starts another run under a hierarchy that already exists.
+//
+// startedRun seeds the project, agent and candidate, and those creates refuse an
+// existing identity by design — so a test needing two runs of one candidate
+// cannot call it twice.
+func startedSiblingRun(t testing.TB, store Store, id EvaluationRunID) EvaluationRun {
+	t.Helper()
+	created := mustRun(t, id, "cand-1", conformanceEpoch())
+	if err := store.CreateEvaluationRun(context.Background(), created); err != nil {
+		t.Fatalf("seed sibling run: %v", err)
+	}
+	started, err := created.Start(created.CreatedAt().Add(time.Second))
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := store.UpdateEvaluationRun(context.Background(), created, started); err != nil {
+		t.Fatalf("start sibling run: %v", err)
+	}
+	return started
 }

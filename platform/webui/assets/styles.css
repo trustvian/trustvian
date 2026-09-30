@@ -758,3 +758,197 @@ td { font-family: var(--mono); overflow-wrap: anywhere; }
   max-width: 44rem;
 }
 fieldset > .hint { margin-bottom: 0.6rem; }
+
+
+/* ---------------------------------------------------------------------
+ * Evidence (task 076)
+ *
+ * Reference and candidate stay visibly distinct, and every state that uses a
+ * colour also carries a word — the rule this whole file follows, and it matters
+ * more here than anywhere: the four resolution statuses look identical in a
+ * payload, and three of them mean "do not read this as no evidence".
+ * ------------------------------------------------------------------ */
+
+.evidence-section { margin-top: 0.5rem; }
+
+/* Side. A chip, a border and a word: the word is what survives monochrome. */
+.side {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  margin-left: 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.side-reference { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.side-candidate { border-color: var(--state-new); color: var(--state-new); background: var(--sunken); }
+.side-none { color: var(--muted); background: var(--sunken); font-weight: 500; }
+
+/* Status. The chip carries the server's word verbatim. */
+.status-box {
+  margin: 0.6rem 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--sunken);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+.status-line { margin: 0 0 0.35rem; }
+.status-chip {
+  display: inline-block;
+  padding: 0.12rem 0.55rem;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+.status-resolved { color: var(--pass); border-color: var(--pass); }
+.status-none_found { color: var(--muted); }
+.status-indeterminate { color: var(--state-warn); border-color: var(--state-warn); }
+.status-aggregate_only { color: var(--state-note); border-color: var(--state-note); }
+.status-why { margin: 0; color: var(--muted); font-size: 0.86rem; }
+
+/* Retained history. The same shape, because it is the same kind of statement. */
+.history-box {
+  margin: 0.6rem 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--panel);
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+}
+.history-line { margin: 0 0 0.3rem; font-family: var(--mono); font-size: 0.82rem; }
+.history-why { margin: 0; color: var(--muted); font-size: 0.86rem; }
+
+/* Page navigation. "End of results" is about the page and says so. */
+.page-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.8rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--line-soft);
+}
+.page-state { margin: 0; color: var(--muted); font-size: 0.82rem; font-family: var(--mono); }
+.page-end { margin: 0; color: var(--muted); font-size: 0.84rem; max-width: 52ch; }
+
+/* Row controls. Buttons, because they act; styled quietly, because a table of
+   loud buttons is unreadable. */
+.row-actions { display: inline-flex; flex-wrap: wrap; gap: 0.3rem; }
+.link-button {
+  padding: 0.15rem 0.5rem;
+  font-size: 0.78rem;
+  background: var(--panel);
+  color: var(--accent);
+  border: 1px solid var(--line);
+}
+.muted { color: var(--muted); font-size: 0.8rem; font-style: italic; }
+
+/* Trace structure.
+ *
+ * A flat ordered list with a per-depth indent class rather than nested markup or
+ * an inline style. Depth comes from a producer-controlled parent chain, so it is
+ * bounded in trace.js and there is exactly one rule per allowed depth here —
+ * which also keeps the policy's ban on inline style intact.
+ */
+.trace-tree { list-style: none; margin: 0.6rem 0 0; padding: 0; }
+.trace-node {
+  padding: 0.45rem 0.6rem;
+  margin-bottom: 0.3rem;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid var(--line);
+  border-radius: 4px;
+}
+.trace-node.depth-0 { margin-left: 0.00rem; }
+.trace-node.depth-1 { margin-left: 1.15rem; }
+.trace-node.depth-2 { margin-left: 2.30rem; }
+.trace-node.depth-3 { margin-left: 3.45rem; }
+.trace-node.depth-4 { margin-left: 4.60rem; }
+.trace-node.depth-5 { margin-left: 5.75rem; }
+.trace-node.depth-6 { margin-left: 6.90rem; }
+.trace-node.depth-7 { margin-left: 8.05rem; }
+.trace-node.depth-8 { margin-left: 9.20rem; }
+.trace-node.depth-9 { margin-left: 10.35rem; }
+.trace-node.depth-10 { margin-left: 11.50rem; }
+.trace-node.depth-11 { margin-left: 12.65rem; }
+.trace-node.depth-12 { margin-left: 13.80rem; }
+.trace-node.depth-13 { margin-left: 14.95rem; }
+.trace-node.depth-14 { margin-left: 16.10rem; }
+.trace-node.depth-15 { margin-left: 17.25rem; }
+.trace-node.depth-16 { margin-left: 18.40rem; }
+.trace-node.depth-17 { margin-left: 19.55rem; }
+.trace-node.depth-18 { margin-left: 20.70rem; }
+.trace-node.depth-19 { margin-left: 21.85rem; }
+.trace-node.depth-20 { margin-left: 23.00rem; }
+.trace-node.depth-21 { margin-left: 24.15rem; }
+.trace-node.depth-22 { margin-left: 25.30rem; }
+.trace-node.depth-23 { margin-left: 26.45rem; }
+.trace-node.depth-24 { margin-left: 27.60rem; }
+
+.trace-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.6rem; margin: 0 0 0.25rem; }
+.trace-seq { font-family: var(--mono); font-size: 0.78rem; color: var(--muted); }
+.trace-action { font-weight: 600; font-size: 0.9rem; overflow-wrap: anywhere; }
+.trace-status { font-size: 0.76rem; font-family: var(--mono); }
+.status-ok { color: var(--state-calm); }
+.status-error { color: var(--state-stop); font-weight: 600; }
+.status-unset { color: var(--state-note); }
+.status-unavailable { color: var(--muted); }
+.trace-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.9rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.trace-meta span { overflow-wrap: anywhere; }
+.trace-warn {
+  margin: 0.3rem 0 0;
+  padding: 0.3rem 0.5rem;
+  background: var(--warn-bg);
+  border-radius: 4px;
+  font-size: 0.78rem;
+}
+
+/* Provenance. Two columns on a wide screen, stacked on a narrow one, and the
+   side border is the same vocabulary the chips above use. */
+.provenance { display: grid; gap: 1rem; grid-template-columns: 1fr 1fr; }
+.provenance-side {
+  padding: 0.7rem 0.85rem;
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+.provenance-side.side-reference { border-top: 3px solid var(--accent); }
+.provenance-side.side-candidate { border-top: 3px solid var(--state-new); }
+.provenance-side h4 { margin: 0 0 0.3rem; font-size: 0.92rem; }
+
+@media (max-width: 720px) {
+  .provenance { grid-template-columns: 1fr; }
+}
+
+/* Evidence tables size to their content and scroll rather than breaking short
+ * words across lines.
+ *
+ * The shared rule is `width: 100%` plus `overflow-wrap: anywhere`, which is
+ * right for a two-column detail table and wrong here: these tables carry a
+ * recorded action beside several one-word cells, and squeezing them turned
+ * "critical" into "critic al". Columns take their natural width, the long
+ * recorded action wraps at a readable measure, and the existing .scroll wrapper
+ * does the rest.
+ */
+#panel-evidence td { white-space: nowrap; padding-right: 1rem; }
+/* The one cell that should wrap, marked by the renderer rather than guessed at
+   from a column index — the column order differs per view. */
+.cell-wrap {
+  display: inline-block;
+  max-width: 46ch;
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+/* The row controls stack rather than widening the table past its container:
+   three navigation controls on one line pushed the last one off the edge. */
+#panel-evidence .row-actions { flex-direction: column; align-items: flex-start; }

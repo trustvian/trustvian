@@ -910,6 +910,64 @@ Three properties define it:
 
 See [ADR 0026](adr/0026-evaluation-aggregation-is-bounded-evidence.md).
 
+### Retained observation history
+
+`Observation` and `ObservationHistory` (task 067) are the third durable
+artefact a run produces, beside the aggregate and the behavior snapshot. Both
+of those are reductions; this is the row that says *which* observation scored
+0.91, when it happened relative to the one before it, and what trace it
+belonged to.
+
+```text
+DecisionRecord ──▶ Observation      identified by (RunID, Sequence)
+                                    ordered by Sequence, never by timestamp
+```
+
+- **Identity is `(RunID, Sequence)`**, the ingest sequence the retry contract
+  already assigns. A span id is unique only inside its trace, a parent span id
+  is a trace-scoped reference, and an event id is caller-supplied — none of the
+  three may be an identity, because each would make it a property of the
+  producer behaving well.
+- **Ordering is by sequence, not by time.** Equal timestamps are ordinary,
+  producer clocks are not authority, and a parent span ends *after* the
+  children it started — so a child is routinely accepted first. Sorting by time
+  would reorder a trace against its own arrival.
+- **Fixed shape.** An allowlist expressed as columns. `Contributors` is
+  deliberately absent as the record's one variable-length field, and there is no
+  attribute map, span-event list or payload column — so no prompt, completion,
+  argument, result, document or arbitrary attribute can be written through one.
+- **Bounded at 4096 per run.** Past it the run keeps ingesting and reports its
+  history as partial, the same rule the behavior collector applies at 512
+  distinct behaviors: saturation is degraded evidence, not a failed ingest.
+
+`ObservationHistory` has **three** states because two would force a lie:
+
+| State | Means |
+|---|---|
+| `complete` | every accepted record is retained |
+| `partial` | some are and some are not — the run saturated, or began before retention existed |
+| `unavailable` | this run has records and none of their history was ever retained |
+
+A run migrated from a pre-retention schema reports `unavailable`, never an
+empty `complete`: reporting "complete, zero rows" would be a fabricated
+historical fact. See
+[ADR 0048](adr/0048-retained-history-is-sequence-identified-bounded-and-honest-about-absence.md).
+
+`ObservationScope` (task 076) is how that history is read in a correlated view:
+at most one of session, trace or behavioral identity, applied as a storage
+predicate before the page bound and scoped inside one run. More than one is
+refused rather than answered — see
+[ADR 0049](adr/0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md).
+
+**Two facts about an observation are not retained, and both matter to a
+reader.** Fidelity (task 075) and behavioral layer (task 083) travel beside a
+record at ingest and on the realtime frame and have no column here, so a
+historical read cannot say whether an operation's identity came from
+agent-oriented telemetry or from its transport. Sequence signals live in the
+anomaly contributors, which are excluded, so nothing durable says whether an
+order departed from what was learned. Consumers state both absences rather than
+inferring either.
+
 ### Behavioral comparison
 
 `BehaviorCollector`, `BehaviorSnapshot` and `BehaviorDiff` (task 054) answer a

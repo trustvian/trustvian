@@ -27,7 +27,7 @@ Tasks for the `v1.0` milestone.
 | [073 — OTel Collector Evaluation Ingest](073-otel-collector-evaluation-ingest.md) | Specified and implemented |
 | [074 — Zero-Input Live Behavior WebUI](074-zero-input-live-behavior-webui.md) | Specified and implemented |
 | [075 — AI Semantic Telemetry Normalization](075-ai-semantic-telemetry-normalization.md) | Specified and implemented |
-| [076 — Behavioral Trace & Session Evidence Explorer](076-behavioral-evidence-explorer.md) | Specified; not implemented |
+| [076 — Behavioral Trace & Session Evidence Explorer](076-behavioral-evidence-explorer.md) | Specified and implemented — two presentations narrowed, both because 067 retains neither fidelity nor sequence-deviation evidence |
 | [077 — Unified OTLP Local Dev Runtime](077-unified-otlp-local-dev-runtime.md) | Specified and implemented |
 | [078 — Behavioral Scenario Suites](078-behavioral-scenario-suites.md) | Specified; not implemented — sequenced after 075, and its k-of-N thresholds await a measurement that can fail |
 | [079 — CI Integration: A GitHub Action](079-ci-integration-github-action.md) | Specified; not implemented |
@@ -172,13 +172,21 @@ one whose results reach a reviewer and whose central claim carries a number:
   persisted row or a published payload. The adapters' documented
   preserve-every-span-attribute behavior is unchanged, and the specification
   does not pretend otherwise.
-- **076 — Behavioral Trace & Session Evidence Explorer.** A verdict without
-  its evidence is not explainable, and `DecisionRecord` already carries trace,
-  span and session correlation that the platform receives and does not retain.
-  The explorer presents sessions, traces and behavioral sequence over whatever
-  history **067** makes durable — 067 keeps ownership of the storage contract,
-  and now holds it. **085 is implemented**, so the explorer's evidence
-  resolution exists and 076 navigates it rather than computing it.
+- **076 — Behavioral Trace & Session Evidence Explorer** is **implemented**. A
+  verdict without its evidence is not explainable, and `DecisionRecord` already
+  carried trace, span and session correlation the platform received and did not
+  retain. An **Evidence** tab now leads from a gate check or a behavioral delta
+  to the behaviors that contributed and the observations that carried them, and
+  from one observation into its session, its trace's recorded parent/child
+  structure, the run's behavior sequence, its decision timeline and one
+  behavior's detail — with no identifier typed anywhere in that path. It stores
+  nothing and resolves nothing: **067** owns retention, **085** owns resolution,
+  and this surface reads both. The one capability it added is three optional,
+  mutually exclusive equality narrowings on the existing observation route,
+  recorded in [ADR 0049](../../adr/0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md);
+  there is no schema change. **Two presentations narrowed** because 067 retains
+  neither fidelity nor sequence-deviation evidence — both say so on screen
+  rather than inferring what they would have shown.
 - **077 — Unified OTLP Local Dev Runtime** is **implemented**. Watching an agent
   used to mean a control plane, a Collector, a processor config, a manually
   created hierarchy and the right OTLP environment. `trustvian dev -- <command>`
