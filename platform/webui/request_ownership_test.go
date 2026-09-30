@@ -808,3 +808,315 @@ console.log(JSON.stringify({
 		t.Errorf("context = %q, want run-1", got.ContextKey)
 	}
 }
+
+// ---------------------------------------------------------------------
+// Late failures
+// ---------------------------------------------------------------------
+//
+// The tests above resolve their late requests successfully, which leaves one
+// half of the rule unexercised. A rejected read takes a different path — the
+// catch, not the commit — and that path also reports an error and lowers a
+// loading flag. Both are writes to a surface the reader may have left, so
+// both need the same ticket, and neither was covered on its own.
+
+// TestALateFailureForTheRunLeftBehindIsNotReported covers all three of a run
+// workspace's reads.
+//
+// Reporting it would put a failure about run A into the panel now showing run
+// B — and, because report() also raises the global banner, would replace
+// whatever B had to say with a message about a run no longer on screen.
+func TestALateFailureForTheRunLeftBehindIsNotReported(t *testing.T) {
+	const driver = `
+import { createRunState } from "./views/run-state.js";
+
+const s = createRunState();
+s.openRun("run-a");
+
+// All three reads for run A are outstanding when the reader opens run B.
+const runTicket = s.beginRun();
+const observationTicket = s.beginObservations();
+const behaviorTicket = s.beginBehaviors();
+
+s.openRun("run-b");
+
+console.log(JSON.stringify({
+  runFailureWouldBeReported: s.ownsRun(runTicket),
+  observationFailureAccepted: s.failObservations(observationTicket),
+  behaviorFailureAccepted: s.failBehaviors(behaviorTicket),
+  // Run B has started nothing yet, so nothing of its own is loading. A
+  // stale failure lowering a flag here would be lowering B's.
+  observationsLoading: s.observations.loading,
+  behaviorsLoading: s.behaviors.loading,
+  observationRows: s.observations.rows.length,
+  behaviorRows: s.behaviors.rows.length,
+}));
+`
+	var got struct {
+		RunFailureWouldBeReported  bool `json:"runFailureWouldBeReported"`
+		ObservationFailureAccepted bool `json:"observationFailureAccepted"`
+		BehaviorFailureAccepted    bool `json:"behaviorFailureAccepted"`
+		ObservationsLoading        bool `json:"observationsLoading"`
+		BehaviorsLoading           bool `json:"behaviorsLoading"`
+		ObservationRows            int  `json:"observationRows"`
+		BehaviorRows               int  `json:"behaviorRows"`
+	}
+	decodeDriver(t, runDriver(t, driver), &got)
+
+	if got.RunFailureWouldBeReported {
+		t.Error("a failed run read for the run the reader left is still owned, so " +
+			"its error would be reported into the run now on screen")
+	}
+	if got.ObservationFailureAccepted {
+		t.Error("a failed observation read for the previous run was accepted")
+	}
+	if got.BehaviorFailureAccepted {
+		t.Error("a failed behavior read for the previous run was accepted")
+	}
+	if got.ObservationsLoading || got.BehaviorsLoading {
+		t.Error("a stale failure left a loading flag raised on the new run")
+	}
+	if got.ObservationRows != 0 || got.BehaviorRows != 0 {
+		t.Error("rows survived the run change")
+	}
+}
+
+// TestAStaleSuccessCannotClearANewerError is the ordering that matters most
+// and is the easiest to get backwards.
+//
+// The current read fails and its error is on screen. An older read for the
+// same surface then succeeds. Committing it would replace the error with
+// rows — and, in the view, reach clearProblem() and take the banner down —
+// leaving a reader with data they have no reason to distrust and no sign that
+// the newer read failed.
+func TestAStaleSuccessCannotClearANewerError(t *testing.T) {
+	const driver = `
+import { createRunState } from "./views/run-state.js";
+
+const s = createRunState();
+s.openRun("run-a");
+
+const older = s.beginObservations();
+const newer = s.beginObservations();
+
+// The current read fails. In the view this reports an error and lowers the
+// flag; here it is the ticket being accepted that matters.
+const newerFailureAccepted = s.failObservations(newer);
+const loadingAfterFailure = s.observations.loading;
+
+// The older read then succeeds, late.
+const olderSuccessAccepted = s.commitObservations(older, {
+  observations: [{ sequence: "1" }, { sequence: "2" }],
+  next_after: "stale-cursor",
+});
+
+console.log(JSON.stringify({
+  newerFailureAccepted,
+  loadingAfterFailure,
+  olderSuccessAccepted,
+  rows: s.observations.rows.length,
+  cursor: s.observations.nextAfter,
+  loaded: s.observations.loaded,
+  loadingAtEnd: s.observations.loading,
+}));
+`
+	var got struct {
+		NewerFailureAccepted bool   `json:"newerFailureAccepted"`
+		LoadingAfterFailure  bool   `json:"loadingAfterFailure"`
+		OlderSuccessAccepted bool   `json:"olderSuccessAccepted"`
+		Rows                 int    `json:"rows"`
+		Cursor               string `json:"cursor"`
+		Loaded               bool   `json:"loaded"`
+		LoadingAtEnd         bool   `json:"loadingAtEnd"`
+	}
+	decodeDriver(t, runDriver(t, driver), &got)
+
+	if !got.NewerFailureAccepted {
+		t.Fatal("the current read could not report its own failure; the guard is " +
+			"too strict to be useful")
+	}
+	if got.LoadingAfterFailure {
+		t.Error("the current read's failure did not lower its own loading flag")
+	}
+	if got.OlderSuccessAccepted {
+		t.Error("a stale success was committed over a newer failure; the error " +
+			"would be replaced by rows, with nothing saying the newer read failed")
+	}
+	if got.Rows != 0 || got.Loaded {
+		t.Errorf("%d stale rows reached the table (loaded=%v)", got.Rows, got.Loaded)
+	}
+	if got.Cursor != "" {
+		t.Errorf("cursor = %q; paging would continue a collection the reader is "+
+			"not looking at", got.Cursor)
+	}
+	if got.LoadingAtEnd {
+		t.Error("the loading flag is still raised; the skeleton would never resolve")
+	}
+}
+
+// TestALateFailureForThePreviousProjectIsNotReported is the project-scoped
+// half of the same rule.
+func TestALateFailureForThePreviousProjectIsNotReported(t *testing.T) {
+	const driver = `
+import { createProjectScope } from "./views/project-scope.js";
+
+const s = createProjectScope();
+s.setProject("project-a");
+
+const compareA = s.beginCompare("agents");
+const promotionsA = s.beginPromotions();
+
+s.setProject("project-b");
+
+// The new project starts its own read, so there is a live indicator for a
+// stale failure to wrongly lower.
+const compareB = s.beginCompare("agents");
+const loadingForB = s.compareLoading.agents;
+
+const oldCompareFailureAccepted = s.failCompare(compareA);
+const loadingAfterStaleFailure = s.compareLoading.agents;
+
+// A failed promotion read for the old project must not mark the new one
+// populated, which would leave B's history permanently unfetched.
+const oldPromotionAccepted = s.commitPromotions(promotionsA, "", 1);
+
+console.log(JSON.stringify({
+  loadingForB,
+  oldCompareFailureAccepted,
+  loadingAfterStaleFailure,
+  oldPromotionAccepted,
+  stillNeedsPromotions: s.needsPromotions(),
+  currentFailureAccepted: s.failCompare(compareB),
+  loadingAtEnd: s.compareLoading.agents,
+}));
+`
+	var got struct {
+		LoadingForB               bool `json:"loadingForB"`
+		OldCompareFailureAccepted bool `json:"oldCompareFailureAccepted"`
+		LoadingAfterStaleFailure  bool `json:"loadingAfterStaleFailure"`
+		OldPromotionAccepted      bool `json:"oldPromotionAccepted"`
+		StillNeedsPromotions      bool `json:"stillNeedsPromotions"`
+		CurrentFailureAccepted    bool `json:"currentFailureAccepted"`
+		LoadingAtEnd              bool `json:"loadingAtEnd"`
+	}
+	decodeDriver(t, runDriver(t, driver), &got)
+
+	if !got.LoadingForB {
+		t.Fatal("the new project's read did not raise an indicator; there would be " +
+			"nothing for a stale failure to disturb")
+	}
+	if got.OldCompareFailureAccepted {
+		t.Error("a Compare failure for the previous project was accepted")
+	}
+	if !got.LoadingAfterStaleFailure {
+		t.Error("a stale failure lowered the new project's loading flag; its " +
+			"skeleton would vanish while its own read was still outstanding")
+	}
+	if got.OldPromotionAccepted {
+		t.Error("a promotion read for the previous project was accepted")
+	}
+	if !got.StillNeedsPromotions {
+		t.Error("a stale promotion response marked the new project populated, so " +
+			"its history would never be fetched")
+	}
+	if !got.CurrentFailureAccepted || got.LoadingAtEnd {
+		t.Error("the current read could not report its failure or clear its own flag")
+	}
+}
+
+// TestAFailureOnOneSurfaceLeavesTheOthersAlone is independence under the
+// error path rather than the success path.
+func TestAFailureOnOneSurfaceLeavesTheOthersAlone(t *testing.T) {
+	const driver = `
+import { createRunState } from "./views/run-state.js";
+
+const s = createRunState();
+s.openRun("run-a");
+
+const observations = s.beginObservations();
+const behaviors = s.beginBehaviors();
+const run = s.beginRun();
+
+// One surface fails. The other two are mid-read and must not notice.
+s.failBehaviors(behaviors);
+
+console.log(JSON.stringify({
+  behaviorsCleared: s.behaviors.loading === false,
+  observationsStillLoading: s.observations.loading,
+  observationsStillOwned: s.ownsObservations(observations),
+  runStillOwned: s.ownsRun(run),
+  observationsCanStillCommit: s.commitObservations(observations, { observations: [{ sequence: "1" }] }),
+  runCanStillCommit: s.commitDetail(run, { id: "run-a" }),
+}));
+`
+	var got map[string]bool
+	decodeDriver(t, runDriver(t, driver), &got)
+
+	for key, why := range map[string]string{
+		"behaviorsCleared":           "the failing surface did not clear its own indicator",
+		"observationsStillLoading":   "a failure on one surface cleared another's indicator",
+		"observationsStillOwned":     "a failure on one surface invalidated another's ticket",
+		"runStillOwned":              "a failure on one surface invalidated the run read",
+		"observationsCanStillCommit": "a failure elsewhere stopped this surface committing",
+		"runCanStillCommit":          "a failure elsewhere stopped the run read committing",
+	} {
+		if !got[key] {
+			t.Errorf("%s: %s", key, why)
+		}
+	}
+}
+
+// TestARejectedHierarchyReadLeavesTheLevelsAlone covers the level browser's
+// error path.
+//
+// A rejection has to reach the caller so the error can be reported, and it
+// must not disturb the levels on the way — including when the rejection
+// belongs to a subject the reader has already left.
+func TestARejectedHierarchyReadLeavesTheLevelsAlone(t *testing.T) {
+	const driver = `
+import { HierarchyBrowser } from "./v1/discovery.js";
+
+function deferred() {
+  let settle, fail;
+  const promise = new Promise((res, rej) => { settle = res; fail = rej; });
+  return { promise, settle, fail };
+}
+
+const slow = deferred();
+const browser = new HierarchyBrowser({
+  listProjects: () => Promise.resolve({ projects: [] }),
+  listProjectAgents: () => slow.promise,
+  listAgentCandidates: () => Promise.resolve({ candidates: [] }),
+  listCandidateRuns: () => Promise.resolve({ evaluation_runs: [] }),
+});
+
+// A page is already on screen when the read that will fail starts.
+browser.levels.agents = { rows: [{ id: "on-screen" }], nextAfter: "keep", loaded: true };
+
+const read = browser.loadAgents("project-a", "").then(() => "resolved", () => "rejected");
+browser.invalidate();
+slow.fail(new Error("network"));
+
+console.log(JSON.stringify({
+  outcome: await read,
+  rows: browser.levels.agents.rows.map((row) => row.id),
+  cursor: browser.levels.agents.nextAfter,
+  loaded: browser.levels.agents.loaded,
+}));
+`
+	var got struct {
+		Outcome string   `json:"outcome"`
+		Rows    []string `json:"rows"`
+		Cursor  string   `json:"cursor"`
+		Loaded  bool     `json:"loaded"`
+	}
+	decodeDriver(t, runDriver(t, driver), &got)
+
+	if got.Outcome != "rejected" {
+		t.Errorf("the read %s; a rejection must reach the caller so the error can "+
+			"be reported", got.Outcome)
+	}
+	if len(got.Rows) != 1 || got.Rows[0] != "on-screen" || got.Cursor != "keep" || !got.Loaded {
+		t.Errorf("a rejected read disturbed the level: rows=%v cursor=%q loaded=%v",
+			got.Rows, got.Cursor, got.Loaded)
+	}
+}
