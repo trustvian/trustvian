@@ -486,7 +486,8 @@ func (d BehaviorDiff) CandidateDistinctCount() int       { return d.candidateDis
 func (d BehaviorDiff) AddedCount() int { return d.added }
 
 // AddedChangeCount is the number of counted behavioral **changes**: added
-// identities that are not the recorded child of another added identity.
+// identities that are not the recorded child of another added identity, where
+// an identity is such a child only when every retained occurrence of it is.
 //
 // Never greater than AddedCount, and equal to it whenever correlation is not
 // complete. ADR 0052 § every unresolved case counts more.

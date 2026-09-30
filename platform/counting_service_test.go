@@ -262,3 +262,178 @@ func TestRecordsWithNoSpanIdentityCountAsIdentities(t *testing.T) {
 		t.Errorf("counted changes = %d, want 2", got)
 	}
 }
+
+// changeShapes renders a diff's changes as root<-contributors strings, so a
+// test pins both together.
+func changeShapes(diff platform.BehaviorDiff) []string {
+	shapes := make([]string, 0, diff.AddedChangeCount())
+	for _, c := range diff.AddedChanges() {
+		shape := c.RootFingerprintID + "<-"
+		for i, id := range c.ContributingFingerprintIDs {
+			if i > 0 {
+				shape += ","
+			}
+			shape += id
+		}
+		shapes = append(shapes, shape)
+	}
+	return shapes
+}
+
+// knownToolReference is a reference run that already has the known tool and
+// its old destination.
+func knownToolReference() []trustvian.DecisionRecord {
+	return []trustvian.DecisionRecord{
+		correlatedRecord("ref-1", "fp-known-tool", "export_customer", "", "trace-r", "span-known", ""),
+		correlatedRecord("ref-2", "fp-http-old", "post", "export.localhost", "trace-r", "span-known-http", "span-known"),
+	}
+}
+
+// TestMixedObservationContextsThroughTheService is the first #132 review
+// blocker end to end, over durable rows.
+//
+// One new transport identity is observed beneath a new tool and in a second
+// context the new tool cannot explain. The second context must keep the
+// identity counted: in the first case it is ADR 0047's known tool changing
+// destination, which a fingerprint-level "has any added parent" fold used to
+// absorb into the new tool's change.
+func TestMixedObservationContextsThroughTheService(t *testing.T) {
+	newToolCall := []trustvian.DecisionRecord{
+		correlatedRecord("can-new", "fp-new-tool", "import_invoices", "", "trace-new", "span-new", ""),
+		correlatedRecord("can-new-http", "fp-http-new", "post", "attacker.example", "trace-new", "span-new-http", "span-new"),
+	}
+	cases := []struct {
+		name  string
+		other []trustvian.DecisionRecord
+	}{
+		{
+			name: "also beneath the unchanged known tool",
+			other: []trustvian.DecisionRecord{
+				correlatedRecord("can-known", "fp-known-tool", "export_customer", "", "trace-known", "span-known", ""),
+				correlatedRecord("can-known-http", "fp-http-new", "post", "attacker.example", "trace-known", "span-known-http", "span-known"),
+			},
+		},
+		{
+			name: "also independently as a root",
+			other: []trustvian.DecisionRecord{
+				correlatedRecord("can-known", "fp-known-tool", "export_customer", "", "trace-known", "span-known", ""),
+				correlatedRecord("can-lone-http", "fp-http-new", "post", "attacker.example", "trace-lone", "span-lone-http", ""),
+			},
+		},
+		{
+			name: "also beneath a parent that was never observed",
+			other: []trustvian.DecisionRecord{
+				correlatedRecord("can-known", "fp-known-tool", "export_customer", "", "trace-known", "span-known", ""),
+				correlatedRecord("can-orphan-http", "fp-http-new", "post", "attacker.example", "trace-orphan", "span-orphan-http", "span-sampled-away"),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.completeCorrelatedRun(t, "run-ref", "cand-ref", knownToolReference())
+			f.completeCorrelatedRun(t, "run-can", "cand-can", append(slices.Clone(newToolCall), tc.other...))
+
+			diff := compareRuns(t, f, "run-ref", "run-can").Diff
+			if got := diff.AddedCount(); got != 2 {
+				t.Fatalf("added identities = %d, want 2 (the new tool and the new destination)", got)
+			}
+			want := []string{
+				"fp-http-new<-fp-http-new",
+				"fp-new-tool<-fp-http-new,fp-new-tool",
+			}
+			if got := changeShapes(diff); !slices.Equal(got, want) {
+				t.Errorf("changes = %v, want %v; an occurrence the new tool does not "+
+					"explain must keep the destination counted", got, want)
+			}
+			if got := diff.CorrelationState(); got != platform.CorrelationComplete {
+				t.Errorf("correlation = %q, want complete", got)
+			}
+		})
+	}
+}
+
+// TestCyclesRefuseTheFoldThroughTheService is the second #132 review blocker
+// end to end: a cycle anywhere reports partial *and* the identity count.
+func TestCyclesRefuseTheFoldThroughTheService(t *testing.T) {
+	cases := []struct {
+		name    string
+		records []trustvian.DecisionRecord
+		added   []string
+	}{
+		{
+			name: "cycle reachable from another root",
+			records: []trustvian.DecisionRecord{
+				correlatedRecord("can-r", "fp-root", "plan", "", "trace-1", "span-r", ""),
+				correlatedRecord("can-a1", "fp-a", "step_a", "", "trace-1", "span-a1", "span-r"),
+				correlatedRecord("can-a2", "fp-a", "step_a", "", "trace-2", "span-a2", "span-b2"),
+				correlatedRecord("can-b2", "fp-b", "step_b", "", "trace-2", "span-b2", "span-a2"),
+			},
+			added: []string{"fp-a", "fp-b", "fp-root"},
+		},
+		{
+			name: "disjoint valid pair plus a cycle",
+			records: []trustvian.DecisionRecord{
+				correlatedRecord("can-a", "fp-a", "tool_a", "", "trace-1", "span-a", ""),
+				correlatedRecord("can-b", "fp-b", "post", "a.example", "trace-1", "span-b", "span-a"),
+				correlatedRecord("can-c", "fp-c", "step_c", "", "trace-2", "span-c", "span-d"),
+				correlatedRecord("can-d", "fp-d", "step_d", "", "trace-2", "span-d", "span-c"),
+			},
+			added: []string{"fp-a", "fp-b", "fp-c", "fp-d"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.completeCorrelatedRun(t, "run-ref", "cand-ref", knownToolReference())
+			f.completeCorrelatedRun(t, "run-can", "cand-can", tc.records)
+
+			diff := compareRuns(t, f, "run-ref", "run-can").Diff
+			if got := diff.CorrelationState(); got != platform.CorrelationPartial {
+				t.Errorf("correlation = %q, want partial", got)
+			}
+			if diff.AddedCount() != len(tc.added) {
+				t.Fatalf("added identities = %d, want %d", diff.AddedCount(), len(tc.added))
+			}
+			want := make([]string, 0, len(tc.added))
+			for _, id := range tc.added {
+				want = append(want, id+"<-"+id)
+			}
+			if got := changeShapes(diff); !slices.Equal(got, want) {
+				t.Errorf("changes = %v, want the unfolded %v; partial means the "+
+					"identity count, contributors included", got, want)
+			}
+		})
+	}
+}
+
+// TestIngestOrderDoesNotChangeTheCountThroughTheService pins arrival-order
+// independence over retained rows: the same records, ingested in opposite
+// orders into two candidate runs, produce identical changes.
+func TestIngestOrderDoesNotChangeTheCountThroughTheService(t *testing.T) {
+	records := []trustvian.DecisionRecord{
+		correlatedRecord("can-known", "fp-known-tool", "export_customer", "", "trace-known", "span-known", ""),
+		correlatedRecord("can-known-http", "fp-http-new", "post", "attacker.example", "trace-known", "span-known-http", "span-known"),
+		correlatedRecord("can-new", "fp-new-tool", "import_invoices", "", "trace-new", "span-new", ""),
+		correlatedRecord("can-new-http", "fp-http-new", "post", "attacker.example", "trace-new", "span-new-http", "span-new"),
+	}
+	reversed := slices.Clone(records)
+	slices.Reverse(reversed)
+
+	f := newFixture(t)
+	f.completeCorrelatedRun(t, "run-ref", "cand-ref", knownToolReference())
+	f.completeCorrelatedRun(t, "run-forward", "cand-forward", records)
+	f.completeCorrelatedRun(t, "run-reverse", "cand-reverse", reversed)
+
+	forward := changeShapes(compareRuns(t, f, "run-ref", "run-forward").Diff)
+	reverse := changeShapes(compareRuns(t, f, "run-ref", "run-reverse").Diff)
+	if !slices.Equal(forward, reverse) {
+		t.Errorf("ingest order changed the result: %v vs %v", forward, reverse)
+	}
+	if want := []string{
+		"fp-http-new<-fp-http-new",
+		"fp-new-tool<-fp-http-new,fp-new-tool",
+	}; !slices.Equal(forward, want) {
+		t.Errorf("changes = %v, want %v", forward, want)
+	}
+}

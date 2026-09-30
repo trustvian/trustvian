@@ -42,7 +42,14 @@ Three properties constrain any rule:
 ### The unit: a counted change is an added identity with no added parent
 
 > A **counted behavioral change** is an added behavioral identity that is not
-> the recorded child of another added behavioral identity of the same run.
+> the recorded child of another added behavioral identity of the same run —
+> where an identity counts as such a child only when **every** retained
+> occurrence of it is recorded beneath an added identity.
+
+The qualifier matters because an identity is not an occurrence. One
+fingerprint can be observed many times, in different places, and the fold
+operates on identities; § *folding is decided per identity, over every
+occurrence* below says how the two meet.
 
 Behavioral identities are unchanged. Counting happens over the *added* set of a
 comparison, using recorded parentage, and the rule is structural — it never asks
@@ -80,6 +87,52 @@ The parent is present in both runs, so it is not *added*, so the transport
 identity is a root and is counted. The rule folds a change into its parent only
 when the parent is itself new.
 
+### Folding is decided per identity, over every occurrence
+
+An added identity is **eligible to fold** only when every one of its retained
+occurrences resolves, within its own trace, to a parent that is a *different
+added* identity. A single occurrence the added parents do not explain keeps the
+identity a counted change of its own:
+
+- an occurrence beneath a parent present in the reference;
+- an occurrence with no parent reference — observed independently, as a root;
+- an occurrence whose parent reference does not resolve — never observed,
+  sampled away, or named in another trace;
+- an occurrence with no trace to resolve its parent in;
+- an occurrence recorded beneath the same identity. The rule does not walk
+  further up the span chain looking for a different ancestor, because that is
+  an inference the recorded edge does not make;
+- an added identity with no retained occurrence at all.
+
+The motivating hole is ADR 0047's case in a busier run. A new tool and a known
+tool both reach one new destination:
+
+```text
+reference   tool·export_customer   +  http·POST→export.localhost
+candidate   tool·export_customer   →  http·POST→attacker.example     (trace 1)
+            tool·import_invoices   →  http·POST→attacker.example     (trace 2)
+
+added                 {tool·import_invoices, http·POST→attacker.example}
+attacker.example      beneath an added parent in trace 2,
+                      beneath an unchanged parent in trace 1 → not eligible
+counted changes       2
+  tool·import_invoices      contributing: itself, http·POST→attacker.example
+  http·POST→attacker.example contributing: itself
+```
+
+A rule that folded an identity whenever *any* occurrence had an added parent
+reports 1 here, and the known tool's new destination disappears into the new
+tool's change. The fold now keeps it.
+
+The identity still contributes to the new tool's change, because it is true
+that the new tool reached it. So a contributor can also be the root of its own
+change; contribution sets overlap, as they already do for a child shared by
+two new tools.
+
+Arrival order cannot change any of this: both the parent relation and the set
+of identities with an independent occurrence are sets, built over the whole
+retained history.
+
 ### Which relationships qualify
 
 Exactly one: the `ParentSpanID` a record carries, resolved **within the same
@@ -108,10 +161,11 @@ is `BehaviorDelta`'s `RateDelta` and is deliberately not a change count.
 | Child arrives before parent | Order-independent: edges resolve over the whole retained history, not as records stream | — |
 | Parent never observed, or sampled away | Edge resolves to nothing; the child is a root | counts |
 | Parent observed but not *added* | Not an added-parent; the child is a root | counts |
-| `(TraceID, SpanID)` names two different identities | Ambiguous; the edge is refused and correlation is marked incomplete | counts |
+| One identity beneath an added parent **and** beneath an unchanged parent, as a root, beneath an unresolved parent, or beneath itself | Not eligible to fold: the identity is a root of its own change, and still contributes to the added parent's change | counts |
+| `(TraceID, SpanID)` names two different identities | Ambiguous; **the whole fold is refused** and correlation is marked partial | counts |
 | Duplicate observation of one span, same identity | One node; no effect | — |
 | Parent reference into another trace or run | Does not resolve | counts |
-| Cycle among added identities | Every participant is treated as a root and correlation is marked incomplete | counts |
+| Cycle **anywhere** among added identities — including one reachable from an unrelated root, and one beside an otherwise valid component | Detected over the whole added subgraph (Kahn's algorithm, linear in identities plus edges, not a walk from roots); **the whole fold is refused** and correlation is marked partial | counts |
 | Nested calls | Each level folds into its own added parent; the outermost added identity is the root | folds |
 | Concurrent calls | Independent edges; no ordering assumption anywhere | folds |
 
@@ -145,6 +199,14 @@ retention bound *is* the correlation bound, and a history that stopped early is
 already a state this platform models and reports. Adding a second bound with its
 own saturation rule would be a second thing to reason about that says the same
 thing less well.
+
+**Partial means the identity count, whatever made it partial.** Retention
+saturation, an ambiguous span reference and a cycle all yield the same result:
+one change per added identity, each contributing only itself, and
+`added_change_count == added_count`. There is no partially folded result — a
+cycle in one corner of the graph does not leave a valid pair elsewhere folded —
+because a reader told `partial` must be able to rely on that equality without
+knowing which cause applied.
 
 A comparison whose correlation is not `complete` reports the identity count as
 its change count and says why. It does not refuse — refusing would make every
@@ -204,6 +266,20 @@ evidence a caller can read. Tracked as [issue 131](https://github.com/trustvian/
 one the defect report suggests. Rejected: it silently changes what every stored
 promotion and every caller's pipeline asserted, in the permissive direction, and
 gives no way to tell an old result from a new one.
+
+**Fold an identity when any occurrence has an added parent.** The first
+implementation of this ADR did this, by taking the union of parents per
+fingerprint and folding whenever the union held an added one. Rejected in
+review: it lets one linked occurrence absorb every other occurrence of the same
+identity, including the known-tool-changing-destination case ADR 0047 exists
+for. Eligibility is therefore *every* occurrence, not *any*.
+
+**Treat only the members of a cycle as roots.** Also the first
+implementation's behavior. Rejected in review for two reasons: finding members
+by reachability from roots misses a cycle that a root can reach, which was then
+reported `complete`; and a cycle beside a valid component reported `partial`
+while still folding the valid component, which broke the contract that partial
+means the identity count. A cycle now refuses the whole fold.
 
 **Fold behavioral identity.** Refused by ADR 0047 and re-refused here; it is the
 detection hole the whole design is arranged around.

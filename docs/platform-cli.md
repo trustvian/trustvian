@@ -145,9 +145,11 @@ Counted changes: 1 (policy 1)
 ```
 
 A **counted change** is an added identity that is not the recorded child of
-another added identity, so the tool and its transport child are two identities
-and one change. Where the correlation is not complete — a run that predates
-retention, or one whose retained history saturated — the line reads
+another added identity — where an identity is such a child only when every
+retained occurrence of it is — so the tool and its transport child are two
+identities and one change. Where the correlation is not complete — a run that
+predates retention, one whose retained history saturated, or one whose recorded
+parentage is ambiguous or cyclic — the line reads
 `correlation partial: counted changes equal added behaviors`, because without
 recorded parentage nothing may fold.
 

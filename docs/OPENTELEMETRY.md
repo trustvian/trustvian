@@ -393,7 +393,8 @@ two layers contributes two.** A team allowing one added behavior is allowing one
 
 **A comparison now also reports how many *changes* those identities amount to.**
 A counted behavioral change is an added identity that is not the recorded child
-of another added identity, so the tool and its transport child above are two
+of another added identity — where an identity is such a child only when every
+retained occurrence of it is — so the tool and its transport child above are two
 identities and one change. Both numbers are reported, named for what they count:
 
 ```text

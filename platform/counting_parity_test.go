@@ -215,3 +215,112 @@ func TestBothBackendsCountTheSameChanges(t *testing.T) {
 			sqliteResult.roots, postgresResult.roots)
 	}
 }
+
+// countingParityShapes renders every change as root<-contributors.
+func countingParityShapes(diff BehaviorDiff) []string {
+	out := make([]string, 0, diff.AddedChangeCount())
+	for _, c := range diff.AddedChanges() {
+		out = append(out, c.RootFingerprintID+"<-"+strings.Join(c.ContributingFingerprintIDs, ","))
+	}
+	return out
+}
+
+// measureReviewShapes drives #132's two review shapes through one backend: an
+// identity observed beneath both a new and an unchanged tool, and a valid pair
+// beside a cycle.
+func measureReviewShapes(t *testing.T, plane *ControlPlane) (mixed, cyclic BehaviorDiff) {
+	t.Helper()
+	driveCountingRun(t, plane, "run-ref", "cand-ref", []trustvian.DecisionRecord{
+		countingParityRecord("ref-1", "fp-known-tool", "export_customer", "", "trace-r", "span-k", ""),
+		countingParityRecord("ref-2", "fp-http-old", "post", "export.localhost", "trace-r", "span-kh", "span-k"),
+	})
+	driveCountingRun(t, plane, "run-mixed", "cand-mixed", []trustvian.DecisionRecord{
+		countingParityRecord("mix-1", "fp-known-tool", "export_customer", "", "trace-k", "span-k", ""),
+		countingParityRecord("mix-2", "fp-http-new", "post", "attacker.example", "trace-k", "span-kh", "span-k"),
+		countingParityRecord("mix-3", "fp-new-tool", "import_invoices", "", "trace-n", "span-n", ""),
+		countingParityRecord("mix-4", "fp-http-new", "post", "attacker.example", "trace-n", "span-nh", "span-n"),
+	})
+	driveCountingRun(t, plane, "run-cycle", "cand-cycle", []trustvian.DecisionRecord{
+		countingParityRecord("cyc-1", "fp-a", "tool_a", "", "trace-1", "span-a", ""),
+		countingParityRecord("cyc-2", "fp-b", "post", "b.example", "trace-1", "span-b", "span-a"),
+		countingParityRecord("cyc-3", "fp-c", "step_c", "", "trace-2", "span-c", "span-d"),
+		countingParityRecord("cyc-4", "fp-d", "step_d", "", "trace-2", "span-d", "span-c"),
+	})
+
+	limits := EvaluationGateLimits{
+		MaxAddedBehaviors:           10,
+		MaxBlockDecisions:           10,
+		MaxCriticalRiskObservations: 10,
+	}
+	m, err := plane.CompareEvaluations(context.Background(), "run-ref", "run-mixed", limits)
+	if err != nil {
+		t.Fatalf("CompareEvaluations(mixed) error = %v", err)
+	}
+	c, err := plane.CompareEvaluations(context.Background(), "run-ref", "run-cycle", limits)
+	if err != nil {
+		t.Fatalf("CompareEvaluations(cycle) error = %v", err)
+	}
+	return m.Diff, c.Diff
+}
+
+func TestBothBackendsCountTheReviewShapesTheSame(t *testing.T) {
+	dsn := strings.TrimSpace(conformancePostgresDSN())
+	if dsn == "" {
+		t.Skipf("%s is not set; a parity test needs both backends", postgresDSNEnv)
+	}
+
+	sqliteStore, err := OpenSQLiteStore(context.Background(),
+		filepath.Join(t.TempDir(), "platform.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = sqliteStore.Close() })
+	sqlitePlane, err := NewControlPlane(sqliteStore, sqliteStore, sqliteStore)
+	if err != nil {
+		t.Fatalf("NewControlPlane(sqlite) error = %v", err)
+	}
+	postgresStore, err := OpenPostgresStore(context.Background(), PostgresConfig{
+		DSN: isolatedSchemaDSN(t, dsn),
+	})
+	if err != nil {
+		t.Fatalf("OpenPostgresStore() error = %v", err)
+	}
+	t.Cleanup(func() { _ = postgresStore.Close() })
+	postgresPlane, err := NewControlPlane(postgresStore, postgresStore, postgresStore)
+	if err != nil {
+		t.Fatalf("NewControlPlane(postgres) error = %v", err)
+	}
+
+	sqliteMixed, sqliteCyclic := measureReviewShapes(t, sqlitePlane)
+	postgresMixed, postgresCyclic := measureReviewShapes(t, postgresPlane)
+
+	// The values both must agree on, asserted first.
+	wantMixed := []string{"fp-http-new<-fp-http-new", "fp-new-tool<-fp-http-new,fp-new-tool"}
+	if got := countingParityShapes(sqliteMixed); !slices.Equal(got, wantMixed) ||
+		sqliteMixed.CorrelationState() != CorrelationComplete {
+		t.Fatalf("sqlite mixed = %v (%s), want %v (complete)",
+			got, sqliteMixed.CorrelationState(), wantMixed)
+	}
+	wantCyclic := []string{"fp-a<-fp-a", "fp-b<-fp-b", "fp-c<-fp-c", "fp-d<-fp-d"}
+	if got := countingParityShapes(sqliteCyclic); !slices.Equal(got, wantCyclic) ||
+		sqliteCyclic.CorrelationState() != CorrelationPartial {
+		t.Fatalf("sqlite cyclic = %v (%s), want %v (partial)",
+			got, sqliteCyclic.CorrelationState(), wantCyclic)
+	}
+
+	for _, pair := range []struct {
+		name             string
+		sqlite, postgres BehaviorDiff
+	}{
+		{"mixed", sqliteMixed, postgresMixed},
+		{"cyclic", sqliteCyclic, postgresCyclic},
+	} {
+		if s, p := countingParityShapes(pair.sqlite), countingParityShapes(pair.postgres); !slices.Equal(s, p) {
+			t.Errorf("%s changes differ by backend: sqlite %v, postgres %v", pair.name, s, p)
+		}
+		if pair.sqlite.CorrelationState() != pair.postgres.CorrelationState() {
+			t.Errorf("%s correlation differs: sqlite %q, postgres %q", pair.name,
+				pair.sqlite.CorrelationState(), pair.postgres.CorrelationState())
+		}
+	}
+}

@@ -400,7 +400,9 @@ type behaviorDiffDTO struct {
 	SharedCount  int `json:"shared_count"`
 
 	// AddedChangeCount counts added behavioral **changes** — added
-	// identities that are not the recorded child of another added identity.
+	// identities that are not the recorded child of another added identity,
+	// where an identity is such a child only when every retained occurrence
+	// of it is.
 	// Never greater than AddedCount, and equal to it whenever
 	// CorrelationState is not "complete".
 	AddedChangeCount int `json:"added_change_count"`

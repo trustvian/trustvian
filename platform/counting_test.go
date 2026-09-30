@@ -446,3 +446,270 @@ func TestChangeCountArithmeticRefusesTheImpossible(t *testing.T) {
 		})
 	}
 }
+
+// changeShape renders a fold result as one comparable string per change, so a
+// test can pin roots and contributors together.
+func changeShape(changes []BehaviorChange) []string {
+	shape := make([]string, 0, len(changes))
+	for _, c := range changes {
+		shape = append(shape, c.RootFingerprintID+"<-"+strings.Join(c.ContributingFingerprintIDs, ","))
+	}
+	return shape
+}
+
+// TestMixedObservationContextsKeepTheirOwnChange is the first #132 review
+// blocker, closed.
+//
+// One fingerprint is observed in two contexts: beneath a new added parent,
+// and somewhere the new parent cannot explain. Folding is eligible only when
+// *every* occurrence of the identity sits beneath an added identity; one
+// occurrence the fold cannot attribute keeps the identity a change of its
+// own. The shared contribution to the new parent's change stays, because it
+// is true.
+func TestMixedObservationContextsKeepTheirOwnChange(t *testing.T) {
+	cases := []struct {
+		name         string
+		observations []Observation
+		added        []string
+		want         []string
+		why          string
+	}{
+		{
+			// The reproduction from the review: a new tool and a known tool
+			// both reach one new destination. The known tool's new
+			// destination is ADR 0047's case and must not be absorbed into
+			// the new tool's change.
+			name: "beneath an added parent and beneath an unchanged parent",
+			observations: []Observation{
+				obs("fp-known-tool", "trace-1", "span-known", ""),
+				obs("fp-http-new", "trace-1", "span-known-http", "span-known"),
+				obs("fp-new-tool", "trace-2", "span-new", ""),
+				obs("fp-http-new", "trace-2", "span-new-http", "span-new"),
+			},
+			added: []string{"fp-new-tool", "fp-http-new"},
+			want: []string{
+				"fp-http-new<-fp-http-new",
+				"fp-new-tool<-fp-http-new,fp-new-tool",
+			},
+			why: "a known tool reaching a new destination is a change even when a new tool also reaches it",
+		},
+		{
+			name: "beneath an added parent and independently as a root",
+			observations: []Observation{
+				obs("fp-tool", "trace-1", "span-tool", ""),
+				obs("fp-http", "trace-1", "span-http", "span-tool"),
+				obs("fp-http", "trace-2", "span-lone-http", ""),
+			},
+			added: []string{"fp-tool", "fp-http"},
+			want: []string{
+				"fp-http<-fp-http",
+				"fp-tool<-fp-http,fp-tool",
+			},
+			why: "an occurrence with no parent is not explained by the new tool",
+		},
+		{
+			name: "beneath an added parent and beneath a missing parent",
+			observations: []Observation{
+				obs("fp-tool", "trace-1", "span-tool", ""),
+				obs("fp-http", "trace-1", "span-http", "span-tool"),
+				obs("fp-http", "trace-2", "span-orphan-http", "span-sampled-away"),
+			},
+			added: []string{"fp-tool", "fp-http"},
+			want: []string{
+				"fp-http<-fp-http",
+				"fp-tool<-fp-http,fp-tool",
+			},
+			why: "an unresolved parent is unknown, and unknown must count",
+		},
+		{
+			name: "beneath an added parent and beneath a parent in another trace",
+			observations: []Observation{
+				obs("fp-tool", "trace-1", "span-tool", ""),
+				obs("fp-http", "trace-1", "span-http", "span-tool"),
+				obs("fp-http", "trace-2", "span-other-http", "span-tool"),
+			},
+			added: []string{"fp-tool", "fp-http"},
+			want: []string{
+				"fp-http<-fp-http",
+				"fp-tool<-fp-http,fp-tool",
+			},
+			why: "a cross-trace reference resolves to nothing, so that occurrence is unexplained",
+		},
+		{
+			name: "beneath an added parent and beneath itself",
+			observations: []Observation{
+				obs("fp-tool", "trace-1", "span-tool", ""),
+				obs("fp-http", "trace-1", "span-http", "span-tool"),
+				obs("fp-http", "trace-2", "span-outer", ""),
+				obs("fp-http", "trace-2", "span-inner", "span-outer"),
+			},
+			added: []string{"fp-tool", "fp-http"},
+			want: []string{
+				"fp-http<-fp-http",
+				"fp-tool<-fp-http,fp-tool",
+			},
+			why: "the outer occurrence is a root, so the identity is independent of the new tool",
+		},
+		{
+			// The control: every occurrence beneath an added parent, and
+			// under two different added parents. Still folds.
+			name: "beneath added parents only",
+			observations: []Observation{
+				obs("fp-tool-a", "trace-1", "span-a", ""),
+				obs("fp-http", "trace-1", "span-a-http", "span-a"),
+				obs("fp-tool-b", "trace-2", "span-b", ""),
+				obs("fp-http", "trace-2", "span-b-http", "span-b"),
+			},
+			added: []string{"fp-tool-a", "fp-tool-b", "fp-http"},
+			want: []string{
+				"fp-tool-a<-fp-http,fp-tool-a",
+				"fp-tool-b<-fp-http,fp-tool-b",
+			},
+			why: "every occurrence is explained by an added parent, so the fold still applies",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			changes, state := countChanges(t, tc.observations, tc.added, CorrelationComplete)
+			if got := changeShape(changes); !slices.Equal(got, tc.want) {
+				t.Errorf("changes = %v, want %v — %s", got, tc.want, tc.why)
+			}
+			if state != CorrelationComplete {
+				t.Errorf("state = %q, want complete: every edge resolved or "+
+					"legitimately did not", state)
+			}
+		})
+	}
+}
+
+// TestCyclesAnywhereRefuseTheWholeFold is the second #132 review blocker,
+// closed.
+//
+// Reachability from a root is not cycle detection. A cycle reachable from
+// another root was reported complete, and a cycle beside a valid pair was
+// reported partial while still folding the pair — which broke ADR 0052's
+// contract that a partial correlation reports the identity count. A cycle
+// anywhere in the added graph now refuses the fold outright.
+func TestCyclesAnywhereRefuseTheWholeFold(t *testing.T) {
+	cases := []struct {
+		name         string
+		observations []Observation
+		added        []string
+	}{
+		{
+			name: "cycle reachable from another root",
+			observations: []Observation{
+				obs("fp-root", "trace-1", "span-r", ""),
+				obs("fp-a", "trace-1", "span-a1", "span-r"),
+				obs("fp-a", "trace-2", "span-a2", "span-b2"),
+				obs("fp-b", "trace-2", "span-b2", "span-a2"),
+			},
+			added: []string{"fp-root", "fp-a", "fp-b"},
+		},
+		{
+			name: "disjoint valid pair plus a cycle",
+			observations: []Observation{
+				obs("fp-a", "trace-1", "span-a", ""),
+				obs("fp-b", "trace-1", "span-b", "span-a"),
+				obs("fp-c", "trace-2", "span-c", "span-d"),
+				obs("fp-d", "trace-2", "span-d", "span-c"),
+			},
+			added: []string{"fp-a", "fp-b", "fp-c", "fp-d"},
+		},
+		{
+			name: "cycle through a node that is also a root",
+			observations: []Observation{
+				obs("fp-a", "trace-1", "span-a", ""),
+				obs("fp-b", "trace-1", "span-b", "span-a"),
+				obs("fp-a", "trace-2", "span-a2", "span-b2"),
+				obs("fp-b", "trace-2", "span-b2", ""),
+			},
+			added: []string{"fp-a", "fp-b"},
+		},
+		{
+			name: "three-node cycle below a root",
+			observations: []Observation{
+				obs("fp-root", "trace-1", "span-r", ""),
+				obs("fp-a", "trace-1", "span-a", "span-r"),
+				obs("fp-b", "trace-2", "span-b", "span-a2"),
+				obs("fp-a", "trace-2", "span-a2", "span-c"),
+				obs("fp-c", "trace-2", "span-c", "span-b"),
+			},
+			added: []string{"fp-root", "fp-a", "fp-b", "fp-c"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			changes, state := countChanges(t, tc.observations, tc.added, CorrelationComplete)
+			if state != CorrelationPartial {
+				t.Errorf("state = %q, want partial: a cyclic relation is not "+
+					"trustworthy enough to lower a count with", state)
+			}
+			if len(changes) != len(tc.added) {
+				t.Errorf("counted %d changes over %d added identities; partial "+
+					"means the unfolded identity count (%v)",
+					len(changes), len(tc.added), changeShape(changes))
+			}
+			for _, c := range changes {
+				if len(c.ContributingFingerprintIDs) != 1 ||
+					c.ContributingFingerprintIDs[0] != c.RootFingerprintID {
+					t.Errorf("change %q lists %v; an unfolded change contributes only itself",
+						c.RootFingerprintID, c.ContributingFingerprintIDs)
+				}
+			}
+		})
+	}
+}
+
+// TestEveryArrivalOrderProducesTheSameChanges pins order independence over
+// the mixed-context shape, where a fold that decided per occurrence as rows
+// streamed would be most tempted to let the first context win.
+func TestEveryArrivalOrderProducesTheSameChanges(t *testing.T) {
+	base := []Observation{
+		obs("fp-known-tool", "trace-1", "span-known", ""),
+		obs("fp-http-new", "trace-1", "span-known-http", "span-known"),
+		obs("fp-new-tool", "trace-2", "span-new", ""),
+		obs("fp-http-new", "trace-2", "span-new-http", "span-new"),
+		obs("fp-nested", "trace-2", "span-nested", "span-new-http"),
+	}
+	added := []string{"fp-new-tool", "fp-http-new", "fp-nested"}
+	want := []string{
+		"fp-http-new<-fp-http-new,fp-nested",
+		"fp-new-tool<-fp-http-new,fp-nested,fp-new-tool",
+	}
+
+	permutations := 0
+	var permute func(prefix, rest []Observation)
+	permute = func(prefix, rest []Observation) {
+		if len(rest) == 0 {
+			permutations++
+			changes, state := countChanges(t, slices.Clone(prefix), slices.Clone(added), CorrelationComplete)
+			if got := changeShape(changes); !slices.Equal(got, want) {
+				t.Fatalf("order %v produced %v, want %v", fingerprintsOf(prefix), got, want)
+			}
+			if state != CorrelationComplete {
+				t.Fatalf("order %v produced state %q", fingerprintsOf(prefix), state)
+			}
+			return
+		}
+		for i := range rest {
+			next := append(slices.Clone(prefix), rest[i])
+			remaining := append(slices.Clone(rest[:i]), rest[i+1:]...)
+			permute(next, remaining)
+		}
+	}
+	permute(nil, base)
+	if permutations != 120 {
+		t.Fatalf("exercised %d orders, want all 120", permutations)
+	}
+}
+
+func fingerprintsOf(observations []Observation) []string {
+	out := make([]string, 0, len(observations))
+	for _, o := range observations {
+		out = append(out, o.FingerprintID+"@"+o.SpanID)
+	}
+	return out
+}

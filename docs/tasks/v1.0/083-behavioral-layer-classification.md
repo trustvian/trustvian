@@ -172,7 +172,8 @@ decide how two observations become one counted change — and the decision it
 was waiting for is now
 [ADR 0052](../../adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md):
 **a counted change is an added identity that is not the recorded child of
-another added identity.**
+another added identity**, where an identity is such a child only when every
+retained occurrence of it is.
 
 **What is still deferred** is the optional `max_added_behavior_changes` gate
 limit. ADR 0052 specifies it in full and does not build it: it needs new
@@ -269,7 +270,10 @@ fingerprints as before. The existing degradation suites pass unmodified.
 | One act is one counted change, end to end over a real store | `TestOneNewToolCountsAsOneChangeThroughTheService` | `platform` |
 | A known tool changing destination still reaches the gate | `TestAKnownToolChangingDestinationStillReachesTheGate` | `platform` |
 | A comparison is reproducible after restart | `TestAComparisonIsReproducibleAfterRestart` | `platform` |
-| Both storage backends count the same | `TestBothBackendsCountTheSameChanges` | `platform` |
+| Both storage backends count the same | `TestBothBackendsCountTheSameChanges`, `TestBothBackendsCountTheReviewShapesTheSame` | `platform` |
+| One identity in mixed contexts — beneath an added and an unchanged parent, as a root, beneath a missing parent — keeps its own change | `TestMixedObservationContextsKeepTheirOwnChange`, `TestMixedObservationContextsThroughTheService`, `TestCompareKeepsAKnownToolsNewDestinationCountedBesideANewTool` | `platform`, `platform/httpapi` |
+| A cycle anywhere — reachable from another root, or beside a valid component — refuses the whole fold | `TestCyclesAnywhereRefuseTheWholeFold`, `TestCyclesRefuseTheFoldThroughTheService`, `TestCompareReportsTheIdentityCountWhenTheAddedGraphHasACycle` | `platform`, `platform/httpapi` |
+| Every arrival order produces the same changes and contributors | `TestEveryArrivalOrderProducesTheSameChanges`, `TestIngestOrderDoesNotChangeTheCountThroughTheService` | `platform` |
 | The record carries what the fold consumes | `TestTheRecordCarriesWhatTheCountingFoldConsumes` | `processor` |
 | Absent / unlinked correlation | `TestMissingCorrelationFallsBackToTwoCountedChanges` | `processor` |
 | The same tool switching destination | `TestToolSwitchingDestinationChangesTheTransportIdentity` | `processor` |
