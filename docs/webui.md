@@ -761,6 +761,43 @@ record: labels and help in the UI sans, and every value that *is* a record —
 an identifier, a timestamp, a score, a count — in mono with tabular figures,
 so a digit never moves between rows.
 
+## Which response is still the one that matters
+
+The reader can move while a read is in flight, so every asynchronous surface
+decides on arrival whether its response is still wanted. A request takes a
+ticket before awaiting and presents it back afterwards; a ticket is stale
+once a newer request has started on that surface, or once the subject has
+changed underneath it.
+
+This is deliberately **not** built on cancellation. An abort is a request to
+stop that the network may decline, and it can lose the race with a response
+already queued — a surface whose correctness depended on the abort winning
+would be right almost always, which is the worst place for a correctness
+property to be. A ticket comparison has no race to lose.
+
+What it prevents, each of which was a real defect:
+
+- A response for run A landing after the reader opened run B, filling B's
+  table with A's rows.
+- An older request finishing last and overwriting the newer answer.
+- An older request's completion clearing the loading flag a newer one had
+  just raised, so the skeleton vanished while the newer read was still out.
+- A response for the previous project repopulating the destination the
+  reader has already switched away from.
+
+Two rules follow from it. **Everything scoped to a subject is cleared when
+the subject changes** — opening a run clears both tab pages, their cursors,
+the narrowing, the selection and the strip's counts in one step, and changing
+project clears Compare's lists, both assigned comparison sides and the
+promotion cursor. And **a cache is valid for an identity, not for a
+boolean**: Compare and Promotions ask whether what they hold describes the
+project they are scoped to, because "have I loaded before?" is still true
+after a project change.
+
+Surfaces are independent. The three reads of a run workspace, the three
+lists in Compare, and Promotions each hold their own ticket, so fetching one
+never abandons another's outstanding work.
+
 ## What a surface looks like when it has no records
 
 Four states, and a surface is always in exactly one:

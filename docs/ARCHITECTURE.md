@@ -626,6 +626,14 @@ assets/
 presentation stops being a layer. Only `styles/tokens.css` names a raw value,
 and it declares both colour schemes, so light and dark cannot drift apart.
 
+Asynchronous state is owned by `views/run-state.js` and
+`views/project-scope.js` rather than by the view that draws it. Both hold the
+rule that their contents belong to one subject — a run, a project — and both
+refuse a response that arrived for a subject the reader has left, using the
+ticket primitive in `core/ownership.js`. The same rule `internal` realtime
+applies to the stream: take a token before the await, check it immediately
+after, and never depend on a cancellation winning a race.
+
 No framework, no npm, no CDN, no build step, and no web font — the policy's
 `font-src 'none'` is honest because nothing asks for one.
 

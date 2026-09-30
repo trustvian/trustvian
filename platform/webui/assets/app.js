@@ -22,6 +22,9 @@ import { LabelCache, HierarchyBrowser, renderOptions } from "./v1/discovery.js";
 import * as dash from "./ui/dashboard.js";
 import { icon } from "./ui/icons.js";
 import { notify } from "./ui/feedback.js";
+import { createRunState } from "./views/run-state.js";
+import { createProjectScope } from "./views/project-scope.js";
+import { createSurface } from "./core/ownership.js";
 import * as evidence from "./views/evidence.js";
 
 const byID = (id) => document.getElementById(id);
@@ -875,22 +878,32 @@ async function loadRootProjects(after) {
 // collection carries its own flag so a table that is fetching draws the shape
 // of the rows that are coming instead of an empty line that looks like "there
 // is nothing here".
+// The hierarchy's loading flags, one per level.
+//
+// The run workspace's and Compare's live in their state modules instead,
+// because clearing one is an ownership decision — only the request that
+// raised a flag may lower it — and a rule enforced by a module cannot be
+// forgotten at a call site. These four stay here because openLevel is the
+// only thing that touches them.
 const loading = {
   projects: false,
   agents: false,
   candidates: false,
   runs: false,
-  observations: false,
-  behaviors: false,
-  compareRuns: false,
 };
+
+// The run workspace's state, and the project-scoped state Compare and
+// Promotions share. Both own the rule that their contents belong to one
+// subject, and both refuse a response that arrived for a subject the reader
+// has left. See views/run-state.js and views/project-scope.js.
+const runState = createRunState();
+const projectScope = createProjectScope();
 
 let openedProject = "";
 let openedProjectName = "";
 let openedAgent = "";
 let openedAgentName = "";
 let openedCandidate = "";
-let openedRun = "";
 
 // ------------------------------- location --------------------------------
 
@@ -926,8 +939,8 @@ function drawCrumbs() {
       });
     }
   }
-  if (currentView === "view-run" && openedRun !== "") {
-    trail.push({ label: openedRun });
+  if (currentView === "view-run" && runState.runID !== "") {
+    trail.push({ label: runState.runID });
   }
   dash.renderCrumbs(host, trail);
 }
@@ -944,6 +957,36 @@ function setProjectScope(id, name) {
   byID("promotion-project").value = id;
   byID("promotion-list-project").value = id;
   byID("agent-project-id").value = id;
+
+  // An actual change, not a re-render. Compare and Promotions hold records
+  // that belong to a project, and both used to survive one being swapped
+  // underneath them — so project B's Compare showed A's agents and B's
+  // Promotions showed A's history, under B's name in the sidebar.
+  //
+  // setProject abandons anything in flight for the project being left and
+  // drops the agent, the candidate, both chosen comparison sides and the
+  // promotion cursor. resetCompare clears what the browser is holding, and
+  // both destinations redraw empty rather than keeping rows a reader would
+  // reasonably read as B's.
+  if (projectScope.setProject(id)) {
+    compareHierarchy.reset();
+    resetPromotionHistory();
+    renderCompareView();
+    render.clear(compareResult);
+    compareResult.append(render.emptyState("No comparison run."));
+    render.clear(promotionHistory);
+    promotionHistory.append(render.emptyState("No promotions listed."));
+    // The finding's evidence context came from a comparison of the previous
+    // project's runs, so it is no longer about anything on screen. Reset to
+    // the empty shape rather than null: the evidence controls read its two
+    // fields, and a null here would move this bug rather than fix it.
+    evidenceComparison = { referenceRunID: "", candidateRunID: "" };
+    // The hierarchy the Runs destination browses is project-scoped too, so
+    // an agent or candidate page still in flight for the previous project
+    // must not land in it. The projects page itself is not project-scoped
+    // and is left alone.
+    hierarchy.invalidate();
+  }
   drawCrumbs();
 }
 
@@ -1064,6 +1107,7 @@ function renderRunStatusChips() {
 
 function renderAgentsList() {
   dash.pickList(byID("agents-list"), byID("agents-more"), {
+    loading: loading.agents,
     level: hierarchy.levels.agents,
     selected: openedAgent,
     pendingMessage: "Choose a project.",
@@ -1087,6 +1131,7 @@ function renderAgentsList() {
 
 function renderCandidatesList() {
   dash.pickList(byID("candidates-list"), byID("candidates-more"), {
+    loading: loading.candidates,
     level: hierarchy.levels.candidates,
     selected: openedCandidate,
     pendingMessage: "Choose an agent.",
@@ -1164,7 +1209,7 @@ function renderRunsView() {
     columns: runColumns((row) => { void openRunDetail(row.id); }),
     rows,
     keyOf: (row) => row.id,
-    selected: openedRun,
+    selected: runState.runID,
     onOpen: (row) => { void openRunDetail(row.id); },
   });
 
@@ -1227,20 +1272,39 @@ function renderProjectsLevel() {
 }
 
 // openLevel performs exactly one bounded request per user action.
+// hierarchySurface owns the Runs destination's reads.
+//
+// The browser itself refuses to commit a page whose generation has moved, so
+// a stale response never reaches `levels`. This owns what happens after the
+// read: which render wins, whose error is shown, and whose skeleton the
+// loading flag belongs to.
+const hierarchySurface = createSurface("hierarchy");
+
 async function openLevel(level, load) {
+  const ticket = hierarchySurface.begin(`${openedProject}\u0000${level}`);
   // Raised before the request and lowered whatever happens to it, so a
   // failure leaves a message rather than a skeleton that never resolves.
   loading[level] = true;
   renderProjectsLevel();
   try {
     await load();
+    if (!hierarchySurface.owns(ticket)) {
+      return;
+    }
     clearProblem();
   } catch (error) {
+    if (!hierarchySurface.owns(ticket)) {
+      return;
+    }
     loading[level] = false;
     report(byID(LEVEL_HOSTS[level] || "runs-table"), error);
     return;
   } finally {
-    loading[level] = false;
+    // Only the current request may lower the flag. An older one finishing
+    // late would otherwise take away the skeleton a newer read just raised.
+    if (hierarchySurface.owns(ticket)) {
+      loading[level] = false;
+    }
   }
   renderProjectsLevel();
 }
@@ -1262,11 +1326,10 @@ const LEVEL_HOSTS = Object.freeze({
 // rows on screen — retained history is bounded and the authoritative counts
 // are not, so a table that counted itself would report how much it drew.
 
-let runProgress = null;
-let runDetail = null;
-
 function renderRunStrip() {
   const items = [];
+  const runDetail = runState.detail;
+  const runProgress = runState.progress;
   if (runDetail !== null) {
     // A failed or cancelled run is the one fact on this strip somebody needs
     // to see before they read anything else.
@@ -1289,32 +1352,55 @@ function renderRunStrip() {
 
 // openRunDetail reads one run's authoritative state. One bounded read, plus
 // its progress.
+//
+// `openRun` clears everything scoped to the previous run in one step — both
+// tab pages, their cursors, the narrowing, the selected row, the record and
+// the progress — and abandons anything still in flight for it. Clearing them
+// individually here is how the original was wrong: the behaviors tab kept its
+// rows and its loaded flag, so opening a second run showed the first run's
+// behaviors and fetched nothing.
 async function openRunDetail(runID) {
-  openedRun = runID;
-  runDetail = null;
-  runProgress = null;
+  runState.openRun(runID);
   closeDetailPanel();
-  resetObservationScope();
   openView("view-run");
   showRunSection("run-overview");
   byID("page-title").textContent = runID;
+  renderRunStrip();
+  renderRunActions();
 
+  const ticket = runState.beginRun();
   try {
     const run = await api.getRun(runID);
-    runDetail = run;
+    if (!runState.commitDetail(ticket, run)) {
+      return;
+    }
     render.renderRun(byID("investigate-run"), run);
     setOpenRun(runID);
     byID("watch-run-id").value = runID;
     byID("evidence-run-id").value = runID;
     clearProblem();
     try {
-      runProgress = await api.getProgress(runID);
-      render.renderProgress(byID("investigate-progress"), runProgress);
+      const progress = await api.getProgress(runID);
+      if (!runState.commitProgress(ticket, progress)) {
+        return;
+      }
+      render.renderProgress(byID("investigate-progress"), progress);
     } catch (progressError) {
+      if (!runState.ownsRun(ticket)) {
+        return;
+      }
       report(byID("investigate-progress"), progressError);
     }
   } catch (error) {
+    // A failure for a run the reader has left is not this run's failure, and
+    // reporting it would replace a newer message with an older one.
+    if (!runState.ownsRun(ticket)) {
+      return;
+    }
     report(byID("investigate-run"), error);
+  }
+  if (!runState.ownsRun(ticket)) {
+    return;
   }
   renderRunStrip();
   renderRunActions();
@@ -1329,13 +1415,13 @@ async function openRunDetail(runID) {
 function renderRunActions() {
   const host = byID("run-view-actions");
   render.clear(host);
-  if (openedRun === "") {
+  if (runState.runID === "") {
     return;
   }
   const watch = render.element("button", "link-button", "Watch this run live");
   watch.type = "button";
   watch.addEventListener("click", () => {
-    byID("watch-run-id").value = openedRun;
+    byID("watch-run-id").value = runState.runID;
     openView("view-live");
     byID("watch-start").focus();
   });
@@ -1344,7 +1430,7 @@ function renderRunActions() {
   const history = render.element("button", "link-button", "Open in evidence");
   history.type = "button";
   history.addEventListener("click", () => {
-    byID("evidence-run-id").value = openedRun;
+    byID("evidence-run-id").value = runState.runID;
     openEvidence("evidence-run");
   });
   host.append(history);
@@ -1358,16 +1444,6 @@ function renderRunActions() {
 // page bound, which is why it is a request parameter and not a filter over a
 // page that already arrived.
 
-let observationScope = { sessionID: "", traceID: "", fingerprintID: "" };
-let observationPage = { rows: [], nextAfter: "", loaded: false, state: "", retained: "" };
-let selectedObservation = "";
-
-function resetObservationScope() {
-  observationScope = { sessionID: "", traceID: "", fingerprintID: "" };
-  observationPage = { rows: [], nextAfter: "", loaded: false, state: "", retained: "" };
-  selectedObservation = "";
-}
-
 const OBSERVATION_SCOPES = Object.freeze([
   Object.freeze({ field: "sessionID", label: "Session" }),
   Object.freeze({ field: "traceID", label: "Trace" }),
@@ -1375,6 +1451,7 @@ const OBSERVATION_SCOPES = Object.freeze([
 ]);
 
 function renderObservationScopeChips() {
+  const observationScope = runState.scope;
   const host = byID("observations-scope");
   render.clear(host);
   let narrowed = false;
@@ -1391,7 +1468,7 @@ function renderObservationScopeChips() {
     chip.append(render.element("span", null, " ✕"));
     chip.setAttribute("aria-label", `Remove the ${entry.label.toLowerCase()} narrowing`);
     chip.addEventListener("click", () => {
-      observationScope = { sessionID: "", traceID: "", fingerprintID: "" };
+      runState.clearNarrowing();
       void loadObservations("");
     });
     host.append(chip);
@@ -1407,36 +1484,39 @@ function renderObservationScopeChips() {
 // second control that silently dropped the first would be a page pretending
 // to a capability the protocol does not have.
 function narrowObservations(field, value) {
-  observationScope = { sessionID: "", traceID: "", fingerprintID: "" };
-  observationScope[field] = value;
+  // Retargets the observation surface, so a page still in flight for the
+  // previous narrowing cannot land under this one.
+  runState.narrow(field, value);
   showRunSection("run-observations");
   void loadObservations("");
 }
 
 async function loadObservations(after) {
-  if (openedRun === "") {
+  if (runState.runID === "") {
     return;
   }
-  loading.observations = true;
+  const runID = runState.runID;
+  const scope = runState.scope;
+  // Raising the flag and taking the ticket are one step, and only this
+  // ticket can lower it again.
+  const ticket = runState.beginObservations();
   renderObservationsView();
   try {
-    const response = await api.runObservations(openedRun, observationScope, after);
-    observationPage = {
-      rows: Array.isArray(response.observations) ? response.observations : [],
-      nextAfter: typeof response.next_after === "string" ? response.next_after : "",
-      loaded: true,
-      state: response.history_state || "",
-      retained: response.retained_count || "",
-    };
-    selectedObservation = "";
+    const response = await api.runObservations(runID, scope, after);
+    // Superseded — a different run, a different narrowing, or a newer page
+    // for this one. Nothing is committed and the flag is left alone, because
+    // it belongs to whichever request is current now.
+    if (!runState.commitObservations(ticket, response)) {
+      return;
+    }
     closeDetailPanel();
     clearProblem();
   } catch (error) {
-    loading.observations = false;
+    if (!runState.failObservations(ticket)) {
+      return;
+    }
     report(byID("observations-table"), error);
     return;
-  } finally {
-    loading.observations = false;
   }
   renderObservationsView();
 }
@@ -1444,8 +1524,10 @@ async function loadObservations(after) {
 function renderObservationsView() {
   renderObservationScopeChips();
 
+  const observationPage = runState.observations;
+
   dash.dataTable(byID("observations-table"), {
-    loading: loading.observations,
+    loading: runState.observations.loading,
     skeletonRows: 6,
     emptyTitle: observationPage.loaded ? "No retained observation in this view" : "Nothing loaded yet",
     emptyHint: observationPage.loaded
@@ -1511,7 +1593,7 @@ function renderObservationsView() {
     ],
     rows: observationPage.rows,
     keyOf: (row) => String(row.sequence),
-    selected: selectedObservation,
+    selected: runState.selected,
     edgeOf: (row) => dash.decisionEdge(row.decision),
     onOpen: (row) => selectObservation(row),
   });
@@ -1545,7 +1627,7 @@ function behaviorText(behavior, key) {
 }
 
 byID("observations-more").addEventListener("click", () => {
-  void loadObservations(observationPage.nextAfter);
+  void loadObservations(runState.observations.nextAfter);
 });
 
 // --------------------------- the detail panel -----------------------------
@@ -1556,8 +1638,8 @@ byID("observations-more").addEventListener("click", () => {
 // they had paged forward to must not jump back. Selection moves as a class,
 // and closing the panel puts focus back on the row it came from.
 function selectObservation(observation) {
-  selectedObservation = String(observation.sequence);
-  dash.markSelected(byID("observations-table"), selectedObservation);
+  runState.select(observation.sequence);
+  dash.markSelected(byID("observations-table"), runState.selected);
 
   const panel = byID("detail");
   const body = byID("detail-body");
@@ -1634,7 +1716,7 @@ function closeDetailPanel() {
 }
 
 byID("detail-close").addEventListener("click", () => {
-  const key = selectedObservation;
+  const key = runState.selected;
   closeDetailPanel();
   // The selection survives the panel closing: the row stays marked and keeps
   // the focus, so the reader is where they were rather than at the top.
@@ -1643,35 +1725,33 @@ byID("detail-close").addEventListener("click", () => {
 
 // -------------------------------- behaviors -------------------------------
 
-let behaviorPage = { rows: [], nextAfter: "", loaded: false };
-
 async function loadBehaviors(after) {
-  if (openedRun === "") {
+  if (runState.runID === "") {
     return;
   }
-  loading.behaviors = true;
+  const runID = runState.runID;
+  const ticket = runState.beginBehaviors();
   renderBehaviorsView();
   try {
-    const response = await api.runBehaviors(openedRun, after);
-    behaviorPage = {
-      rows: Array.isArray(response.behaviors) ? response.behaviors : [],
-      nextAfter: typeof response.next_after === "string" ? response.next_after : "",
-      loaded: true,
-    };
+    const response = await api.runBehaviors(runID, after);
+    if (!runState.commitBehaviors(ticket, response)) {
+      return;
+    }
     clearProblem();
   } catch (error) {
-    loading.behaviors = false;
+    if (!runState.failBehaviors(ticket)) {
+      return;
+    }
     report(byID("behaviors-table"), error);
     return;
-  } finally {
-    loading.behaviors = false;
   }
   renderBehaviorsView();
 }
 
 function renderBehaviorsView() {
+  const behaviorPage = runState.behaviors;
   dash.dataTable(byID("behaviors-table"), {
-    loading: loading.behaviors,
+    loading: runState.behaviors.loading,
     skeletonRows: 4,
     emptyTitle: behaviorPage.loaded ? "This run retained no behaviors" : "Nothing loaded yet",
     emptyIcon: "compare",
@@ -1706,7 +1786,7 @@ function renderBehaviorsView() {
 }
 
 byID("behaviors-more").addEventListener("click", () => {
-  void loadBehaviors(behaviorPage.nextAfter);
+  void loadBehaviors(runState.behaviors.nextAfter);
 });
 
 // A run's sections read on demand, one page each, the first time they are
@@ -1721,13 +1801,16 @@ for (const tab of byID("run-tabs").querySelectorAll(".subtab")) {
       closeDetailPanel();
     }
     if (tab.dataset.section === "run-observations") {
-      if (observationPage.loaded) {
+      if (runState.observations.loaded) {
         renderObservationsView();
       } else {
         void loadObservations("");
       }
     }
-    if (tab.dataset.section === "run-behaviors" && !behaviorPage.loaded) {
+    // `loaded` is meaningful again because opening a run clears it. It used
+    // not to be: it stayed true across a run change, so this asked nothing
+    // and the tab showed the previous run's behaviors.
+    if (tab.dataset.section === "run-behaviors" && !runState.behaviors.loaded) {
       void loadBehaviors("");
     }
   });
@@ -1744,13 +1827,17 @@ function onEnterView(viewID) {
   if (viewID === "view-projects" && !hierarchy.levels.projects.loaded) {
     void openLevel("projects", () => hierarchy.loadProjects(""));
   }
-  if (viewID === "view-compare" && !compareHierarchy.levels.agents.loaded && openedProject !== "") {
+  // Both of these ask whether what they are holding is about the project
+  // they are scoped to — identity, not a loaded flag. A boolean stayed true
+  // across a project change, so the destination kept the previous project's
+  // records and fetched nothing.
+  if (viewID === "view-compare" && projectScope.needsCompare()) {
     void openCompareLevel("agents", () => compareHierarchy.loadAgents(openedProject, ""));
   }
   // A destination scoped to a project shows that project's records. Making a
   // reader press a button to see history that the scope already determines is
   // the form-first habit this console is replacing.
-  if (viewID === "view-promotion" && openedProject !== "" && promotionProject === "") {
+  if (viewID === "view-promotion" && projectScope.needsPromotions()) {
     void loadPromotionPage(openedProject, "", 1, null);
   }
 }
@@ -1841,25 +1928,29 @@ const compareHierarchy = new HierarchyBrowser({
   listCandidateRuns: (candidateID, after) => api.listCandidateRuns(candidateID, after),
 });
 
-let compareAgent = "";
-let compareCandidate = "";
-// The two sides. Each holds the run record the reader chose, so the summary
-// panel can show what it is rather than only its identifier.
-let compareSides = { reference: null, candidate: null };
+// The agent, the candidate and the two chosen sides live in projectScope,
+// because all four belong to a project and all four used to survive a change
+// of one. A reference run assigned under project A stayed assigned under B,
+// where that run does not exist.
 
 async function openCompareLevel(level, load) {
-  const flag = level === "runs" ? "compareRuns" : level;
-  loading[flag] = true;
+  const ticket = projectScope.beginCompare(level);
   renderCompareView();
   try {
+    // The browser refuses to commit a page whose generation has moved, so a
+    // stale response changes no level. This guards what happens *after* the
+    // read: the render, the error and the loading flag.
     await load();
+    if (!projectScope.commitCompare(ticket)) {
+      return;
+    }
     clearProblem();
   } catch (error) {
-    loading[flag] = false;
+    if (!projectScope.failCompare(ticket)) {
+      return;
+    }
     report(byID(COMPARE_LEVEL_HOSTS[level] || "compare-runs-table"), error);
     return;
-  } finally {
-    loading[flag] = false;
   }
   renderCompareView();
 }
@@ -1877,15 +1968,12 @@ const COMPARE_LEVEL_HOSTS = Object.freeze({
 // comparison, and refusing it here means the reader sees why immediately
 // instead of reading a server error.
 function assignSide(side, run) {
-  const other = side === "reference" ? "candidate" : "reference";
-  if (compareSides[other] !== null && compareSides[other].id === run.id) {
-    compareSides[other] = null;
-  }
-  compareSides[side] = run;
+  projectScope.assignSide(side, run);
   renderCompareView();
 }
 
 function renderCompareSides() {
+  const compareSides = projectScope.sides;
   for (const side of ["reference", "candidate"]) {
     const host = byID(`compare-${side}-summary`);
     const chosen = compareSides[side];
@@ -1900,28 +1988,31 @@ function renderCompareSides() {
     render.renderRun(host, chosen);
   }
 
-  const ready = compareSides.reference !== null
-    && compareSides.candidate !== null
-    && compareSides.reference.id !== compareSides.candidate.id;
+  const ready = projectScope.comparisonReady();
   byID("compare-submit").disabled = !ready;
   byID("compare-ready").textContent = ready
     ? "Ready to compare."
     : "Choose a reference and a candidate to enable this.";
 
   // Provenance reads the same two runs, so it needs nothing typed either.
-  if (compareSides.reference !== null) {
-    byID("evidence-provenance-reference").value = compareSides.reference.id;
-    byID("promotion-reference").value = compareSides.reference.id;
-  }
-  if (compareSides.candidate !== null) {
-    byID("evidence-provenance-candidate").value = compareSides.candidate.id;
-    byID("promotion-candidate").value = compareSides.candidate.id;
-  }
+  // Provenance and the promotion form read the same two runs, so neither
+  // needs anything typed. Cleared alongside the sides when the project
+  // changes, since a run identifier from the previous project is not a
+  // convenience there — it is a wrong answer left in a field.
+  byID("evidence-provenance-reference").value = compareSides.reference === null
+    ? "" : compareSides.reference.id;
+  byID("promotion-reference").value = compareSides.reference === null
+    ? "" : compareSides.reference.id;
+  byID("evidence-provenance-candidate").value = compareSides.candidate === null
+    ? "" : compareSides.candidate.id;
+  byID("promotion-candidate").value = compareSides.candidate === null
+    ? "" : compareSides.candidate.id;
 }
 
 // sideControl renders one row's assign button for one side.
 function sideControl(side, run) {
-  const chosen = compareSides[side] !== null && compareSides[side].id === run.id;
+  const held = projectScope.sides[side];
+  const chosen = held !== null && held.id === run.id;
   const control = render.element(
     "button",
     "chip-button",
@@ -1939,15 +2030,15 @@ function sideControl(side, run) {
 
 function renderCompareView() {
   dash.pickList(byID("compare-agents-list"), byID("compare-agents-more"), {
+    loading: projectScope.compareLoading.agents,
     level: compareHierarchy.levels.agents,
-    selected: compareAgent,
+    selected: projectScope.agent,
     pendingMessage: "Choose a project in the sidebar.",
     emptyMessage: "This project has no agents.",
     labelOf: (row) => row.name || row.id,
     detailOf: (row) => (row.name && row.name !== row.id ? row.id : ""),
     onOpen: (row) => {
-      compareAgent = row.id;
-      compareCandidate = "";
+      projectScope.setAgent(row.id);
       void openCompareLevel("candidates", () => compareHierarchy.loadCandidates(row.id, ""));
     },
   });
@@ -1956,8 +2047,9 @@ function renderCompareView() {
     : "";
 
   dash.pickList(byID("compare-candidates-list"), byID("compare-candidates-more"), {
+    loading: projectScope.compareLoading.candidates,
     level: compareHierarchy.levels.candidates,
-    selected: compareCandidate,
+    selected: projectScope.candidate,
     pendingMessage: "Choose an agent.",
     emptyMessage: "This agent has no candidates.",
     labelOf: (row) => (row.metadata && row.metadata.label ? row.metadata.label : row.id),
@@ -1965,7 +2057,7 @@ function renderCompareView() {
       ? row.id
       : ""),
     onOpen: (row) => {
-      compareCandidate = row.id;
+      projectScope.setCandidate(row.id);
       void openCompareLevel("runs", () => compareHierarchy.loadRuns(row.id, ""));
     },
   });
@@ -1975,7 +2067,7 @@ function renderCompareView() {
 
   const level = compareHierarchy.levels.runs;
   dash.dataTable(byID("compare-runs-table"), {
-    loading: loading.compareRuns,
+    loading: projectScope.compareLoading.runs,
     skeletonRows: 3,
     emptyTitle: level.loaded ? "This candidate has no runs" : "Choose an agent, then a candidate",
     emptyHint: level.loaded ? undefined : "Assigning a side needs a run to assign.",
@@ -2064,7 +2156,7 @@ byID("form-compare").addEventListener("submit", async (event) => {
     // field. The button is disabled until both are chosen, and this is the
     // same condition stated once more so a submit that reached here anyway
     // says what is missing instead of sending an empty identifier.
-    if (compareSides.reference === null || compareSides.candidate === null) {
+    if (!projectScope.comparisonReady()) {
       showProblem("Choose a reference run and a candidate run in the table above.");
       return;
     }
@@ -2084,7 +2176,7 @@ byID("form-compare").addEventListener("submit", async (event) => {
 
     try {
       const response = await api.compare(
-        compareSides.reference.id, compareSides.candidate.id, limits,
+        projectScope.sides.reference.id, projectScope.sides.candidate.id, limits,
       );
       // The verdict inside is the server's. This call renders it; it does not
       // recompute it from the limits above.
@@ -2666,14 +2758,11 @@ const promotionNav = byID("promotion-history-nav");
 const promotionPageState = byID("promotion-page-state");
 const promotionNextButton = byID("promotion-next-page");
 
-let promotionProject = "";
-let promotionCursor = "";
-let promotionPage = 0;
+// The project, the cursor and the page number live in projectScope, so a
+// change of project clears all three and abandons whatever is in flight.
 
 function resetPromotionHistory() {
-  promotionProject = "";
-  promotionCursor = "";
-  promotionPage = 0;
+  projectScope.resetPromotions();
   render.clear(promotionPageState);
   syncPromotionNav();
 }
@@ -2684,9 +2773,16 @@ function resetPromotionHistory() {
 // however far anyone reads, and there is no array quietly growing behind the
 // view.
 async function loadPromotionPage(projectID, after, pageNumber, submitter) {
+  const ticket = projectScope.beginPromotions();
   await busy(submitter, async () => {
     try {
       const response = await api.listPromotions(projectID, after);
+      // History for a project the reader has left is not this project's
+      // history. Checked before anything is drawn, because the table below
+      // is the one belonging to whichever project is scoped now.
+      if (!projectScope.ownsPromotions(ticket)) {
+        return;
+      }
 
       // The page that arrived is rendered either way. It is valid history the
       // server returned, and withholding it because the *continuation* is
@@ -2700,8 +2796,6 @@ async function loadPromotionPage(projectID, after, pageNumber, submitter) {
         // disable" by identity, and an undefined submitter would throw.
         onOpenRun: (runID) => { void loadRun(runID, null); },
       });
-      promotionProject = projectID;
-      promotionPage = pageNumber;
 
       // A continuation that cannot advance is a server fault, and following it
       // would turn "Load next page" into an infinite loop. The cursor is
@@ -2709,24 +2803,30 @@ async function loadPromotionPage(projectID, after, pageNumber, submitter) {
       // because the cursor is broken and the project is not.
       const fault = api.promotionCursorFault(after, response);
       if (fault !== "") {
-        promotionCursor = "";
+        projectScope.commitPromotions(ticket, "", pageNumber);
         render.renderPromotionPageState(promotionPageState, pageNumber, false);
         showProblem(fault);
         return;
       }
 
-      promotionCursor = typeof response.next_after === "string" ? response.next_after : "";
-      render.renderPromotionPageState(promotionPageState, pageNumber, promotionCursor !== "");
+      const cursor = typeof response.next_after === "string" ? response.next_after : "";
+      projectScope.commitPromotions(ticket, cursor, pageNumber);
+      render.renderPromotionPageState(promotionPageState, pageNumber, cursor !== "");
       clearProblem();
     } catch (error) {
+      if (!projectScope.ownsPromotions(ticket)) {
+        return;
+      }
       // The cursor is not trustworthy after a failed read, but the project
       // still is: leaving Start over available is the difference between a
       // transient blip and having to retype the project.
-      promotionCursor = "";
-      promotionProject = projectID;
+      projectScope.commitPromotions(ticket, "", pageNumber);
       report(promotionHistory, error);
     }
   });
+  if (!projectScope.ownsPromotions(ticket)) {
+    return;
+  }
 
   // Applied after busy() has restored the clicked button, not inside it.
   //
@@ -2740,9 +2840,9 @@ async function loadPromotionPage(projectID, after, pageNumber, submitter) {
 
 // syncPromotionNav makes the controls describe the state that actually exists.
 function syncPromotionNav() {
-  const loaded = promotionProject !== "";
+  const loaded = projectScope.promotionPageNumber > 0;
   promotionNav.hidden = !loaded;
-  promotionNextButton.disabled = promotionCursor === "";
+  promotionNextButton.disabled = projectScope.promotionCursor === "";
 }
 
 byID("form-promotion-list").addEventListener("submit", async (event) => {
@@ -2752,11 +2852,14 @@ byID("form-promotion-list").addEventListener("submit", async (event) => {
 });
 
 promotionNextButton.addEventListener("click", async (event) => {
-  if (promotionProject === "" || promotionCursor === "") {
+  if (projectScope.project === "" || projectScope.promotionCursor === "") {
     return;
   }
   await loadPromotionPage(
-    promotionProject, promotionCursor, promotionPage + 1, event.currentTarget);
+    projectScope.project,
+    projectScope.promotionCursor,
+    projectScope.promotionPageNumber + 1,
+    event.currentTarget);
 });
 
 // Start over re-reads the first page rather than remembering earlier ones.
@@ -2764,10 +2867,10 @@ promotionNextButton.addEventListener("click", async (event) => {
 // keeping every visited page to walk backwards is the accumulation this shape
 // exists to avoid.
 byID("promotion-restart").addEventListener("click", async (event) => {
-  if (promotionProject === "") {
+  if (projectScope.project === "") {
     return;
   }
-  await loadPromotionPage(promotionProject, "", 1, event.currentTarget);
+  await loadPromotionPage(projectScope.project, "", 1, event.currentTarget);
 });
 
 // ---------------------------------------------------------------------

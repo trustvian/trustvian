@@ -111,6 +111,48 @@ actually depend on.
   or the Content-Security-Policy changed. See
   [ADR 0051](docs/adr/0051-the-browser-bundle-is-a-layered-design-system.md).
 
+### Fixed
+
+- **Three state defects in the browser console, found in review.** All three
+  were invisible to a source scan, because what was wrong was which of two
+  responses arrived last and what a boolean meant after the reader had moved.
+
+  **Run-scoped state survived a change of run.** Opening run B after viewing
+  run A's Behaviors tab left the tab marked loaded, so it rendered A's rows
+  and fetched nothing — and its paging cursor would have asked for the next
+  page of A's collection under B. The same shape applied to the observation
+  page, the narrowing, the selected row and the strip's counts. All of it is
+  now cleared in one step when the run changes.
+
+  **A stale response could overwrite the current view.** `openRunDetail`,
+  the observation loader and the behavior loader committed whatever came
+  back. A response for a run or a filter the reader had left would repopulate
+  the surface, clear a newer error, close the current detail panel, or stop a
+  newer loading indicator. Each read now takes a ticket before awaiting and
+  presents it back before touching anything; the level browser checks its
+  own generation before assigning, because the commit happens inside the
+  awaited call and a guard in the caller would run after the clobber.
+
+  **Project-scoped state survived a change of project.** Compare and
+  Promotions decided whether to fetch by asking "have I loaded before?",
+  which is still true after switching from project A to B — so B showed A's
+  agents, A's assigned comparison sides and A's promotion history, under B's
+  name in the sidebar. Cache validity is now project identity, and a change
+  of project abandons what is in flight and clears what is held.
+
+  This is **not** built on cancellation: an abort can lose the race with a
+  response already queued, and a surface whose correctness depended on the
+  abort winning would be right almost always. Surfaces are independent — the
+  three reads of a run workspace, Compare's three lists and Promotions each
+  hold their own ticket, so fetching one never abandons another's work. One
+  further defect fell out of that: Compare's loading flags were the ones the
+  Runs destination reads, so fetching on either drew a skeleton over the
+  other.
+
+  Ten behavioural regression tests drive the real modules under node with
+  deliberately out-of-order promises, rather than asserting on source
+  strings. Every one was verified to fail against the defect it covers.
+
 ### Added
 
 - **The browser now follows a finding to the evidence behind it** (task 076). A

@@ -1376,7 +1376,11 @@ func TestPromotionHistoryPagesRatherThanAccumulating(t *testing.T) {
 		t.Error("app.js does not pass a cursor to listPromotions; every click would " +
 			"re-read page one")
 	}
-	if !strings.Contains(app, "promotionCursor, promotionPage + 1") {
+	// The cursor and the page number are held by projectScope, which is what
+	// lets a change of project drop both — a cursor into project A's history
+	// is not a position in project B's.
+	if !strings.Contains(app, "projectScope.promotionCursor") ||
+		!strings.Contains(app, "projectScope.promotionPageNumber + 1") {
 		t.Error("the next-page control does not advance from the stored cursor")
 	}
 
@@ -2443,15 +2447,19 @@ func TestComparisonSidesAreAssignedFromRows(t *testing.T) {
 		}
 	}
 
-	// The two identifiers the server receives are the rows that were assigned.
-	if !strings.Contains(app, "compareSides.reference.id, compareSides.candidate.id") {
+	// The two identifiers the server receives are the rows that were
+	// assigned. They live in projectScope, so a change of project drops
+	// them: a run assigned under project A is not a side of a comparison in
+	// project B.
+	if !strings.Contains(app, "projectScope.sides.reference.id, projectScope.sides.candidate.id") {
 		t.Error("the comparison request is not built from the assigned rows")
 	}
 	// And it cannot be sent until both sides are chosen.
 	if !strings.Contains(app, `byID("compare-submit").disabled = !ready`) {
 		t.Error("the compare control is not gated on a valid selection")
 	}
-	if !strings.Contains(app, "compareSides.reference.id !== compareSides.candidate.id") {
+	scope := stripJSComments(readAsset(t, "project-scope.js"))
+	if !strings.Contains(scope, "sides.reference.id !== sides.candidate.id") {
 		t.Error("a run compared against itself is not refused")
 	}
 }

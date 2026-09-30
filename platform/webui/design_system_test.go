@@ -199,21 +199,58 @@ func TestLoadingIsNotTheSameAnswerAsEmpty(t *testing.T) {
 	}
 
 	// Every collection that can be fetched says so while it is fetching.
+	// The hierarchy's four flags live in app.js; the run workspace's and
+	// Compare's live in their state modules, because lowering one is an
+	// ownership decision rather than a step in a request.
 	app := stripJSComments(readAsset(t, "app.js"))
-	for _, collection := range []string{
-		"projects", "runs", "observations", "behaviors", "compareRuns",
-	} {
+	for _, collection := range []string{"projects", "runs", "agents", "candidates"} {
 		if !strings.Contains(app, "loading."+collection) {
 			t.Errorf("no loading state for %s; its table cannot tell a reader to wait",
 				collection)
 		}
 	}
+	for _, surface := range []string{
+		"runState.observations.loading",
+		"runState.behaviors.loading",
+		"projectScope.compareLoading.runs",
+		"projectScope.compareLoading.agents",
+	} {
+		if !strings.Contains(app, surface) {
+			t.Errorf("no loading state read for %s; its table cannot tell a reader "+
+				"to wait", surface)
+		}
+	}
 
 	// A flag that is raised and never lowered is a skeleton that never
-	// resolves, so every one is cleared in a finally.
-	if strings.Count(app, "} finally {") < 3 {
-		t.Error("loading flags are not cleared in a finally; a failed request would " +
-			"leave a permanent skeleton")
+	// resolves — and one lowered by the wrong request is a skeleton that
+	// vanishes while a newer read is still outstanding. The second is what a
+	// `finally` produced here, and it is why there is no longer one: raising
+	// the flag issues a ticket, and every path that lowers it must present
+	// that ticket back.
+	//
+	// TestASupersededResponseLeavesTheLoadingIndicatorAlone in
+	// request_ownership_test.go proves the behaviour; this keeps the
+	// mechanism from being replaced by an unguarded assignment.
+	lowers := map[string]string{
+		"run-state.js":     "loading: false",
+		"project-scope.js": "[ticket.level]: false",
+	}
+	for module, clears := range lowers {
+		if !strings.Contains(stripJSComments(readAsset(t, module)), clears) {
+			t.Errorf("%s never lowers a loading flag; a skeleton would never resolve",
+				module)
+		}
+	}
+	appLogic := stripJSNoise(readAsset(t, "app.js"))
+	if regexp.MustCompile(`loading\.(observations|behaviors)\s*=`).MatchString(appLogic) {
+		t.Error("app.js assigns a run-workspace loading flag directly; it must go " +
+			"through the ticket that raised it, or an older request can clear a " +
+			"newer request's indicator")
+	}
+	if strings.Contains(appLogic, "compareLoading[") ||
+		regexp.MustCompile(`compareLoading\.\w+\s*=`).MatchString(appLogic) {
+		t.Error("app.js assigns a Compare loading flag directly; it must go through " +
+			"the ticket that raised it")
 	}
 
 	// And an empty state says what to do, rather than only that there is
