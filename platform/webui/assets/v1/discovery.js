@@ -105,9 +105,39 @@ export class LabelCache {
 //
 // Each level is replaced rather than accumulated, so browsing a large
 // hierarchy costs one page of memory per level however far somebody walks.
+//
+// **A page is committed only if it is still wanted.** Every read takes the
+// generation before awaiting and checks it immediately after, before touching
+// `levels` — the same rule realtime.js applies to the stream, and for the same
+// reason. The check has to be here rather than in the caller: the assignment
+// happens inside these methods, so a guard after the call would run after the
+// clobber it was meant to prevent. A superseded read returns null and leaves
+// every level exactly as it found it.
 export class HierarchyBrowser {
   constructor(deps) {
     this.deps = deps;
+    this.levels = {
+      projects: emptyLevel(),
+      agents: emptyLevel(),
+      candidates: emptyLevel(),
+      runs: emptyLevel(),
+    };
+    this.parents = { agents: "", candidates: "", runs: "" };
+    this.generation = 0;
+  }
+
+  // invalidate abandons every read still in flight.
+  //
+  // Called when the subject changes — a different project, a browser being
+  // reused for a different scope — rather than when a new read starts. After
+  // it, a response for the old subject cannot reach `levels`.
+  invalidate() {
+    this.generation += 1;
+  }
+
+  // reset drops every page and abandons anything outstanding.
+  reset() {
+    this.invalidate();
     this.levels = {
       projects: emptyLevel(),
       agents: emptyLevel(),
@@ -120,7 +150,11 @@ export class HierarchyBrowser {
   // loadProjects reads one page of the root. This is the whole automatic
   // startup budget, and it is also what the reconnect snapshot performs.
   async loadProjects(after) {
+    const generation = this.generation;
     const response = await this.deps.listProjects(after);
+    if (generation !== this.generation) {
+      return null;
+    }
     this.levels.projects = levelFrom(response, "projects");
     // Descending resets what is below, so a stale child list can never appear
     // to belong to a parent somebody has since moved away from.
@@ -132,7 +166,11 @@ export class HierarchyBrowser {
   }
 
   async loadAgents(projectID, after) {
+    const generation = this.generation;
     const response = await this.deps.listProjectAgents(projectID, after);
+    if (generation !== this.generation) {
+      return null;
+    }
     this.levels.agents = levelFrom(response, "agents");
     this.parents.agents = projectID;
     this.levels.candidates = emptyLevel();
@@ -143,7 +181,11 @@ export class HierarchyBrowser {
   }
 
   async loadCandidates(agentID, after) {
+    const generation = this.generation;
     const response = await this.deps.listAgentCandidates(agentID, after);
+    if (generation !== this.generation) {
+      return null;
+    }
     this.levels.candidates = levelFrom(response, "candidates");
     this.parents.candidates = agentID;
     this.levels.runs = emptyLevel();
@@ -152,7 +194,11 @@ export class HierarchyBrowser {
   }
 
   async loadRuns(candidateID, after) {
+    const generation = this.generation;
     const response = await this.deps.listCandidateRuns(candidateID, after);
+    if (generation !== this.generation) {
+      return null;
+    }
     this.levels.runs = levelFrom(response, "evaluation_runs");
     this.parents.runs = candidateID;
     return this.levels.runs;
@@ -169,86 +215,6 @@ function levelFrom(response, key) {
     nextAfter: typeof response.next_after === "string" ? response.next_after : "",
     loaded: true,
   };
-}
-
-// renderLevel draws one bounded page as a list of selectable rows.
-//
-// Every row costs exactly one request when pressed, and the continuation is an
-// explicit affordance rather than something followed automatically. A page is
-// never implied to be the whole level: where more exists, the footer says so
-// in words.
-export function renderLevel(host, spec) {
-  host.replaceChildren();
-
-  const heading = document.createElement("h4");
-  heading.className = "level-title";
-  heading.textContent = spec.title;
-  host.append(heading);
-
-  if (!spec.level.loaded) {
-    const hint = document.createElement("p");
-    hint.className = "empty";
-    hint.textContent = spec.pendingMessage;
-    host.append(hint);
-    return;
-  }
-
-  if (spec.level.rows.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "empty";
-    empty.textContent = spec.emptyMessage;
-    host.append(empty);
-    return;
-  }
-
-  const list = document.createElement("ul");
-  list.className = "level";
-  for (const row of spec.level.rows) {
-    const item = document.createElement("li");
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "level-row";
-    if (spec.selected && spec.selected === row.id) {
-      button.classList.add("level-row-selected");
-      button.setAttribute("aria-current", "true");
-    }
-
-    const name = document.createElement("span");
-    name.className = "level-name";
-    name.textContent = spec.labelOf(row);
-    button.append(name);
-
-    const detail = spec.detailOf(row);
-    if (detail !== "") {
-      const sub = document.createElement("span");
-      sub.className = "level-detail";
-      sub.textContent = detail;
-      button.append(sub);
-    }
-
-    button.setAttribute("aria-label", `${spec.openLabel} ${spec.labelOf(row)}`);
-    button.addEventListener("click", () => spec.onOpen(row));
-    item.append(button);
-    list.append(item);
-  }
-  host.append(list);
-
-  const footer = document.createElement("p");
-  footer.className = "note-inline";
-  if (spec.level.nextAfter) {
-    footer.textContent = `Showing ${spec.level.rows.length}. More exist.`;
-    host.append(footer);
-    const more = document.createElement("button");
-    more.type = "button";
-    more.className = "link-button";
-    more.textContent = "Load more";
-    more.setAttribute("aria-label", `Load more ${spec.title.toLowerCase()}`);
-    more.addEventListener("click", () => spec.onMore(spec.level.nextAfter));
-    host.append(more);
-    return;
-  }
-  footer.textContent = `Showing all ${spec.level.rows.length}.`;
-  host.append(footer);
 }
 
 // renderOptions fills a <select> from a discovered collection.

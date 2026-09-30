@@ -40,6 +40,7 @@ Tasks for the `v1.0` milestone.
 | 086–090 | Reserved and scoped by [082](082-agent-inspection-and-evaluation-depth.md); **no specification written yet.** 089 is **PROPOSED** rather than approved |
 | [091 — Platform Analytics and Developer Ecosystem](091-platform-analytics-and-developer-ecosystem.md) | Specified. Documentation and planning only; implements nothing |
 | 092–095 | Reserved and scoped by [091](091-platform-analytics-and-developer-ecosystem.md); **no specification written yet.** Post-`v1.0` platform depth — none is a release gate |
+| [096 — Record-First Admin Console](096-record-first-admin-console.md) | Specified and implemented — presentation and information architecture only; no route, capability or bound changes |
 
 The numbers 068–072 are the approved plan, not placeholders — the sequence,
 its ordering, and what each milestone covers are decided. What does not exist

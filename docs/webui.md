@@ -10,6 +10,19 @@ control-plane forms still exist — creating entities, driving a run's lifecycle
 opening something by an identifier — but they are a secondary surface called
 **Manage**, and watching an agent never requires them.
 
+It is laid out as an **admin console**: a persistent sidebar of destinations, a
+workspace whose primary surface is a table of real records, and a contextual
+panel that opens beside the table when a row is selected. Records are how you
+move around it. Every project, run, observation and behavior on screen is a row
+you can click, and every identifier — a run, a trace, a session, a behavioral
+fingerprint — renders as a control that goes somewhere.
+
+**You never have to type an identifier to reach anything.** Discovering a run,
+inspecting an observation, following its trace or session, choosing two runs to
+compare and opening the evidence behind a gate check are all reachable by
+clicking what is on screen. The identifier fields that remain are for the case
+where you already have one, from a log or a CI job.
+
 ## Quick start
 
 ```bash
@@ -37,14 +50,19 @@ one URL and needs no second field.
 
 ## What it can do
 
-| Section | Purpose |
+| Destination | Purpose |
 |---|---|
 | **Live** *(default)* | Watch. Active agents appear by themselves, one run's behavior flow animates as calls arrive, and an inspector shows what Trustvian decided |
-| **Investigate** | Explore. Browse the durable hierarchy a bounded page at a time, open a run's authoritative detail, or narrow the stream to one run |
-| **Compare** | Measure. Compare a reference run against a candidate and read the server's gate, diff and scorecard |
+| **Projects** | Choose. A searchable table of what exists; picking a row scopes the whole console and the sidebar says which project that is |
+| **Runs** | Explore. A visible list of the project's agents and their candidates, then the run table itself. Clicking a run opens its workspace |
+| **Compare** | Measure. Assign two runs from a table as reference and candidate, then read the server's gate, diff and scorecard |
 | **Evidence** | Explain. Follow a gate check or a behavioral delta to the observations behind it, and read one run's retained session, trace, sequence and timeline |
-| **Promotions** | Decide. Record a promotion decision and page a project's history |
+| **Promotions** | Decide. Record a promotion decision and page the scoped project's history |
 | **Manage** | Administer. Create projects, agents, candidates and runs; drive a run's lifecycle; open anything by identifier |
+
+Every destination is backed by a capability `/v1` serves. There is no entry for
+work that does not exist yet: an empty destination teaches a reader that the
+product is thinner than it is.
 
 What it deliberately cannot do: ingest decision records (that is the job of the
 application under evaluation, through the CLI or the API), or manage
@@ -223,9 +241,56 @@ the client would resynchronize, and the crawl would start again.
 
 So descent is yours: selecting a project reads one page of its agents,
 selecting an agent reads one page of its candidates, selecting a candidate
-reads one page of its runs. Where more exists, **More** says so and costs one
-request. There is no timer, no polling and no background prefetch anywhere in
-the page.
+reads one page of its runs. Where more exists, **Load next page** says so and
+costs one request. There is no timer, no polling and no background prefetch
+anywhere in the page.
+
+That bound is also why **Runs** is reached through a visible list of agents and
+a visible list of candidates rather than one "all runs in this project" table.
+`/v1` publishes no such collection, and synthesising one in the browser would
+be exactly the crawl above. Two bounded lists are the honest shape of the data;
+being *visible*, rather than collapsed into menus, is what keeps them from
+being something to traverse.
+
+The filter boxes on **Projects** and **Runs** narrow the rows already on
+screen. They never ask the server for a page it was not going to fetch, and the
+line beside them always says whether you are looking at the whole collection or
+one page of it.
+
+### A run's workspace
+
+Clicking a run row opens it. The sidebar stays on **Runs**, because that is
+where you came from and where the breadcrumb returns you.
+
+A compact strip carries the run's authoritative figures — status, candidate,
+environment, and the record, observation and distinct-behavior counts read from
+`GET /v1/evaluation-runs/{id}/progress`. Nothing on the strip is counted from
+the rows on screen: retained history is bounded and those counts are not, so a
+strip that counted itself would report how much the page drew rather than how
+much the run observed.
+
+Three tabs sit under it:
+
+- **Overview** — the run record and its progress, as the control plane holds
+  them.
+- **Observations** — one bounded page of retained history. A decision shows as
+  a rule down the row's leading edge *and* as a word in its own column; the
+  rule makes fifty rows scannable, and the word is what carries the meaning.
+- **Behaviors** — the distinct behavioral identities the run produced, with the
+  authoritative observation count each carries.
+
+Selecting an observation opens it in the panel beside the table: the recorded
+decision and policy rule, the five scores, timing and span status, the
+behavior, and the correlation references. **Session**, **trace** and
+**behavior** are controls — pressing one narrows the table to that view, which
+is a new bounded request with the narrowing applied in storage *before* the
+page bound. At most one narrowing applies at a time, because the server accepts
+at most one and a page that offered two would be claiming a capability the
+protocol does not have.
+
+Selecting a row does not redraw the table, so your place in it survives; a chip
+above the table shows the active narrowing and removes it. Closing the panel
+returns focus to the row it came from.
 
 ### Accessibility
 
@@ -248,15 +313,17 @@ header's `role="status"` region.
 
 ## Manage — the administrative surface
 
-Everything that creates or changes control-plane state, behind one tab with
-five sub-sections: **Open by ID**, **Projects**, **Agents**, **Candidates** and
-**Evaluations**. Nothing was removed when it moved here — creating entities,
-the full run lifecycle, and opening anything by identifier all work exactly as
-before.
+Everything that creates or changes control-plane state, behind one destination
+with five sub-sections: **Projects**, **Agents**, **Candidates**,
+**Evaluations** and **Open by ID**. Nothing was removed when it moved here —
+creating entities, the full run lifecycle, and opening anything by identifier
+all work exactly as before.
 
-It is no longer how you *find* things: **Live** discovers active work by
-itself, and **Investigate** walks Projects → Agents → Candidates → Runs with
-nothing typed.
+It is not how you *find* things: **Live** discovers active work by itself, and
+**Projects** and **Runs** walk the hierarchy with nothing typed. Forms are the
+right shape here because these are inputs, not navigation. Where the console
+already knows a value — the scoped project, the chosen agent or candidate — the
+field is filled for you and stays editable.
 
 **The forms explain themselves now.** A field labelled "Candidate ID" beside an
 empty box told a developer nothing about what belonged there. Each caller-owned
@@ -287,7 +354,9 @@ database is the only source of truth.
 [Task 074](tasks/v1.0/074-zero-input-live-behavior-webui.md) is what made this
 secondary. See [ADR 0041](adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md)
 for why the collection capability was added after two deliberate deferrals, and
-why discovery is bounded as a whole workflow rather than only per route.
+why discovery is bounded as a whole workflow rather than only per route, and
+[ADR 0050](adr/0050-the-browser-surface-is-a-record-first-admin-console.md) for
+why what remains is a console of tables rather than a set of forms.
 
 ## Watching one run
 
@@ -350,11 +419,21 @@ fails or reconnects; it does not sit there looking like it is working.
 
 ## Comparing two runs
 
-Browse to a candidate under **Investigate** and its runs fill the reference and
-candidate selectors here, so you pick a run you can see rather than copying an
-identifier out of a log. The text inputs remain, because a run you already have
-an identifier for should not require browsing to it first — the identifier is
-still the value the server receives.
+**Compare** shows the runs of a candidate as a table with two controls on every
+row: **Reference** and **Candidate**. You assign a side by pressing one. Both
+chosen runs are then shown in full in labelled panels, so what you are about to
+compare is on screen rather than implied by two opaque strings, and the
+**Compare runs** control stays disabled until both sides are chosen and they
+are different runs.
+
+There is no identifier field for either side and no menu standing in for one.
+The identifier is still the value the server receives — the contract is
+unchanged — but nobody has to find one, copy one or recognise one in a list.
+
+Compare keeps its own agent and candidate lists rather than sharing the **Runs**
+destination's. Sharing them would mean that choosing a comparison moved your
+place in the run table, and that changing that table silently changed what a
+pending comparison meant.
 
 All three gate limits are required, and `0` is valid. They are **policy, not
 evidence**: they are yours to choose, the same comparison yields PASS or FAIL
@@ -649,6 +728,110 @@ What the browser side adds:
 
 CSP is browser hardening. It is not authentication, and it does not make the
 runtime safe to expose.
+
+## How the bundle is put together
+
+Five layers, and dependencies only point downward.
+
+| Layer | May import | Holds |
+|---|---|---|
+| `core/` | nothing | DOM construction, value formatting |
+| `v1/` | `core` | the control-plane contract: routes, field allowlists, renderers |
+| `ui/` | `core` | the design system: tables, strips, pick lists, panels, icons, states |
+| `live/` | `live` | the realtime observatory: graph, rail, timeline, inspector |
+| `views/` | `core`, `v1`, `ui` | one module per destination |
+| `app.js` | anything | the composition root, and the only one |
+
+`ui/` may not import `v1/`. That boundary is the one that matters: the moment
+a component can read a route, presentation stops being a layer and the design
+system starts carrying domain knowledge.
+
+Styles are five sheets in cascade order — `tokens`, `base`, `layout`,
+`components`, `views`. **Only `tokens.css` names a raw value.** Every colour,
+size, space, radius and duration is declared once with its dark-mode
+counterpart beside it and read elsewhere as `var(--…)`; a hex literal in any
+other sheet fails a test. That is what keeps light and dark from drifting
+apart, and it is why the accent is blue: green, amber and red carry verdict
+and risk, violet carries "new", and an accent sharing any of those hues would
+make *selected* read as *severe*.
+
+There is no web font. `font-src 'none'` is an honest policy only because
+nothing asks for one, so the type system's distinction is prose versus
+record: labels and help in the UI sans, and every value that *is* a record —
+an identifier, a timestamp, a score, a count — in mono with tabular figures,
+so a digit never moves between rows.
+
+## Which response is still the one that matters
+
+The reader can move while a read is in flight, so every asynchronous surface
+decides on arrival whether its response is still wanted. A request takes a
+ticket before awaiting and presents it back afterwards; a ticket is stale
+once a newer request has started on that surface, or once the subject has
+changed underneath it.
+
+This is deliberately **not** built on cancellation. An abort is a request to
+stop that the network may decline, and it can lose the race with a response
+already queued — a surface whose correctness depended on the abort winning
+would be right almost always, which is the worst place for a correctness
+property to be. A ticket comparison has no race to lose.
+
+What it prevents, each of which was a real defect:
+
+- A response for run A landing after the reader opened run B, filling B's
+  table with A's rows.
+- An older request finishing last and overwriting the newer answer.
+- An older request's completion clearing the loading flag a newer one had
+  just raised, so the skeleton vanished while the newer read was still out.
+- A response for the previous project repopulating the destination the
+  reader has already switched away from.
+
+Two rules follow from it. **Everything scoped to a subject is cleared when
+the subject changes** — opening a run clears both tab pages, their cursors,
+the narrowing, the selection and the strip's counts in one step, and changing
+project clears Compare's lists, both assigned comparison sides and the
+promotion cursor. And **a cache is valid for an identity, not for a
+boolean**: Compare and Promotions ask whether what they hold describes the
+project they are scoped to, because "have I loaded before?" is still true
+after a project change.
+
+Surfaces are independent. The three reads of a run workspace, the three
+lists in Compare, and Promotions each hold their own ticket, so fetching one
+never abandons another's outstanding work.
+
+## What a surface looks like when it has no records
+
+Four states, and a surface is always in exactly one:
+
+- **Loading** — a skeleton in the shape of the rows that are coming, so the
+  page does not jump when they arrive. It is **static**: this console has a
+  standing rule that nothing loops, because a page with something
+  perpetually moving on it teaches a reader to ignore movement, and movement
+  is the one signal this product has. `aria-busy` says the same thing to a
+  screen reader.
+- **Empty** — the absence stated as a fact, and the next action named. An
+  empty collection is not a failure and nothing here apologises for one.
+- **Failed** — the server's refusal, shown as the refusal it is. An
+  unreachable control plane is never rendered as a gate result.
+- **Populated** — the records.
+
+Loading and empty used to render identically, as one line of italic text, so
+a table that was still fetching and a table with nothing in it looked the
+same. They are now different answers, and a guard keeps them that way.
+
+### Severity is three carriers, and the word is the one that counts
+
+A decision shows as a gutter down the row's leading edge, a tint behind the
+row, and a mark beside the word in its own column.
+
+```text
+▏1  09:11:01  POST /chat        ✓ allow    low
+▏5  09:15:05  export_customer   ⊘ block    ⚠ critical
+▏6  09:16:06  send_email        ⚠ alert    ⚠ high
+```
+
+Remove the gutter, the tint and the mark and the table is still correct —
+that is the test for whether any of them was allowed to be added. The word is
+always the one the server returned, spelled its way.
 
 ## No build step
 

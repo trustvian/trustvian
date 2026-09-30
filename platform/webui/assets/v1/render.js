@@ -28,6 +28,8 @@
 // reads these, and a computed list would defeat it.
 // ---------------------------------------------------------------------
 
+import { element, clear } from "../core/dom.js";
+
 export const PROJECT_FIELDS = Object.freeze([
   "id",
   "name",
@@ -316,23 +318,11 @@ const labelFor = (key) => (Object.hasOwn(LABELS, key) ? LABELS[key] : key);
 // element builds a node with optional text.
 //
 // The only way text enters the DOM in this application.
-export function element(tag, className, text) {
-  const node = document.createElement(tag);
-  if (className) {
-    node.className = className;
-  }
-  if (text !== undefined && text !== null) {
-    node.textContent = String(text);
-  }
-  return node;
-}
-
-export function clear(node) {
-  // replaceChildren() with no arguments, rather than innerHTML = "". Same
-  // result, and it keeps the forbidden property out of the source entirely so
-  // the guard stays absolute instead of carrying an exception.
-  node.replaceChildren();
-}
+// element and clear live in core/dom.js, which is the bottom of the stack and
+// knows nothing about Trustvian. Re-exported here because this module is what
+// the /v1 surface imports, and a second import line in every caller would buy
+// nothing.
+export { element, clear };
 
 // display formats one allowlisted value as text.
 //

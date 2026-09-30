@@ -15,19 +15,90 @@ package webui
 
 import (
 	"fmt"
+	"path"
 	"regexp"
 	"strings"
 	"testing"
 )
 
-// readAsset returns one shipped asset's source.
+// readAsset returns one shipped asset's source, by path or by base name.
+//
+// The assets are organised in directories — `v1/`, `ui/`, `views/`, `live/`,
+// `core/`, `styles/` — and a guard names the module it is about, not where
+// that module currently sits. Resolving a base name keeps the guards pinned to
+// the source rather than to a layout, so moving a file is a move rather than a
+// hundred-line test edit.
+//
+// Ambiguity is fatal rather than resolved by a rule. Two files sharing a base
+// name would make `readAsset(t, "render.js")` mean whichever the walk reached
+// first, and a guard that silently scans the wrong file is worse than one that
+// does not compile.
 func readAsset(t *testing.T, name string) string {
 	t.Helper()
 	body, err := assetFS.ReadFile("assets/" + name)
-	if err != nil {
+	if err == nil {
+		return string(body)
+	}
+
+	var matches []string
+	for _, candidate := range assetNames() {
+		if path.Base(candidate) == name {
+			matches = append(matches, candidate)
+		}
+	}
+	switch len(matches) {
+	case 0:
 		t.Fatalf("read embedded asset %s: %v", name, err)
+	case 1:
+	default:
+		t.Fatalf("asset base name %q is ambiguous across %v; base names must be "+
+			"unique so a guard names one module", name, matches)
+	}
+	body, err = assetFS.ReadFile("assets/" + matches[0])
+	if err != nil {
+		t.Fatalf("read embedded asset %s: %v", matches[0], err)
 	}
 	return string(body)
+}
+
+// allStyles returns every shipped stylesheet, concatenated.
+//
+// A guard that asks "do the styles honour reduced motion" is about the
+// cascade as a whole, not about whichever file the rule currently sits in.
+// Splitting one sheet into five must not be able to make such a guard pass
+// by moving a rule out of the file it happened to read.
+func allStyles(t *testing.T) string {
+	t.Helper()
+	var all strings.Builder
+	sheets := 0
+	for _, name := range assetNames() {
+		if !strings.HasSuffix(name, ".css") {
+			continue
+		}
+		sheets++
+		all.WriteString(readAsset(t, name))
+		all.WriteString("\n")
+	}
+	if sheets == 0 {
+		t.Fatal("no stylesheet found; a guard over the styles would pass vacuously")
+	}
+	return all.String()
+}
+
+// TestAssetBaseNamesAreUnique is what readAsset's shortcut rests on.
+func TestAssetBaseNamesAreUnique(t *testing.T) {
+	seen := make(map[string]string)
+	for _, name := range assetNames() {
+		base := path.Base(name)
+		if first, clash := seen[base]; clash {
+			t.Errorf("%s and %s share the base name %q; a guard naming a module "+
+				"would become ambiguous", first, name, base)
+		}
+		seen[base] = name
+	}
+	if len(seen) < 10 {
+		t.Fatalf("only %d assets found; this guard would not be meaningful", len(seen))
+	}
 }
 
 func scriptAssets(t *testing.T) map[string]string {
@@ -1305,7 +1376,11 @@ func TestPromotionHistoryPagesRatherThanAccumulating(t *testing.T) {
 		t.Error("app.js does not pass a cursor to listPromotions; every click would " +
 			"re-read page one")
 	}
-	if !strings.Contains(app, "promotionCursor, promotionPage + 1") {
+	// The cursor and the page number are held by projectScope, which is what
+	// lets a change of project drop both — a cursor into project A's history
+	// is not a position in project B's.
+	if !strings.Contains(app, "projectScope.promotionCursor") ||
+		!strings.Contains(app, "projectScope.promotionPageNumber + 1") {
 		t.Error("the next-page control does not advance from the stored cursor")
 	}
 
@@ -1533,22 +1608,22 @@ func TestPromotionNavStateIsAppliedAfterTheButtonIsRestored(t *testing.T) {
 func TestLiveIsTheDefaultLandingView(t *testing.T) {
 	shell := readAsset(t, "index.html")
 
-	// Exactly one tab is selected on load, and it is Live.
-	selected := regexp.MustCompile(`id="(tab-[a-z]+)"[^>]*aria-selected="true"`).
+	// Exactly one sidebar destination is current on load, and it is Live.
+	selected := regexp.MustCompile(`id="(nav-[a-z]+)"[^>]*aria-current="page"`).
 		FindAllStringSubmatch(shell, -1)
 	if len(selected) != 1 {
-		t.Fatalf("%d tabs are selected on load, want exactly 1", len(selected))
+		t.Fatalf("%d destinations are current on load, want exactly 1", len(selected))
 	}
-	if selected[0][1] != "tab-live" {
-		t.Errorf("the default tab is %s, want tab-live; the ID form must not be the "+
-			"front door", selected[0][1])
+	if selected[0][1] != "nav-live" {
+		t.Errorf("the default destination is %s, want nav-live; the ID form must not "+
+			"be the front door", selected[0][1])
 	}
 
-	// And exactly one panel is visible, which must be the Live one.
-	visible := regexp.MustCompile(`<section class="panel[a-z -]*" id="(panel-[a-z]+)"([^>]*)>`).
+	// And exactly one view is visible, which must be the Live one.
+	visible := regexp.MustCompile(`<section class="view[a-z -]*" id="(view-[a-z]+)"([^>]*)>`).
 		FindAllStringSubmatch(shell, -1)
 	if len(visible) < 4 {
-		t.Fatalf("found %d panels; this guard would not be meaningful", len(visible))
+		t.Fatalf("found %d views; this guard would not be meaningful", len(visible))
 	}
 	shown := []string{}
 	for _, match := range visible {
@@ -1556,8 +1631,8 @@ func TestLiveIsTheDefaultLandingView(t *testing.T) {
 			shown = append(shown, match[1])
 		}
 	}
-	if len(shown) != 1 || shown[0] != "panel-live" {
-		t.Errorf("panels visible on load = %v, want exactly [panel-live]", shown)
+	if len(shown) != 1 || shown[0] != "view-live" {
+		t.Errorf("views visible on load = %v, want exactly [view-live]", shown)
 	}
 }
 
@@ -1585,12 +1660,29 @@ func TestEveryManualCapabilityIsStillReachable(t *testing.T) {
 			t.Errorf("the run lifecycle control %s is gone", id)
 		}
 	}
-	// Every tab still has a panel and vice versa, so nothing was orphaned by
-	// the reordering.
-	tabs := regexp.MustCompile(`data-panel="(panel-[a-z]+)"`).FindAllStringSubmatch(shell, -1)
-	for _, tab := range tabs {
-		if !strings.Contains(shell, `id="`+tab[1]+`"`) {
-			t.Errorf("tab points at %s, which does not exist", tab[1])
+	// Every destination still has a view and vice versa, so nothing was
+	// orphaned by the reorganisation.
+	destinations := regexp.MustCompile(`data-view="(view-[a-z]+)"`).FindAllStringSubmatch(shell, -1)
+	if len(destinations) < 5 {
+		t.Fatalf("found %d destinations; this guard would not be meaningful", len(destinations))
+	}
+	for _, item := range destinations {
+		if !strings.Contains(shell, `id="`+item[1]+`"`) {
+			t.Errorf("a destination points at %s, which does not exist", item[1])
+		}
+	}
+	// And no view is a placeholder: every one names the destination that owns
+	// it, so an empty entry for a feature that does not exist cannot be added
+	// without also adding the view it claims to open.
+	views := regexp.MustCompile(`<section class="view[a-z -]*" id="(view-[a-z]+)" data-nav="(nav-[a-z]+)"`).
+		FindAllStringSubmatch(shell, -1)
+	if len(views) < 5 {
+		t.Fatalf("found %d views declaring an owner; this guard would not be meaningful",
+			len(views))
+	}
+	for _, view := range views {
+		if !strings.Contains(shell, `id="`+view[2]+`"`) {
+			t.Errorf("%s is owned by %s, which is not a destination", view[1], view[2])
 		}
 	}
 }
@@ -1726,17 +1818,51 @@ func TestLiveDescentIsLazyAndOnePagePerAction(t *testing.T) {
 		}
 	}
 
-	// Every rendered level offers an explicit open control and an explicit
-	// continuation. Neither is ever followed automatically.
+	// Every rendered collection offers an explicit open control, so a row is
+	// how a reader descends rather than a field they fill in.
 	for _, level := range []string{
-		"renderProjectsLevel", "renderAgentsLevel", "renderCandidatesLevel", "renderRunsLevel",
+		"renderProjectsView", "renderAgentsList", "renderCandidatesList",
+		"renderRunsView", "renderBehaviorsView", "renderCompareView",
 	} {
 		body := functionBodyForTest(t, app, "function "+level+"(")
-		for _, control := range []string{"onOpen:", "onMore:"} {
-			if !strings.Contains(body, control) {
-				t.Errorf("%s offers no %s control", level, control)
-			}
+		if !strings.Contains(body, "onOpen:") {
+			t.Errorf("%s offers no onOpen: control", level)
 		}
+		// A render pass may say that a continuation exists. It may not take
+		// one: `nextAfter)` is the shape of handing the server's cursor to a
+		// loader, and drawing a page must never do that.
+		if strings.Contains(body, "nextAfter)") {
+			t.Errorf("%s passes a cursor to a loader while drawing; a continuation "+
+				"is followed because somebody pressed it", level)
+		}
+	}
+
+	// And each continuation is a control of its own, wired to one press.
+	// Literals are kept here: the element id is the thing being located.
+	wiring := stripJSComments(readAsset(t, "app.js"))
+	for _, pager := range []string{
+		"projects-more", "agents-more", "candidates-more", "runs-more",
+		"observations-more", "behaviors-more",
+		"compare-agents-more", "compare-candidates-more", "compare-runs-more",
+	} {
+		if !strings.Contains(wiring, `byID("`+pager+`").addEventListener("click"`) {
+			t.Errorf("%s is not wired as an explicit continuation control", pager)
+		}
+	}
+
+	// The list renderer itself neither fetches nor follows: it is handed a
+	// page and a button, and all it does with the cursor is decide whether
+	// the button is worth showing.
+	dashboard := stripJSNoise(readAsset(t, "dashboard.js"))
+	for _, forbidden := range []string{"await ", "fetch(", "api."} {
+		if strings.Contains(dashboard, forbidden) {
+			t.Errorf("dashboard.js contains %q; it draws and must not reach the "+
+				"control plane", forbidden)
+		}
+	}
+	pick := wholeFunctionBodyForTest(t, "dashboard.js", "export function pickList(")
+	if !strings.Contains(pick, `moreButton.hidden = spec.level.nextAfter === ""`) {
+		t.Error("pickList does not derive its continuation control from the server's cursor")
 	}
 }
 
@@ -1750,7 +1876,7 @@ func TestLiveDescentIsLazyAndOnePagePerAction(t *testing.T) {
 // them would let one run's new_behavior, decision and risk overwrite
 // another's.
 func TestLiveGraphIsScopedToOneRun(t *testing.T) {
-	live := stripJSNoise(readAsset(t, "live.js"))
+	live := stripJSNoise(readAsset(t, "model.js"))
 
 	// The model must refuse to draw a frame from an unselected scope.
 	if !regexp.MustCompile(`card\.key !== this\.selectedKey[\s\S]{0,120}?edge:\s*null`).MatchString(live) {
@@ -1792,7 +1918,7 @@ func TestLiveGraphIsScopedToOneRun(t *testing.T) {
 // TestLiveViewDecidesNothing extends the authority scan to the new modules.
 func TestLiveViewDecidesNothing(t *testing.T) {
 	sources := map[string]string{
-		"live.js":      stripJSNoise(readAsset(t, "live.js")),
+		"live.js":      stripJSNoise(readAsset(t, "model.js")),
 		"graph.js":     stripJSNoise(readAsset(t, "graph.js")),
 		"rail.js":      stripJSNoise(readAsset(t, "rail.js")),
 		"timeline.js":  stripJSNoise(readAsset(t, "timeline.js")),
@@ -1839,7 +1965,7 @@ func TestLiveViewDecidesNothing(t *testing.T) {
 // A friendlier verb inferred here would be the browser asserting something no
 // evidence supports.
 func TestLiveGraphInventsNoSemanticName(t *testing.T) {
-	live := stripJSComments(readAsset(t, "live.js"))
+	live := stripJSComments(readAsset(t, "model.js"))
 	graph := stripJSComments(readAsset(t, "graph.js")) +
 		stripJSComments(readAsset(t, "inspector.js")) +
 		stripJSComments(readAsset(t, "timeline.js"))
@@ -1881,7 +2007,7 @@ func TestLiveGraphInventsNoSemanticName(t *testing.T) {
 // TestLiveBoundsAreTheDocumentedValues pins each visualization limit, and the
 // two it reuses rather than re-chooses.
 func TestLiveBoundsAreTheDocumentedValues(t *testing.T) {
-	live := stripJSNoise(readAsset(t, "live.js"))
+	live := stripJSNoise(readAsset(t, "model.js"))
 	realtime := stripJSNoise(readAsset(t, "realtime.js"))
 
 	bounds := map[string]int{
@@ -1926,7 +2052,7 @@ func TestLiveBoundsAreTheDocumentedValues(t *testing.T) {
 // saturated. A realtime queue overflow means notification continuity was lost.
 // Reporting any as another would misdescribe the run.
 func TestLiveStatesSaturationRatherThanTruncating(t *testing.T) {
-	live := stripJSComments(readAsset(t, "live.js"))
+	live := stripJSComments(readAsset(t, "model.js"))
 	// rail.js owns both notices, so the two statements live side by side and
 	// can be checked against each other.
 	graph := stripJSComments(readAsset(t, "rail.js"))
@@ -1966,7 +2092,7 @@ func TestLiveStatesSaturationRatherThanTruncating(t *testing.T) {
 
 // TestLiveHonoursReducedMotion, with no information carried by movement.
 func TestLiveHonoursReducedMotion(t *testing.T) {
-	css := readAsset(t, "styles.css")
+	css := allStyles(t)
 	// Literals kept: the media query is a string value, and stripping strings
 	// would blank the very thing being located.
 	app := stripJSComments(readAsset(t, "app.js"))
@@ -2003,7 +2129,7 @@ func TestLiveHonoursReducedMotion(t *testing.T) {
 // TestLiveRendersWithoutDangerousPrimitives is the escaping rule extended to
 // SVG, which is where an animated surface most invites an exception.
 func TestLiveRendersWithoutDangerousPrimitives(t *testing.T) {
-	for _, name := range []string{"live.js", "graph.js", "rail.js", "timeline.js", "inspector.js", "discovery.js"} {
+	for _, name := range []string{"model.js", "graph.js", "rail.js", "timeline.js", "inspector.js", "discovery.js"} {
 		source := stripJSNoise(readAsset(t, name))
 		for _, forbidden := range []string{
 			"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write",
@@ -2080,7 +2206,7 @@ func TestLiveClaimsNoHistory(t *testing.T) {
 	}
 
 	// No persistence of observations anywhere in the model.
-	live := stripJSNoise(readAsset(t, "live.js"))
+	live := stripJSNoise(readAsset(t, "model.js"))
 	for _, forbidden := range []string{"history", "archive", "persist"} {
 		if regexp.MustCompile(`\b` + forbidden + `\b`).MatchString(strings.ToLower(live)) {
 			t.Errorf("live.js references %q; nothing here retains an observation", forbidden)
@@ -2105,12 +2231,44 @@ func TestNoFrontendDependencyOrBuildStep(t *testing.T) {
 			}
 		}
 	}
-	for name, source := range scriptAssets(t) {
-		// Every import is a relative path to a sibling module.
-		for _, match := range regexp.MustCompile(`from\s+"([^"]+)"`).FindAllStringSubmatch(source, -1) {
-			if !strings.HasPrefix(match[1], "./") {
-				t.Errorf("%s imports %q; only same-directory modules are allowed",
-					name, match[1])
+	assertImportsResolveInsideTheBundle(t, scriptAssets(t))
+}
+
+// assertImportsResolveInsideTheBundle is the no-dependency rule, restated for
+// a bundle with directories.
+//
+// The original form was "every import starts with ./", which was exactly right
+// while every module was a sibling. It is now too strict — `ui/` importing
+// `../v1/render.js` is the layering working — and it was always weaker than it
+// looked, because it only checked the *shape* of the specifier.
+//
+// This resolves each one against the importing file and requires the target to
+// exist in the embedded set. A bare specifier fails (it is not relative), a CDN
+// URL fails, and so does a path that merely looks right — a typo is caught here
+// rather than as a blank page.
+func assertImportsResolveInsideTheBundle(t *testing.T, sources map[string]string) {
+	t.Helper()
+	shipped := make(map[string]bool)
+	for _, name := range assetNames() {
+		shipped[name] = true
+	}
+	for name, source := range sources {
+		// Comments are stripped first. The assets explain themselves in prose,
+		// and a sentence containing the word "from" followed by a quotation is
+		// not an import — matching one would make this guard fire on its own
+		// documentation.
+		stripped := stripJSComments(source)
+		for _, match := range regexp.MustCompile(`from\s+"([^"]+)"`).FindAllStringSubmatch(stripped, -1) {
+			specifier := match[1]
+			if !strings.HasPrefix(specifier, "./") && !strings.HasPrefix(specifier, "../") {
+				t.Errorf("%s imports %q; every module is a relative path inside the "+
+					"bundle, so a package name or a URL cannot appear here", name, specifier)
+				continue
+			}
+			target := path.Join(path.Dir(name), specifier)
+			if !shipped[target] {
+				t.Errorf("%s imports %q, which resolves to %q and is not shipped",
+					name, specifier, target)
 			}
 		}
 	}
@@ -2121,6 +2279,48 @@ func TestNoFrontendDependencyOrBuildStep(t *testing.T) {
 // Stops at the next top-level declaration of any kind, so the last function in
 // a file does not swallow everything after it — which it did, and made a
 // per-function assertion count the whole module's API calls.
+// wholeFunctionBodyForTest returns a whole function body, braces matched.
+//
+// functionBodyForTest stops at the first construct that looks like the next
+// declaration, which includes a nested block's "  }\n\n  ". That is fine for
+// the short functions it was written for and wrong for one with an early
+// return: the body it returns ends before the interesting half, so an
+// assertion over it passes without ever seeing the code it names.
+//
+// The extent is found in the noise-stripped source, where a brace inside a
+// string literal cannot be miscounted, and the same range is then taken from
+// the comment-stripped source, which keeps the literals the caller is looking
+// for. Both transforms blank in place, so the two agree on every offset.
+func wholeFunctionBodyForTest(t *testing.T, name, header string) string {
+	t.Helper()
+	source := readAsset(t, name)
+	structure := stripJSNoise(source)
+	literals := stripJSComments(source)
+
+	start := strings.Index(structure, header)
+	if start < 0 {
+		t.Fatalf("%s has no declaration %q", name, header)
+	}
+	open := strings.IndexByte(structure[start:], '{')
+	if open < 0 {
+		t.Fatalf("%s: %q has no body", name, header)
+	}
+	depth := 0
+	for i := start + open; i < len(structure); i++ {
+		switch structure[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return literals[start+open : i+1]
+			}
+		}
+	}
+	t.Fatalf("%s: %q has an unbalanced body", name, header)
+	return ""
+}
+
 func functionBodyForTest(t *testing.T, source, header string) string {
 	t.Helper()
 	start := strings.Index(source, header)
@@ -2164,45 +2364,107 @@ func functionBodyForTest(t *testing.T, source, header string) string {
 func TestFrontDoorIsNotAForm(t *testing.T) {
 	shell := readAsset(t, "index.html")
 
-	live := panelBodyForTest(t, shell, "panel-live")
+	live := panelBodyForTest(t, shell, "view-live")
 	if live == "" {
-		t.Fatal("no Live panel")
+		t.Fatal("no Live view")
 	}
 
-	// The Live panel carries exactly one form — the single-run watch is under
-	// Investigate, so Live should carry none at all.
-	if strings.Contains(live, "<form") {
-		t.Error("the Live panel contains a form; the landing viewport must not ask " +
-			"for anything before it is useful")
-	}
+	// Nothing in the landing viewport asks for an entity identifier. The
+	// single-run watch is the one form here, and it is filled by the Watch
+	// control on a run rather than typed.
 	for _, field := range []string{
 		`id="open-project-id"`, `id="open-agent-id"`, `id="open-candidate-id"`,
 		`id="open-run-id"`, `id="project-id"`, `id="agent-id"`, `id="candidate-id"`,
 	} {
 		if strings.Contains(live, field) {
-			t.Errorf("the Live panel contains %s; identifier entry belongs to Manage", field)
+			t.Errorf("the Live view contains %s; identifier entry belongs to Manage", field)
 		}
 	}
 
 	// And the primary navigation is the product's, not the database's.
-	nav := shell[strings.Index(shell, `<nav class="tabs"`):strings.Index(shell, "</nav>")]
-	for _, gone := range []string{`id="tab-project"`, `id="tab-agent"`, `id="tab-candidate"`} {
+	navStart := strings.Index(shell, `<nav class="sidebar"`)
+	navEnd := strings.Index(shell, "</nav>")
+	if navStart < 0 || navEnd < navStart {
+		t.Fatal("no sidebar in the shell")
+	}
+	nav := shell[navStart:navEnd]
+	for _, gone := range []string{`id="nav-project"`, `id="nav-agent"`, `id="nav-candidate"`} {
 		if strings.Contains(nav, gone) {
 			t.Errorf("the primary navigation still contains %s; entity CRUD is a "+
 				"Manage sub-surface, not a top-level destination", gone)
 		}
 	}
 	for _, want := range []string{
-		`id="tab-live"`, `id="tab-investigate"`, `id="tab-compare"`,
-		`id="tab-promotion"`, `id="tab-manage"`,
+		`id="nav-live"`, `id="nav-projects"`, `id="nav-runs"`, `id="nav-compare"`,
+		`id="nav-evidence"`, `id="nav-promotion"`, `id="nav-manage"`,
 	} {
 		if !strings.Contains(nav, want) {
 			t.Errorf("the primary navigation is missing %s", want)
 		}
 	}
+
+	// The way in to a record is a row in a table, not a menu. Projects, runs,
+	// observations and the comparison's two sides each have a table host; if
+	// one is ever replaced by a <select> this fails.
+	for _, host := range []string{
+		`id="projects-table"`, `id="runs-table"`, `id="observations-table"`,
+		`id="behaviors-table"`, `id="compare-runs-table"`,
+	} {
+		if !strings.Contains(shell, host) {
+			t.Errorf("the shell is missing %s; a collection is browsed as a table", host)
+		}
+	}
 }
 
-// panelBodyForTest returns one panel's markup.
+// TestComparisonSidesAreAssignedFromRows is the brief in one assertion.
+//
+// Choosing what to compare must be picking two visible runs, not naming two
+// identifiers. The selection lives in the table's own controls, the chosen
+// runs are shown in full, and the submit is gated on having both.
+func TestComparisonSidesAreAssignedFromRows(t *testing.T) {
+	shell := readAsset(t, "index.html")
+	// Literals kept: the element ids and the field names are what is located.
+	app := stripJSComments(readAsset(t, "app.js"))
+
+	// No identifier field for either side, and no menu standing in for one.
+	for _, gone := range []string{
+		`id="compare-reference"`, `id="compare-candidate"`,
+		`id="compare-reference-pick"`, `id="compare-candidate-pick"`,
+	} {
+		if strings.Contains(shell, gone) {
+			t.Errorf("the shell still contains %s; a comparison side is assigned from "+
+				"a run's own row, never typed or chosen from a menu", gone)
+		}
+	}
+
+	// Both sides are shown as records, so a reader sees what they are about
+	// to compare rather than two opaque strings.
+	for _, panel := range []string{
+		`id="compare-reference-summary"`, `id="compare-candidate-summary"`,
+	} {
+		if !strings.Contains(shell, panel) {
+			t.Errorf("the shell is missing %s; a chosen side must be shown in full", panel)
+		}
+	}
+
+	// The two identifiers the server receives are the rows that were
+	// assigned. They live in projectScope, so a change of project drops
+	// them: a run assigned under project A is not a side of a comparison in
+	// project B.
+	if !strings.Contains(app, "projectScope.sides.reference.id, projectScope.sides.candidate.id") {
+		t.Error("the comparison request is not built from the assigned rows")
+	}
+	// And it cannot be sent until both sides are chosen.
+	if !strings.Contains(app, `byID("compare-submit").disabled = !ready`) {
+		t.Error("the compare control is not gated on a valid selection")
+	}
+	scope := stripJSComments(readAsset(t, "project-scope.js"))
+	if !strings.Contains(scope, "sides.reference.id !== sides.candidate.id") {
+		t.Error("a run compared against itself is not refused")
+	}
+}
+
+// panelBodyForTest returns one view's markup.
 func panelBodyForTest(t *testing.T, shell, panelID string) string {
 	t.Helper()
 	start := strings.Index(shell, `id="`+panelID+`"`)
@@ -2244,14 +2506,14 @@ func TestObservatoryRegionsExist(t *testing.T) {
 	shell := readAsset(t, "index.html")
 	for _, id := range []string{
 		`id="rail"`, `id="canvas"`, `id="inspector"`, `id="timeline"`,
-		`id="canvas-notices"`, `id="conn-chip"`, `id="header-agent"`, `id="header-counts"`,
+		`id="canvas-notices"`, `id="conn-chip"`, `id="live-strip"`,
 	} {
 		if !strings.Contains(shell, id) {
-			t.Errorf("the Live panel is missing %s", id)
+			t.Errorf("the Live view is missing %s", id)
 		}
 	}
 	// Responsive collapse rather than three columns squeezed into a phone.
-	css := readAsset(t, "styles.css")
+	css := allStyles(t)
 	if !strings.Contains(css, ".observatory") {
 		t.Fatal("no observatory layout")
 	}
@@ -2279,16 +2541,33 @@ func TestHeaderCountsAreAuthoritative(t *testing.T) {
 	}
 
 	// The counters must not be accumulated from frames.
-	summary := functionBodyForTest(t, stripJSNoise(readAsset(t, "app.js")),
-		"function authoritativeSummary(card)")
+	summary := wholeFunctionBodyForTest(t, "app.js", "function drawHeader()")
 	for _, derived := range []string{"seenLive +", "+= 1", "cards.size"} {
 		if strings.Contains(summary, derived) {
-			t.Errorf("authoritativeSummary derives a count (%q); authoritative counts "+
-				"come from /v1", derived)
+			t.Errorf("drawHeader derives a count (%q); authoritative counts come "+
+				"from /v1", derived)
 		}
 	}
 	if !strings.Contains(summary, "authoritative.recordCount") {
-		t.Error("the header's observation count does not come from the authoritative read")
+		t.Error("the strip's observation count does not come from the authoritative read")
+	}
+	// And the two kinds of figure stay apart on the strip: the live one is
+	// labelled as this connection's, never as the run's total.
+	if !strings.Contains(summary, `key: "Seen on this connection"`) {
+		t.Error("the live frame count is not labelled as a count of this connection")
+	}
+
+	// The run workspace's strip reads the same authoritative progress and
+	// counts none of the rows it drew.
+	runStrip := wholeFunctionBodyForTest(t, "app.js", "function renderRunStrip()")
+	for _, derived := range []string{".rows.length", ".length)", "observationPage", "behaviorPage"} {
+		if strings.Contains(runStrip, derived) {
+			t.Errorf("renderRunStrip derives a figure from %q; a strip reports what "+
+				"the run observed, not how much this page drew", derived)
+		}
+	}
+	if !strings.Contains(runStrip, "runProgress.record_count") {
+		t.Error("the run strip's record count does not come from the progress read")
 	}
 }
 
@@ -2298,7 +2577,7 @@ func TestHeaderCountsAreAuthoritative(t *testing.T) {
 // another agent became busy. That is the difference between a cockpit and a
 // dashboard that changes under you.
 func TestSelectionIsPinnedNotStolen(t *testing.T) {
-	live := stripJSNoise(readAsset(t, "live.js"))
+	live := stripJSNoise(readAsset(t, "model.js"))
 	rail := stripJSComments(readAsset(t, "rail.js"))
 
 	// Following only adopts a new scope while following.
@@ -2356,10 +2635,14 @@ func TestOneObservationOneAnimation(t *testing.T) {
 			t.Errorf("graph.js uses %q; there is no ambient or looping animation", ambient)
 		}
 	}
-	css := readAsset(t, "styles.css")
+	// No sheet loops anything — including the loading skeleton, whose
+	// obvious form is a shimmer. The rule is the whole cascade's, not the
+	// graph's alone: a page with something perpetually moving on it teaches
+	// a reader to ignore movement, which is the one signal this product has.
+	css := allStyles(t)
 	if strings.Contains(css, "animation: ") && strings.Contains(css, "infinite") {
-		t.Error("styles.css declares a looping animation; a quiet agent draws a " +
-			"quiet graph")
+		t.Error("a stylesheet declares a looping animation; a quiet agent draws a " +
+			"quiet page")
 	}
 }
 
@@ -2482,9 +2765,9 @@ func TestTimelineIsAViewportNotHistory(t *testing.T) {
 // and the old tests depend on is still present.
 func TestManageKeepsEveryControl(t *testing.T) {
 	shell := readAsset(t, "index.html")
-	manage := panelBodyForTest(t, shell, "panel-manage")
+	manage := panelBodyForTest(t, shell, "view-manage")
 	if manage == "" {
-		t.Fatal("no Manage panel")
+		t.Fatal("no Manage view")
 	}
 
 	// Every create and open form lives under Manage now.
@@ -2558,9 +2841,11 @@ func TestFormsExplainTheirIdentifiers(t *testing.T) {
 		}
 	}
 
-	// Compare and Promotion offer discovered runs rather than only a text box.
+	// Promotion offers discovered runs rather than only a text box. Compare
+	// went further and has no identifier field at all — its two sides are
+	// assigned from the run table, which TestComparisonSidesAreAssignedFromRows
+	// pins.
 	for _, picker := range []string{
-		"compare-reference-pick", "compare-candidate-pick",
 		"promotion-reference-pick", "promotion-candidate-pick",
 	} {
 		if !strings.Contains(shell, `id="`+picker+`"`) {
@@ -2569,20 +2854,14 @@ func TestFormsExplainTheirIdentifiers(t *testing.T) {
 		}
 	}
 	// The gate limits are policy and say so.
-	if !strings.Contains(shell, "These are policy, not evidence") {
+	if !strings.Contains(shell, "Policy, not evidence") {
 		t.Error("the gate limits are not explained as caller-owned policy")
 	}
 }
 
 // TestRedesignAddsNoDependency.
 func TestRedesignAddsNoDependency(t *testing.T) {
-	for name, source := range scriptAssets(t) {
-		for _, match := range regexp.MustCompile(`from\s+"([^"]+)"`).FindAllStringSubmatch(source, -1) {
-			if !strings.HasPrefix(match[1], "./") {
-				t.Errorf("%s imports %q; only same-directory modules are allowed", name, match[1])
-			}
-		}
-	}
+	assertImportsResolveInsideTheBundle(t, scriptAssets(t))
 	shell := readAsset(t, "index.html")
 	for _, forbidden := range []string{
 		"https://", "http://", "//cdn", "<script src=\"http", "@import", "unpkg", "jsdelivr",
@@ -2591,15 +2870,30 @@ func TestRedesignAddsNoDependency(t *testing.T) {
 			t.Errorf("index.html references %q; no CDN, no external font, no build step", forbidden)
 		}
 	}
-	css := readAsset(t, "styles.css")
-	for _, forbidden := range []string{"@import", "url(http", "//fonts."} {
-		if strings.Contains(css, forbidden) {
-			t.Errorf("styles.css references %q", forbidden)
+	sheets := 0
+	for _, name := range assetNames() {
+		if !strings.HasSuffix(name, ".css") {
+			continue
+		}
+		sheets++
+		css := readAsset(t, name)
+		for _, forbidden := range []string{"@import", "url(http", "//fonts."} {
+			if strings.Contains(css, forbidden) {
+				t.Errorf("%s references %q", name, forbidden)
+			}
 		}
 	}
-	// The module split is real: one giant app.js is what this replaced.
+	if sheets == 0 {
+		t.Fatal("no stylesheet found; this guard would pass vacuously")
+	}
+	// The module split is real, and it is a layered tree rather than one
+	// giant app.js: `core/` knows nothing about Trustvian, `v1/` owns the
+	// control-plane contract, `ui/` is presentation with no API access,
+	// `live/` is the realtime observatory and `views/` is one file per
+	// destination.
 	for _, module := range []string{
-		"graph.js", "rail.js", "timeline.js", "inspector.js", "discovery.js", "live.js",
+		"live/graph.js", "live/rail.js", "live/timeline.js", "live/inspector.js",
+		"live/model.js", "v1/discovery.js", "v1/api.js", "v1/render.js",
 	} {
 		if _, err := assetFS.ReadFile("assets/" + module); err != nil {
 			t.Errorf("expected module %s is missing", module)
@@ -2675,7 +2969,7 @@ func TestInspectorStatesFidelityInWords(t *testing.T) {
 // asserting something no evidence supports — which is the same prohibition the
 // adapter obeys, one layer out.
 func TestLiveViewReadsFidelityAndDoesNotDeriveIt(t *testing.T) {
-	source := stripJSComments(readAsset(t, "live.js"))
+	source := stripJSComments(readAsset(t, "model.js"))
 
 	if !strings.Contains(source, "observation.fidelity") {
 		t.Error("live.js does not read the server's fidelity")

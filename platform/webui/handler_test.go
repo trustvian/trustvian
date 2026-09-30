@@ -61,10 +61,10 @@ func TestAssetsAreServedWithDeclaredContentTypes(t *testing.T) {
 		want string
 	}{
 		{"/assets/app.js", typeJS},
-		{"/assets/api.js", typeJS},
-		{"/assets/realtime.js", typeJS},
-		{"/assets/render.js", typeJS},
-		{"/assets/styles.css", typeCSS},
+		{"/assets/v1/api.js", typeJS},
+		{"/assets/v1/realtime.js", typeJS},
+		{"/assets/v1/render.js", typeJS},
+		{"/assets/styles/tokens.css", typeCSS},
 	}
 
 	for _, tt := range tests {

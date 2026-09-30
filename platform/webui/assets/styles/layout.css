@@ -1,0 +1,288 @@
+/*
+ * The shell: sidebar, page head, workspace, contextual panel, responsive.
+ *
+ * Three fixed regions and nothing else. A component decides how it looks;
+ * this file decides where it goes.
+ */
+
+.app {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+/* ------------------------------- sidebar ---------------------------------- */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  background: var(--chrome);
+  color: var(--chrome-ink);
+  border-right: 1px solid var(--chrome-edge);
+  height: 100vh;
+  overflow-y: auto;
+  padding: var(--s-4) 0 var(--s-3);
+  position: sticky;
+  top: 0;
+}
+
+.brand {
+  align-items: center;
+  display: flex;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  padding: 0 var(--s-4) var(--s-4);
+}
+.brand-mark { color: var(--chrome-accent); font-size: var(--t-lead); }
+.wordmark {
+  color: var(--chrome-ink);
+  font-size: var(--t-base);
+  font-weight: var(--w-semi);
+  letter-spacing: 0.01em;
+  margin-right: auto;
+}
+
+/* The connection chip. The dot is decoration; the word beside it is the
+   state, so nothing here depends on seeing a colour. */
+.conn-chip {
+  align-items: center;
+  border: 1px solid var(--chrome-line);
+  border-radius: var(--r-pill);
+  color: var(--chrome-muted);
+  display: inline-flex;
+  font-size: var(--t-micro);
+  gap: var(--s-1);
+  letter-spacing: 0.02em;
+  padding: 1px var(--s-2);
+}
+.conn-dot {
+  background: currentColor;
+  border-radius: 50%;
+  flex: none;
+  height: 6px;
+  width: 6px;
+}
+.conn-live { border-color: currentColor; color: var(--chrome-calm); }
+.conn-wait { border-color: currentColor; color: var(--chrome-note); }
+.conn-down { border-color: currentColor; color: var(--chrome-stop); }
+.conn-idle { color: var(--chrome-muted); }
+
+/* Destinations are grouped by what a reader came to do. Seven flat peers
+   made every one look equally likely; four short groups make the shape of
+   the product legible before anything is clicked. */
+.nav-group { margin: 0 0 var(--s-2); }
+.nav-group-label {
+  color: var(--chrome-faint);
+  font-size: var(--t-micro);
+  font-weight: var(--w-semi);
+  letter-spacing: 0.06em;
+  margin: 0;
+  padding: var(--s-2) var(--s-4) var(--s-1);
+}
+.nav-list { list-style: none; margin: 0; padding: 0; }
+.nav-item {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-left: 2px solid transparent;
+  color: var(--chrome-muted);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: var(--t-body);
+  gap: var(--s-3);
+  padding: var(--s-2) var(--s-4);
+  text-align: left;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+  width: 100%;
+}
+.nav-item .icon { color: var(--chrome-faint); font-size: 1.05em; }
+.nav-item:hover { background: var(--chrome-hover); color: var(--chrome-ink); }
+.nav-item:hover .icon { color: var(--chrome-muted); }
+.nav-item[aria-current="page"] {
+  background: var(--chrome-active);
+  border-left-color: var(--chrome-accent);
+  color: var(--chrome-on);
+  font-weight: var(--w-medium);
+}
+.nav-item[aria-current="page"] .icon { color: var(--chrome-accent); }
+.nav-item:focus-visible { outline: 2px solid var(--chrome-accent); outline-offset: -2px; }
+
+/* A count a reader can act on, never a decoration. It appears only when the
+   console actually holds the number. */
+.nav-count {
+  background: var(--chrome-hover);
+  border-radius: var(--r-pill);
+  color: var(--chrome-muted);
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  margin-left: auto;
+  padding: 0 var(--s-2);
+}
+.nav-item[aria-current="page"] .nav-count { background: var(--chrome-line); color: var(--chrome-ink); }
+
+/* Project context. Always says what the workspace is scoped to, and changes
+   it by going to the project list rather than by opening a menu. */
+.scope-block {
+  border-top: 1px solid var(--chrome-line);
+  margin-top: auto;
+  padding: var(--s-4) var(--s-4) 0;
+}
+.scope-label { color: var(--chrome-faint); font-size: var(--t-micro); margin: 0; }
+.scope-value {
+  color: var(--chrome-ink);
+  font-size: var(--t-body);
+  font-weight: var(--w-medium);
+  margin: var(--s-1) 0 var(--s-2);
+  overflow-wrap: anywhere;
+}
+.scope-block .link-button {
+  border-color: var(--chrome-line);
+  color: var(--chrome-muted);
+  font-size: var(--t-small);
+}
+.scope-block .link-button:hover { border-color: var(--chrome-faint); color: var(--chrome-ink); }
+
+/* ------------------------------- workspace -------------------------------- */
+
+.shell { display: flex; flex-direction: column; min-width: 0; }
+
+.page-head {
+  align-items: flex-start;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: var(--s-5);
+  justify-content: space-between;
+  min-height: var(--head-h);
+  padding: var(--s-4) var(--s-6);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.page-head-main { min-width: 0; }
+.page-title {
+  font-size: var(--t-title);
+  letter-spacing: -0.005em;
+  margin: 0;
+}
+.page-head-actions { align-items: center; display: flex; flex-wrap: wrap; gap: var(--s-2); }
+
+/* Breadcrumbs carry the selection, and every step but the last is a control
+   so a reader goes back up the path they made. */
+.crumbs {
+  align-items: baseline;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--t-small);
+  gap: var(--s-1);
+  margin-top: 2px;
+}
+.crumb {
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--t-small);
+  padding: 0 2px;
+}
+.crumb:hover { text-decoration: underline; }
+.crumb-current { color: var(--ink-soft); font-weight: var(--w-medium); }
+.crumb-sep { color: var(--n-5); }
+
+.workspace {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--s-5) var(--s-6) var(--s-7);
+}
+
+/* A cap so a 34-inch display does not stretch a definition list to a metre
+   wide. Tables opt out: a wide table wants the width, and that is the one
+   thing that genuinely reads better big. */
+.view { max-width: 86rem; }
+.view[hidden] { display: none; }
+.section[hidden] { display: none; }
+
+.view-split {
+  align-items: start;
+  display: grid;
+  gap: var(--s-5);
+  grid-template-columns: minmax(0, 1fr) var(--detail-w);
+  max-width: none;
+}
+/* With no observation selected there is no panel, and the table takes the
+   width back rather than sitting beside a reserved empty column. */
+.view-split:has(> .detail[hidden]) { grid-template-columns: minmax(0, 1fr); }
+.view-main { min-width: 0; }
+
+/* A run's overview is two short records, not two full-width blocks. */
+#run-overview {
+  align-items: start;
+  display: grid;
+  gap: var(--s-4);
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+}
+#run-overview .result { margin: 0; }
+#run-view-actions { grid-column: 1 / -1; margin: 0; }
+
+.foot {
+  border-top: 1px solid var(--line);
+  color: var(--faint);
+  font-size: var(--t-small);
+  padding: var(--s-4) var(--s-6);
+}
+.foot p { margin: 0; }
+
+/* ------------------------------- responsive ------------------------------- */
+
+@media (max-width: 1180px) {
+  .view-split { grid-template-columns: minmax(0, 1fr); }
+  .detail { max-height: none; position: static; }
+}
+
+@media (max-width: 900px) {
+  .app { grid-template-columns: minmax(0, 1fr); }
+  .sidebar {
+    height: auto;
+    padding-bottom: 0;
+    position: static;
+  }
+  .brand { padding-bottom: var(--s-3); }
+  .nav-group { margin: 0; }
+  .nav-group-label { display: none; }
+  .nav-list {
+    display: flex;
+    gap: 2px;
+    overflow-x: auto;
+    padding: 0 var(--s-3) var(--s-3);
+  }
+  /* The groups become one scrolling strip, with a rule where a heading was
+     so the grouping survives losing its labels. */
+  .nav-group + .nav-group .nav-list { border-left: 1px solid var(--chrome-line); }
+  .nav-item {
+    border-bottom: 2px solid transparent;
+    border-left: 0;
+    border-radius: var(--r-sm) var(--r-sm) 0 0;
+    white-space: nowrap;
+    width: auto;
+  }
+  .nav-item[aria-current="page"] {
+    border-bottom-color: var(--chrome-accent);
+    border-left: 0;
+  }
+  .scope-block {
+    align-items: baseline;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-3);
+    margin-top: 0;
+    padding: var(--s-3) var(--s-4);
+  }
+  .scope-value { margin: 0; }
+  .page-head { position: static; padding: var(--s-4); }
+  .workspace { padding: var(--s-4) var(--s-4) var(--s-7); }
+  .foot { padding: var(--s-4); }
+}

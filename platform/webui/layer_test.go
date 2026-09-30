@@ -131,7 +131,7 @@ func layerSentenceLiterals(t *testing.T, source string) []string {
 // asserted in the browser too: fidelity defaults an absent value to "transport",
 // and the layer must not, because "not classified" is a real state.
 func TestLiveViewCarriesTheLayerWithoutDefaulting(t *testing.T) {
-	source := readAsset(t, "live.js")
+	source := readAsset(t, "model.js")
 
 	if !strings.Contains(source, `observation.behavior_layer || ""`) {
 		t.Error("live.js does not read behavior_layer, or defaults it to something")
@@ -158,7 +158,7 @@ func TestBehaviorLabelHasNoDanglingSeparator(t *testing.T) {
 
 	// And no asset builds a label by unconditional concatenation with a
 	// separator. This catches the shape rather than one instance of it.
-	for _, name := range []string{"graph.js", "live.js", "inspector.js", "render.js"} {
+	for _, name := range []string{"graph.js", "model.js", "inspector.js", "render.js"} {
 		source := readAsset(t, name)
 		// ` → ` or ` · ` immediately followed by a bare interpolation of a
 		// possibly-empty descriptor field.
