@@ -46,12 +46,20 @@ func runDriver(t *testing.T, driver string, args ...string) []byte {
 		t.Skip("node is not on PATH; the structural evidence assertions still ran")
 	}
 
+	// The bundle is laid out in directories, and the driver imports the same
+	// specifiers the browser resolves, so the tree is reproduced rather than
+	// flattened. A flattened copy would run modules whose relative imports
+	// mean something different from what ships.
 	dir := t.TempDir()
 	for _, name := range assetNames() {
 		if !strings.HasSuffix(name, ".js") {
 			continue
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(readAsset(t, name)), 0o600); err != nil {
+		target := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			t.Fatalf("create %s: %v", filepath.Dir(name), err)
+		}
+		if err := os.WriteFile(target, []byte(readAsset(t, name)), 0o600); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
 	}
@@ -94,7 +102,7 @@ type traceNode struct {
 }
 
 const traceDriver = `
-import { buildTraceTree, TRACE_MAX_DEPTH } from "./trace.js";
+import { buildTraceTree, TRACE_MAX_DEPTH } from "./views/trace.js";
 const cases = JSON.parse(process.argv[2]);
 const out = {};
 for (const name of Object.keys(cases)) {
@@ -324,7 +332,7 @@ func atoiTest(s string) int {
 // ---------------------------------------------------------------------
 
 const factsDriver = `
-import { formatDuration, spanStatusLabel, newBehaviorLabel } from "./trace.js";
+import { formatDuration, spanStatusLabel, newBehaviorLabel } from "./views/trace.js";
 const input = JSON.parse(process.argv[2]);
 const out = { durations: {}, statuses: {}, newBehavior: {} };
 for (const name of Object.keys(input.durations)) {
@@ -470,11 +478,11 @@ import {
   parentStateText, PARENT_STATES, DURATION_UNAVAILABLE,
   FIDELITY_NOT_RETAINED, SEQUENCE_DEVIATION_NOT_RETAINED,
   NEW_TO_RUN, SEEN_IN_RUN,
-} from "./trace.js";
+} from "./views/trace.js";
 import {
   statusSentence, historySentence, RUN_VIEWS, OBSERVATION_COLUMNS,
   RECORDED_COUNT_CAVEAT, EXHAUSTIVE_CAVEAT, PROVENANCE_UNSPECIFIED,
-} from "./evidence.js";
+} from "./views/evidence.js";
 
 const sentences = [];
 for (const key of Object.keys(PARENT_STATES)) {
@@ -544,7 +552,7 @@ func TestNoRenderedSentenceAssertsReasoningIntentOrCausality(t *testing.T) {
 // ---------------------------------------------------------------------
 
 const controllerDriver = `
-import { EvidenceSurface, needsExplicitSide, findingPresentation } from "./evidence.js";
+import { EvidenceSurface, needsExplicitSide, findingPresentation } from "./views/evidence.js";
 
 // A recording view. It draws nothing; it records what it was asked to draw,
 // which is what makes "a stale response was discarded" observable.
@@ -1561,8 +1569,8 @@ func TestEvidenceSurfaceExistsInTheShell(t *testing.T) {
 	shell := readAsset(t, "index.html")
 
 	for _, needed := range []string{
-		`id="tab-evidence"`,
-		`id="panel-evidence"`,
+		`id="nav-evidence"`,
+		`id="view-evidence"`,
 		`data-section="evidence-finding"`,
 		`data-section="evidence-run"`,
 		`data-section="evidence-provenance"`,
@@ -1588,7 +1596,7 @@ func TestEvidenceSurfaceExistsInTheShell(t *testing.T) {
 	// absence is an oversight.
 	for _, phrase := range []string{"prompt", "tool argument", "arbitrary attribute"} {
 		if !strings.Contains(shell, phrase) {
-			t.Errorf("the Evidence panel does not name %q among what it cannot show", phrase)
+			t.Errorf("the Evidence view does not name %q among what it cannot show", phrase)
 		}
 	}
 }
@@ -1604,15 +1612,20 @@ func TestSubtabSwitchersAreScopedToTheirPanel(t *testing.T) {
 	app := stripJSComments(readAsset(t, "app.js"))
 
 	if strings.Contains(app, `document.querySelectorAll(".subtab")`) {
-		t.Error("app.js queries every .subtab in the document; with two panels " +
-			"holding sub-sections that wires each button to both switchers")
+		t.Error("app.js queries every .subtab in the document; with several views " +
+			"holding sub-sections that wires each button to every switcher")
 	}
-	if !regexp.MustCompile(`panel\.querySelectorAll\("\.subtab"\)`).MatchString(app) {
-		t.Error("the subtab query is not scoped to a panel")
+	if !regexp.MustCompile(`view\.querySelectorAll\("\.subtab"\)`).MatchString(app) {
+		t.Error("the subtab query is not scoped to a view")
 	}
-	for _, panel := range []string{"panel-manage", "panel-evidence"} {
-		if !strings.Contains(app, panel) {
-			t.Errorf("app.js does not set up subtabs for %s", panel)
+	// Four views hold sub-sections now, which is what makes the scope
+	// load-bearing rather than a precaution.
+	for _, view := range []string{
+		`setupSubtabs("view-manage"`, `setupSubtabs("view-evidence"`,
+		`setupSubtabs("view-promotion"`, `setupSubtabs("view-run"`,
+	} {
+		if !strings.Contains(app, view) {
+			t.Errorf("app.js does not set up subtabs with %s)", view)
 		}
 	}
 }

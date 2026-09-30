@@ -3,62 +3,117 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Trustvian — live agent behavior</title>
-<link rel="stylesheet" href="/assets/styles.css">
+<title>Trustvian — agent behavior console</title>
+<!-- Five sheets, loaded in cascade order: values, then element defaults,
+     then where things go, then what they look like, then the two surfaces
+     that are not reusable. Five links rather than one sheet importing the
+     others: an imported sheet is not discovered until its importer has been
+     parsed, which serialises the requests for nothing. -->
+<link rel="stylesheet" href="/assets/styles/tokens.css">
+<link rel="stylesheet" href="/assets/styles/base.css">
+<link rel="stylesheet" href="/assets/styles/layout.css">
+<link rel="stylesheet" href="/assets/styles/components.css">
+<link rel="stylesheet" href="/assets/styles/views.css">
 </head>
 <body>
-<a class="skip" href="#main">Skip to content</a>
+<a class="skip" href="#workspace">Skip to content</a>
 
-<!-- ============================ Header ============================
-     Operational, not administrative. Connection state, the agent being
-     watched, and the run's authoritative counts — read from /v1, never
-     accumulated from the stream. Opaque identifiers are technical detail and
-     live in the inspector.
--->
-<header class="top">
+<!-- =====================================================================
+     The shell is a console, not a form.
+
+     Three fixed regions: a persistent sidebar of destinations, a workspace
+     whose primary surface is a table of real records, and a contextual panel
+     that opens beside the table when a row is selected. Nothing here asks a
+     developer to know an identifier before they can see anything.
+
+     Every destination below is backed by a capability /v1 actually serves.
+     There are no placeholders for work that does not exist yet: an empty
+     destination teaches a reader that the product is thinner than it is.
+===================================================================== -->
+<div class="app">
+
+<!-- ============================ Sidebar ============================ -->
+<nav class="sidebar" id="sidebar" aria-label="Sections">
   <div class="brand">
+    <span class="brand-mark" id="brand-mark" aria-hidden="true"></span>
     <span class="wordmark">Trustvian</span>
     <span class="conn-chip" id="conn-chip" role="status" aria-live="polite">
       <span class="conn-dot" aria-hidden="true"></span><span id="conn-text">Connecting</span>
     </span>
   </div>
 
-  <div class="context" id="header-context">
-    <p class="context-agent" id="header-agent">No agent selected</p>
-    <p class="context-line" id="header-scope"></p>
+  <!-- Grouped by what a reader came to do. Seven flat peers made every one
+       look equally likely; four short groups make the shape of the product
+       legible before anything is clicked. The icons are decoration beside a
+       word, never instead of one. -->
+  <div class="nav-group">
+    <p class="nav-group-label" id="nav-group-observe">Observe</p>
+    <ul class="nav-list" aria-labelledby="nav-group-observe">
+      <li><button type="button" class="nav-item" id="nav-live" data-view="view-live" data-icon="live" aria-current="page">Live</button></li>
+    </ul>
+  </div>
+  <div class="nav-group">
+    <p class="nav-group-label" id="nav-group-investigate">Investigate</p>
+    <ul class="nav-list" aria-labelledby="nav-group-investigate">
+      <li><button type="button" class="nav-item" id="nav-projects" data-view="view-projects" data-icon="projects">Projects</button></li>
+      <li><button type="button" class="nav-item" id="nav-runs" data-view="view-runs" data-icon="runs">Runs</button></li>
+      <li><button type="button" class="nav-item" id="nav-compare" data-view="view-compare" data-icon="compare">Compare</button></li>
+      <li><button type="button" class="nav-item" id="nav-evidence" data-view="view-evidence" data-icon="evidence">Evidence</button></li>
+    </ul>
+  </div>
+  <div class="nav-group">
+    <p class="nav-group-label" id="nav-group-decide">Decide</p>
+    <ul class="nav-list" aria-labelledby="nav-group-decide">
+      <li><button type="button" class="nav-item" id="nav-promotion" data-view="view-promotion" data-icon="promotion">Promotions</button></li>
+    </ul>
+  </div>
+  <div class="nav-group">
+    <p class="nav-group-label" id="nav-group-administer">Administer</p>
+    <ul class="nav-list" aria-labelledby="nav-group-administer">
+      <li><button type="button" class="nav-item" id="nav-manage" data-view="view-manage" data-icon="manage">Manage</button></li>
+    </ul>
   </div>
 
-  <div class="counters" id="header-counters">
-    <p class="counter-note" id="header-counts">Authoritative counts appear when a run is selected.</p>
+  <!-- Project context. Always visible, always says which project the
+       workspace is scoped to, and changes it by going to the project list
+       rather than by opening a menu. -->
+  <div class="scope-block">
+    <p class="scope-label">Project</p>
+    <p class="scope-value" id="scope-project">None selected</p>
+    <button type="button" class="link-button" id="scope-change">Change project</button>
   </div>
-</header>
-
-<nav class="tabs" aria-label="Sections">
-  <button type="button" class="tab" id="tab-live" data-panel="panel-live" aria-selected="true">Live</button>
-  <button type="button" class="tab" id="tab-investigate" data-panel="panel-investigate" aria-selected="false">Investigate</button>
-  <button type="button" class="tab" id="tab-compare" data-panel="panel-compare" aria-selected="false">Compare</button>
-  <button type="button" class="tab" id="tab-evidence" data-panel="panel-evidence" aria-selected="false">Evidence</button>
-  <button type="button" class="tab" id="tab-promotion" data-panel="panel-promotion" aria-selected="false">Promotions</button>
-  <button type="button" class="tab" id="tab-manage" data-panel="panel-manage" aria-selected="false">Manage</button>
 </nav>
 
-<main id="main">
+<!-- ============================ Workspace ============================ -->
+<div class="shell">
+
+<header class="page-head">
+  <div class="page-head-main">
+    <h1 class="page-title" id="page-title">Live</h1>
+    <nav class="crumbs" id="crumbs" aria-label="Selection"></nav>
+  </div>
+  <div class="page-head-actions" id="page-actions"></div>
+</header>
 
 <p class="err" id="global-error" role="alert" aria-live="assertive" hidden></p>
 
+<main class="workspace" id="workspace">
+
 <!-- ============================ Live ============================
-     The default surface and the product's front door. Three regions plus a
-     timeline: active scopes on the left, the behavior canvas in the middle,
-     the inspector on the right. Nothing here asks for an identifier.
+     A current viewport over the stream. Active scopes on the left, the
+     behavior flow in the middle, the observation inspector on the right.
+     Nothing here asks for an identifier.
 -->
-<section class="panel panel-live" id="panel-live" aria-labelledby="tab-live">
+<section class="view" id="view-live" data-nav="nav-live">
+  <div class="strip" id="live-strip"></div>
+
   <div class="observatory">
 
     <aside class="rail" aria-label="Active agents and runs">
       <h2 class="region-title">Active now</h2>
       <p class="region-note">
-        Every scope seen on this connection, most recent first. Counts are
-        frames that arrived here, not a run's authoritative record count.
+        Every scope on this connection, most recent first. Counts are frames
+        that arrived here, not a run's record count.
       </p>
       <div id="rail"></div>
     </aside>
@@ -71,10 +126,9 @@
       <div id="canvas-notices"></div>
       <div id="canvas" class="canvas-host"></div>
       <p class="region-note canvas-foot">
-        One run at a time. A fingerprint identifies a behavioral shape and
-        carries no run, so two unrelated runs can share one — drawing them
-        together would let one run's decision overwrite another's. Activity in
-        a run you are not watching updates its card and is not drawn here.
+        One run at a time. A fingerprint carries no run, so two unrelated runs
+        can share one; activity in a run you are not watching updates its card
+        instead of being drawn here.
       </p>
     </section>
 
@@ -88,140 +142,250 @@
   <section class="timeline-region" aria-label="Live event timeline">
     <h2 class="region-title">Live stream</h2>
     <p class="region-note">
-      The current connection only. The stream keeps no history and replays
-      nothing, so a reconnect starts a new segment rather than continuing this
-      one.
+      A viewport over the current connection. The stream keeps no history and
+      replays nothing, so a reconnect starts a new segment.
     </p>
     <div id="timeline"></div>
   </section>
+
+  <!-- Narrowing the subscription to one run. Secondary to the unfiltered
+       stream above, which is why it sits at the foot of the view. The run is
+       normally filled by the Watch control on a run's overview. -->
+  <section class="sub-region" aria-label="Watch one run">
+    <h2 class="region-title">Watch one run</h2>
+    <p class="region-note">
+      Narrows the subscription to one run and reads its authoritative snapshot.
+    </p>
+    <form class="row" id="form-watch">
+      <label for="watch-run-id">Evaluation run</label>
+      <input type="text" id="watch-run-id" name="run_id" autocomplete="off" required>
+      <button type="submit" id="watch-start">Watch</button>
+      <button type="button" class="btn-quiet" id="watch-reconnect" disabled>Reconnect</button>
+      <button type="button" class="btn-quiet" id="watch-stop" disabled>Stop</button>
+    </form>
+    <p class="state" id="watch-state" role="status" aria-live="polite">Not watching one run.</p>
+    <div class="result" id="live-snapshot">
+      <p class="empty">No snapshot.</p>
+    </div>
+  </section>
 </section>
 
-<!-- ============================ Investigate ============================
-     Durable state, browsed a bounded page at a time, plus one run's
-     authoritative detail. This is where a developer goes when nothing is
-     running and they still need to find what exists.
+<!-- ============================ Projects ============================
+     The project selection page. A visible table of what exists, searchable
+     over the rows on screen, with the continuation the server offered as an
+     explicit action. Choosing a row scopes the whole console.
 -->
-<section class="panel" id="panel-investigate" aria-labelledby="tab-investigate" hidden>
-  <h2>Investigate</h2>
-  <p class="note">
-    Realtime answers <em>what is active now</em>. This answers <em>what
-    exists</em>, from durable state. Opening the page reads the first page of
-    projects and nothing else — no child level is fetched and no continuation
-    followed until you ask.
-  </p>
+<section class="view" id="view-projects" data-nav="nav-projects" hidden>
+  <div class="strip" id="projects-strip"></div>
 
-  <div class="levels">
-    <div class="level-column result" id="level-projects"></div>
-    <div class="level-column result" id="level-agents"></div>
-    <div class="level-column result" id="level-candidates"></div>
-    <div class="level-column result" id="level-runs"></div>
+  <div class="toolbar">
+    <label class="search" for="projects-search" data-icon="search">
+      <span class="search-label">Filter projects</span>
+      <input type="search" id="projects-search" autocomplete="off" placeholder="Name or identifier">
+    </label>
+    <span class="toolbar-note" id="projects-page-state"></span>
   </div>
 
-  <h3>Run detail</h3>
-  <p class="note">
-    Authoritative, read from <code>/v1</code>. Selecting a run above opens it
-    here; the lifecycle controls for it are under Manage.
-  </p>
-  <div class="result" id="investigate-run">
-    <p class="empty">No run opened.</p>
-  </div>
-  <div class="result" id="investigate-progress">
-    <p class="empty">No progress read.</p>
-  </div>
-
-  <h3>Watch one run</h3>
-  <p class="note">
-    The Live stream already shows every run. This narrows the subscription to a
-    single run and reads its authoritative snapshot, which is what you want
-    when a run is finishing and you care about its final state.
-  </p>
-  <form class="row" id="form-watch">
-    <label for="watch-run-id">Evaluation run ID</label>
-    <input type="text" id="watch-run-id" name="run_id" autocomplete="off" required>
-    <button type="submit" id="watch-start">Watch</button>
-    <button type="button" id="watch-reconnect" disabled>Reconnect now</button>
-    <button type="button" id="watch-stop" disabled>Stop</button>
-  </form>
-  <p class="state" id="watch-state" role="status" aria-live="polite">Not watching one run.</p>
-  <div class="result" id="live-snapshot">
-    <p class="empty">No snapshot.</p>
+  <div class="table-host" id="projects-table"></div>
+  <div class="pager" id="projects-pager" hidden>
+    <button type="button" id="projects-more">Load next page</button>
   </div>
 </section>
 
-<!-- ============================ Compare ============================ -->
-<section class="panel" id="panel-compare" aria-labelledby="tab-compare" hidden>
-  <h2>Compare</h2>
-  <p class="note">
-    Pick two runs of the same candidate&rsquo;s agent. Browsing to a candidate
-    under <strong>Investigate</strong> fills these lists; the identifiers stay
-    the values behind them, so you never have to copy one.
+<!-- ============================ Runs ============================
+     The workhorse. A visible scope bar of the project's agents and their
+     candidates, then the run table itself. Selection is by click at every
+     level; no level is a menu.
+
+     The scope bar exists because /v1 has no "runs for a project" collection,
+     and walking every agent and candidate to synthesise one would be the
+     unbounded traversal ADR 0041 refuses. Two bounded lists are the honest
+     shape of the data.
+-->
+<section class="view" id="view-runs" data-nav="nav-runs" hidden>
+  <!-- The scope bar collapses once it has done its job. Both choices stay
+       on the summary strip below, so nothing is hidden — only the two lists
+       that were taking a third of the screen to say what one line says. -->
+  <div class="scope-bar" id="runs-scope">
+    <div class="scope-col">
+      <div class="scope-col-head">
+        <h2 class="region-title">Agents</h2>
+        <span class="scope-count" id="agents-count"></span>
+      </div>
+      <div class="pick-list" id="agents-list"></div>
+      <button type="button" class="more-inline" id="agents-more" hidden>Load next page</button>
+    </div>
+    <div class="scope-col">
+      <div class="scope-col-head">
+        <h2 class="region-title">Candidates</h2>
+        <span class="scope-count" id="candidates-count"></span>
+      </div>
+      <div class="pick-list" id="candidates-list"></div>
+      <button type="button" class="more-inline" id="candidates-more" hidden>Load next page</button>
+    </div>
+  </div>
+
+  <div class="strip" id="runs-strip"></div>
+
+  <div class="toolbar">
+    <button type="button" class="btn-quiet" id="runs-scope-toggle" hidden aria-expanded="false" aria-controls="runs-scope">Change agent or candidate</button>
+    <div class="chips" id="runs-status-filter" role="group" aria-label="Filter by status"></div>
+    <label class="search" for="runs-search" data-icon="search">
+      <span class="search-label">Filter runs</span>
+      <input type="search" id="runs-search" autocomplete="off" placeholder="Run or candidate">
+    </label>
+    <span class="toolbar-note" id="runs-page-state"></span>
+  </div>
+
+  <div class="table-host" id="runs-table"></div>
+  <div class="pager" id="runs-pager" hidden>
+    <button type="button" id="runs-more">Load next page</button>
+  </div>
+</section>
+
+<!-- ============================ Run workspace ============================
+     Opened by clicking a run row. Not a navigation destination of its own:
+     the sidebar stays on Runs, because that is where the reader came from and
+     where Back returns them.
+-->
+<section class="view view-split" id="view-run" data-nav="nav-runs" hidden>
+  <div class="view-main">
+    <div class="strip" id="run-strip"></div>
+
+    <nav class="subtabs" id="run-tabs" aria-label="Run views">
+      <button type="button" class="subtab" data-section="run-overview" aria-selected="true">Overview</button>
+      <button type="button" class="subtab" data-section="run-observations" aria-selected="false">Observations</button>
+      <button type="button" class="subtab" data-section="run-behaviors" aria-selected="false">Behaviors</button>
+    </nav>
+
+    <div class="section" id="run-overview">
+      <div class="result" id="investigate-run">
+        <p class="empty">No run opened.</p>
+      </div>
+      <div class="result" id="investigate-progress">
+        <p class="empty">No progress read.</p>
+      </div>
+      <div class="actions" id="run-view-actions"></div>
+    </div>
+
+    <div class="section" id="run-observations" hidden>
+      <div class="toolbar">
+        <div class="chips" id="observations-scope" role="group" aria-label="Correlated narrowing"></div>
+        <span class="toolbar-note" id="observations-page-state"></span>
+      </div>
+      <div class="table-host" id="observations-table"></div>
+      <div class="pager" id="observations-pager" hidden>
+        <button type="button" id="observations-more">Load next page</button>
+      </div>
+    </div>
+
+    <div class="section" id="run-behaviors" hidden>
+      <div class="toolbar">
+        <span class="toolbar-note" id="behaviors-page-state"></span>
+      </div>
+      <div class="table-host" id="behaviors-table"></div>
+      <div class="pager" id="behaviors-pager" hidden>
+        <button type="button" id="behaviors-more">Load next page</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- The contextual panel. Opens beside the table on selection, keeps the
+       selected row highlighted, and closing it returns focus to that row
+       without resetting the table. -->
+  <aside class="detail" id="detail" aria-label="Observation detail" hidden>
+    <div class="detail-head">
+      <h2 class="detail-title" id="detail-title">Observation</h2>
+      <button type="button" class="detail-close" id="detail-close" aria-label="Close detail">Close</button>
+    </div>
+    <div class="detail-body" id="detail-body"></div>
+  </aside>
+</section>
+
+<!-- ============================ Compare ============================
+     Two runs, chosen from a visible table by assigning rows to a side. The
+     two chosen runs are then shown in full, side by side, so the reader can
+     see what they are about to compare rather than two opaque identifiers.
+-->
+<section class="view" id="view-compare" data-nav="nav-compare" hidden>
+  <div class="scope-bar">
+    <div class="scope-col">
+      <div class="scope-col-head">
+        <h2 class="region-title">Agents</h2>
+        <span class="scope-count" id="compare-agents-count"></span>
+      </div>
+      <div class="pick-list" id="compare-agents-list"></div>
+      <button type="button" class="more-inline" id="compare-agents-more" hidden>Load next page</button>
+    </div>
+    <div class="scope-col">
+      <div class="scope-col-head">
+        <h2 class="region-title">Candidates</h2>
+        <span class="scope-count" id="compare-candidates-count"></span>
+      </div>
+      <div class="pick-list" id="compare-candidates-list"></div>
+      <button type="button" class="more-inline" id="compare-candidates-more" hidden>Load next page</button>
+    </div>
+  </div>
+
+  <h2 class="region-title">Choose two runs</h2>
+  <p class="region-note">
+    Assign one run as the reference and another as the candidate. Runs of any
+    candidate under the same agent can be compared.
   </p>
+  <div class="toolbar">
+    <span class="toolbar-note" id="compare-runs-page-state"></span>
+  </div>
+  <div class="table-host" id="compare-runs-table"></div>
+  <div class="pager" id="compare-runs-pager" hidden>
+    <button type="button" id="compare-runs-more">Load next page</button>
+  </div>
 
-  <form class="stack" id="form-compare">
-    <div class="field">
-      <label for="compare-reference-pick">Reference run</label>
-      <select id="compare-reference-pick">
-        <option value="">Browse to a candidate under Investigate</option>
-      </select>
-      <p class="hint">The run the candidate is measured against.</p>
+  <div class="sides">
+    <div class="cmp-side" id="compare-side-reference">
+      <h3 class="cmp-side-title">Reference</h3>
+      <div class="side-body" id="compare-reference-summary">
+        <p class="empty">No reference chosen. Use a row's Reference control above.</p>
+      </div>
     </div>
-    <div class="field">
-      <label for="compare-reference">Reference run ID</label>
-      <input type="text" id="compare-reference" name="reference_run_id" autocomplete="off" required>
-      <p class="hint">Filled by the list above, or typed if you already have it.</p>
+    <div class="cmp-side" id="compare-side-candidate">
+      <h3 class="cmp-side-title">Candidate</h3>
+      <div class="side-body" id="compare-candidate-summary">
+        <p class="empty">No candidate chosen. Use a row's Candidate control above.</p>
+      </div>
     </div>
+  </div>
 
-    <div class="field">
-      <label for="compare-candidate-pick">Candidate run</label>
-      <select id="compare-candidate-pick">
-        <option value="">Browse to a candidate under Investigate</option>
-      </select>
-      <p class="hint">The run being evaluated.</p>
-    </div>
-    <div class="field">
-      <label for="compare-candidate">Candidate run ID</label>
-      <input type="text" id="compare-candidate" name="candidate_run_id" autocomplete="off" required>
-      <p class="hint">Filled by the list above, or typed if you already have it.</p>
-    </div>
-
+  <form class="limits" id="form-compare">
     <fieldset>
-      <legend>Gate limits (all required; 0 is valid)</legend>
+      <legend>Gate limits</legend>
       <p class="hint">
-        These are policy, not evidence. They are yours to choose, and the same
-        comparison yields PASS or FAIL depending only on them.
+        Policy, not evidence. They are yours to choose, and the same comparison
+        yields PASS or FAIL depending only on them. <code>0</code> is valid.
       </p>
-      <div class="field">
-        <label for="compare-max-added">Max added behaviors</label>
-        <input type="text" id="compare-max-added" inputmode="numeric" autocomplete="off" required>
-        <p class="hint">
-          How many behaviors the candidate may show that the reference did not.
-          <code>0</code> permits no added behavior at all.
-        </p>
-      </div>
-      <div class="field">
-        <label for="compare-max-block">Max block decisions</label>
-        <input type="text" id="compare-max-block" inputmode="numeric" autocomplete="off" required>
-        <p class="hint">
-          How many BLOCK decisions the candidate&rsquo;s evidence may contain.
-        </p>
-      </div>
-      <div class="field">
-        <label for="compare-max-critical">Max critical risk observations</label>
-        <input type="text" id="compare-max-critical" inputmode="numeric" autocomplete="off" required>
-        <p class="hint">
-          How many critical-risk observations the candidate&rsquo;s evidence may
-          contain.
-        </p>
+      <div class="limit-row">
+        <div class="field">
+          <label for="compare-max-added">Max added behaviors</label>
+          <input type="text" id="compare-max-added" inputmode="numeric" autocomplete="off" required>
+        </div>
+        <div class="field">
+          <label for="compare-max-block">Max block decisions</label>
+          <input type="text" id="compare-max-block" inputmode="numeric" autocomplete="off" required>
+        </div>
+        <div class="field">
+          <label for="compare-max-critical">Max critical risk observations</label>
+          <input type="text" id="compare-max-critical" inputmode="numeric" autocomplete="off" required>
+        </div>
       </div>
     </fieldset>
-    <button type="submit">Compare</button>
+    <button type="submit" id="compare-submit" disabled>Compare runs</button>
+    <p class="hint" id="compare-ready">Choose a reference and a candidate to enable this.</p>
   </form>
 
-  <p class="note">
+  <p class="region-note">
     The verdict is the server's. This page renders <code>gate.verdict</code> and
-    the five checks it returned, and computes nothing from the limits itself. A
-    gate result is a deterministic outcome under the limits you supplied — not a
-    judgement that a candidate is safe, unsafe or ready for anything.
+    the checks it returned, and computes nothing from the limits itself. A gate
+    result is a deterministic outcome under the limits you supplied &mdash; not
+    a judgement that a candidate is safe, unsafe or ready for anything.
   </p>
 
   <div class="result" id="compare-result" aria-live="polite">
@@ -230,27 +394,17 @@
 </section>
 
 <!-- ============================ Evidence ============================
-     Task 076. Navigation from a finding to the behaviors that contributed and
-     the observations that carried them, and from one observation into its
-     session, trace and behavioral context.
-
-     Nothing here resolves anything. Every status, count, side and verdict on
-     screen is a value /v1 returned — task 085 owns resolution, task 067 owns
-     retention, and this surface owns reading them.
+     Why Trustvian reached a conclusion, from what it retained. Reached by
+     choosing a check or a delta on a comparison, so the finding arrives with
+     its references already attached.
 -->
-<section class="panel" id="panel-evidence" aria-labelledby="tab-evidence" hidden>
-  <h2>Evidence</h2>
-  <p class="note">
-    Why Trustvian reached a conclusion, from what it retained. This surface shows
-    which observations a finding rests on, which actions a session or trace
-    contained, and what was recorded about each one.
-  </p>
-  <p class="note">
-    <strong>What it cannot show, by design.</strong> No prompt, completion,
+<section class="view" id="view-evidence" data-nav="nav-evidence" hidden>
+  <p class="region-note">
+    <strong>What this cannot show, by design.</strong> No prompt, completion,
     reasoning, tool argument, tool result, retrieved document, HTTP body or
     arbitrary attribute &mdash; none of those is retained, so none is reachable
-    here. Trace structure is the recorded parent span reference and nothing else:
-    ordering is not reasoning, and this page never says an agent decided,
+    here. Trace structure is the recorded parent span reference and nothing
+    else: ordering is not reasoning, and this page never says an agent decided,
     intended or chose anything.
   </p>
 
@@ -260,449 +414,384 @@
     <button type="button" class="subtab" data-section="evidence-provenance" aria-selected="false">Provenance</button>
   </nav>
 
-<div class="evidence-section" id="evidence-finding" hidden>
-  <h3>Evidence &mdash; finding</h3>
-  <p class="note">
-    Opened from a gate check or a behavioral delta under <strong>Compare</strong>.
-    Compare two runs, then choose the evidence control on the check or delta you
-    want to understand &mdash; no identifier is typed anywhere in that path.
-  </p>
-  <div class="result" id="evidence-finding-result" aria-live="polite">
-    <p class="empty">
-      Nothing open. Run a comparison under Compare, then choose a gate check or a
-      behavioral delta to see the evidence behind it.
-    </p>
-  </div>
-</div>
-
-<div class="evidence-section" id="evidence-run" hidden>
-  <h3>Evidence &mdash; run history</h3>
-  <p class="note">
-    Five views over one run's retained history, each a bounded page. Opening an
-    observation from a finding fills these in for you.
-  </p>
-
-  <form class="stack" id="form-evidence-run">
-    <div class="field">
-      <label for="evidence-run-id">Evaluation run ID</label>
-      <input type="text" id="evidence-run-id" name="run_id" autocomplete="off" required>
-      <p class="hint">
-        The run whose history to read. Filled for you when you open an
-        observation from a finding. Example: <code>run-2026-03-04-a</code>
+  <div class="evidence-section" id="evidence-finding" hidden>
+    <div class="result" id="evidence-finding-result" aria-live="polite">
+      <p class="empty">
+        Nothing open. Compare two runs, then choose the evidence control on a
+        gate check or a behavioral delta.
       </p>
     </div>
+  </div>
 
-    <div class="field">
+  <div class="evidence-section" id="evidence-run" hidden>
+    <p class="region-note">
+      Bounded views over one run's retained history. Opening an observation
+      from a finding fills these in for you; a run opened under
+      <strong>Runs</strong> fills the run.
+    </p>
+
+    <form class="row" id="form-evidence-run">
+      <label for="evidence-run-id">Evaluation run</label>
+      <input type="text" id="evidence-run-id" name="run_id" autocomplete="off" required>
       <label for="evidence-view">View</label>
       <select id="evidence-view"></select>
-      <p class="hint" id="evidence-view-blurb"></p>
+      <span class="inline-field" id="evidence-identifier-field">
+        <label for="evidence-identifier" id="evidence-identifier-label">Identifier</label>
+        <input type="text" id="evidence-identifier" name="identifier" autocomplete="off">
+      </span>
+      <button type="submit">Load</button>
+    </form>
+    <p class="hint" id="evidence-view-blurb"></p>
+    <p class="hint" id="evidence-identifier-hint">
+      Filled for you when you open a session, trace or behavior from a row.
+    </p>
+
+    <div class="result" id="evidence-run-result" aria-live="polite">
+      <p class="empty">No run history loaded.</p>
     </div>
-
-    <div class="field" id="evidence-identifier-field">
-      <label for="evidence-identifier" id="evidence-identifier-label">Identifier</label>
-      <input type="text" id="evidence-identifier" name="identifier" autocomplete="off">
-      <p class="hint" id="evidence-identifier-hint">
-        Filled for you when you open a session, trace or behavior from a row
-        below. The value is the one the observation recorded.
-      </p>
-    </div>
-
-    <button type="submit">Load</button>
-  </form>
-
-  <div class="result" id="evidence-run-result" aria-live="polite">
-    <p class="empty">No run history loaded.</p>
   </div>
-</div>
 
-<div class="evidence-section" id="evidence-provenance" hidden>
-  <h3>Evidence &mdash; version provenance</h3>
-  <p class="note">
-    What the two sides of a comparison <em>were</em>, as the producer supplied it
-    when each candidate was created. Every field a producer did not supply reads
-    <code>not stated</code>: an unknown model is not the same fact as a model both
-    sides shared, and a panel that could not tell them apart would be worse than
-    one that said nothing.
-  </p>
+  <div class="evidence-section" id="evidence-provenance" hidden>
+    <p class="region-note">
+      What the two sides of a comparison <em>were</em>, as the producer supplied
+      it when each candidate was created. A field no producer supplied reads
+      <code>not stated</code>: an unknown model is not the same fact as a model
+      both sides shared.
+    </p>
 
-  <form class="stack" id="form-evidence-provenance">
-    <div class="field">
-      <label for="evidence-provenance-reference">Reference run ID</label>
+    <form class="row" id="form-evidence-provenance">
+      <label for="evidence-provenance-reference">Reference run</label>
       <input type="text" id="evidence-provenance-reference" autocomplete="off" required>
-      <p class="hint">Filled from a comparison, or typed if you already have it.</p>
-    </div>
-    <div class="field">
-      <label for="evidence-provenance-candidate">Candidate run ID</label>
+      <label for="evidence-provenance-candidate">Candidate run</label>
       <input type="text" id="evidence-provenance-candidate" autocomplete="off" required>
-      <p class="hint">The run being evaluated.</p>
-    </div>
-    <button type="submit">Load provenance</button>
-  </form>
+      <button type="submit">Load provenance</button>
+    </form>
+    <p class="hint">Filled from the runs chosen under Compare.</p>
 
-  <div class="result" id="evidence-provenance-result" aria-live="polite">
-    <p class="empty">No provenance loaded.</p>
+    <div class="result" id="evidence-provenance-result" aria-live="polite">
+      <p class="empty">No provenance loaded.</p>
+    </div>
   </div>
-</div>
 </section>
 
-<section class="panel" id="panel-promotion" aria-labelledby="tab-promotion" hidden>
-  <h2>Promotion</h2>
-
-  <p class="note">
-    A promotion is a durable record that Trustvian decided a candidate may
-    advance from one environment toward another, on the evidence of two
-    completed runs under the limits you supply. <strong>Trustvian records the
-    decision; it deploys nothing</strong>, and a recorded decision says nothing
-    about where a candidate is running.
+<!-- ============================ Promotions ============================ -->
+<section class="view" id="view-promotion" data-nav="nav-promotion" hidden>
+  <p class="region-note">
+    A promotion records that a gate result was used to move a candidate into an
+    environment. Trustvian deploys nothing and changes nothing outside its own
+    records: the decision and the deployment are both yours.
   </p>
 
-  <h3>Record a decision</h3>
-  <p class="note">
-    Browsing to a candidate under <strong>Investigate</strong> fills the run
-    lists and the project below, so the only things you choose here are the
-    target environment and the limits. The source environment is
-    <em>not</em> a field: the server infers it from the environment the two
-    runs share.
-  </p>
-  <form class="stack" id="form-promotion-create">
-    <div class="field">
-      <label for="promotion-id">Promotion ID</label>
-      <input type="text" id="promotion-id" name="id" autocomplete="off" required>
-      <p class="hint">
-        A stable identifier you choose for this decision, and the only thing
-        that identifies it. Re-sending one that exists is refused rather than
-        overwritten. Example: <code>promo-2026-03-01-a</code>
-      </p>
+  <nav class="subtabs" aria-label="Promotion sections">
+    <button type="button" class="subtab" data-section="promotion-history-section" aria-selected="true">History</button>
+    <button type="button" class="subtab" data-section="promotion-create-section" aria-selected="false">Record one</button>
+  </nav>
+
+  <div class="promotion-section" id="promotion-history-section" hidden>
+    <form class="row" id="form-promotion-list">
+      <label for="promotion-list-project">Project</label>
+      <input type="text" id="promotion-list-project" autocomplete="off" required>
+      <button type="submit">List promotions</button>
+    </form>
+    <div class="toolbar">
+      <span class="toolbar-note" id="promotion-page-state" aria-live="polite"></span>
     </div>
-    <div class="field">
-      <label for="promotion-reference-pick">Reference run</label>
-      <select id="promotion-reference-pick">
-        <option value="">Browse to a candidate under Investigate</option>
-      </select>
+    <div class="result" id="promotion-history" aria-live="polite">
+      <p class="empty">No promotions listed.</p>
     </div>
-    <div class="field">
-      <label for="promotion-reference">Reference run ID</label>
-      <input type="text" id="promotion-reference" name="reference_run_id" autocomplete="off" required>
-      <p class="hint">The completed run the candidate is measured against.</p>
+    <div class="pager" id="promotion-history-nav" hidden>
+      <button type="button" id="promotion-next-page">Load next page</button>
+      <button type="button" id="promotion-restart">Start over</button>
     </div>
-    <div class="field">
-      <label for="promotion-candidate-pick">Candidate run</label>
-      <select id="promotion-candidate-pick">
-        <option value="">Browse to a candidate under Investigate</option>
-      </select>
-    </div>
-    <div class="field">
-      <label for="promotion-candidate">Candidate run ID</label>
-      <input type="text" id="promotion-candidate" name="candidate_run_id" autocomplete="off" required>
-      <p class="hint">
-        The completed run being promoted. Both runs must belong to the same
-        agent.
-      </p>
-    </div>
-    <div class="field">
-      <label for="promotion-project">Project ID</label>
-      <input type="text" id="promotion-project" autocomplete="off">
-      <p class="hint">
-        Used only to list this project&rsquo;s environments below. It is not
-        sent with the decision &mdash; the server derives the project from the
-        runs.
-      </p>
-    </div>
-    <div class="field">
-      <label for="promotion-target">Target environment</label>
-      <select id="promotion-target" name="target_environment" required>
-        <option value="">Load a project to choose a target</option>
-      </select>
-      <button type="button" id="promotion-load-environments">Load environments</button>
-    </div>
-    <fieldset>
-      <legend>Gate limits (all required; 0 is valid)</legend>
+
+    <form class="row" id="form-promotion-get">
+      <label for="promotion-open-id">Promotion</label>
+      <input type="text" id="promotion-open-id" autocomplete="off" required>
+      <button type="submit">Open promotion</button>
+    </form>
+  </div>
+
+  <div class="promotion-section" id="promotion-create-section" hidden>
+    <form class="stack" id="form-promotion-create">
       <div class="field">
-        <label for="promotion-max-added">Max added behaviors</label>
-        <input type="text" id="promotion-max-added" inputmode="numeric" autocomplete="off" required>
+        <label for="promotion-id">ID</label>
+        <input type="text" id="promotion-id" name="id" autocomplete="off" required>
         <p class="hint">
-          How many behaviors the candidate may show that the reference did not.
-          <code>0</code> permits no added behavior at all.
+          A stable identifier you choose for this decision, and the only thing
+          that identifies it. Re-sending one that exists is refused rather than
+          overwritten. Example: <code>promo-2026-03-01-a</code>
         </p>
       </div>
       <div class="field">
-        <label for="promotion-max-block">Max block decisions</label>
-        <input type="text" id="promotion-max-block" inputmode="numeric" autocomplete="off" required>
+        <label for="promotion-reference-pick">Reference run</label>
+        <select id="promotion-reference-pick">
+          <option value="">Choose a run under Runs</option>
+        </select>
       </div>
       <div class="field">
-        <label for="promotion-max-critical">Max critical risk observations</label>
-        <input type="text" id="promotion-max-critical" inputmode="numeric" autocomplete="off" required>
+        <label for="promotion-reference">Reference run ID</label>
+        <input type="text" id="promotion-reference" name="reference_run_id" autocomplete="off" required>
+        <p class="hint">Filled from the runs chosen under Compare, or from the list above.</p>
       </div>
-    </fieldset>
-    <button type="submit">Record decision</button>
-  </form>
-
-  <p class="note">
-    The source environment is not asked for: the server infers it from the two
-    runs, which must already agree on it. The outcome is the server's — this
-    page renders what was recorded and computes no verdict, no ordering and no
-    outcome of its own.
-  </p>
-
-  <div class="result" id="promotion-result" aria-live="polite">
-    <p class="empty">No promotion recorded.</p>
-  </div>
-
-  <h3>Open a decision</h3>
-  <form class="row" id="form-promotion-get">
-    <label for="promotion-open-id">Promotion ID</label>
-    <input type="text" id="promotion-open-id" autocomplete="off" required>
-    <button type="submit">Open</button>
-  </form>
-
-  <h3>Project history</h3>
-  <p class="note">
-    History is read one bounded page at a time, newest identifiers last, in the
-    order the control plane recorded them. Your position is held only while
-    this page is open &mdash; a reload starts again at the first page.
-  </p>
-  <form class="row" id="form-promotion-list">
-    <label for="promotion-list-project">Project ID</label>
-    <input type="text" id="promotion-list-project" autocomplete="off" required>
-    <button type="submit">List</button>
-  </form>
-
-  <div class="result" id="promotion-history" aria-live="polite">
-    <p class="empty">No history loaded.</p>
-  </div>
-
-  <div class="row" id="promotion-history-nav" hidden>
-    <button type="button" id="promotion-next-page">Load next page</button>
-    <button type="button" id="promotion-restart">Start over</button>
-    <span class="note-inline" id="promotion-page-state" aria-live="polite"></span>
+      <div class="field">
+        <label for="promotion-candidate-pick">Candidate run</label>
+        <select id="promotion-candidate-pick">
+          <option value="">Choose a run under Runs</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="promotion-candidate">Candidate run ID</label>
+        <input type="text" id="promotion-candidate" name="candidate_run_id" autocomplete="off" required>
+        <p class="hint">The run being evaluated.</p>
+      </div>
+      <div class="field">
+        <label for="promotion-project">Project</label>
+        <input type="text" id="promotion-project" autocomplete="off">
+        <p class="hint">Filled from the project chosen in the sidebar. Used to load its environments; it is not part of the decision.</p>
+      </div>
+      <div class="field">
+        <label for="promotion-target">Target environment</label>
+        <select id="promotion-target" name="target_environment" required>
+          <option value="">Load a project to choose a target</option>
+        </select>
+        <button type="button" class="btn-quiet" id="promotion-load-environments">Load environments</button>
+      </div>
+      <fieldset>
+        <legend>Gate limits</legend>
+        <div class="limit-row">
+          <div class="field">
+            <label for="promotion-max-added">Max added behaviors</label>
+            <input type="text" id="promotion-max-added" inputmode="numeric" autocomplete="off" required>
+          </div>
+          <div class="field">
+            <label for="promotion-max-block">Max block decisions</label>
+            <input type="text" id="promotion-max-block" inputmode="numeric" autocomplete="off" required>
+          </div>
+          <div class="field">
+            <label for="promotion-max-critical">Max critical risk observations</label>
+            <input type="text" id="promotion-max-critical" inputmode="numeric" autocomplete="off" required>
+          </div>
+        </div>
+      </fieldset>
+      <button type="submit">Record promotion</button>
+    </form>
+    <div class="result" id="promotion-result" aria-live="polite">
+      <p class="empty">No promotion open.</p>
+    </div>
   </div>
 </section>
 
 <!-- ============================ Manage ============================
-     Every control-plane form, still working, no longer the front door. A
-     developer observing a running agent never needs this surface.
+     Creating entities, driving a run's lifecycle, and opening something by an
+     identifier you already have — from a log, a CI job or the CLI. Forms are
+     the right shape here: these are inputs, not navigation.
 -->
-<section class="panel" id="panel-manage" aria-labelledby="tab-manage" hidden>
-  <h2>Manage</h2>
-  <p class="note">
-    Advanced control-plane operations. Creating entities, driving a run's
-    lifecycle, and opening something by an identifier you already have. To
-    <em>watch</em> an agent you do not need anything here — open
-    <strong>Live</strong>.
-  </p>
-
+<section class="view" id="view-manage" data-nav="nav-manage" hidden>
   <nav class="subtabs" aria-label="Manage sections">
-    <button type="button" class="subtab" data-section="manage-open" aria-selected="true">Open by ID</button>
-    <button type="button" class="subtab" data-section="manage-project" aria-selected="false">Projects</button>
+    <button type="button" class="subtab" data-section="manage-project" aria-selected="true">Projects</button>
     <button type="button" class="subtab" data-section="manage-agent" aria-selected="false">Agents</button>
     <button type="button" class="subtab" data-section="manage-candidate" aria-selected="false">Candidates</button>
     <button type="button" class="subtab" data-section="manage-evaluation" aria-selected="false">Evaluations</button>
+    <button type="button" class="subtab" data-section="manage-open" aria-selected="false">Open by ID</button>
   </nav>
 
-<div class="manage-section" id="manage-open" hidden>
-  <h3>Manage — open by ID</h3>
-  <p class="note">
-    Opening something by its identifier, for when you already know it. This is
-    not the front door: <strong>Live</strong> finds active work by itself, and
-    its hierarchy browser walks Projects &rarr; Agents &rarr; Candidates &rarr;
-    Runs a page at a time without anything typed. Use this when you have an
-    identifier from a log, a CI job or the CLI and want to go straight to it.
-  </p>
-  <p class="note">
-    There is still no search. Creating something below opens it for this page
-    session only; that is a convenience, not a catalog, and a reload forgets
-    it &mdash; the control plane is the only source of truth.
-  </p>
-
-  <form class="row" id="form-open-project">
-    <label for="open-project-id">Project ID</label>
-    <input type="text" id="open-project-id" name="id" autocomplete="off" required>
-    <button type="submit">Open project</button>
-  </form>
-
-  <form class="row" id="form-open-agent">
-    <label for="open-agent-id">Agent ID</label>
-    <input type="text" id="open-agent-id" name="id" autocomplete="off" required>
-    <button type="submit">Open agent</button>
-  </form>
-
-  <form class="row" id="form-open-candidate">
-    <label for="open-candidate-id">Candidate ID</label>
-    <input type="text" id="open-candidate-id" name="id" autocomplete="off" required>
-    <button type="submit">Open candidate</button>
-  </form>
-
-  <form class="row" id="form-open-run">
-    <label for="open-run-id">Evaluation run ID</label>
-    <input type="text" id="open-run-id" name="id" autocomplete="off" required>
-    <button type="submit">Open run</button>
-  </form>
-
-  <h4>Where state lives</h4>
-  <p class="note">
-    Projects, agents, candidates, runs and bounded evidence are stored by the
-    local runtime in its project-local state directory and survive a restart.
-    Realtime is ephemeral by design and does not. This runtime is
-    <strong>unauthenticated</strong> and listens on loopback only — that is the
-    entire security boundary. Do not expose it or put a proxy in front of it.
-  </p>
-</div>
-
-<div class="manage-section" id="manage-project" hidden>
-  <h3>Project</h3>
-  <form class="stack" id="form-create-project">
-    <div class="field">
-      <label for="project-id">ID</label>
-      <input type="text" id="project-id" name="id" autocomplete="off" required>
-      <p class="hint">A stable identifier you choose for this workspace. Example: <code>support-demo</code></p>
-    </div>
-    <div class="field">
-      <label for="project-name">Name</label>
-      <input type="text" id="project-name" name="name" autocomplete="off" required>
-    </div>
-    <button type="submit">Create project</button>
-  </form>
-  <div class="result" id="project-result" aria-live="polite">
-    <p class="empty">No project open.</p>
-  </div>
-</div>
-
-<div class="manage-section" id="manage-agent" hidden>
-  <h3>Agent</h3>
-  <form class="stack" id="form-create-agent">
-    <div class="field">
-      <label for="agent-id">ID</label>
-      <input type="text" id="agent-id" name="id" autocomplete="off" required>
-      <p class="hint">A stable identifier for the agent across every version of it — not a version, a commit or a deployment. Example: <code>support-agent</code></p>
-    </div>
-    <div class="field">
-      <label for="agent-project-id">Project ID</label>
-      <input type="text" id="agent-project-id" name="project_id" autocomplete="off" required>
-      <p class="hint">The project that owns this agent. Browse projects under <strong>Investigate</strong> if you do not have it.</p>
-    </div>
-    <div class="field">
-      <label for="agent-name">Name</label>
-      <input type="text" id="agent-name" name="name" autocomplete="off" required>
-    </div>
-    <button type="submit">Create agent</button>
-  </form>
-  <div class="result" id="agent-result" aria-live="polite">
-    <p class="empty">No agent open.</p>
-  </div>
-</div>
-
-<div class="manage-section" id="manage-candidate" hidden>
-  <h3>Candidate</h3>
-  <form class="stack" id="form-create-candidate">
-    <div class="field">
-      <label for="candidate-id">ID</label>
-      <input type="text" id="candidate-id" name="id" autocomplete="off" required>
-      <p class="hint">A stable identifier for the <em>version</em> being evaluated. Example: <code>git:43af19c</code></p>
-    </div>
-    <div class="field">
-      <label for="candidate-agent-id">Agent ID</label>
-      <input type="text" id="candidate-agent-id" name="agent_id" autocomplete="off" required>
-      <p class="hint">The agent this version belongs to.</p>
-    </div>
-    <fieldset>
-      <legend>Metadata (all optional)</legend>
+  <div class="manage-section" id="manage-project" hidden>
+    <form class="stack" id="form-create-project">
       <div class="field">
-        <label for="candidate-label">Label</label>
-        <input type="text" id="candidate-label" name="label" autocomplete="off">
+        <label for="project-id">ID</label>
+        <input type="text" id="project-id" name="id" autocomplete="off" required>
+        <p class="hint">A stable identifier you choose for this workspace. Example: <code>support-demo</code></p>
       </div>
       <div class="field">
-        <label for="candidate-source-ref">Source ref</label>
-        <input type="text" id="candidate-source-ref" name="source_ref" autocomplete="off">
+        <label for="project-name">Name</label>
+        <input type="text" id="project-name" name="name" autocomplete="off" required>
       </div>
-      <div class="field">
-        <label for="candidate-artifact-digest">Artifact digest</label>
-        <input type="text" id="candidate-artifact-digest" name="artifact_digest" autocomplete="off">
-      </div>
-      <div class="field">
-        <label for="candidate-model">Model</label>
-        <input type="text" id="candidate-model" name="model" autocomplete="off">
-      </div>
-      <div class="field">
-        <label for="candidate-toolset-digest">Toolset digest</label>
-        <input type="text" id="candidate-toolset-digest" name="toolset_digest" autocomplete="off">
-      </div>
-      <div class="field">
-        <label for="candidate-config-digest">Config digest</label>
-        <input type="text" id="candidate-config-digest" name="config_digest" autocomplete="off">
-      </div>
-    </fieldset>
-    <button type="submit">Create candidate</button>
-  </form>
-  <div class="result" id="candidate-result" aria-live="polite">
-    <p class="empty">No candidate open.</p>
-  </div>
-</div>
-
-<div class="manage-section" id="manage-evaluation" hidden>
-  <h3>Evaluation run</h3>
-  <form class="stack" id="form-create-run">
-    <div class="field">
-      <label for="run-id">ID</label>
-      <input type="text" id="run-id" name="id" autocomplete="off" required>
-      <p class="hint">A stable identifier you choose for this execution. Example: <code>run-2026-03-01-reference</code></p>
+      <button type="submit">Create project</button>
+    </form>
+    <div class="result" id="project-result" aria-live="polite">
+      <p class="empty">No project open.</p>
     </div>
-    <div class="field">
-      <label for="run-candidate-id">Candidate ID</label>
-      <input type="text" id="run-candidate-id" name="candidate_id" autocomplete="off" required>
-      <p class="hint">The candidate version this run executes.</p>
-    </div>
-    <div class="field">
-      <label for="run-environment">Environment</label>
-      <input type="text" id="run-environment" name="environment" autocomplete="off" required>
-      <p class="hint">An environment reference the project already owns. A reference it has not registered is refused.</p>
-    </div>
-    <div class="field">
-      <label for="run-profile">Behavioral profile</label>
-      <input type="text" id="run-profile" name="behavioral_profile" autocomplete="off" required>
-      <p class="hint">Which learned behavioral history this run is measured against. Runs sharing a profile share a baseline.</p>
-    </div>
-    <button type="submit">Create run</button>
-  </form>
-
-  <div class="result" id="run-result" aria-live="polite">
-    <p class="empty">No run open.</p>
   </div>
 
-  <h4>Lifecycle</h4>
-  <p class="note">
-    The server decides whether a transition is legal and rejects the rest. This
-    page does not keep a second copy of that rule, so every action stays
-    available and the server's answer is what you see.
-  </p>
-  <div class="actions" id="run-actions">
-    <button type="button" id="run-start" disabled>Start</button>
-    <button type="button" id="run-complete" disabled>Complete</button>
-    <button type="button" id="run-cancel" disabled>Cancel</button>
-    <span class="inline-field">
-      <label for="run-fail-reason">Failure reason</label>
-      <input type="text" id="run-fail-reason" autocomplete="off">
-      <button type="button" id="run-fail" disabled>Fail</button>
-    </span>
-    <button type="button" id="run-refresh" disabled>Refresh</button>
+  <div class="manage-section" id="manage-agent" hidden>
+    <form class="stack" id="form-create-agent">
+      <div class="field">
+        <label for="agent-id">ID</label>
+        <input type="text" id="agent-id" name="id" autocomplete="off" required>
+        <p class="hint">A stable identifier for the agent across every version of it &mdash; not a version, a commit or a deployment. Example: <code>support-agent</code></p>
+      </div>
+      <div class="field">
+        <label for="agent-project-id">Project ID</label>
+        <input type="text" id="agent-project-id" name="project_id" autocomplete="off" required>
+        <p class="hint">Filled from the project chosen in the sidebar.</p>
+      </div>
+      <div class="field">
+        <label for="agent-name">Name</label>
+        <input type="text" id="agent-name" name="name" autocomplete="off" required>
+      </div>
+      <button type="submit">Create agent</button>
+    </form>
+    <div class="result" id="agent-result" aria-live="polite">
+      <p class="empty">No agent open.</p>
+    </div>
   </div>
 
-  <h4>Progress</h4>
-  <div class="result" id="progress-result" aria-live="polite">
-    <p class="empty">No progress read yet.</p>
+  <div class="manage-section" id="manage-candidate" hidden>
+    <form class="stack" id="form-create-candidate">
+      <div class="field">
+        <label for="candidate-id">ID</label>
+        <input type="text" id="candidate-id" name="id" autocomplete="off" required>
+        <p class="hint">A stable identifier for the <em>version</em> being evaluated. Example: <code>git:43af19c</code></p>
+      </div>
+      <div class="field">
+        <label for="candidate-agent-id">Agent ID</label>
+        <input type="text" id="candidate-agent-id" name="agent_id" autocomplete="off" required>
+        <p class="hint">Filled from the agent chosen under Runs.</p>
+      </div>
+      <fieldset>
+        <legend>Metadata (all optional)</legend>
+        <div class="field">
+          <label for="candidate-label">Label</label>
+          <input type="text" id="candidate-label" name="label" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="candidate-source-ref">Source ref</label>
+          <input type="text" id="candidate-source-ref" name="source_ref" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="candidate-artifact-digest">Artifact digest</label>
+          <input type="text" id="candidate-artifact-digest" name="artifact_digest" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="candidate-model">Model</label>
+          <input type="text" id="candidate-model" name="model" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="candidate-toolset-digest">Toolset digest</label>
+          <input type="text" id="candidate-toolset-digest" name="toolset_digest" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="candidate-config-digest">Config digest</label>
+          <input type="text" id="candidate-config-digest" name="config_digest" autocomplete="off">
+        </div>
+      </fieldset>
+      <button type="submit">Create candidate</button>
+    </form>
+    <div class="result" id="candidate-result" aria-live="polite">
+      <p class="empty">No candidate open.</p>
+    </div>
   </div>
-</div>
 
+  <div class="manage-section" id="manage-evaluation" hidden>
+    <form class="stack" id="form-create-run">
+      <div class="field">
+        <label for="run-id">ID</label>
+        <input type="text" id="run-id" name="id" autocomplete="off" required>
+        <p class="hint">A stable identifier you choose for this execution. Example: <code>run-2026-03-01-reference</code></p>
+      </div>
+      <div class="field">
+        <label for="run-candidate-id">Candidate ID</label>
+        <input type="text" id="run-candidate-id" name="candidate_id" autocomplete="off" required>
+        <p class="hint">The candidate version this run executes. Filled from the candidate chosen under Runs.</p>
+      </div>
+      <div class="field">
+        <label for="run-environment">Environment</label>
+        <input type="text" id="run-environment" name="environment" autocomplete="off" required>
+        <p class="hint">An environment reference the project already owns. A reference it has not registered is refused.</p>
+      </div>
+      <div class="field">
+        <label for="run-profile">Behavioral profile</label>
+        <input type="text" id="run-profile" name="behavioral_profile" autocomplete="off" required>
+        <p class="hint">Which learned behavioral history this run is measured against. Runs sharing a profile share a baseline.</p>
+      </div>
+      <button type="submit">Create run</button>
+    </form>
+
+    <div class="result" id="run-result" aria-live="polite">
+      <p class="empty">No run open.</p>
+    </div>
+
+    <h3 class="region-title">Lifecycle</h3>
+    <p class="region-note">
+      The server decides whether a transition is legal and rejects the rest.
+      This page keeps no second copy of that rule, so every action stays
+      available and the server's answer is what you see.
+    </p>
+    <div class="actions" id="run-actions">
+      <button type="button" id="run-start" disabled>Start</button>
+      <button type="button" id="run-complete" disabled>Complete</button>
+      <button type="button" id="run-cancel" disabled>Cancel</button>
+      <span class="inline-field">
+        <label for="run-fail-reason">Failure reason</label>
+        <input type="text" id="run-fail-reason" autocomplete="off">
+        <button type="button" id="run-fail" disabled>Fail</button>
+      </span>
+      <button type="button" id="run-refresh" disabled>Refresh</button>
+    </div>
+
+    <h3 class="region-title">Progress</h3>
+    <div class="result" id="progress-result" aria-live="polite">
+      <p class="empty">No progress read yet.</p>
+    </div>
+  </div>
+
+  <div class="manage-section" id="manage-open" hidden>
+    <p class="region-note">
+      For an identifier you already have from a log, a CI job or the CLI.
+      Finding something you do not have an identifier for is what
+      <strong>Projects</strong> and <strong>Runs</strong> are for.
+    </p>
+
+    <form class="row" id="form-open-project">
+      <label for="open-project-id">Project ID</label>
+      <input type="text" id="open-project-id" name="id" autocomplete="off" required>
+      <button type="submit">Open project</button>
+    </form>
+
+    <form class="row" id="form-open-agent">
+      <label for="open-agent-id">Agent ID</label>
+      <input type="text" id="open-agent-id" name="id" autocomplete="off" required>
+      <button type="submit">Open agent</button>
+    </form>
+
+    <form class="row" id="form-open-candidate">
+      <label for="open-candidate-id">Candidate ID</label>
+      <input type="text" id="open-candidate-id" name="id" autocomplete="off" required>
+      <button type="submit">Open candidate</button>
+    </form>
+
+    <form class="row" id="form-open-run">
+      <label for="open-run-id">Evaluation run ID</label>
+      <input type="text" id="open-run-id" name="id" autocomplete="off" required>
+      <button type="submit">Open run</button>
+    </form>
+
+    <h3 class="region-title">Where state lives</h3>
+    <p class="region-note">
+      Projects, agents, candidates, runs and bounded evidence are stored by the
+      local runtime in its project-local state directory and survive a restart.
+      Realtime is ephemeral by design and does not. This runtime is
+      <strong>unauthenticated</strong> and listens on loopback only &mdash; that
+      is the entire security boundary. Do not expose it or put a proxy in front
+      of it.
+    </p>
+  </div>
 </section>
 
 </main>
 
 <footer class="foot">
   <p>
-    Unauthenticated · loopback only · no history retained.
+    Unauthenticated &middot; loopback only &middot; no history retained.
     Automation should read <code>/v1</code>; this page's layout is
     observational and not a compatibility promise.
   </p>
 </footer>
+
+</div><!-- /shell -->
+</div><!-- /app -->
+
+<div class="toasts" id="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
 
 <script type="module" src="/assets/app.js"></script>
 </body>

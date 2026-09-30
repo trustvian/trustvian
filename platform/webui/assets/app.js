@@ -10,16 +10,19 @@
 // database stays the only source of truth. The watched run in the URL fragment
 // is navigation state, never read back as fact.
 
-import * as api from "./api.js";
-import * as render from "./render.js";
-import { RealtimeSession, STATE } from "./realtime.js";
-import { LiveModel } from "./live.js";
-import { GraphCanvas, PULSE_MS } from "./graph.js";
-import { renderRail, renderCanvasNotices } from "./rail.js";
-import { TimelineFeed, renderTimeline } from "./timeline.js";
-import { renderInspector } from "./inspector.js";
-import { LabelCache, HierarchyBrowser, renderLevel, renderOptions } from "./discovery.js";
-import * as evidence from "./evidence.js";
+import * as api from "./v1/api.js";
+import * as render from "./v1/render.js";
+import { RealtimeSession, STATE } from "./v1/realtime.js";
+import { LiveModel } from "./live/model.js";
+import { GraphCanvas, PULSE_MS } from "./live/graph.js";
+import { renderRail, renderCanvasNotices } from "./live/rail.js";
+import { TimelineFeed, renderTimeline } from "./live/timeline.js";
+import { renderInspector } from "./live/inspector.js";
+import { LabelCache, HierarchyBrowser, renderOptions } from "./v1/discovery.js";
+import * as dash from "./ui/dashboard.js";
+import { icon } from "./ui/icons.js";
+import { notify } from "./ui/feedback.js";
+import * as evidence from "./views/evidence.js";
 
 const byID = (id) => document.getElementById(id);
 
@@ -52,50 +55,125 @@ function report(target, error) {
     : error.message);
 }
 
-function setupTabs() {
-  const tabs = Array.from(document.querySelectorAll(".tab"));
-  const select = (tab) => {
-    for (const other of tabs) {
-      const panel = byID(other.dataset.panel);
-      const active = other === tab;
-      other.setAttribute("aria-selected", active ? "true" : "false");
-      panel.hidden = !active;
-    }
-    tab.focus();
-  };
-  for (const tab of tabs) {
-    tab.addEventListener("click", () => select(tab));
-    tab.addEventListener("keydown", (event) => {
-      // Arrow-key movement between tabs, so the section switcher is usable
-      // without a pointer.
-      const index = tabs.indexOf(tab);
-      if (event.key === "ArrowRight") {
-        select(tabs[(index + 1) % tabs.length]);
-      } else if (event.key === "ArrowLeft") {
-        select(tabs[(index - 1 + tabs.length) % tabs.length]);
-      }
-    });
+// ---------------------------------------------------------------------
+// Navigation
+// ---------------------------------------------------------------------
+//
+// A persistent sidebar of destinations, each backed by a capability /v1
+// actually serves. There is no destination for work that does not exist yet:
+// an empty one teaches a reader the product is thinner than it is.
+//
+// A view names the destination that stays lit while it is open, which is how
+// the run workspace can be a full page without being a seventh place to go —
+// a reader who opened a run came from Runs, and that is where Back returns
+// them.
+
+// PAGE_TITLES is the title each destination shows. Declared here rather than
+// read from the sidebar's own label so a heading can say more than a nav item
+// has room for.
+const PAGE_TITLES = Object.freeze([
+  Object.freeze({ view: "view-live", title: "Live" }),
+  Object.freeze({ view: "view-projects", title: "Projects" }),
+  Object.freeze({ view: "view-runs", title: "Evaluation runs" }),
+  Object.freeze({ view: "view-run", title: "Run" }),
+  Object.freeze({ view: "view-compare", title: "Compare runs" }),
+  Object.freeze({ view: "view-evidence", title: "Evidence" }),
+  Object.freeze({ view: "view-promotion", title: "Promotions" }),
+  Object.freeze({ view: "view-manage", title: "Manage" }),
+]);
+
+// navCount publishes a figure the console already holds.
+//
+// Only a real one: it appears when a page has been read and disappears when
+// the scope changes, because a stale badge is worse than none. It counts the
+// page on screen and says so nowhere else — the strip is where an
+// authoritative total belongs.
+function navCount(navID, value) {
+  const item = byID(navID);
+  if (item === null) {
+    return;
   }
-  return select;
+  const existing = item.querySelector(".nav-count");
+  if (value === "" || value === undefined || value === null) {
+    if (existing !== null) {
+      existing.remove();
+    }
+    return;
+  }
+  if (existing !== null) {
+    existing.textContent = String(value);
+    return;
+  }
+  item.append(render.element("span", "nav-count", String(value)));
 }
 
-const selectTab = setupTabs();
+function titleFor(viewID) {
+  for (const entry of PAGE_TITLES) {
+    if (entry.view === viewID) {
+      return entry.title;
+    }
+  }
+  return "";
+}
 
-// Manage holds five sub-surfaces behind one tab.
+// Decorative glyphs, placed from the markup's own data-icon so the shell
+// stays the single place that says which destination carries which. Built
+// rather than written as markup, because nothing in this bundle parses any.
+for (const host of document.querySelectorAll("[data-icon]")) {
+  host.prepend(icon(host.dataset.icon));
+}
+byID("brand-mark").append(icon("evidence"));
+
+const navItems = Array.from(document.querySelectorAll(".nav-item"));
+const views = Array.from(document.querySelectorAll(".view"));
+let currentView = "view-live";
+
+// openView reveals one destination and marks the sidebar entry it belongs to.
+function openView(viewID) {
+  currentView = viewID;
+  const target = byID(viewID);
+  const owner = target === null ? viewID : target.dataset.nav;
+  for (const view of views) {
+    view.hidden = view.id !== viewID;
+  }
+  for (const item of navItems) {
+    if (item.id === owner) {
+      item.setAttribute("aria-current", "page");
+    } else {
+      item.removeAttribute("aria-current");
+    }
+  }
+  byID("page-title").textContent = titleFor(viewID);
+  drawCrumbs();
+}
+
+for (const item of navItems) {
+  item.addEventListener("click", () => {
+    openView(item.dataset.view);
+    onEnterView(item.dataset.view);
+  });
+  item.addEventListener("keydown", (event) => {
+    // Arrow-key movement down the sidebar, so the switcher works without a
+    // pointer.
+    const index = navItems.indexOf(item);
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      navItems[(index + 1) % navItems.length].focus();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      navItems[(index - 1 + navItems.length) % navItems.length].focus();
+    }
+  });
+}
+
+// setupSubtabs switches between the sections inside one view.
 //
-// They used to be five top-level tabs, which put "Project", "Agent",
-// "Candidate" and "Evaluation" in the primary navigation of a product whose
-// job is watching an agent work. They are advanced controls: still here, still
-// working, and one level down.
-// Scoped to one panel, because there are two sets of sub-sections now.
-//
-// A document-wide `.subtab` query worked while Manage was the only panel with
-// sub-sections; with Evidence beside it, one query would wire every button to
-// both switchers and hide one panel's sections whenever the other's were shown.
-// The scope is the fix, and it is the whole of it.
-function setupSubtabs(panelID, defaultSection) {
-  const panel = byID(panelID);
-  const subtabs = Array.from(panel.querySelectorAll(".subtab"));
+// Scoped to a view, because several have sub-sections now: a document-wide
+// `.subtab` query would wire every button to every switcher and hide one
+// view's sections whenever another's were shown.
+function setupSubtabs(viewID, defaultSection) {
+  const view = byID(viewID);
+  const subtabs = Array.from(view.querySelectorAll(".subtab"));
   const show = (id) => {
     for (const tab of subtabs) {
       const active = tab.dataset.section === id;
@@ -125,20 +203,22 @@ function setupSubtabs(panelID, defaultSection) {
   return show;
 }
 
-const showManageSection = setupSubtabs("panel-manage", "manage-open");
-const showEvidenceSection = setupSubtabs("panel-evidence", "evidence-finding");
+const showManageSection = setupSubtabs("view-manage", "manage-project");
+const showEvidenceSection = setupSubtabs("view-evidence", "evidence-finding");
+const showPromotionSection = setupSubtabs("view-promotion", "promotion-history-section");
+const showRunSection = setupSubtabs("view-run", "run-overview");
 
 // openManage reveals one Manage subsection, for the create-then-show flows
 // that used to jump to a top-level tab.
 function openManage(sectionID) {
-  selectTab(byID("tab-manage"));
+  openView("view-manage");
   showManageSection(sectionID);
 }
 
 // openEvidence reveals one Evidence subsection, for the navigation that starts
 // in Compare and lands here.
 function openEvidence(sectionID) {
-  selectTab(byID("tab-evidence"));
+  openView("view-evidence");
   showEvidenceSection(sectionID);
 }
 
@@ -340,8 +420,14 @@ function lifecycle(buttonID, call) {
     const button = byID(buttonID);
     await busy(button, async () => {
       try {
-        render.renderRun(runResult, await call(openRunID));
+        const run = await call(openRunID);
+        render.renderRun(runResult, run);
         clearProblem();
+        // The panel below already shows the new record, but a status moving
+        // from "running" to "completed" is one word changing in a definition
+        // list. This says the server accepted the transition, in the status
+        // the server returned — never a word this page chose.
+        notify(`Run ${openRunID} is ${run.status}.`, "done");
         try {
           render.renderProgress(progressResult, await api.getProgress(openRunID));
         } catch (ignored) {
@@ -350,6 +436,12 @@ function lifecycle(buttonID, call) {
         }
       } catch (error) {
         report(runResult, error);
+        // A refused transition is the server's answer and the reason it is
+        // worth surfacing: the button stays enabled, so without this the
+        // only sign of a refusal is a panel the reader may not be looking at.
+        notify(error.operational
+          ? "The control plane could not answer. This is not a gate result."
+          : error.message, "fail");
       }
     });
   });
@@ -400,9 +492,6 @@ openForm("form-open-run", "open-run-id", loadRun);
 
 const connChip = byID("conn-chip");
 const connText = byID("conn-text");
-const headerAgent = byID("header-agent");
-const headerScope = byID("header-scope");
-const headerCounts = byID("header-counts");
 const canvasScope = byID("canvas-scope");
 const railHost = byID("rail");
 const canvasNotices = byID("canvas-notices");
@@ -558,50 +647,54 @@ function drawTimeline() {
   });
 }
 
+// drawHeader fills the Live view's summary strip.
+//
+// The strip carries two kinds of figure and keeps them apart: what this
+// connection has seen, and what the control plane holds. A frame count and a
+// record count are different facts, and one strip item that blurred them
+// would be reporting the stream as the database — so the live figure is
+// labelled "Seen on this connection" and never sits under a count's label.
 function drawHeader() {
   const card = liveModel.selectedCard();
   if (card === undefined) {
-    headerAgent.textContent = "No agent selected";
-    headerScope.textContent = "";
-    headerCounts.textContent = "Authoritative counts appear when a run is selected.";
+    dash.summaryStrip(byID("live-strip"), [
+      { key: "Agent", value: "None selected" },
+      { key: "Counts", value: "Select a run" },
+    ]);
     canvasScope.textContent = "No run selected.";
     return;
   }
 
   const name = labelForScope(card.scope);
-  headerAgent.textContent = name || card.scope.agent_id || "(unnamed agent)";
+  const items = [
+    { key: "Agent", value: name || card.scope.agent_id || "(unnamed agent)" },
+  ];
+  if (card.scope.environment) {
+    items.push({ key: "Environment", value: card.scope.environment });
+  }
+  if (card.scope.run_id) {
+    items.push({ key: "Run", value: card.scope.run_id });
+  }
+  items.push({ key: "Seen on this connection", value: String(card.seenLive) });
 
-  const context = [card.scope.environment, card.scope.candidate_id ? "candidate" : ""]
-    .filter((part) => part !== "");
-  headerScope.textContent = context.join(" · ");
+  if (authoritative.runID === card.scope.run_id && authoritative.recordCount !== "") {
+    items.push({ key: "Observations", value: authoritative.recordCount });
+    if (authoritative.distinctCount !== "") {
+      items.push({ key: "Behaviors", value: authoritative.distinctCount });
+    }
+    if (authoritative.complete === false) {
+      items.push({ key: "Evidence", value: "incomplete" });
+    } else if (authoritative.complete === true) {
+      items.push({ key: "Evidence", value: "complete" });
+    }
+  } else {
+    items.push({ key: "Observations", value: "loading…" });
+  }
+  dash.summaryStrip(byID("live-strip"), items);
 
   canvasScope.textContent = card.scope.run_id
     ? `Drawing run ${card.scope.run_id}.`
     : "Drawing the selected run.";
-
-  headerCounts.textContent = authoritativeSummary(card);
-}
-
-// authoritativeSummary is the header's counter line.
-//
-// Every number in it comes from GET /v1/evaluation-runs/{id}/progress. The
-// live-seen count is labelled as such and kept visually separate, because a
-// frame count and a record count are different facts and a header that blurred
-// them would be reporting the stream as the database.
-function authoritativeSummary(card) {
-  if (authoritative.runID !== card.scope.run_id || authoritative.recordCount === "") {
-    return `${card.seenLive} seen live · authoritative counts loading…`;
-  }
-  const parts = [`${authoritative.recordCount} observations`];
-  if (authoritative.distinctCount !== "") {
-    parts.push(`${authoritative.distinctCount} behaviors`);
-  }
-  if (authoritative.complete === false) {
-    parts.push("evidence incomplete");
-  } else if (authoritative.complete === true) {
-    parts.push("evidence complete");
-  }
-  return parts.join(" · ");
 }
 
 function drawAll() {
@@ -755,7 +848,7 @@ const liveSession = new RealtimeSession(
 );
 
 // ---------------------------------------------------------------------
-// Bounded hierarchy discovery
+// Bounded discovery, as a console
 // ---------------------------------------------------------------------
 //
 // The startup budget, in one place so it cannot drift: one page of
@@ -767,127 +860,898 @@ const liveSession = new RealtimeSession(
 // 64 frames. Under live traffic that buffer overflows, the client abandons and
 // resynchronizes, and the crawl starts again — a resync loop that gets worse
 // the larger the database is. A bounded route is not a bounded workflow.
+//
+// Which is why the runs table is reached through a visible list of agents and
+// a visible list of candidates rather than a single "all runs in this project"
+// collection: /v1 publishes no such collection, and synthesising one here
+// would be exactly the crawl above. Two bounded lists are the honest shape of
+// the data, and being visible is what keeps them from being a menu.
 
 async function loadRootProjects(after) {
   return hierarchy.loadProjects(after);
 }
 
-let openedProject = "";
-let openedAgent = "";
-let openedCandidate = "";
+// Loading is a state a surface can be in, not the absence of one. Each
+// collection carries its own flag so a table that is fetching draws the shape
+// of the rows that are coming instead of an empty line that looks like "there
+// is nothing here".
+const loading = {
+  projects: false,
+  agents: false,
+  candidates: false,
+  runs: false,
+  observations: false,
+  behaviors: false,
+  compareRuns: false,
+};
 
-function renderProjectsLevel() {
-  renderLevel(byID("level-projects"), {
-    title: "Projects",
-    level: hierarchy.levels.projects,
-    selected: openedProject,
-    pendingMessage: "Not loaded.",
-    emptyMessage: "No projects exist yet.",
-    openLabel: "Show agents of project",
-    labelOf: (row) => row.name || row.id,
-    detailOf: (row) => (row.name && row.name !== row.id ? row.id : ""),
-    onOpen: (row) => {
-      openedProject = row.id;
-      // The promotion form needs a project to list target environments, and
-      // this is the one a developer just chose. Filling it is a convenience;
-      // the field stays editable and is still not sent with the decision.
-      byID("promotion-project").value = row.id;
-      byID("promotion-list-project").value = row.id;
-      void openLevel("agents", () => hierarchy.loadAgents(row.id, ""));
-    },
-    onMore: (cursor) => { void openLevel("projects", () => hierarchy.loadProjects(cursor)); },
-  });
-  renderAgentsLevel();
-  renderCandidatesLevel();
-  renderRunsLevel();
-  refreshCompareOptions();
+let openedProject = "";
+let openedProjectName = "";
+let openedAgent = "";
+let openedAgentName = "";
+let openedCandidate = "";
+let openedRun = "";
+
+// ------------------------------- location --------------------------------
+
+// drawCrumbs renders the path that reached the current view.
+//
+// Built from the selection, not from a history of clicks: the trail says what
+// is selected, so it is the same whether a reader arrived by browsing or by
+// opening something directly.
+function drawCrumbs() {
+  const host = byID("crumbs");
+  const trail = [];
+  if (currentView === "view-projects" || openedProject === "") {
+    if (openedProject !== "") {
+      trail.push({ label: openedProjectName || openedProject });
+    }
+  } else {
+    trail.push({
+      label: openedProjectName || openedProject,
+      onOpen: () => { openView("view-projects"); onEnterView("view-projects"); },
+    });
+  }
+  if (currentView === "view-runs" || currentView === "view-run") {
+    if (openedAgent !== "") {
+      trail.push({
+        label: openedAgentName || openedAgent,
+        onOpen: () => { openView("view-runs"); },
+      });
+    }
+    if (openedCandidate !== "") {
+      trail.push({
+        label: openedCandidate,
+        onOpen: () => { openView("view-runs"); },
+      });
+    }
+  }
+  if (currentView === "view-run" && openedRun !== "") {
+    trail.push({ label: openedRun });
+  }
+  dash.renderCrumbs(host, trail);
 }
 
-function renderAgentsLevel() {
-  renderLevel(byID("level-agents"), {
-    title: "Agents",
+// setProjectScope records which project the console is scoped to.
+//
+// The sidebar states it, and the forms that need a project are filled from
+// it. Filling a field is a convenience and the field stays editable — the
+// value sent is still whatever it holds when it is submitted.
+function setProjectScope(id, name) {
+  openedProject = id;
+  openedProjectName = name || "";
+  byID("scope-project").textContent = name || id || "None selected";
+  byID("promotion-project").value = id;
+  byID("promotion-list-project").value = id;
+  byID("agent-project-id").value = id;
+  drawCrumbs();
+}
+
+// --------------------------------- projects -------------------------------
+
+// Client-side filtering over the rows already on screen, and nothing more.
+//
+// The box narrows what is visible; it never asks the server for a page it was
+// not going to fetch, and it never implies the collection is only what it can
+// see. The row count beside it says which of the two is happening.
+let projectFilter = "";
+
+function matchesFilter(text, filter) {
+  return filter === "" || String(text).toLowerCase().includes(filter);
+}
+
+function renderProjectsView() {
+  const level = hierarchy.levels.projects;
+  const rows = level.rows.filter(
+    (row) => matchesFilter(row.id, projectFilter) || matchesFilter(row.name || "", projectFilter),
+  );
+
+  dash.summaryStrip(byID("projects-strip"), [
+    { key: "Projects on this page", value: level.loaded ? String(level.rows.length) : "" },
+    // Only when a filter is narrowing something, so the strip never states a
+    // figure that is the one beside it.
+    { key: "Matching the filter", value: projectFilter === "" ? "" : String(rows.length) },
+  ]);
+
+  dash.dataTable(byID("projects-table"), {
+    loading: loading.projects,
+    skeletonRows: 4,
+    emptyTitle: level.loaded && level.rows.length === 0
+      ? "No projects yet"
+      : "Nothing matches that filter",
+    emptyHint: level.loaded && level.rows.length === 0
+      ? "A project is created by the CLI, the API, or under Manage."
+      : "Clear the filter to see the rest of this page.",
+    emptyIcon: "projects",
+    columns: [
+      {
+        key: "name",
+        label: "Project",
+        cell: (row) => dash.identChip(row.name || row.id, () => openProject(row), "Open project"),
+      },
+      { key: "id", label: "Identifier", className: "ident", cell: (row) => row.id },
+    ],
+    rows,
+    keyOf: (row) => row.id,
+    selected: openedProject,
+    onOpen: (row) => openProject(row),
+  });
+
+  byID("projects-page-state").textContent = level.loaded
+    ? (level.nextAfter === ""
+      ? `${level.rows.length} project(s); this is the whole collection.`
+      : `${level.rows.length} project(s) on this page; more exist.`)
+    : "";
+  byID("projects-pager").hidden = level.nextAfter === "";
+  navCount("nav-projects", level.loaded ? String(level.rows.length) : "");
+}
+
+// openProject scopes the console and moves to that project's runs.
+//
+// One request: the project's first page of agents. Nothing below it is
+// fetched until a reader asks for it.
+function openProject(row) {
+  setProjectScope(row.id, row.name);
+  openedAgent = "";
+  openedAgentName = "";
+  openedCandidate = "";
+  openView("view-runs");
+  void openLevel("agents", () => hierarchy.loadAgents(row.id, ""));
+}
+
+byID("projects-search").addEventListener("input", (event) => {
+  projectFilter = event.target.value.trim().toLowerCase();
+  renderProjectsView();
+});
+
+byID("projects-more").addEventListener("click", () => {
+  void openLevel("projects", () => hierarchy.loadProjects(hierarchy.levels.projects.nextAfter));
+});
+
+byID("scope-change").addEventListener("click", () => {
+  openView("view-projects");
+  onEnterView("view-projects");
+});
+
+// ----------------------------------- runs ---------------------------------
+
+const RUN_STATUS_FILTERS = Object.freeze([
+  Object.freeze({ key: "", label: "All" }),
+  Object.freeze({ key: "created", label: "Created" }),
+  Object.freeze({ key: "running", label: "Running" }),
+  Object.freeze({ key: "completed", label: "Completed" }),
+  Object.freeze({ key: "failed", label: "Failed" }),
+  Object.freeze({ key: "cancelled", label: "Cancelled" }),
+]);
+
+let runStatusFilter = "";
+let runFilter = "";
+
+function renderRunStatusChips() {
+  const host = byID("runs-status-filter");
+  render.clear(host);
+  for (const option of RUN_STATUS_FILTERS) {
+    const chip = render.element("button", "chip-button", option.label);
+    chip.type = "button";
+    chip.setAttribute("aria-pressed", runStatusFilter === option.key ? "true" : "false");
+    chip.addEventListener("click", () => {
+      runStatusFilter = option.key;
+      renderRunsView();
+    });
+    host.append(chip);
+  }
+}
+
+function renderAgentsList() {
+  dash.pickList(byID("agents-list"), byID("agents-more"), {
     level: hierarchy.levels.agents,
     selected: openedAgent,
-    pendingMessage: "Select a project.",
+    pendingMessage: "Choose a project.",
     emptyMessage: "This project has no agents.",
-    openLabel: "Show candidates of agent",
     labelOf: (row) => row.name || row.id,
     detailOf: (row) => (row.name && row.name !== row.id ? row.id : ""),
     onOpen: (row) => {
       openedAgent = row.id;
+      openedAgentName = row.name || "";
+      openedCandidate = "";
+      runsScopeOpen = true;
       labels.remember("agent", row.id, row.name);
+      byID("candidate-agent-id").value = row.id;
       void openLevel("candidates", () => hierarchy.loadCandidates(row.id, ""));
     },
-    onMore: (cursor) => {
-      void openLevel("agents", () => hierarchy.loadAgents(hierarchy.parents.agents, cursor));
-    },
   });
+  byID("agents-count").textContent = hierarchy.levels.agents.loaded
+    ? `${hierarchy.levels.agents.rows.length} on this page`
+    : "";
 }
 
-function renderCandidatesLevel() {
-  renderLevel(byID("level-candidates"), {
-    title: "Candidates",
+function renderCandidatesList() {
+  dash.pickList(byID("candidates-list"), byID("candidates-more"), {
     level: hierarchy.levels.candidates,
     selected: openedCandidate,
-    pendingMessage: "Select an agent.",
+    pendingMessage: "Choose an agent.",
     emptyMessage: "This agent has no candidates.",
-    openLabel: "Show runs of candidate",
     labelOf: (row) => (row.metadata && row.metadata.label ? row.metadata.label : row.id),
-    detailOf: (row) => (row.metadata && row.metadata.label ? row.id : ""),
+    detailOf: (row) => (row.metadata && row.metadata.label && row.metadata.label !== row.id
+      ? row.id
+      : ""),
     onOpen: (row) => {
       openedCandidate = row.id;
+      byID("run-candidate-id").value = row.id;
+      runsScopeOpen = false;
       void openLevel("runs", () => hierarchy.loadRuns(row.id, ""));
     },
-    onMore: (cursor) => {
-      void openLevel("candidates",
-        () => hierarchy.loadCandidates(hierarchy.parents.candidates, cursor));
-    },
   });
+  byID("candidates-count").textContent = hierarchy.levels.candidates.loaded
+    ? `${hierarchy.levels.candidates.rows.length} on this page`
+    : "";
 }
 
-function renderRunsLevel() {
-  renderLevel(byID("level-runs"), {
-    title: "Evaluation runs",
-    level: hierarchy.levels.runs,
-    pendingMessage: "Select a candidate.",
-    emptyMessage: "This candidate has no runs.",
-    openLabel: "Open evaluation run",
-    labelOf: (row) => row.id,
-    detailOf: (row) => [row.status, row.environment].filter((p) => p).join(" · "),
-    onOpen: (row) => { void openRunDetail(row.id); },
-    onMore: (cursor) => {
-      void openLevel("runs", () => hierarchy.loadRuns(hierarchy.parents.runs, cursor));
+// runColumns are the columns a run table shows, in one place.
+//
+// Shared by the Runs destination and Compare's selection table, so the two
+// cannot drift into describing the same record differently.
+function runColumns(onOpen) {
+  return [
+    {
+      key: "id",
+      label: "Run",
+      cell: (row) => dash.identChip(row.id, () => onOpen(row), "Open run"),
     },
+    { key: "candidate_id", label: "Candidate", className: "ident", cell: (row) => row.candidate_id },
+    { key: "status", label: "Status", cell: (row) => row.status },
+    { key: "environment", label: "Environment", cell: (row) => row.environment },
+    { key: "behavioral_profile", label: "Profile", cell: (row) => row.behavioral_profile },
+    { key: "created_at", label: "Created", className: "ident", cell: (row) => dash.shortTime(row.created_at) },
+    { key: "started_at", label: "Started", className: "ident", cell: (row) => dash.shortTime(row.started_at) },
+    { key: "finished_at", label: "Finished", className: "ident", cell: (row) => dash.shortTime(row.finished_at) },
+  ];
+}
+
+function renderRunsView() {
+  renderAgentsList();
+  renderCandidatesList();
+  renderRunStatusChips();
+
+  const level = hierarchy.levels.runs;
+  const rows = level.rows.filter((row) => {
+    if (runStatusFilter !== "" && row.status !== runStatusFilter) {
+      return false;
+    }
+    return matchesFilter(row.id, runFilter) || matchesFilter(row.candidate_id || "", runFilter);
   });
+
+  const narrowed = runStatusFilter !== "" || runFilter !== "";
+  dash.summaryStrip(byID("runs-strip"), [
+    { key: "Agent", value: openedAgentName || openedAgent },
+    { key: "Candidate", value: openedCandidate },
+    { key: "Runs on this page", value: level.loaded ? String(level.rows.length) : "" },
+    { key: "Shown", value: level.loaded && narrowed ? String(rows.length) : "" },
+  ]);
+
+  dash.dataTable(byID("runs-table"), {
+    loading: loading.runs,
+    skeletonRows: 4,
+    emptyTitle: !level.loaded
+      ? "Choose an agent, then a candidate"
+      : (level.rows.length === 0 ? "This candidate has no runs" : "Nothing matches those filters"),
+    emptyHint: !level.loaded
+      ? "The two lists above are this project's agents and their versions."
+      : (level.rows.length === 0
+        ? "A run appears here once one is created for this candidate."
+        : "Clear the status chip or the filter to see the rest of this page."),
+    emptyIcon: "runs",
+    columns: runColumns((row) => { void openRunDetail(row.id); }),
+    rows,
+    keyOf: (row) => row.id,
+    selected: openedRun,
+    onOpen: (row) => { void openRunDetail(row.id); },
+  });
+
+  byID("runs-page-state").textContent = level.loaded
+    ? (level.nextAfter === ""
+      ? `${level.rows.length} run(s); this is the whole collection.`
+      : `${level.rows.length} run(s) on this page; more exist.`)
+    : "";
+  byID("runs-pager").hidden = level.nextAfter === "";
+  navCount("nav-runs", level.loaded ? String(level.rows.length) : "");
+  syncRunsScope();
+}
+
+// The scope bar is a chooser, and once it has chosen it is two lists taking
+// a third of the screen to state what the strip below already says. It
+// collapses on selection and comes back on request; nothing it held is lost,
+// because the agent and the candidate are both on the strip.
+let runsScopeOpen = true;
+
+function syncRunsScope() {
+  const chosen = openedCandidate !== "";
+  const collapse = chosen && !runsScopeOpen;
+  byID("runs-scope").hidden = collapse;
+  const toggle = byID("runs-scope-toggle");
+  toggle.hidden = !chosen;
+  toggle.setAttribute("aria-expanded", collapse ? "false" : "true");
+  toggle.textContent = collapse ? "Change agent or candidate" : "Hide the chooser";
+}
+
+byID("runs-scope-toggle").addEventListener("click", () => {
+  runsScopeOpen = !runsScopeOpen;
+  syncRunsScope();
+});
+
+byID("runs-search").addEventListener("input", (event) => {
+  runFilter = event.target.value.trim().toLowerCase();
+  renderRunsView();
+});
+byID("agents-more").addEventListener("click", () => {
+  void openLevel("agents",
+    () => hierarchy.loadAgents(hierarchy.parents.agents, hierarchy.levels.agents.nextAfter));
+});
+byID("candidates-more").addEventListener("click", () => {
+  void openLevel("candidates",
+    () => hierarchy.loadCandidates(hierarchy.parents.candidates, hierarchy.levels.candidates.nextAfter));
+});
+byID("runs-more").addEventListener("click", () => {
+  void openLevel("runs",
+    () => hierarchy.loadRuns(hierarchy.parents.runs, hierarchy.levels.runs.nextAfter));
+});
+
+// renderProjectsLevel redraws every level the browser holds.
+//
+// Kept under its old name because the realtime snapshot calls it: a reconnect
+// re-reads one page of projects and this is what puts it on screen.
+function renderProjectsLevel() {
+  renderProjectsView();
+  renderRunsView();
   refreshCompareOptions();
 }
 
 // openLevel performs exactly one bounded request per user action.
 async function openLevel(level, load) {
+  // Raised before the request and lowered whatever happens to it, so a
+  // failure leaves a message rather than a skeleton that never resolves.
+  loading[level] = true;
+  renderProjectsLevel();
   try {
     await load();
-    renderProjectsLevel();
     clearProblem();
   } catch (error) {
-    report(byID(`level-${level}`), error);
+    loading[level] = false;
+    report(byID(LEVEL_HOSTS[level] || "runs-table"), error);
+    return;
+  } finally {
+    loading[level] = false;
   }
+  renderProjectsLevel();
 }
 
-// openRunDetail reads one run's authoritative state. One bounded read.
+const LEVEL_HOSTS = Object.freeze({
+  projects: "projects-table",
+  agents: "agents-list",
+  candidates: "candidates-list",
+  runs: "runs-table",
+});
+
+// ------------------------------ run workspace -----------------------------
+//
+// One run, opened by clicking its row. Three sections over the same record:
+// what the control plane holds about the run, the observations it retained,
+// and the distinct behaviors those observations fell into.
+//
+// Every figure on the strip is a value /v1 returned. None is counted from the
+// rows on screen — retained history is bounded and the authoritative counts
+// are not, so a table that counted itself would report how much it drew.
+
+let runProgress = null;
+let runDetail = null;
+
+function renderRunStrip() {
+  const items = [];
+  if (runDetail !== null) {
+    // A failed or cancelled run is the one fact on this strip somebody needs
+    // to see before they read anything else.
+    const stopped = runDetail.status === "failed" || runDetail.status === "cancelled";
+    items.push({
+      key: "Status",
+      value: runDetail.status,
+      className: stopped ? "is-stop" : "",
+    });
+    items.push({ key: "Candidate", value: runDetail.candidate_id });
+    items.push({ key: "Environment", value: runDetail.environment });
+  }
+  if (runProgress !== null) {
+    items.push({ key: "Records", value: runProgress.record_count });
+    items.push({ key: "Behavior observations", value: runProgress.behavior_observation_count });
+    items.push({ key: "Distinct behaviors", value: runProgress.distinct_behavior_count });
+  }
+  dash.summaryStrip(byID("run-strip"), items);
+}
+
+// openRunDetail reads one run's authoritative state. One bounded read, plus
+// its progress.
 async function openRunDetail(runID) {
+  openedRun = runID;
+  runDetail = null;
+  runProgress = null;
+  closeDetailPanel();
+  resetObservationScope();
+  openView("view-run");
+  showRunSection("run-overview");
+  byID("page-title").textContent = runID;
+
   try {
     const run = await api.getRun(runID);
+    runDetail = run;
     render.renderRun(byID("investigate-run"), run);
     setOpenRun(runID);
     byID("watch-run-id").value = runID;
+    byID("evidence-run-id").value = runID;
     clearProblem();
     try {
-      render.renderProgress(byID("investigate-progress"), await api.getProgress(runID));
+      runProgress = await api.getProgress(runID);
+      render.renderProgress(byID("investigate-progress"), runProgress);
     } catch (progressError) {
       report(byID("investigate-progress"), progressError);
     }
   } catch (error) {
     report(byID("investigate-run"), error);
+  }
+  renderRunStrip();
+  renderRunActions();
+  drawCrumbs();
+}
+
+// renderRunActions offers the things a reader can do with the open run.
+//
+// Every one of them is navigation or a read. The lifecycle transitions stay
+// under Manage: the server decides whether one is legal, and putting them
+// beside a table of evidence would suggest this page knew.
+function renderRunActions() {
+  const host = byID("run-view-actions");
+  render.clear(host);
+  if (openedRun === "") {
+    return;
+  }
+  const watch = render.element("button", "link-button", "Watch this run live");
+  watch.type = "button";
+  watch.addEventListener("click", () => {
+    byID("watch-run-id").value = openedRun;
+    openView("view-live");
+    byID("watch-start").focus();
+  });
+  host.append(watch);
+
+  const history = render.element("button", "link-button", "Open in evidence");
+  history.type = "button";
+  history.addEventListener("click", () => {
+    byID("evidence-run-id").value = openedRun;
+    openEvidence("evidence-run");
+  });
+  host.append(history);
+}
+
+// ------------------------------ observations ------------------------------
+//
+// One bounded page of a run's retained history, optionally narrowed to one
+// correlated view. The narrowing is at most one of session, trace or behavior
+// — the server refuses more than one — and it is applied in storage before the
+// page bound, which is why it is a request parameter and not a filter over a
+// page that already arrived.
+
+let observationScope = { sessionID: "", traceID: "", fingerprintID: "" };
+let observationPage = { rows: [], nextAfter: "", loaded: false, state: "", retained: "" };
+let selectedObservation = "";
+
+function resetObservationScope() {
+  observationScope = { sessionID: "", traceID: "", fingerprintID: "" };
+  observationPage = { rows: [], nextAfter: "", loaded: false, state: "", retained: "" };
+  selectedObservation = "";
+}
+
+const OBSERVATION_SCOPES = Object.freeze([
+  Object.freeze({ field: "sessionID", label: "Session" }),
+  Object.freeze({ field: "traceID", label: "Trace" }),
+  Object.freeze({ field: "fingerprintID", label: "Behavior" }),
+]);
+
+function renderObservationScopeChips() {
+  const host = byID("observations-scope");
+  render.clear(host);
+  let narrowed = false;
+  for (const entry of OBSERVATION_SCOPES) {
+    const value = observationScope[entry.field];
+    if (value === "") {
+      continue;
+    }
+    narrowed = true;
+    const chip = render.element("button", "chip-clear");
+    chip.type = "button";
+    chip.append(render.element("span", null, `${entry.label}: `));
+    chip.append(render.element("span", "mono", value));
+    chip.append(render.element("span", null, " ✕"));
+    chip.setAttribute("aria-label", `Remove the ${entry.label.toLowerCase()} narrowing`);
+    chip.addEventListener("click", () => {
+      observationScope = { sessionID: "", traceID: "", fingerprintID: "" };
+      void loadObservations("");
+    });
+    host.append(chip);
+  }
+  if (!narrowed) {
+    host.append(render.element("span", "toolbar-note", "Whole run"));
+  }
+}
+
+// narrowObservations replaces the narrowing with exactly one dimension.
+//
+// Replaces rather than adds: the server accepts at most one, and offering a
+// second control that silently dropped the first would be a page pretending
+// to a capability the protocol does not have.
+function narrowObservations(field, value) {
+  observationScope = { sessionID: "", traceID: "", fingerprintID: "" };
+  observationScope[field] = value;
+  showRunSection("run-observations");
+  void loadObservations("");
+}
+
+async function loadObservations(after) {
+  if (openedRun === "") {
+    return;
+  }
+  loading.observations = true;
+  renderObservationsView();
+  try {
+    const response = await api.runObservations(openedRun, observationScope, after);
+    observationPage = {
+      rows: Array.isArray(response.observations) ? response.observations : [],
+      nextAfter: typeof response.next_after === "string" ? response.next_after : "",
+      loaded: true,
+      state: response.history_state || "",
+      retained: response.retained_count || "",
+    };
+    selectedObservation = "";
+    closeDetailPanel();
+    clearProblem();
+  } catch (error) {
+    loading.observations = false;
+    report(byID("observations-table"), error);
+    return;
+  } finally {
+    loading.observations = false;
+  }
+  renderObservationsView();
+}
+
+function renderObservationsView() {
+  renderObservationScopeChips();
+
+  dash.dataTable(byID("observations-table"), {
+    loading: loading.observations,
+    skeletonRows: 6,
+    emptyTitle: observationPage.loaded ? "No retained observation in this view" : "Nothing loaded yet",
+    emptyHint: observationPage.loaded
+      ? "Retained history is bounded; a narrowing may have no observations under it."
+      : undefined,
+    emptyIcon: "clock",
+    columns: [
+      {
+        key: "sequence",
+        label: "Seq",
+        cell: (row) => dash.identChip(
+          render.retainedValue(row, "sequence"),
+          () => selectObservation(row),
+          "Open observation",
+        ),
+      },
+      {
+        key: "timestamp",
+        label: "Time",
+        className: "ident",
+        cell: (row) => dash.shortTime(render.retainedValue(row, "timestamp")),
+      },
+      {
+        key: "operation",
+        label: "Operation",
+        className: "wrap",
+        cell: (row) => behaviorText(row.behavior, "operation_name"),
+      },
+      {
+        key: "target",
+        label: "Target",
+        className: "wrap",
+        cell: (row) => behaviorText(row.behavior, "target_name"),
+      },
+      {
+        key: "decision",
+        label: "Decision",
+        className: "keep",
+        // The word is the server's and carries the meaning alone. The mark
+        // and the colour are reinforcement, so the column still reads on a
+        // monochrome display and to a colour-blind reader.
+        cell: (row) => dash.verdict(
+          render.retainedValue(row, "decision"),
+          dash.decisionEdge(row.decision),
+          dash.decisionClass(row.decision),
+        ),
+      },
+      {
+        key: "risk_level",
+        label: "Risk",
+        className: "keep",
+        cell: (row) => dash.verdict(
+          render.retainedValue(row, "risk_level"),
+          dash.riskIsSevere(row.risk_level) ? "flag" : "",
+          dash.riskClass(row.risk_level),
+        ),
+      },
+      { key: "trust_score", label: "Trust", align: "right", cell: (row) => render.retainedValue(row, "trust_score") },
+      // Anomaly, context risk and the confidences are in the detail panel.
+      // Nine columns did not fit beside an open panel, and a column that
+      // scrolls out of sight is not a column a reader can scan.
+      { key: "duration_nanos", label: "Duration", align: "right", cell: (row) => dash.durationText(render.retainedValue(row, "duration_nanos")) },
+    ],
+    rows: observationPage.rows,
+    keyOf: (row) => String(row.sequence),
+    selected: selectedObservation,
+    edgeOf: (row) => dash.decisionEdge(row.decision),
+    onOpen: (row) => selectObservation(row),
+  });
+
+  const parts = [];
+  if (observationPage.retained !== "") {
+    parts.push(`${observationPage.retained} retained`);
+  }
+  if (observationPage.state !== "") {
+    parts.push(observationPage.state === "complete"
+      ? "the whole history is retained"
+      : `history is ${observationPage.state}`);
+  }
+  if (observationPage.nextAfter !== "") {
+    parts.push("more exist on this page's continuation");
+  }
+  byID("observations-page-state").textContent = parts.join(" · ");
+  byID("observations-pager").hidden = observationPage.nextAfter === "";
+}
+
+// behaviorText reads one allowlisted field of a retained behavior.
+//
+// Through the allowlist, in the same direction render.js uses: the list is
+// iterated, never the object, so a field /v1 adds later cannot reach a cell
+// because somebody wrote `behavior.new_thing`.
+function behaviorText(behavior, key) {
+  if (behavior === undefined || behavior === null || !render.BEHAVIOR_FIELDS.includes(key)) {
+    return render.displayValue(undefined);
+  }
+  return render.displayValue(behavior[key]);
+}
+
+byID("observations-more").addEventListener("click", () => {
+  void loadObservations(observationPage.nextAfter);
+});
+
+// --------------------------- the detail panel -----------------------------
+
+// selectObservation opens one observation beside the table.
+//
+// The table is not redrawn: the reader's place in it is theirs, and a page
+// they had paged forward to must not jump back. Selection moves as a class,
+// and closing the panel puts focus back on the row it came from.
+function selectObservation(observation) {
+  selectedObservation = String(observation.sequence);
+  dash.markSelected(byID("observations-table"), selectedObservation);
+
+  const panel = byID("detail");
+  const body = byID("detail-body");
+  render.clear(body);
+  byID("detail-title").textContent = `Observation ${render.retainedValue(observation, "sequence")}`;
+
+  body.append(dash.detailGroup("Decision", [
+    ["Decision", render.retainedValue(observation, "decision")],
+    ["Risk level", render.retainedValue(observation, "risk_level")],
+    ["Policy rule", render.retainedValue(observation, "policy_rule")],
+    ["Matched default", render.retainedValue(observation, "matched_default")],
+    ["Approval status", render.retainedValue(observation, "approval_status")],
+  ]));
+
+  body.append(dash.detailGroup("Scores", [
+    ["Trust", render.retainedValue(observation, "trust_score")],
+    ["Anomaly", render.retainedValue(observation, "anomaly_score")],
+    ["Anomaly confidence", render.retainedValue(observation, "anomaly_confidence")],
+    ["Context risk", render.retainedValue(observation, "context_risk")],
+    ["Identity confidence", render.retainedValue(observation, "identity_confidence")],
+  ]));
+
+  body.append(dash.detailGroup("Timing", [
+    ["Timestamp", render.retainedValue(observation, "timestamp")],
+    ["Duration", dash.durationText(render.retainedValue(observation, "duration_nanos"))],
+    ["Span status", render.retainedValue(observation, "span_status")],
+    ["Span lineage", render.retainedValue(observation, "span_lineage")],
+  ]));
+
+  body.append(dash.detailGroup("Behavior", [
+    ["Operation", behaviorText(observation.behavior, "operation_name")],
+    ["Category", behaviorText(observation.behavior, "operation_category")],
+    ["Target", behaviorText(observation.behavior, "target_name")],
+    ["Target category", behaviorText(observation.behavior, "target_category")],
+    ["Actor", render.retainedValue(observation, "actor_id")],
+    ["New behavior", render.retainedValue(observation, "new_behavior")],
+  ]));
+
+  // Correlation references. Each one that narrows the table is a control;
+  // each one that does not is flat, so a chip never promises a journey the
+  // page cannot make.
+  body.append(dash.detailRefs("Correlation", [
+    {
+      key: "Session",
+      value: render.retainedValue(observation, "session_id"),
+      onOpen: (value) => narrowObservations("sessionID", value),
+    },
+    {
+      key: "Trace",
+      value: render.retainedValue(observation, "trace_id"),
+      onOpen: (value) => narrowObservations("traceID", value),
+    },
+    {
+      key: "Behavior",
+      value: render.retainedValue(observation, "fingerprint_id"),
+      onOpen: (value) => narrowObservations("fingerprintID", value),
+    },
+    { key: "Span", value: render.retainedValue(observation, "span_id") },
+    { key: "Parent span", value: render.retainedValue(observation, "parent_span_id") },
+    { key: "Delegated from", value: render.retainedValue(observation, "delegated_from") },
+    { key: "Event", value: render.retainedValue(observation, "event_id") },
+  ]));
+
+  panel.hidden = false;
+}
+
+function closeDetailPanel() {
+  const panel = byID("detail");
+  if (panel.hidden) {
+    return;
+  }
+  panel.hidden = true;
+  render.clear(byID("detail-body"));
+}
+
+byID("detail-close").addEventListener("click", () => {
+  const key = selectedObservation;
+  closeDetailPanel();
+  // The selection survives the panel closing: the row stays marked and keeps
+  // the focus, so the reader is where they were rather than at the top.
+  dash.focusRow(byID("observations-table"), key);
+});
+
+// -------------------------------- behaviors -------------------------------
+
+let behaviorPage = { rows: [], nextAfter: "", loaded: false };
+
+async function loadBehaviors(after) {
+  if (openedRun === "") {
+    return;
+  }
+  loading.behaviors = true;
+  renderBehaviorsView();
+  try {
+    const response = await api.runBehaviors(openedRun, after);
+    behaviorPage = {
+      rows: Array.isArray(response.behaviors) ? response.behaviors : [],
+      nextAfter: typeof response.next_after === "string" ? response.next_after : "",
+      loaded: true,
+    };
+    clearProblem();
+  } catch (error) {
+    loading.behaviors = false;
+    report(byID("behaviors-table"), error);
+    return;
+  } finally {
+    loading.behaviors = false;
+  }
+  renderBehaviorsView();
+}
+
+function renderBehaviorsView() {
+  dash.dataTable(byID("behaviors-table"), {
+    loading: loading.behaviors,
+    skeletonRows: 4,
+    emptyTitle: behaviorPage.loaded ? "This run retained no behaviors" : "Nothing loaded yet",
+    emptyIcon: "compare",
+    columns: [
+      {
+        key: "fingerprint_id",
+        label: "Behavior",
+        cell: (row) => dash.identChip(
+          row.fingerprint_id,
+          (value) => narrowObservations("fingerprintID", value),
+          "Show observations of behavior",
+        ),
+      },
+      { key: "operation_category", label: "Category", cell: (row) => behaviorText(row.behavior, "operation_category") },
+      { key: "operation_name", label: "Operation", className: "wrap", cell: (row) => behaviorText(row.behavior, "operation_name") },
+      { key: "target_name", label: "Target", className: "wrap", cell: (row) => behaviorText(row.behavior, "target_name") },
+      { key: "target_category", label: "Target category", cell: (row) => behaviorText(row.behavior, "target_category") },
+      // The authoritative count, from the collection. Never the number of
+      // rows this table happens to be showing.
+      { key: "observations", label: "Observations", align: "right", cell: (row) => render.displayValue(row.observations) },
+    ],
+    rows: behaviorPage.rows,
+    keyOf: (row) => row.fingerprint_id,
+    onOpen: (row) => narrowObservations("fingerprintID", row.fingerprint_id),
+  });
+  byID("behaviors-page-state").textContent = behaviorPage.loaded
+    ? (behaviorPage.nextAfter === ""
+      ? `${behaviorPage.rows.length} behavior(s); this is the whole collection.`
+      : `${behaviorPage.rows.length} behavior(s) on this page; more exist.`)
+    : "";
+  byID("behaviors-pager").hidden = behaviorPage.nextAfter === "";
+}
+
+byID("behaviors-more").addEventListener("click", () => {
+  void loadBehaviors(behaviorPage.nextAfter);
+});
+
+// A run's sections read on demand, one page each, the first time they are
+// opened. Opening a run reads the run and its progress and nothing else.
+for (const tab of byID("run-tabs").querySelectorAll(".subtab")) {
+  tab.addEventListener("click", () => {
+    // The detail panel describes a row in the observation table. Leaving it
+    // open over another section would show a record beside a table that does
+    // not contain it, and its Close would return focus to a row nobody can
+    // see. The selection itself survives: coming back re-marks the row.
+    if (tab.dataset.section !== "run-observations") {
+      closeDetailPanel();
+    }
+    if (tab.dataset.section === "run-observations") {
+      if (observationPage.loaded) {
+        renderObservationsView();
+      } else {
+        void loadObservations("");
+      }
+    }
+    if (tab.dataset.section === "run-behaviors" && !behaviorPage.loaded) {
+      void loadBehaviors("");
+    }
+  });
+}
+
+// ------------------------------ entering a view ---------------------------
+
+// onEnterView reads what a destination needs, once, when it is opened.
+//
+// One page per destination and never more: nothing here follows a cursor, and
+// a destination already holding a page is left alone so returning to it does
+// not re-fetch what is on screen.
+function onEnterView(viewID) {
+  if (viewID === "view-projects" && !hierarchy.levels.projects.loaded) {
+    void openLevel("projects", () => hierarchy.loadProjects(""));
+  }
+  if (viewID === "view-compare" && !compareHierarchy.levels.agents.loaded && openedProject !== "") {
+    void openCompareLevel("agents", () => compareHierarchy.loadAgents(openedProject, ""));
+  }
+  // A destination scoped to a project shows that project's records. Making a
+  // reader press a button to see history that the scope already determines is
+  // the form-first habit this console is replacing.
+  if (viewID === "view-promotion" && openedProject !== "" && promotionProject === "") {
+    void loadPromotionPage(openedProject, "", 1, null);
   }
 }
 
@@ -958,37 +1822,217 @@ watchStop.addEventListener("click", () => {
 
 const compareResult = byID("compare-result");
 
-// Compare's run pickers, filled from whatever the hierarchy browser has
-// loaded.
+// Compare chooses two runs by assigning rows, not by naming identifiers.
 //
 // The identifier is still the value the server receives — the contract is
-// unchanged — but it stops being something a person has to find and copy. The
-// text inputs remain, because a developer who already has an identifier from
-// CI should not have to browse to it, and because a run outside the currently
-// loaded page has to be reachable somehow.
-const comparePickers = Object.freeze([
-  Object.freeze({ select: "compare-reference-pick", input: "compare-reference" }),
-  Object.freeze({ select: "compare-candidate-pick", input: "compare-candidate" }),
-]);
+// unchanged — but nobody has to find one, copy one or recognise one in a
+// menu. A reader browses to a candidate, sees its runs, and says which of
+// them is the reference and which is the candidate. Both choices are then
+// shown in full, so what is about to be compared is on screen rather than
+// implied by two opaque strings.
+//
+// Compare keeps its own browser. Sharing the Runs destination's would mean
+// choosing a comparison moved the reader's place in the run table, and
+// changing that table would silently change what a pending comparison meant.
+const compareHierarchy = new HierarchyBrowser({
+  listProjects: (after) => api.listProjects(after),
+  listProjectAgents: (projectID, after) => api.listProjectAgents(projectID, after),
+  listAgentCandidates: (agentID, after) => api.listAgentCandidates(agentID, after),
+  listCandidateRuns: (candidateID, after) => api.listCandidateRuns(candidateID, after),
+});
 
+let compareAgent = "";
+let compareCandidate = "";
+// The two sides. Each holds the run record the reader chose, so the summary
+// panel can show what it is rather than only its identifier.
+let compareSides = { reference: null, candidate: null };
+
+async function openCompareLevel(level, load) {
+  const flag = level === "runs" ? "compareRuns" : level;
+  loading[flag] = true;
+  renderCompareView();
+  try {
+    await load();
+    clearProblem();
+  } catch (error) {
+    loading[flag] = false;
+    report(byID(COMPARE_LEVEL_HOSTS[level] || "compare-runs-table"), error);
+    return;
+  } finally {
+    loading[flag] = false;
+  }
+  renderCompareView();
+}
+
+const COMPARE_LEVEL_HOSTS = Object.freeze({
+  agents: "compare-agents-list",
+  candidates: "compare-candidates-list",
+  runs: "compare-runs-table",
+});
+
+// assignSide records one run as a side of the comparison.
+//
+// Assigning a run that already holds the other side moves it, rather than
+// letting the same run be both: a run compared against itself is not a
+// comparison, and refusing it here means the reader sees why immediately
+// instead of reading a server error.
+function assignSide(side, run) {
+  const other = side === "reference" ? "candidate" : "reference";
+  if (compareSides[other] !== null && compareSides[other].id === run.id) {
+    compareSides[other] = null;
+  }
+  compareSides[side] = run;
+  renderCompareView();
+}
+
+function renderCompareSides() {
+  for (const side of ["reference", "candidate"]) {
+    const host = byID(`compare-${side}-summary`);
+    const chosen = compareSides[side];
+    render.clear(host);
+    byID(`compare-side-${side}`).classList.toggle("cmp-side-chosen", chosen !== null);
+    if (chosen === null) {
+      host.append(render.emptyState(
+        `No ${side} chosen. Use a row's ${side === "reference" ? "Reference" : "Candidate"} control above.`,
+      ));
+      continue;
+    }
+    render.renderRun(host, chosen);
+  }
+
+  const ready = compareSides.reference !== null
+    && compareSides.candidate !== null
+    && compareSides.reference.id !== compareSides.candidate.id;
+  byID("compare-submit").disabled = !ready;
+  byID("compare-ready").textContent = ready
+    ? "Ready to compare."
+    : "Choose a reference and a candidate to enable this.";
+
+  // Provenance reads the same two runs, so it needs nothing typed either.
+  if (compareSides.reference !== null) {
+    byID("evidence-provenance-reference").value = compareSides.reference.id;
+    byID("promotion-reference").value = compareSides.reference.id;
+  }
+  if (compareSides.candidate !== null) {
+    byID("evidence-provenance-candidate").value = compareSides.candidate.id;
+    byID("promotion-candidate").value = compareSides.candidate.id;
+  }
+}
+
+// sideControl renders one row's assign button for one side.
+function sideControl(side, run) {
+  const chosen = compareSides[side] !== null && compareSides[side].id === run.id;
+  const control = render.element(
+    "button",
+    "chip-button",
+    side === "reference" ? "Reference" : "Candidate",
+  );
+  control.type = "button";
+  control.setAttribute("aria-pressed", chosen ? "true" : "false");
+  control.setAttribute("aria-label", `Use ${run.id} as the ${side}`);
+  control.addEventListener("click", (event) => {
+    event.stopPropagation();
+    assignSide(side, run);
+  });
+  return control;
+}
+
+function renderCompareView() {
+  dash.pickList(byID("compare-agents-list"), byID("compare-agents-more"), {
+    level: compareHierarchy.levels.agents,
+    selected: compareAgent,
+    pendingMessage: "Choose a project in the sidebar.",
+    emptyMessage: "This project has no agents.",
+    labelOf: (row) => row.name || row.id,
+    detailOf: (row) => (row.name && row.name !== row.id ? row.id : ""),
+    onOpen: (row) => {
+      compareAgent = row.id;
+      compareCandidate = "";
+      void openCompareLevel("candidates", () => compareHierarchy.loadCandidates(row.id, ""));
+    },
+  });
+  byID("compare-agents-count").textContent = compareHierarchy.levels.agents.loaded
+    ? `${compareHierarchy.levels.agents.rows.length} on this page`
+    : "";
+
+  dash.pickList(byID("compare-candidates-list"), byID("compare-candidates-more"), {
+    level: compareHierarchy.levels.candidates,
+    selected: compareCandidate,
+    pendingMessage: "Choose an agent.",
+    emptyMessage: "This agent has no candidates.",
+    labelOf: (row) => (row.metadata && row.metadata.label ? row.metadata.label : row.id),
+    detailOf: (row) => (row.metadata && row.metadata.label && row.metadata.label !== row.id
+      ? row.id
+      : ""),
+    onOpen: (row) => {
+      compareCandidate = row.id;
+      void openCompareLevel("runs", () => compareHierarchy.loadRuns(row.id, ""));
+    },
+  });
+  byID("compare-candidates-count").textContent = compareHierarchy.levels.candidates.loaded
+    ? `${compareHierarchy.levels.candidates.rows.length} on this page`
+    : "";
+
+  const level = compareHierarchy.levels.runs;
+  dash.dataTable(byID("compare-runs-table"), {
+    loading: loading.compareRuns,
+    skeletonRows: 3,
+    emptyTitle: level.loaded ? "This candidate has no runs" : "Choose an agent, then a candidate",
+    emptyHint: level.loaded ? undefined : "Assigning a side needs a run to assign.",
+    emptyIcon: "runs",
+    columns: [
+      { key: "id", label: "Run", className: "ident", cell: (row) => row.id },
+      { key: "candidate_id", label: "Candidate", className: "ident", cell: (row) => row.candidate_id },
+      { key: "status", label: "Status", cell: (row) => row.status },
+      { key: "environment", label: "Environment", cell: (row) => row.environment },
+      { key: "created_at", label: "Created", className: "ident", cell: (row) => dash.shortTime(row.created_at) },
+      { key: "reference", label: "Set as reference", cell: (row) => sideControl("reference", row) },
+      { key: "candidate", label: "Set as candidate", cell: (row) => sideControl("candidate", row) },
+    ],
+    rows: level.rows,
+    keyOf: (row) => row.id,
+  });
+  byID("compare-runs-page-state").textContent = level.loaded
+    ? (level.nextAfter === ""
+      ? `${level.rows.length} run(s); this is the whole collection.`
+      : `${level.rows.length} run(s) on this page; more exist.`)
+    : "";
+  byID("compare-runs-pager").hidden = level.nextAfter === "";
+
+  renderCompareSides();
+}
+
+byID("compare-agents-more").addEventListener("click", () => {
+  void openCompareLevel("agents", () => compareHierarchy.loadAgents(
+    compareHierarchy.parents.agents, compareHierarchy.levels.agents.nextAfter,
+  ));
+});
+byID("compare-candidates-more").addEventListener("click", () => {
+  void openCompareLevel("candidates", () => compareHierarchy.loadCandidates(
+    compareHierarchy.parents.candidates, compareHierarchy.levels.candidates.nextAfter,
+  ));
+});
+byID("compare-runs-more").addEventListener("click", () => {
+  void openCompareLevel("runs", () => compareHierarchy.loadRuns(
+    compareHierarchy.parents.runs, compareHierarchy.levels.runs.nextAfter,
+  ));
+});
+
+// refreshCompareOptions fills the promotion form's run pickers.
+//
+// Promotion keeps selects: recording one is an occasional administrative act
+// on two runs a reader has already compared, and the fields are filled from
+// that comparison. They are not how anybody moves around this page.
 function refreshCompareOptions() {
   const runs = hierarchy.levels.runs.rows;
-  for (const picker of comparePickers.concat(promotionRunPickers())) {
+  for (const picker of promotionRunPickers()) {
     renderOptions(byID(picker.select), runs, {
       placeholder: "Choose a run",
-      emptyLabel: "Browse to a candidate under Investigate",
+      emptyLabel: "Browse to a candidate under Runs",
       labelOf: (row) => row.id,
       detailOf: (row) => [row.status, row.environment].filter((p) => p).join(" · "),
     });
   }
-}
-
-for (const picker of comparePickers) {
-  byID(picker.select).addEventListener("change", (event) => {
-    if (event.target.value !== "") {
-      byID(picker.input).value = event.target.value;
-    }
-  });
 }
 
 // Declared as a function because the promotion section is wired further down;
@@ -1000,6 +2044,13 @@ function promotionRunPickers() {
   ];
 }
 
+for (const picker of promotionRunPickers()) {
+  byID(picker.select).addEventListener("change", (event) => {
+    if (event.target.value !== "") {
+      byID(picker.input).value = event.target.value;
+    }
+  });
+}
 const LIMIT_INPUTS = Object.freeze([
   Object.freeze({ id: "compare-max-added", key: "maxAddedBehaviors", label: "Max added behaviors" }),
   Object.freeze({ id: "compare-max-block", key: "maxBlockDecisions", label: "Max block decisions" }),
@@ -1009,6 +2060,15 @@ const LIMIT_INPUTS = Object.freeze([
 byID("form-compare").addEventListener("submit", async (event) => {
   event.preventDefault();
   await busy(event.submitter, async () => {
+    // The two sides come from the rows the reader assigned, never from a
+    // field. The button is disabled until both are chosen, and this is the
+    // same condition stated once more so a submit that reached here anyway
+    // says what is missing instead of sending an empty identifier.
+    if (compareSides.reference === null || compareSides.candidate === null) {
+      showProblem("Choose a reference run and a candidate run in the table above.");
+      return;
+    }
+
     const limits = {};
     for (const input of LIMIT_INPUTS) {
       const text = value(input.id);
@@ -1024,7 +2084,7 @@ byID("form-compare").addEventListener("submit", async (event) => {
 
     try {
       const response = await api.compare(
-        value("compare-reference"), value("compare-candidate"), limits,
+        compareSides.reference.id, compareSides.candidate.id, limits,
       );
       // The verdict inside is the server's. This call renders it; it does not
       // recompute it from the limits above.

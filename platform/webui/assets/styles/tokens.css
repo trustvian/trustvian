@@ -1,0 +1,209 @@
+/*
+ * Design tokens — the only file that names a raw value.
+ *
+ * Everything below is a decision, and every other stylesheet reads these
+ * rather than restating them. A colour, a size or a duration that appears as
+ * a literal anywhere else is a decision made twice.
+ *
+ * Three rules this system is built on:
+ *
+ *   1. **Colour is reinforcement, never the signal.** Every state that uses a
+ *      colour also carries a word and usually a mark, so the meaning survives
+ *      a monochrome display and a colour-blind reader. The semantic ramps are
+ *      contrast-checked against the surface they sit on in both schemes.
+ *
+ *   2. **The accent is one hue, chosen by elimination.** Green, amber and red
+ *      carry verdict and risk; violet carries "new". An accent sharing any of
+ *      those would make selection read as severity. Blue is what is left, and
+ *      that is the reason for it.
+ *
+ *   3. **No web font.** The Content-Security-Policy sets `font-src 'none'`,
+ *      which is only honest because nothing here asks for one. The type
+ *      system's distinction is prose versus record, not display versus body:
+ *      labels and help are the UI sans, and every value that *is* a record —
+ *      an identifier, a timestamp, a score, a count — is mono with tabular
+ *      figures so columns align and a digit never moves between rows.
+ */
+
+:root {
+  /* ---- neutral ramp -------------------------------------------------- */
+  /* Slightly cool. A warm grey under a blue accent reads as two greys. */
+  --n-0:  #ffffff;
+  --n-1:  #fbfbfc;
+  --n-2:  #f4f4f6;
+  --n-3:  #ebebee;
+  --n-4:  #e0e0e4;
+  --n-5:  #c9c9d0;
+  --n-6:  #8e8e99;
+  --n-7:  #63636e;
+  --n-8:  #3d3d46;
+  --n-9:  #1b1b20;
+
+  /* ---- surfaces ------------------------------------------------------ */
+  --bg:        var(--n-1);
+  --panel:     var(--n-0);
+  --sunken:    var(--n-2);
+  --ink:       var(--n-9);
+  --ink-soft:  var(--n-8);
+  --muted:     var(--n-7);
+  --faint:     var(--n-6);
+  --line:      var(--n-4);
+  --line-soft: var(--n-3);
+
+  /* ---- accent -------------------------------------------------------- */
+  --accent:      #27568f;
+  --accent-hot:  #1f4677;
+  --accent-ink:  #ffffff;
+  --accent-soft: #e8eff7;
+  --accent-line: #b6cde4;
+
+  /* ---- verdict and risk ---------------------------------------------- */
+  /* Load-bearing, and never the only carrier of their meaning. */
+  --pass:       #1d5c34;
+  --pass-soft:  #e6f2ea;
+  --fail:       #8a2417;
+  --fail-soft:  #fbecea;
+  --warn-bg:    #fdf3e7;
+  --err-bg:     #fcefed;
+
+  --state-calm: #2f6b48;
+  --state-note: #6f5f1f;
+  --state-warn: #8a4f16;
+  --state-stop: #8a2417;
+  --state-new:  #5b3488;
+
+  /* Row tints for the severity gutter. Deliberately very light: the tint
+     draws the eye down a long column, and the word in the cell is what
+     states the decision. */
+  --tint-warn: #fdf6ee;
+  --tint-stop: #fdf0ee;
+
+  /* ---- chrome (the sidebar's own surface) ---------------------------- */
+  /* Navigation is not content, and in either scheme it reads as a
+     different material rather than as a slightly different grey. */
+  --chrome:        #191c21;
+  --chrome-ink:    #e7e9ec;
+  --chrome-muted:  #949aa4;
+  --chrome-faint:  #6c727c;
+  --chrome-line:   #2a2f36;
+  --chrome-hover:  #21252b;
+  --chrome-active: #252b33;
+  --chrome-accent: #6ba7de;
+  --chrome-calm:   #79c496;
+  --chrome-note:   #d8bf68;
+  --chrome-stop:   #ee9b8e;
+  --chrome-edge:   #000000;
+  --chrome-on:     #ffffff;
+
+  /* ---- type ---------------------------------------------------------- */
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --t-micro: 0.6875rem; /* 11px — column headers, chip labels */
+  --t-small: 0.75rem;   /* 12px — help, meta, strip keys */
+  --t-body:  0.8125rem; /* 13px — table cells, controls */
+  --t-base:  0.875rem;  /* 14px — prose */
+  --t-lead:  1rem;      /* 16px — strip values, section titles */
+  --t-title: 1.125rem;  /* 18px — page title */
+  --t-hero:  1.375rem;  /* 22px — the rare large number */
+
+  --w-normal: 400;
+  --w-medium: 500;
+  --w-semi:   600;
+
+  /* ---- space (4px base) ---------------------------------------------- */
+  --s-1: 0.25rem;
+  --s-2: 0.375rem;
+  --s-3: 0.5rem;
+  --s-4: 0.75rem;
+  --s-5: 1rem;
+  --s-6: 1.5rem;
+  --s-7: 2rem;
+
+  /* ---- shape and depth ------------------------------------------------ */
+  --r-sm: 3px;
+  --r-md: 5px;
+  --r-lg: 8px;
+  --r-pill: 999px;
+
+  /* Depth is almost absent on purpose. A console reads as flat planes
+     separated by hairlines; a shadow under every card is the SaaS default
+     and it makes a dense table look like a stack of receipts. Only the
+     surfaces that genuinely float carry one. */
+  --lift-1: 0 1px 2px rgba(20, 20, 26, 0.05);
+  --lift-2: 0 8px 24px -8px rgba(20, 20, 26, 0.18), 0 2px 6px rgba(20, 20, 26, 0.06);
+  --shadow: var(--lift-1);
+
+  /* ---- motion --------------------------------------------------------- */
+  /* Short enough to acknowledge an action without being a thing you wait
+     for. Every one of these is disabled under prefers-reduced-motion. */
+  --fast: 90ms;
+  --calm: 160ms;
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+
+  /* ---- layout --------------------------------------------------------- */
+  --sidebar-w: 14.5rem;
+  --detail-w: 21rem;
+  --head-h: 3.75rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --n-0: #17181c;
+    --n-1: #121317;
+    --n-2: #1c1e23;
+    --n-3: #24262c;
+    --n-4: #2d3038;
+    --n-5: #3d414b;
+    --n-6: #70747f;
+    --n-7: #9a9ea8;
+    --n-8: #c8ccd4;
+    --n-9: #ecedf0;
+
+    --bg:        var(--n-1);
+    --panel:     var(--n-0);
+    --sunken:    var(--n-2);
+    --ink:       var(--n-9);
+    --ink-soft:  var(--n-8);
+    --muted:     var(--n-7);
+    --faint:     var(--n-6);
+    --line:      var(--n-4);
+    --line-soft: var(--n-3);
+
+    --accent:      #7fb3e3;
+    --accent-hot:  #9ac6ee;
+    --accent-ink:  #0f1519;
+    --accent-soft: #1b2833;
+    --accent-line: #2f4a63;
+
+    --pass:       #79c496;
+    --pass-soft:  #16251c;
+    --fail:       #ee9b8e;
+    --fail-soft:  #2a1a17;
+    --warn-bg:    #2a2318;
+    --err-bg:     #2c1c19;
+
+    --state-calm: #79c496;
+    --state-note: #d8bf68;
+    --state-warn: #e39d61;
+    --state-stop: #ee9b8e;
+    --state-new:  #bd9ff0;
+
+    --tint-warn: #241d14;
+    --tint-stop: #251815;
+
+    --chrome:        #0d0e11;
+    --chrome-ink:    #e3e4e8;
+    --chrome-muted:  #8b8f99;
+    --chrome-faint:  #666a73;
+    --chrome-line:   #1f2126;
+    --chrome-hover:  #15171b;
+    --chrome-active: #1c1f24;
+    --chrome-accent: #7fb3e3;
+    --chrome-edge:   #000000;
+    --chrome-on:     #ffffff;
+
+    --lift-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --lift-2: 0 10px 30px -10px rgba(0, 0, 0, 0.7), 0 2px 8px rgba(0, 0, 0, 0.4);
+  }
+}

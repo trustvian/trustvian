@@ -621,6 +621,29 @@ exit criterion.
   [What Trustvian is not becoming](#what-trustvian-is-not-becoming), whose
   no-model-benchmarking line this does not cross. Not a feature and not a gate
   item.
+- **[096 — record-first admin console](tasks/v1.0/096-record-first-admin-console.md).**
+  074 removed the identifier form from the front door and
+  [ADR 0041](adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md)
+  made the durable hierarchy discoverable, but every surface *behind* Live was
+  still assembled from inputs: two menus to choose a comparison's runs, a run
+  identifier and a narrowing to read evidence, a project typed in before any
+  promotion history appeared. Replacing a text box with a menu had made the
+  identifiers discoverable without making the records browsable. 096 makes the
+  browser surface a console: a persistent sidebar of destinations, tables of
+  real records as the primary navigation, identifiers rendered as the controls
+  that follow them, a contextual detail panel beside the observation table, and
+  a comparison whose two sides are assigned from rows and shown in full. No
+  capability is added or removed, no route changes, and every bound 0041
+  established is unchanged — one page per action, an explicit continuation, and
+  narrowing in storage before the page bound. A second pass made the bundle
+  itself a layered design system — five layers whose dependencies point only
+  downward, one file that names every raw value, and four visibly different
+  states for a surface that has no records — after the first pass left a flat
+  directory in which light and dark drifted apart, a loading table looked
+  like an empty one, and a blocked observation weighed the same as an allowed
+  one. See
+  [ADR 0050](adr/0050-the-browser-surface-is-a-record-first-admin-console.md)
+  and [ADR 0051](adr/0051-the-browser-bundle-is-a-layered-design-system.md).
 
 Still planned: everything from 068 onward. The platform
 can describe an evaluation, aggregate bounded result evidence, compare bounded
@@ -973,6 +996,7 @@ The **Gate** column says which rows the release actually depends on.
 | 093 | Behavioral alert rules — platform-level conditions over that evidence, reusing existing delivery and security principles. The notification domain boundary is decided by 093, once a second producer exists. Notification, never enforcement | Not specified | none |
 | 094 | Public control-plane API contract and typed clients — an OpenAPI description of `/v1`, machine-validated, with generated or contract-tested clients | Not specified | none |
 | 095 | Saved investigations — a bounded durable metadata and reference surface holding investigation context that references authoritative evidence rather than copying it. Depends on 085 only | Not specified | none |
+| 096 | [Record-first admin console](tasks/v1.0/096-record-first-admin-console.md) — the browser surface reorganized around tables of records and clickable identifiers, so no journey through it requires typing one. Presentation and information architecture only; no route, capability or bound changes | Specified | none |
 
 **Production history and scale:**
 

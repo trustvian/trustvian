@@ -31,7 +31,7 @@ import {
   FIDELITY_NOT_RETAINED,
   SEQUENCE_DEVIATION_NOT_RETAINED,
 } from "./trace.js";
-import * as render from "./render.js";
+import * as render from "../v1/render.js";
 
 // ---------------------------------------------------------------------
 // Views

@@ -66,7 +66,7 @@ type renderedRow struct {
 // JSON the browser would parse. Nothing is reshaped on the way in, because a
 // reshaping step here is where a mismatch would be hidden.
 const rowDriver = `
-import { observationRow } from "./evidence.js";
+import { observationRow } from "./views/evidence.js";
 const payload = JSON.parse(process.argv[2]);
 process.stdout.write(JSON.stringify(payload.observations.map(observationRow)));
 `
@@ -79,15 +79,40 @@ func runShippedDriver(t *testing.T, driver string, arg string) []byte {
 		t.Skip("node is not on PATH; this cross-layer check needs the shipped assets run")
 	}
 
+	// The whole script tree, with its directories, rather than the three
+	// modules this driver names. The bundle is layered — a view imports the
+	// /v1 renderer, which imports the DOM core — and a flattened copy would
+	// run modules whose relative imports mean something other than what
+	// ships, which is the opposite of what a cross-layer check is for.
 	dir := t.TempDir()
-	for _, name := range []string{"evidence.js", "trace.js", "render.js"} {
-		body, readErr := os.ReadFile(filepath.Join(webuiAssetDir, name))
+	copied := 0
+	walkErr := filepath.WalkDir(webuiAssetDir, func(from string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".js") {
+			return nil
+		}
+		rel, relErr := filepath.Rel(webuiAssetDir, from)
+		if relErr != nil {
+			return relErr
+		}
+		body, readErr := os.ReadFile(from)
 		if readErr != nil {
-			t.Fatalf("read %s: %v", name, readErr)
+			return readErr
 		}
-		if err := os.WriteFile(filepath.Join(dir, name), body, 0o600); err != nil {
-			t.Fatalf("write %s: %v", name, err)
+		target := filepath.Join(dir, rel)
+		if mkErr := os.MkdirAll(filepath.Dir(target), 0o700); mkErr != nil {
+			return mkErr
 		}
+		copied++
+		return os.WriteFile(target, body, 0o600)
+	})
+	if walkErr != nil {
+		t.Fatalf("copy the shipped assets: %v", walkErr)
+	}
+	if copied == 0 {
+		t.Fatalf("no script assets found under %s", webuiAssetDir)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "driver.mjs"), []byte(driver), 0o600); err != nil {
 		t.Fatalf("write driver: %v", err)
@@ -365,7 +390,7 @@ func TestCorrelatedHistoryRendersWhatTheRouteReturned(t *testing.T) {
 // rename.
 const headerDriver = `
 import { findingPresentation, statusSentence, historySentence, EXHAUSTIVE_CAVEAT }
-  from "./evidence.js";
+  from "./views/evidence.js";
 const payload = JSON.parse(process.argv[2]);
 const shape = findingPresentation(payload);
 const history = payload.history === undefined || payload.history === null

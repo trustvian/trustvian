@@ -1,0 +1,88 @@
+/*
+ * Element defaults and accessibility floor.
+ *
+ * No component lives here — only what every page gets for free: the reset,
+ * the document surface, the focus ring, and the two rules that make the whole
+ * system safe to build on.
+ */
+
+* { box-sizing: border-box; }
+
+/* The hidden attribute outranks a layout display.
+ *
+ * Components below set display: flex or grid, which beats the user agent's
+ * [hidden] { display: none } on specificity — so a pager hidden in script
+ * would keep rendering. Stated once here rather than as a [hidden] clause on
+ * every one of them. */
+[hidden] { display: none !important; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: var(--t-base);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* A record is mono with tabular figures, so a digit never moves between
+   rows and a column of scores can be compared by eye. */
+code, .mono {
+  font-family: var(--mono);
+  font-size: 0.93em;
+  font-variant-numeric: tabular-nums;
+}
+
+h1, h2, h3, h4 { font-weight: var(--w-semi); line-height: 1.3; margin: 0; }
+
+/* Keyboard access: a visible focus ring everywhere, never removed. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* Motion answers an action and never announces itself. Under reduced motion
+   nothing animates at all — the facts it carried are text in every case. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.skip {
+  position: absolute;
+  left: -9999px;
+}
+.skip:focus {
+  left: var(--s-3);
+  top: var(--s-3);
+  z-index: 100;
+  background: var(--panel);
+  padding: var(--s-3) var(--s-4);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+
+/* Icons are inline SVG built with createElementNS — never a font, which the
+   policy forbids, and never an image request. currentColor is the whole
+   contract: an icon is the colour of the text it sits beside. */
+.icon {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  flex: none;
+  vertical-align: -0.125em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.icon-fill { fill: currentColor; stroke: none; }
