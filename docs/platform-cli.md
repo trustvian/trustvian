@@ -102,6 +102,7 @@ trustvian eval ingest       --id <id> --sequence <n>
 trustvian eval compare      --reference-run <id> --candidate-run <id>
                             --max-added-behaviors <n> --max-block-decisions <n>
                             --max-critical-risk-observations <n>
+                            [--max-added-behavior-changes <n>]
 
 trustvian env create   --project-id <id> --ref <ref> --name <name> [--rank <n>]
 trustvian env get      --project-id <id> --ref <ref>
@@ -115,6 +116,7 @@ trustvian promotion create --id <id> --reference-run <id> --candidate-run <id>
                            --target-environment <ref>
                            --max-added-behaviors <n> --max-block-decisions <n>
                            --max-critical-risk-observations <n>
+                           [--max-added-behavior-changes <n>]
 trustvian promotion get    --id <id>
 trustvian promotion list   --project-id <id>
 ```
@@ -161,6 +163,31 @@ and [ADR 0047](adr/0047-behavioral-identity-is-per-observation-counting-is-a-pol
 
 At `--max-added-behaviors 0` none of this is observable. It matters the moment a
 budget is nonzero.
+
+**`--max-added-behavior-changes` bounds counted changes**, and is optional — on
+`eval compare` and `promotion create` alike
+([issue 131](https://github.com/trustvian/trustvian/issues/131)). Omitted, the
+request carries no such field and the server reports the check as not evaluated:
+the verdict is the other five checks alone, exactly as before the flag existed.
+`0` is not the same thing — it is the strictest limit, and the check is evaluated
+against it. Given alongside `--max-added-behaviors`, **both** are enforced;
+neither replaces the other.
+
+```text
+Gate checks:
+  PASS Added behaviors: 2 (maximum 5)
+  ...
+  PASS Added behavior changes: 1 (maximum 1)            evaluated, passed
+  ---- Added behavior changes: not evaluated (no limit supplied)
+  ---- Added behavior changes: not recorded (decided before this check existed)
+  FAIL Added behavior changes: 4 (maximum 3; correlation partial, so this is the identity count)
+```
+
+A not-evaluated or not-recorded check prints neither PASS nor FAIL, because it
+had neither. Where correlation is not complete the counted-change count *is* the
+identity count (ADR 0052), so a limit chosen on the assumption of folding fails
+rather than passes — the conservative direction. Every word is the server's: the
+CLI compares no count against any limit.
 
 `trustvian evidence` pages like every other collection here: `--limit` 1..64 and
 an exclusive `--after` cursor the previous page printed. It aggregates nothing
@@ -216,6 +243,10 @@ observations, and `block_decisions` and `critical_risk_observations` straight to
 the observations that carried them. `reference_evidence` and
 `candidate_evidence` report `aggregate_only` — they fail when a run observed
 *too little*, and an absence has no supporting records to link to.
+`added_behavior_changes` is refused with directions rather than resolved: it
+counts changes, and its evidence is already in the comparison's
+`added_changes`, each of whose contributing identities resolves with
+`--behavior`.
 
 **`RECORDED` and the rows below it are different measurements.** The recorded
 count is what the gate counted, across every record the run ingested. The rows
@@ -506,6 +537,8 @@ goes to stdout in both cases and stderr stays empty.
 All three gate limits are required, and an omitted limit is **not** zero. Zero
 is the strictest limit there is; defaulting to it would fail your build under a
 policy you never chose, and it would look exactly like a real regression.
+`--max-added-behavior-changes` is the one optional limit: omitting it means
+that check is not evaluated, which is also not zero.
 
 ## `--json`
 

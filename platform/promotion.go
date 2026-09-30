@@ -141,9 +141,9 @@ type Promotion struct {
 	target EnvironmentPosition
 
 	// limits and gateResult are the decision-time evidence, snapshotted.
-	// gateResult is what the workflow actually consumed; limits are its three
-	// maximums, kept as a named value because that is how a caller supplied
-	// them.
+	// gateResult is what the workflow actually consumed; limits are its
+	// maximums — three mandatory and one optional — kept as a named value
+	// because that is how a caller supplied them.
 	limits     EvaluationGateLimits
 	gateResult EvaluationGateResult
 
@@ -266,12 +266,23 @@ func NewPromotion(d PromotionDecision) (Promotion, error) {
 			MaxAddedBehaviors:           d.GateResult.AddedBehaviors().Maximum,
 			MaxBlockDecisions:           d.GateResult.BlockDecisions().Maximum,
 			MaxCriticalRiskObservations: d.GateResult.CriticalRiskObservations().Maximum,
+			MaxAddedBehaviorChanges:     changeLimitOf(d.GateResult.AddedBehaviorChanges()),
 		},
 		gateResult: d.GateResult,
 
 		outcome:   outcome,
 		decidedAt: d.DecidedAt,
 	}, nil
+}
+
+// changeLimitOf derives the optional limit from the check that consumed it: set
+// exactly when the check was evaluated, so a promotion cannot record a limit
+// its gate did not apply or apply one it does not record.
+func changeLimitOf(g ChangeCountGate) OptionalGateLimit {
+	if !g.Evaluated() {
+		return OptionalGateLimit{}
+	}
+	return NewOptionalGateLimit(g.Maximum)
 }
 
 // restorePromotion rebuilds a stored decision, applying every check a live

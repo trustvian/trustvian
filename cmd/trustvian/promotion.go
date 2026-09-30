@@ -39,6 +39,7 @@ const promotionUsage = `usage:
                              --max-added-behaviors <n>
                              --max-block-decisions <n>
                              --max-critical-risk-observations <n>
+                             [--max-added-behavior-changes <n>]
                              [--api-url <url>] [--json]
   trustvian promotion get    --id <id> [--api-url <url>] [--json]
   trustvian promotion list   --project-id <id> [--api-url <url>] [--json]` + apiURLNote
@@ -79,6 +80,9 @@ func runPromotionCreate(s streams, args []string, timeout time.Duration) int {
 	fs.Var(&blockDecisions, "max-block-decisions", "maximum block decisions (required)")
 	fs.Var(&criticalRisk, "max-critical-risk-observations",
 		"maximum critical-risk observations (required)")
+	var addedChanges optionalUint64
+	fs.Var(&addedChanges, "max-added-behavior-changes",
+		"maximum counted behavioral changes (optional; omitted: not evaluated)")
 
 	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, promotionUsage, err)
@@ -116,6 +120,7 @@ func runPromotionCreate(s streams, args []string, timeout time.Duration) int {
 			MaxAddedBehaviors:           addedBehaviors.canonical(),
 			MaxBlockDecisions:           blockDecisions.canonical(),
 			MaxCriticalRiskObservations: criticalRisk.canonical(),
+			MaxAddedBehaviorChanges:     addedChanges.optional(),
 		},
 	}
 
@@ -417,6 +422,7 @@ func renderPromotion(w io.Writer, p promotionDTO) error {
 	renderMaximum(w, "Added behaviors", p.GateResult.AddedBehaviors)
 	renderMaximum(w, "Block decisions", p.GateResult.BlockDecisions)
 	renderMaximum(w, "Critical risk observations", p.GateResult.CriticalRiskObservations)
+	renderChangeCount(w, p.GateResult.AddedBehaviorChanges)
 	return nil
 }
 

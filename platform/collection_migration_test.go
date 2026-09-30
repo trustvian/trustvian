@@ -225,8 +225,12 @@ func TestSchemaV4MigratesForwardAddingOnlyTheIntendedSchema(t *testing.T) {
 		slices.Sort(addedColumns)
 
 		wantColumns := []string(nil)
-		if table == tableAggregates {
+		switch table {
+		case tableAggregates:
 			wantColumns = operational
+		case tablePromotions:
+			// v8, issue 131: the optional counted-change check.
+			wantColumns = promotionChangeGateColumnNames()
 		}
 		if !slices.Equal(addedColumns, wantColumns) {
 			t.Errorf("%s gained columns %v, want exactly %v", table, addedColumns, wantColumns)

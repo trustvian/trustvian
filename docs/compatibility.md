@@ -89,9 +89,12 @@ reconstructed later. Everything else in this table is already released.
 | Resolution `side` for a shared behavior | STABLE | A behavior present in both runs **requires** an explicit `side`; omitting it is `400 invalid_request`. An added behavior defaults to `candidate` and a removed one to `reference`, and a side contradicting either is refused. A `check` reference never carries a side | — | Major |
 | Resolution `recorded_count` | STABLE | What the recorded evidence holds — the gate's own actual. **Not a count of the returned rows**, and never reconciled with one: a check counts every record the run ingested while retained history is bounded | — | Major |
 | Resolution `exhaustive` | STABLE | True only when the side's retained history is complete. A full set of matches drawn from partial history is a sample and is never labelled exhaustive | — | Major |
+| `max_added_behavior_changes` gate limit | STABLE | **Optional.** Bounds counted behavioral **changes** — the comparison's `added_change_count` ([ADR 0052](adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md), issue 131). Omitted or `null` means the check is not evaluated and the verdict is the other five checks alone; `"0"` is the strictest limit. A canonical decimal string like the other three; anything else is `400`. When both behavior limits are supplied, both are enforced | — | Major to make mandatory or to change its unit |
+| Gate check `added_behavior_changes` | STABLE | Present on every comparison `gate` and promotion `gate_result`. `state` is exactly `evaluated`, `not_evaluated` or `not_recorded` (a promotion stored before schema 8); `actual`, `maximum`, `passed`, `correlation_state` and `counting_policy_version` are present **only** when evaluated. The evidence routes refuse it as a `check`, directing to `added_changes` | New states only with a major version | Major |
+| Promotion `gate_limits.max_added_behavior_changes` | STABLE | The decision-time threshold, or `null` when the decision was made without it — never `"0"` for absent. Historical promotions read `null` | — | Major |
 | `max_added_behaviors` unit | STABLE | Counts added behavioral **identities**, unchanged by task 083's counting correction. One act observed at two instrumentation layers still consumes two of this budget, and every stored promotion keeps the meaning it was recorded under | A second limit with its own named unit | Major to redefine |
 | Comparison `added_change_count`, `correlation_state`, `counting_policy_version`, `added_changes` | STABLE | Added behavioral **changes** — added identities not wholly beneath added parents: an identity folds only when every retained occurrence of it is recorded beneath an added identity ([ADR 0052](adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)). Never greater than `added_count`, and equal to it whenever `correlation_state` is not `complete`. `counting_policy_version` increments if the rule changes rather than reinterpreting stored results | New additive fields | Major |
-| Which gate checks resolve | STABLE | `added_behaviors`, `block_decisions` and `critical_risk_observations` resolve to evidence. `reference_evidence` and `candidate_evidence` are `aggregate_only` by construction — they fail on an absence, which has no supporting records | A check gaining resolution | Major to remove one |
+| Which gate checks resolve | STABLE | `added_behaviors`, `block_decisions` and `critical_risk_observations` resolve to evidence. `reference_evidence` and `candidate_evidence` are `aggregate_only` by construction — they fail on an absence, which has no supporting records. `added_behavior_changes` is refused (`400`) with directions to the comparison's `added_changes`, whose contributing identities each resolve as a behavior | A check gaining resolution | Major to remove one |
 | `GET /v1/evaluation-runs/{run_id}/observations` | STABLE | Task 067's retained history: same bounded paging, except that the cursor is an **ingest sequence** rather than an identifier — canonical decimal, exclusive, starting at 1, and refused rather than coerced when it is not. Task 076 added `session_id`, `trace_id` and `fingerprint_id`: optional, **mutually exclusive**, applied in storage before the page bound, and echoed back as `scope` so a stored response is self-describing. More than one is `400` | New optional query parameters | Major, or a new path version |
 | Retained observation identity and order | STABLE | An observation is `(run_id, sequence)` and pages in ascending sequence — the order the platform accepted records. **Never ordered by timestamp**, which ties, and never keyed on a span id, which is unique only inside its trace | — | Major |
 | Observation page consistency | STABLE | One page is read from one database snapshot. An ingest committing during a read yields the state before it or after it, never a mixture of the two | — | Major |
@@ -442,7 +445,7 @@ of the contracts above.
 |---|---|---|---|---|
 | Backend selection names (`sqlite`, `postgres`) | OPERATIONALLY STABLE | The accepted values and that omitting one means SQLite | New backend names | Major |
 | `TRUSTVIAN_PLATFORM_POSTGRES_DSN` | OPERATIONALLY STABLE | `trustvian-local` reads the PostgreSQL DSN from it | An additional configuration source | Major |
-| `platform.SchemaVersion` | INTERNAL | One logical version governs both physical schemas; currently **7** | Incremented with a migration on **both** backends | n/a |
+| `platform.SchemaVersion` | INTERNAL | One logical version governs both physical schemas; currently **8** | Incremented with a migration on **both** backends | n/a |
 | Physical SQLite schema | OPERATIONALLY STABLE | Migrated forward only; a newer schema fails closed | Additive tables and columns via a version bump | Major |
 | Physical PostgreSQL schema | OPERATIONALLY STABLE | Same | Same | Major |
 
@@ -466,6 +469,15 @@ columns are derived, never caller-supplied, and are verified against their value
 on read. **Any future lookup through one of these indexes must compare the
 original value as well as the key**, because a digest narrows rather than
 identifies.
+
+**Schema 8 (issue 131) adds the optional counted-change check to the promotion
+history and invents no outcome.** Six columns on `platform_promotions`, on both
+backends, forward-only. Every existing promotion reads back with the check
+`not_recorded` — the state column's default, which says when the row was
+written — and a NULL threshold, count, flag and counting context. Its stored
+verdict and outcome are untouched, and no historical decision is re-evaluated.
+A binary that knows only schema 7 refuses a schema-8 database rather than
+reading it without the new columns.
 
 **Schema 7 (task 067) adds per-observation history and no row.** The step is
 forward-only on both backends and creates two tables and three run-scoped

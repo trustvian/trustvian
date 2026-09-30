@@ -915,21 +915,29 @@ func (h *Handler) compare(w http.ResponseWriter, r *http.Request) {
 
 // decode turns the wire limits into task 056's value.
 //
-// Every limit is required. Zero is a legitimate strict limit — a maximum of 0
-// accepts nothing — so treating an omitted field as zero would silently apply
-// the strictest possible policy to a caller who simply forgot one.
+// The three original limits are required. Zero is a legitimate strict limit —
+// a maximum of 0 accepts nothing — so treating an omitted field as zero would
+// silently apply the strictest possible policy to a caller who simply forgot
+// one.
+//
+// max_added_behavior_changes is optional, and omitted is not zero either: it
+// is *absent*, and the check is not evaluated. Present, it follows the same
+// canonical-decimal rule as the others.
 func (l gateLimitsDTO) decode() (platform.EvaluationGateLimits, error) {
+	parse := func(name, value string) (uint64, error) {
+		parsed, err := strconv.ParseUint(value, 10, 64)
+		if err != nil || strconv.FormatUint(parsed, 10) != value {
+			return 0, apiError{status: http.StatusBadRequest, code: codeInvalidRequest,
+				message: fmt.Sprintf("gate limit %q must be a canonical decimal string", name)}
+		}
+		return parsed, nil
+	}
 	read := func(name string, value *string) (uint64, error) {
 		if value == nil {
 			return 0, apiError{status: http.StatusBadRequest, code: codeInvalidRequest,
 				message: fmt.Sprintf("gate limit %q is required; zero is a strict limit, not a default", name)}
 		}
-		parsed, err := strconv.ParseUint(*value, 10, 64)
-		if err != nil || strconv.FormatUint(parsed, 10) != *value {
-			return 0, apiError{status: http.StatusBadRequest, code: codeInvalidRequest,
-				message: fmt.Sprintf("gate limit %q must be a canonical decimal string", name)}
-		}
-		return parsed, nil
+		return parse(name, *value)
 	}
 
 	added, err := read("max_added_behaviors", l.MaxAddedBehaviors)
@@ -944,11 +952,20 @@ func (l gateLimitsDTO) decode() (platform.EvaluationGateLimits, error) {
 	if err != nil {
 		return platform.EvaluationGateLimits{}, err
 	}
+	var changes platform.OptionalGateLimit
+	if l.MaxAddedBehaviorChanges != nil {
+		maximum, err := parse("max_added_behavior_changes", *l.MaxAddedBehaviorChanges)
+		if err != nil {
+			return platform.EvaluationGateLimits{}, err
+		}
+		changes = platform.NewOptionalGateLimit(maximum)
+	}
 
 	return platform.EvaluationGateLimits{
 		MaxAddedBehaviors:           added,
 		MaxBlockDecisions:           block,
 		MaxCriticalRiskObservations: critical,
+		MaxAddedBehaviorChanges:     changes,
 	}, nil
 }
 

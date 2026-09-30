@@ -439,9 +439,18 @@ All three gate limits are required, and `0` is valid. They are **policy, not
 evidence**: they are yours to choose, the same comparison yields PASS or FAIL
 depending only on them, and each carries inline help saying what it bounds.
 
+A fourth field, **Max added behavior changes**, is optional on both the
+comparison and the promotion form (issue 131). Left empty it is omitted from the
+request — never sent as `0` — and the gate row reads *not evaluated*. A
+promotion recorded before the limit existed reads *not recorded*. Either way the
+row shows no pass or fail, because the check had neither, and it offers no
+evidence control: the server does not resolve that check through the finding
+route, since its evidence is the comparison's counted changes.
+
 The verdict shown is the server's `gate.verdict`. The browser does no gate
-arithmetic — it renders the five checks the control plane returned, with the
-actual and the bound for each.
+arithmetic — it renders the checks the control plane returned, with the actual
+and the bound for each, and the counted-change check's state as the server
+named it.
 
 ```text
 Gate: PASS   ✓        Added behaviors: 2 / max 3

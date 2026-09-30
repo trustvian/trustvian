@@ -184,7 +184,10 @@ func postgresSchemaStatements() []string {
 		agentsByProjectIndexStatement(),
 		candidatesByAgentIndexStatement(),
 		runsByCandidateIndexStatement(),
-	}, observationSchemaStatements(`TEXT COLLATE "C"`, "DOUBLE PRECISION")...)
+	}, append(observationSchemaStatements(`TEXT COLLATE "C"`, "DOUBLE PRECISION"),
+		// v8: issue 131's promotion columns, the same statements the
+		// v7 -> v8 migration applies.
+		promotionChangeGateColumnStatements(`TEXT COLLATE "C"`)...)...)
 }
 
 // postgresPromotionsStatement is v4's only table, kept separate so the
@@ -345,14 +348,23 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 				if err := migratePostgresV5ToV6(ctx, tx); err != nil {
 					return err
 				}
-				return migratePostgresV6ToV7(ctx, tx)
+				if err := migratePostgresV6ToV7(ctx, tx); err != nil {
+					return err
+				}
+				return migratePostgresV7ToV8(ctx, tx)
 			case schemaVersionV5:
 				if err := migratePostgresV5ToV6(ctx, tx); err != nil {
 					return err
 				}
-				return migratePostgresV6ToV7(ctx, tx)
+				if err := migratePostgresV6ToV7(ctx, tx); err != nil {
+					return err
+				}
+				return migratePostgresV7ToV8(ctx, tx)
 			case schemaVersionV6:
-				return migratePostgresV6ToV7(ctx, tx)
+				if err := migratePostgresV6ToV7(ctx, tx); err != nil {
+					return err
+				}
+				return migratePostgresV7ToV8(ctx, tx)
 			}
 			// Not v4, v5 or v6 and holding exactly their tables: a v7 stamp
 			// without v7's tables is damage, and verifyPostgresVersion refuses
@@ -360,8 +372,16 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			return verifyPostgresVersion(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTables()):
-			// The current table set. Nothing to add; the stamp still has to
-			// agree, and a newer one fails closed.
+			// The current table set, which v7 also holds: v8 adds columns
+			// only. A v7 stamp migrates forward; anything else must be the
+			// current stamp, and a newer one fails closed.
+			version, err := postgresStoredVersion(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if version == schemaVersionV7 {
+				return migratePostgresV7ToV8(ctx, tx)
+			}
 			return verifyPostgresVersion(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV1()):
@@ -382,7 +402,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV5ToV6(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV6ToV7(ctx, tx)
+			if err := migratePostgresV6ToV7(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV7ToV8(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV2()):
 			if err := migratePostgresV2ToV3(ctx, tx); err != nil {
@@ -397,7 +420,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV5ToV6(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV6ToV7(ctx, tx)
+			if err := migratePostgresV6ToV7(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV7ToV8(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV3()):
 			if err := migratePostgresV3ToV4(ctx, tx); err != nil {
@@ -409,7 +435,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV5ToV6(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV6ToV7(ctx, tx)
+			if err := migratePostgresV6ToV7(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV7ToV8(ctx, tx)
 
 		default:
 			// A recognized subset that is neither version. Nothing here knows
@@ -567,6 +596,26 @@ func migratePostgresV5ToV6(ctx context.Context, tx pgx.Tx) error {
 // aggregate would fabricate evidence nobody produced.
 func migratePostgresV6ToV7(ctx context.Context, tx pgx.Tx) error {
 	for _, stmt := range observationSchemaStatements(`TEXT COLLATE "C"`, "DOUBLE PRECISION") {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return mapPostgresError("schema migration", "", err)
+		}
+	}
+	// schemaVersionV7, not SchemaVersion: v8 is where they stop being equal.
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
+		schemaVersionV7); err != nil {
+		return mapPostgresError("schema version", "", err)
+	}
+	return nil
+}
+
+// migratePostgresV7ToV8 adds the optional counted-change gate columns to the
+// promotion history, mirroring SQLite's migrateV7ToV8 statement for statement
+// and from the same definitions. It invents no check outcome: every existing
+// row reads back `not_recorded` with NULL evidence, and its stored verdict and
+// outcome are untouched.
+func migratePostgresV7ToV8(ctx context.Context, tx pgx.Tx) error {
+	for _, stmt := range promotionChangeGateColumnStatements(`TEXT COLLATE "C"`) {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
 			return mapPostgresError("schema migration", "", err)
 		}

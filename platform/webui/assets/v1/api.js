@@ -336,7 +336,26 @@ export const cancelRun = (id) =>
 export const failRun = (id, reason) =>
   request("POST", `/v1/evaluation-runs/${segment(id)}/fail`, { reason });
 
-// compare sends the three required limits as canonical decimal strings.
+// gateLimitsBody is the wire form of the limits: three required, one optional.
+//
+// max_added_behavior_changes is included only when the caller supplied it.
+// Omitted means the server does not evaluate that check; "0" means the
+// strictest limit. The two are different requests, so an absent limit is never
+// sent as a value.
+export function gateLimitsBody(limits) {
+  const body = {
+    max_added_behaviors: limits.maxAddedBehaviors,
+    max_block_decisions: limits.maxBlockDecisions,
+    max_critical_risk_observations: limits.maxCriticalRiskObservations,
+  };
+  if (typeof limits.maxAddedBehaviorChanges === "string") {
+    body.max_added_behavior_changes = limits.maxAddedBehaviorChanges;
+  }
+  return body;
+}
+
+// compare sends the required limits, and the optional one when supplied, as
+// canonical decimal strings.
 //
 // They stay text end to end. Turning them into numbers here would silently
 // round a large limit and change the gate the caller asked for.
@@ -344,11 +363,7 @@ export const compare = (referenceRunID, candidateRunID, limits) =>
   request("POST", "/v1/evaluations/compare", {
     reference_run_id: referenceRunID,
     candidate_run_id: candidateRunID,
-    gate_limits: {
-      max_added_behaviors: limits.maxAddedBehaviors,
-      max_block_decisions: limits.maxBlockDecisions,
-      max_critical_risk_observations: limits.maxCriticalRiskObservations,
-    },
+    gate_limits: gateLimitsBody(limits),
   });
 
 // createPromotion records one decision.
@@ -364,11 +379,7 @@ export const createPromotion = (id, referenceRunID, candidateRunID, target, limi
     reference_run_id: referenceRunID,
     candidate_run_id: candidateRunID,
     target_environment: target,
-    gate_limits: {
-      max_added_behaviors: limits.maxAddedBehaviors,
-      max_block_decisions: limits.maxBlockDecisions,
-      max_critical_risk_observations: limits.maxCriticalRiskObservations,
-    },
+    gate_limits: gateLimitsBody(limits),
   });
 
 // getPromotion reads one recorded decision.

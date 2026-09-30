@@ -175,6 +175,17 @@ func (o *optionalUint64) Set(raw string) error {
 // canonical returns the text form sent on the wire.
 func (o *optionalUint64) canonical() string { return strconv.FormatUint(o.value, 10) }
 
+// optional returns the wire form of a limit the caller may omit: nil when the
+// flag was not given, so the request omits the field and the check is not
+// evaluated. Never "0" for an omitted flag — zero is the strictest limit.
+func (o *optionalUint64) optional() *string {
+	if !o.set {
+		return nil
+	}
+	text := o.canonical()
+	return &text
+}
+
 // ---------------------------------------------------------------------
 // Rendering DTOs
 // ---------------------------------------------------------------------
@@ -260,13 +271,25 @@ type minimumGateDTO struct {
 	Passed  bool   `json:"passed"`
 }
 
+// changeCountGateDTO is the optional counted-change check (issue 131). Only
+// State is always present; the rest arrive only when it was evaluated.
+type changeCountGateDTO struct {
+	State                 string  `json:"state"`
+	Actual                *string `json:"actual"`
+	Maximum               *string `json:"maximum"`
+	Passed                *bool   `json:"passed"`
+	CorrelationState      *string `json:"correlation_state"`
+	CountingPolicyVersion *string `json:"counting_policy_version"`
+}
+
 type gateDTO struct {
-	ReferenceEvidence        minimumGateDTO `json:"reference_evidence"`
-	CandidateEvidence        minimumGateDTO `json:"candidate_evidence"`
-	AddedBehaviors           maximumGateDTO `json:"added_behaviors"`
-	BlockDecisions           maximumGateDTO `json:"block_decisions"`
-	CriticalRiskObservations maximumGateDTO `json:"critical_risk_observations"`
-	Verdict                  string         `json:"verdict"`
+	ReferenceEvidence        minimumGateDTO     `json:"reference_evidence"`
+	CandidateEvidence        minimumGateDTO     `json:"candidate_evidence"`
+	AddedBehaviors           maximumGateDTO     `json:"added_behaviors"`
+	BlockDecisions           maximumGateDTO     `json:"block_decisions"`
+	CriticalRiskObservations maximumGateDTO     `json:"critical_risk_observations"`
+	AddedBehaviorChanges     changeCountGateDTO `json:"added_behavior_changes"`
+	Verdict                  string             `json:"verdict"`
 }
 
 type behaviorDiffDTO struct {
@@ -423,10 +446,44 @@ func renderComparison(w io.Writer, c compareDTO) error {
 	renderMaximum(w, "Added behaviors", c.Gate.AddedBehaviors)
 	renderMaximum(w, "Block decisions", c.Gate.BlockDecisions)
 	renderMaximum(w, "Critical risk observations", c.Gate.CriticalRiskObservations)
+	renderChangeCount(w, c.Gate.AddedBehaviorChanges)
 	fmt.Fprintln(w)
 
 	fmt.Fprintf(w, "Gate: %s\n", verdictLabel(c.Gate.Verdict))
 	return nil
+}
+
+// renderChangeCount prints the optional counted-change check as the server
+// reported it.
+//
+// A check that was not evaluated prints no PASS or FAIL, because it had
+// neither — printing PASS would claim a limit the caller never set, and FAIL
+// would claim a failure that did not happen. The mark and the outcome come
+// from the response; nothing here compares actual with maximum.
+func renderChangeCount(w io.Writer, gate changeCountGateDTO) {
+	const label = "Added behavior changes"
+	switch gate.State {
+	case "evaluated":
+		if gate.Passed == nil || gate.Actual == nil || gate.Maximum == nil {
+			fmt.Fprintf(w, "  ???? %s: evaluated, but the response omitted its outcome\n", label)
+			return
+		}
+		correlation := ""
+		if gate.CorrelationState != nil && *gate.CorrelationState != "complete" {
+			correlation = fmt.Sprintf("; correlation %s, so this is the identity count",
+				*gate.CorrelationState)
+		}
+		fmt.Fprintf(w, "  %s %s: %s (maximum %s%s)\n",
+			checkMark(*gate.Passed), label, *gate.Actual, *gate.Maximum, correlation)
+	case "not_evaluated":
+		fmt.Fprintf(w, "  ---- %s: not evaluated (no limit supplied)\n", label)
+	case "not_recorded":
+		fmt.Fprintf(w, "  ---- %s: not recorded (decided before this check existed)\n", label)
+	case "":
+		// A server older than issue 131 sends no such check at all.
+	default:
+		fmt.Fprintf(w, "  ???? %s: unrecognized state %q\n", label, gate.State)
+	}
 }
 
 func renderMinimum(w io.Writer, label string, gate minimumGateDTO) {

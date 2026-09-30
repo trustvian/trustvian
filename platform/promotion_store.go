@@ -14,7 +14,9 @@ package platform
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"slices"
 )
 
 // promotionWriter is one backend's transaction, seen through the operations a
@@ -100,6 +102,7 @@ func insertPromotionLocked(ctx context.Context, w promotionWriter, p Promotion) 
 	}
 
 	gate := p.GateResult()
+	changes := changeGateColumns(gate.AddedBehaviorChanges())
 	if _, err := w.exec(ctx, w.rebind(
 		`INSERT INTO `+tablePromotions+` (
 		   id, project_id, candidate_id, reference_candidate_id,
@@ -114,9 +117,12 @@ func insertPromotionLocked(ctx context.Context, w promotionWriter, p Promotion) 
 		   gate_added_behaviors_actual, gate_added_behaviors_passed,
 		   gate_block_decisions_actual, gate_block_decisions_passed,
 		   gate_critical_risk_actual, gate_critical_risk_passed,
-		   gate_verdict, outcome, decided_at
+		   gate_verdict, outcome, decided_at,
+		   max_added_behavior_changes, gate_added_changes_state,
+		   gate_added_changes_actual, gate_added_changes_passed,
+		   gate_added_changes_correlation_state, gate_added_changes_policy_version
 		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-		           ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		string(p.ID()), string(p.ProjectID()), string(p.CandidateID()),
 		string(gate.ReferenceCandidateID()),
 		string(p.ReferenceRunID()), string(p.CandidateRunID()),
@@ -140,6 +146,12 @@ func insertPromotionLocked(ctx context.Context, w promotionWriter, p Promotion) 
 		boolInt(gate.CriticalRiskObservations().Passed),
 
 		string(gate.Verdict()), string(p.Outcome()), timeText(p.DecidedAt()),
+
+		// Issue 131. NULL, never zero, for a check that did not run: a NULL
+		// threshold is an absent limit and a '0' would be the strictest one.
+		changes.maximum, string(changes.check),
+		changes.actual, changes.passed,
+		changes.correlation, changes.policy,
 	); err != nil {
 		// The primary key is what refuses a duplicate identifier, so the
 		// dialect's constraint error is the one that has to become
@@ -164,7 +176,76 @@ const promotionColumns = `
 	gate_added_behaviors_actual, gate_added_behaviors_passed,
 	gate_block_decisions_actual, gate_block_decisions_passed,
 	gate_critical_risk_actual, gate_critical_risk_passed,
-	gate_verdict, outcome, decided_at`
+	gate_verdict, outcome, decided_at,
+	max_added_behavior_changes, gate_added_changes_state,
+	gate_added_changes_actual, gate_added_changes_passed,
+	gate_added_changes_correlation_state, gate_added_changes_policy_version`
+
+// promotionChangeGateColumnStatements is schema v8's whole addition, issue
+// 131: the optional counted-change check on the promotion history.
+//
+// Written once for both backends and for both the fresh schema and the v7 -> v8
+// migration, so a migrated database and a fresh one hold identical columns.
+//
+// Every column but the state is **nullable, with no default**, and NULL is the
+// meaning: an absent threshold, and no outcome for a check that did not run.
+// A DEFAULT '0' would turn every historical promotion into one decided under
+// the strictest possible limit, which nobody chose.
+//
+// The state is NOT NULL DEFAULT 'not_recorded'. The default is what ADD COLUMN
+// writes into rows that already exist, and it is the true statement about
+// them: they were recorded before the check existed. It is a fact about when
+// the row was written, not an outcome — and every row this code inserts names
+// its state explicitly, so the default reaches no new decision.
+func promotionChangeGateColumnStatements(textType string) []string {
+	columns := []string{
+		"max_added_behavior_changes " + textType,
+		"gate_added_changes_state " + textType + " NOT NULL DEFAULT '" +
+			string(GateCheckNotRecorded) + "'",
+		"gate_added_changes_actual " + textType,
+		"gate_added_changes_passed INTEGER",
+		"gate_added_changes_correlation_state " + textType,
+		"gate_added_changes_policy_version " + textType,
+	}
+	statements := make([]string, 0, len(columns))
+	for _, column := range columns {
+		statements = append(statements, `ALTER TABLE `+tablePromotions+` ADD COLUMN `+column)
+	}
+	return statements
+}
+
+// promotionChangeGateColumnNames lists schema v8's column names, sorted, for
+// the guards that assert a migration added exactly these.
+func promotionChangeGateColumnNames() []string {
+	names := []string{
+		"max_added_behavior_changes", "gate_added_changes_state",
+		"gate_added_changes_actual", "gate_added_changes_passed",
+		"gate_added_changes_correlation_state", "gate_added_changes_policy_version",
+	}
+	slices.Sort(names)
+	return names
+}
+
+// changeGateRow is the counted-change check as bound parameters: NULL (a nil
+// any) wherever the check carries no value.
+type changeGateRow struct {
+	check                                        GateCheckState
+	maximum, actual, passed, correlation, policy any
+}
+
+func changeGateColumns(g ChangeCountGate) changeGateRow {
+	if !g.Evaluated() {
+		return changeGateRow{check: g.State}
+	}
+	return changeGateRow{
+		check:       g.State,
+		maximum:     uint64Text(g.Maximum),
+		actual:      uint64Text(g.Actual),
+		passed:      boolInt(g.Passed),
+		correlation: string(g.CorrelationState),
+		policy:      g.CountingPolicyVersion,
+	}
+}
 
 // promotionRow is one scanned row, before the domain sees it.
 type promotionRow struct {
@@ -192,6 +273,13 @@ type promotionRow struct {
 	criticalPassed                        int
 
 	verdict, outcome, decidedAt string
+
+	changesMaximum     sql.NullString
+	changesState       string
+	changesActual      sql.NullString
+	changesPassed      sql.NullInt64
+	changesCorrelation sql.NullString
+	changesPolicy      sql.NullString
 }
 
 func (r *promotionRow) targets() []any {
@@ -207,7 +295,67 @@ func (r *promotionRow) targets() []any {
 		&r.blockActual, &r.blockPassed,
 		&r.criticalActual, &r.criticalPassed,
 		&r.verdict, &r.outcome, &r.decidedAt,
+		&r.changesMaximum, &r.changesState,
+		&r.changesActual, &r.changesPassed,
+		&r.changesCorrelation, &r.changesPolicy,
 	}
+}
+
+// restoreChangeGate rebuilds the counted-change check from its columns.
+//
+// The state decides which columns must be present. An evaluated check needs
+// all five; a check that did not run or was not recorded must have none, and
+// a value there is a row this code did not write. The stored flag is taken as
+// written and never recomputed from actual and maximum.
+func restoreChangeGate(r promotionRow) (ChangeCountGate, OptionalGateLimit, error) {
+	state := GateCheckState(r.changesState)
+	if !state.valid() {
+		return ChangeCountGate{}, OptionalGateLimit{}, fmt.Errorf(
+			"counted-change check state %q is not a known state", preview(r.changesState))
+	}
+	present := []bool{
+		r.changesMaximum.Valid, r.changesActual.Valid, r.changesPassed.Valid,
+		r.changesCorrelation.Valid, r.changesPolicy.Valid,
+	}
+	if state != GateCheckEvaluated {
+		for _, valid := range present {
+			if valid {
+				return ChangeCountGate{}, OptionalGateLimit{}, fmt.Errorf(
+					"counted-change check is %s but a threshold or outcome is stored", state)
+			}
+		}
+		return ChangeCountGate{State: state}, OptionalGateLimit{}, nil
+	}
+	for _, valid := range present {
+		if !valid {
+			return ChangeCountGate{}, OptionalGateLimit{}, fmt.Errorf(
+				"counted-change check is evaluated but its evidence is incomplete")
+		}
+	}
+	maximum, err := parseUint64Text("max added behavior changes", r.changesMaximum.String)
+	if err != nil {
+		return ChangeCountGate{}, OptionalGateLimit{}, err
+	}
+	actual, err := parseUint64Text("added behavior changes actual", r.changesActual.String)
+	if err != nil {
+		return ChangeCountGate{}, OptionalGateLimit{}, err
+	}
+	if r.changesPassed.Int64 < 0 || r.changesPassed.Int64 > 1 {
+		return ChangeCountGate{}, OptionalGateLimit{}, fmt.Errorf(
+			"added behavior changes passed %d is not 0 or 1", r.changesPassed.Int64)
+	}
+	passed, err := parseStoredBool("added behavior changes passed", int(r.changesPassed.Int64))
+	if err != nil {
+		return ChangeCountGate{}, OptionalGateLimit{}, err
+	}
+	return ChangeCountGate{
+		State:                 GateCheckEvaluated,
+		Actual:                actual,
+		Maximum:               maximum,
+		Passed:                passed,
+		CorrelationState:      CorrelationState(r.changesCorrelation.String),
+		CountingPolicyVersion: r.changesPolicy.String,
+	}, NewOptionalGateLimit(maximum), nil
 }
 
 // restorePromotionRow turns one scanned row into a domain value.
@@ -295,6 +443,11 @@ func restorePromotionRow(r promotionRow) (Promotion, error) {
 		return corrupt(err)
 	}
 
+	changes, changeLimit, err := restoreChangeGate(r)
+	if err != nil {
+		return corrupt(err)
+	}
+
 	gate, err := restoreEvaluationGateResult(
 		EvaluationRunID(r.referenceRunID), CandidateID(r.referenceCandidateID),
 		EvaluationRunID(r.candidateRunID), CandidateID(r.candidateID),
@@ -304,6 +457,7 @@ func restorePromotionRow(r promotionRow) (Promotion, error) {
 		MaximumCountGate{Actual: addedActual, Maximum: maxAdded, Passed: addedPassed},
 		MaximumCountGate{Actual: blockActual, Maximum: maxBlock, Passed: blockPassed},
 		MaximumCountGate{Actual: criticalActual, Maximum: maxCritical, Passed: criticalPassed},
+		changes,
 		GateVerdict(r.verdict),
 	)
 	if err != nil {
@@ -320,6 +474,7 @@ func restorePromotionRow(r promotionRow) (Promotion, error) {
 			MaxAddedBehaviors:           maxAdded,
 			MaxBlockDecisions:           maxBlock,
 			MaxCriticalRiskObservations: maxCritical,
+			MaxAddedBehaviorChanges:     changeLimit,
 		},
 		gate, PromotionOutcome(r.outcome), decidedAt,
 	)

@@ -152,6 +152,8 @@ select {
   margin: 0 0 var(--s-3);
 }
 .toolbar-note { color: var(--muted); font-size: var(--t-small); margin-left: auto; }
+/* An optional field says so in its label, in the muted voice of a hint. */
+label .optional { color: var(--muted); font-weight: normal; }
 
 .search { align-items: center; display: inline-flex; gap: var(--s-2); position: relative; }
 .search .icon { color: var(--faint); left: var(--s-3); pointer-events: none; position: absolute; }

@@ -187,6 +187,20 @@ func newMaximumGateDTO(g platform.MaximumCountGate) maximumGateDTO {
 	return maximumGateDTO{Actual: u64(g.Actual), Maximum: u64(g.Maximum), Passed: g.Passed}
 }
 
+// newChangeCountGateDTO renders the optional check. Outcome fields only when
+// it was evaluated; nothing here decides whether it passed.
+func newChangeCountGateDTO(g platform.ChangeCountGate) changeCountGateDTO {
+	dto := changeCountGateDTO{State: string(g.State)}
+	if !g.Evaluated() {
+		return dto
+	}
+	actual, maximum, passed := u64(g.Actual), u64(g.Maximum), g.Passed
+	correlation, policy := g.CorrelationState.String(), g.CountingPolicyVersion
+	dto.Actual, dto.Maximum, dto.Passed = &actual, &maximum, &passed
+	dto.CorrelationState, dto.CountingPolicyVersion = &correlation, &policy
+	return dto
+}
+
 func newGateResultDTO(r platform.EvaluationGateResult) gateResultDTO {
 	return gateResultDTO{
 		ReferenceEvidence:        newMinimumGateDTO(r.ReferenceEvidence()),
@@ -194,6 +208,7 @@ func newGateResultDTO(r platform.EvaluationGateResult) gateResultDTO {
 		AddedBehaviors:           newMaximumGateDTO(r.AddedBehaviors()),
 		BlockDecisions:           newMaximumGateDTO(r.BlockDecisions()),
 		CriticalRiskObservations: newMaximumGateDTO(r.CriticalRiskObservations()),
+		AddedBehaviorChanges:     newChangeCountGateDTO(r.AddedBehaviorChanges()),
 		Verdict:                  string(r.Verdict()),
 	}
 }
@@ -298,6 +313,16 @@ func newEnvironmentPositionDTO(p platform.EnvironmentPosition) environmentPositi
 	}
 }
 
+// optionalU64 renders an optional limit: its decimal text, or nil for absent.
+func optionalU64(l platform.OptionalGateLimit) *string {
+	maximum, set := l.Maximum()
+	if !set {
+		return nil
+	}
+	text := u64(maximum)
+	return &text
+}
+
 // newPromotionResponse renders one stored decision.
 //
 // Every field comes from the record. Nothing here recomputes a gate, a
@@ -324,6 +349,7 @@ func newPromotionResponse(p platform.Promotion) promotionResponse {
 			MaxAddedBehaviors:           u64(limits.MaxAddedBehaviors),
 			MaxBlockDecisions:           u64(limits.MaxBlockDecisions),
 			MaxCriticalRiskObservations: u64(limits.MaxCriticalRiskObservations),
+			MaxAddedBehaviorChanges:     optionalU64(limits.MaxAddedBehaviorChanges),
 		},
 		GateResult: newGateResultDTO(p.GateResult()),
 

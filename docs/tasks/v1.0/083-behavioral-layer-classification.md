@@ -162,9 +162,9 @@ setting a budget can now read what the budget counts.
 
 ## What is deferred, and why
 
-**The counting correction is implemented.** This section is kept because the
-reasoning that produced the delay is the reasoning behind the rule, and because
-one piece is still deferred.
+**The counting correction is implemented, and so is the optional gate limit
+over it.** This section is kept because the reasoning that produced the delay is
+the reasoning behind the rule.
 
 Task 084 landed first and supplied the input: a record carries `parent_span_id`
 and `span_lineage`. That was never the fold — recording a parent id does not
@@ -175,12 +175,14 @@ was waiting for is now
 another added identity**, where an identity is such a child only when every
 retained occurrence of it is.
 
-**What is still deferred** is the optional `max_added_behavior_changes` gate
-limit. ADR 0052 specifies it in full and does not build it: it needs new
-columns on `platform_promotions`, a schema migration, both backends and a rule
-for promotions recorded before it existed. Until it lands,
-`max_added_behaviors` is the only gate over behavioral change and counts
-identities exactly as it always has.
+**The optional `max_added_behavior_changes` gate limit** was deferred from the
+counting change to [issue 131](https://github.com/trustvian/trustvian/issues/131)
+because it needed promotion-table columns, a migration and both backends. It is
+now built: omitted, the check is not evaluated and no verdict moves; supplied,
+it is enforced beside `max_added_behaviors`, which still counts identities.
+Schema 8 persists its promotion evidence, and promotions recorded earlier read
+back with the check `not_recorded`, never with an invented outcome. ADR 0052
+§ the gate limit states the whole contract.
 
 The three facts that made the fold impossible when this task shipped, one of
 which 084 has now changed:
@@ -271,6 +273,12 @@ fingerprints as before. The existing degradation suites pass unmodified.
 | A known tool changing destination still reaches the gate | `TestAKnownToolChangingDestinationStillReachesTheGate` | `platform` |
 | A comparison is reproducible after restart | `TestAComparisonIsReproducibleAfterRestart` | `platform` |
 | Both storage backends count the same | `TestBothBackendsCountTheSameChanges`, `TestBothBackendsCountTheReviewShapesTheSame` | `platform` |
+| Retention saturation keeps the count unfolded, end to end | `TestSaturatedRetentionCountsIdentitiesAndGatesConservatively` | `platform` |
+| The optional change limit: omitted is not evaluated and moves no verdict; zero, exact and exceeded; both limits enforced | `TestOmittedChangeLimitIsNotEvaluatedAndMovesNoVerdict`, `TestChangeLimitBoundaries`, `TestIdentityAndChangeLimitsAreBothEnforced`, `TestChangeLimitReadsTheFoldedCountThroughTheService`, `TestOmittedChangeLimitMovesNoVerdictThroughTheService` | `platform` |
+| The change limit under partial correlation uses the identity count | `TestChangeLimitUnderPartialCorrelationUsesTheIdentityCount` | `platform` |
+| Absent versus zero over the wire, malformed limits refused, restart round-trip | `TestCompareOptionalChangeLimitOverHTTP`, `TestCompareRejectsMalformedChangeLimits`, `TestPromotionPreservesAbsentVersusZeroChangeLimit` | `platform/httpapi` |
+| Promotion evidence persists on both backends; schema 7 migrates without invented outcomes | `conformPromotionChangeGate`, `TestSQLiteSchemaV7PromotionsMigrateWithoutInventedCheckOutcomes`, `TestPostgresSchemaV7PromotionsMigrateWithoutInventedCheckOutcomes`, `TestPromotionRecordsTheChangeCheckAcrossARestart` | `platform` |
+| The browser and CLI render the server's check state | `TestBrowserRendersTheChangeCheckTheServerReturned`, `TestCompareRendersEachChangeCheckState`, `TestCompareSendsTheChangeLimitOnlyWhenGiven` | `platform/httpapi`, `cmd/trustvian` |
 | One identity in mixed contexts — beneath an added and an unchanged parent, as a root, beneath a missing parent — keeps its own change | `TestMixedObservationContextsKeepTheirOwnChange`, `TestMixedObservationContextsThroughTheService`, `TestCompareKeepsAKnownToolsNewDestinationCountedBesideANewTool` | `platform`, `platform/httpapi` |
 | A cycle anywhere — reachable from another root, or beside a valid component — refuses the whole fold | `TestCyclesAnywhereRefuseTheWholeFold`, `TestCyclesRefuseTheFoldThroughTheService`, `TestCompareReportsTheIdentityCountWhenTheAddedGraphHasACycle` | `platform`, `platform/httpapi` |
 | Every arrival order produces the same changes and contributors | `TestEveryArrivalOrderProducesTheSameChanges`, `TestIngestOrderDoesNotChangeTheCountThroughTheService` | `platform` |
@@ -317,12 +325,11 @@ Against [082's list for this item](082-agent-inspection-and-evaluation-depth.md#
 
 Seven of seven. Criterion 2 was the task's point and is met.
 
-One piece of ADR 0052 is specified and not built: the optional
-`max_added_behavior_changes` gate limit. It is not an acceptance criterion of
-this task — criterion 2 asks for a diff whose count matches, not a gate over
-it — and it needs promotion-table columns, a schema migration and both
-backends, which is separable work with its own persistence risk. Tracked as
-[issue 131](https://github.com/trustvian/trustvian/issues/131).
+The optional `max_added_behavior_changes` gate limit ADR 0052 specifies was not
+an acceptance criterion of this task — criterion 2 asks for a diff whose count
+matches, not a gate over it — and shipped separately under
+[issue 131](https://github.com/trustvian/trustvian/issues/131), with its schema-8
+promotion columns on both backends.
 
 ## Documentation
 
@@ -348,5 +355,5 @@ All four are resolved by
    correlation can only make a comparison stricter, never more permissive.
 4. **Whether the fold is configurable.** It is not. Two limits with two fixed
    units — `max_added_behaviors` over identities, and
-   `max_added_behavior_changes` over changes once it ships — rather than a
+   `max_added_behavior_changes` over changes, which is optional — rather than a
    flag that would change what the first one means.

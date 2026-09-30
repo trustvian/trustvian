@@ -490,7 +490,8 @@ scorecard with explicit caller-owned limits and returns PASS or FAIL.
   under record reordering, so a float gate could flip on replay of the same
   evidence.
 - **No value can compensate for a failed gate.** There is no weighting model
-  to disable: PASS requires all five checks, and the absence of a
+  to disable: PASS requires all five checks — and the optional counted-change
+  check too, whenever the caller supplies its limit — and the absence of a
   compensating path is what makes "a high average cannot override a critical
   violation" true by construction.
 - **Every check is evaluated on every call.** There is no short-circuit, so a

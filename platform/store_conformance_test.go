@@ -128,6 +128,7 @@ func TestStoreConformance(t *testing.T) {
 				conformCollectionConcurrentInsert(t, backend.open)
 			})
 			t.Run("promotions", func(t *testing.T) { conformPromotions(t, backend.open) })
+			t.Run("promotion-change-gate", func(t *testing.T) { conformPromotionChangeGate(t, backend.open) })
 			t.Run("promotion-staleness", func(t *testing.T) {
 				conformPromotionStaleness(t, backend.open)
 			})

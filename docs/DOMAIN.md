@@ -1049,6 +1049,14 @@ evidence present, candidate evidence present, added behaviors within limit,
 candidate block decisions within limit, candidate critical-risk observations
 within limit. PASS requires all five.
 
+A sixth check is optional (ADR 0052, issue 131): counted behavioral changes
+within `MaxAddedBehaviorChanges`. It has a state — `evaluated`,
+`not_evaluated`, or `not_recorded` on a promotion stored before it existed — and
+takes part in the verdict only when evaluated. Its limit is the one limit with
+an absent state: an `OptionalGateLimit` whose zero value is absent, because
+making it mandatory would have defaulted every existing caller to a maximum of
+zero.
+
 The separation is the point. A scorecard says what happened; a policy says
 what is acceptable. The same card yields PASS or FAIL depending only on the
 limits, and the limits belong to the caller because no fact in the evidence

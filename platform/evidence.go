@@ -45,13 +45,18 @@ const (
 	CheckAddedBehaviors           GateCheckName = "added_behaviors"
 	CheckBlockDecisions           GateCheckName = "block_decisions"
 	CheckCriticalRiskObservations GateCheckName = "critical_risk_observations"
+
+	// CheckAddedBehaviorChanges is the optional counted-change check (ADR
+	// 0052, issue 131). The gate publishes it, and it is deliberately **not**
+	// resolvable through this path: see planForCheck.
+	CheckAddedBehaviorChanges GateCheckName = "added_behavior_changes"
 )
 
 // Valid reports whether the name is one the gate publishes.
 func (c GateCheckName) Valid() bool {
 	switch c {
 	case CheckReferenceEvidence, CheckCandidateEvidence, CheckAddedBehaviors,
-		CheckBlockDecisions, CheckCriticalRiskObservations:
+		CheckBlockDecisions, CheckCriticalRiskObservations, CheckAddedBehaviorChanges:
 		return true
 	default:
 		return false
@@ -360,6 +365,21 @@ func planForCheck(check GateCheckName, ctx findingContext) (checkPlan, error) {
 			aggregateOnly: true,
 			recordedCount: ctx.candidateAgg.RecordCount(),
 		}, nil
+
+	case CheckAddedBehaviorChanges:
+		// A count of changes, where every other resolvable check counts
+		// behaviors or records. Answering it with the added identities would
+		// report a contributing set whose size is not the count the check
+		// consumed — two identities under "1 change" — and read as a
+		// mismatch. The comparison already names, for every counted change,
+		// its root and its contributing identities (behavior_diff.
+		// added_changes), and each of those resolves here by --behavior. So
+		// the check is refused, and the refusal says where the evidence is,
+		// rather than being mistaken for a name this platform does not
+		// publish.
+		return checkPlan{}, fmt.Errorf("%w: %s counts behavioral changes; its evidence is "+
+			"the comparison's added_changes, each of whose contributing identities "+
+			"resolves as a behavior", ErrInvalidFinding, check)
 
 	default:
 		return checkPlan{}, fmt.Errorf("%w: %q is not a gate check this platform publishes",

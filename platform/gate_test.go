@@ -698,22 +698,43 @@ func TestGateExposesNoUnsupportedSemantics(t *testing.T) {
 
 // No approval gate: ApprovalStatus is producer-supplied evidence, not proof
 // of authorization, so it cannot yet gate anything.
-func TestGateLimitsExposeOnlyTheThreeApprovedMaximums(t *testing.T) {
+//
+// Three mandatory integer maximums and exactly one optional one — the
+// counted-change limit ADR 0052 decided and issue 131 built. The optional
+// limit is still integer-only: a uint64 and a set marker, nothing else.
+func TestGateLimitsExposeOnlyTheApprovedMaximums(t *testing.T) {
 	typ := reflect.TypeOf(platform.EvaluationGateLimits{})
-	want := map[string]bool{
+	mandatory := map[string]bool{
 		"MaxAddedBehaviors": true, "MaxBlockDecisions": true, "MaxCriticalRiskObservations": true,
 	}
-	if typ.NumField() != len(want) {
-		t.Errorf("EvaluationGateLimits has %d fields, want exactly %d", typ.NumField(), len(want))
+	optional := map[string]bool{"MaxAddedBehaviorChanges": true}
+	if typ.NumField() != len(mandatory)+len(optional) {
+		t.Errorf("EvaluationGateLimits has %d fields, want exactly %d",
+			typ.NumField(), len(mandatory)+len(optional))
 	}
+	optionalType := reflect.TypeOf(platform.OptionalGateLimit{})
 	for i := range typ.NumField() {
 		f := typ.Field(i)
-		if !want[f.Name] {
+		switch {
+		case mandatory[f.Name]:
+			if f.Type.Kind() != reflect.Uint64 {
+				t.Errorf("limit %q has kind %v, want uint64: hard gates are integer-only",
+					f.Name, f.Type.Kind())
+			}
+		case optional[f.Name]:
+			if f.Type != optionalType {
+				t.Errorf("optional limit %q has type %v, want OptionalGateLimit", f.Name, f.Type)
+			}
+		default:
 			t.Errorf("unexpected limit %q; a new gate is a policy decision, not a config line", f.Name)
 		}
-		if f.Type.Kind() != reflect.Uint64 {
-			t.Errorf("limit %q has kind %v, want uint64: hard gates are integer-only", f.Name, f.Type.Kind())
-		}
+	}
+	kinds := map[reflect.Kind]int{}
+	for i := range optionalType.NumField() {
+		kinds[optionalType.Field(i).Type.Kind()]++
+	}
+	if len(kinds) != 2 || kinds[reflect.Uint64] != 1 || kinds[reflect.Bool] != 1 {
+		t.Errorf("OptionalGateLimit holds %v, want exactly one uint64 and one set marker", kinds)
 	}
 }
 

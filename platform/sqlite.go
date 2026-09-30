@@ -35,7 +35,7 @@ import (
 // schema version. They change for different reasons, and coupling them would
 // force a migration on an unrelated release or hide a real one behind an
 // unchanged number.
-const SchemaVersion = 7
+const SchemaVersion = 8
 
 // Table names. Compile-time constants: these are the only identifiers that
 // ever appear in assembled SQL. Every caller-supplied value is a bound
@@ -123,8 +123,7 @@ const (
 // schemaTables is every table this schema owns, and the allowlist a test
 // asserts against so an event, scorecard, or gate-result table cannot appear
 // without something failing.
-var schemaTables = append(append([]string{}, schemaTablesV6...),
-	tableObservations, tableObservationHistory)
+var schemaTables = schemaTablesV7
 
 // SQLiteStore is the local persistence adapter.
 //
@@ -262,6 +261,14 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 	case SchemaVersion:
 		return s.requireTables(ctx, SchemaVersion, schemaTables)
 
+	case schemaVersionV7:
+		// Task 067's tables, before issue 131's promotion columns. v8 adds
+		// columns only, so the table set is the current one.
+		if err := s.requireTables(ctx, schemaVersionV7, schemaTablesV7); err != nil {
+			return err
+		}
+		return s.migrateV7ToV8(ctx)
+
 	case schemaVersionV1:
 		// A task 057 database. Its own schema must be complete before it is
 		// migrated: a partial v1 is damage, and migrating on top of damage
@@ -286,7 +293,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV5ToV6(ctx); err != nil {
 			return err
 		}
-		return s.migrateV6ToV7(ctx)
+		if err := s.migrateV6ToV7(ctx); err != nil {
+			return err
+		}
+		return s.migrateV7ToV8(ctx)
 
 	case schemaVersionV2:
 		if err := s.requireTables(ctx, schemaVersionV2, schemaTablesV2); err != nil {
@@ -304,7 +314,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV5ToV6(ctx); err != nil {
 			return err
 		}
-		return s.migrateV6ToV7(ctx)
+		if err := s.migrateV6ToV7(ctx); err != nil {
+			return err
+		}
+		return s.migrateV7ToV8(ctx)
 
 	case schemaVersionV3:
 		if err := s.requireTables(ctx, schemaVersionV3, schemaTablesV3); err != nil {
@@ -319,7 +332,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV5ToV6(ctx); err != nil {
 			return err
 		}
-		return s.migrateV6ToV7(ctx)
+		if err := s.migrateV6ToV7(ctx); err != nil {
+			return err
+		}
+		return s.migrateV7ToV8(ctx)
 
 	case schemaVersionV6:
 		// A task 084 database: v4's tables, v5's indexes and v6's columns, and
@@ -328,7 +344,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.requireTables(ctx, schemaVersionV6, schemaTablesV6); err != nil {
 			return err
 		}
-		return s.migrateV6ToV7(ctx)
+		if err := s.migrateV6ToV7(ctx); err != nil {
+			return err
+		}
+		return s.migrateV7ToV8(ctx)
 
 	case schemaVersionV5:
 		// v5 and v6 hold the same tables — schema 6 adds columns, not tables —
@@ -340,7 +359,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV5ToV6(ctx); err != nil {
 			return err
 		}
-		return s.migrateV6ToV7(ctx)
+		if err := s.migrateV6ToV7(ctx); err != nil {
+			return err
+		}
+		return s.migrateV7ToV8(ctx)
 
 	case schemaVersionV4:
 		// v4 and v5 hold the same tables, so the table check cannot tell them
@@ -356,7 +378,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV5ToV6(ctx); err != nil {
 			return err
 		}
-		return s.migrateV6ToV7(ctx)
+		if err := s.migrateV6ToV7(ctx); err != nil {
+			return err
+		}
+		return s.migrateV7ToV8(ctx)
 
 	default:
 		// No path from anything else. Newer is refused too: this binary
@@ -663,7 +688,9 @@ func (s *SQLiteStore) migrateV5ToV6Once(ctx context.Context) error {
 // history row is a row rather than a column default.
 func (s *SQLiteStore) migrateV6ToV7(ctx context.Context) error {
 	if err := s.migrateV6ToV7Once(ctx); err != nil {
-		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+		// schemaVersionV7, not SchemaVersion: every step recovers against the
+		// version it produces, and v8 is where the two stop being equal.
+		if s.migrationRaceRecovered(ctx, schemaVersionV7) {
 			return nil
 		}
 		return err
@@ -683,13 +710,59 @@ func (s *SQLiteStore) migrateV6ToV7Once(ctx context.Context) error {
 			return fmt.Errorf("platform: migrate schema v6 to v7: %w", err)
 		}
 	}
+	// Literal schemaVersionV7: stamping the current version here would mark a
+	// v6 database fully migrated while skipping v8's columns.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
-		SchemaVersion); err != nil {
+		schemaVersionV7); err != nil {
 		return fmt.Errorf("platform: migrate schema v6 to v7: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("platform: migrate schema v6 to v7: %w", err)
+	}
+	return nil
+}
+
+// migrateV7ToV8 adds the optional counted-change gate columns to the promotion
+// history, issue 131.
+//
+// **It invents no check outcome.** A schema-7 promotion was decided before
+// max_added_behavior_changes existed, so nobody supplied the limit and no
+// check ran. Every existing row reads back with the check `not_recorded` —
+// the column default, which states when the row was written rather than what
+// a check concluded — and a NULL threshold, actual, flag and counting
+// context. Backfilling a zero threshold, or a passed flag, would record a
+// decision nobody made, exactly the fabrication migrateV3ToV4 refused. The
+// stored verdict and outcome are untouched.
+func (s *SQLiteStore) migrateV7ToV8(ctx context.Context) error {
+	if err := s.migrateV7ToV8Once(ctx); err != nil {
+		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateV7ToV8Once(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: migrate schema v7 to v8: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, statement := range promotionChangeGateColumnStatements("TEXT") {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("platform: migrate schema v7 to v8: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
+		SchemaVersion); err != nil {
+		return fmt.Errorf("platform: migrate schema v7 to v8: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: migrate schema v7 to v8: %w", err)
 	}
 	return nil
 }
@@ -868,6 +941,14 @@ const schemaVersionV5 = 5
 // detectable as one whose runs have no retained history.
 const schemaVersionV6 = 6
 
+// schemaVersionV7 is task 067's schema: per-observation history, and the last
+// version before issue 131 added the optional counted-change gate columns to
+// the promotion history.
+//
+// v7 and v8 hold the same tables — v8 adds columns only — so they are told
+// apart by the stamped version alone, the way v4, v5 and v6 are.
+const schemaVersionV7 = 7
+
 // schemaTablesV1 is what a complete v1 database holds.
 var schemaTablesV1 = []string{
 	tableSchemaVersion, tableProjects, tableAgents, tableCandidates,
@@ -892,6 +973,11 @@ var schemaTablesV4 = append(append([]string{}, schemaTablesV3...), tablePromotio
 // schemaTablesV6 is what a complete v6 database holds: still v4's tables.
 var schemaTablesV6 = schemaTablesV4
 
+// schemaTablesV7 is what a complete v7 database holds: v6's tables and task
+// 067's two, which is also every table v8 holds.
+var schemaTablesV7 = append(append([]string{}, schemaTablesV6...),
+	tableObservations, tableObservationHistory)
+
 // schemaTablesByVersion maps every schema version this binary can recognize to
 // the tables a complete database at that version holds.
 //
@@ -914,6 +1000,7 @@ var schemaTablesByVersion = map[int][]string{
 	// that adds tables, so it is the first with a list of its own again.
 	schemaVersionV5: schemaTablesV4,
 	schemaVersionV6: schemaTablesV6,
+	schemaVersionV7: schemaTablesV7,
 	SchemaVersion:   schemaTables,
 }
 
@@ -1128,7 +1215,10 @@ func schemaStatements() []string {
 		// reason every other version's additions are — the migration applies
 		// exactly these, and a fresh database must end up identical to a
 		// migrated one.
-	}, observationSchemaStatements("TEXT", "REAL")...)
+	}, append(observationSchemaStatements("TEXT", "REAL"),
+		// v8: the optional counted-change gate columns, issue 131 — the
+		// same ALTER statements the v7 -> v8 migration applies.
+		promotionChangeGateColumnStatements("TEXT")...)...)
 }
 
 // observationSchemaStatements is schema v7's whole addition, written once so

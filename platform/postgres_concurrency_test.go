@@ -989,6 +989,7 @@ func postgresPromotionBetween(
 		MaximumCountGate{Actual: 0, Maximum: 0, Passed: true},
 		MaximumCountGate{Actual: 0, Maximum: 0, Passed: true},
 		MaximumCountGate{Actual: 0, Maximum: 0, Passed: true},
+		ChangeCountGate{State: GateCheckNotEvaluated},
 		GateVerdictPass,
 	)
 	if err != nil {
