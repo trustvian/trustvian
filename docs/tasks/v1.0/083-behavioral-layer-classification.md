@@ -1,9 +1,14 @@
 # 083 — Behavioral Layer Identity and Display Classification
 
-Status: **specified; partially implemented.** The classification and rendering
-half is implemented. **The counting correction is deferred** and depends on
-[084](082-agent-inspection-and-evaluation-depth.md#084--correlation-and-operational-evidence-on-the-record-boundary)
-— see [§ What is deferred](#what-is-deferred-and-why).
+Status: **specified; implemented**, with one specified follow-on. The
+classification and rendering half shipped first; **the counting correction is
+now implemented** on top of
+[084](082-agent-inspection-and-evaluation-depth.md#084--correlation-and-operational-evidence-on-the-record-boundary),
+under the rule
+[ADR 0052](../../adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)
+states. What remains is the optional gate limit over the new unit, which ADR
+0052 specifies and defers for its own persistence work — see
+[§ What is deferred](#what-is-deferred-and-why).
 Milestone: `v1.0`
 Depends on: [075](075-ai-semantic-telemetry-normalization.md) (implemented)
 Blocks: [078](078-behavioral-scenario-suites.md)'s threshold re-run — its k-of-N
@@ -157,13 +162,25 @@ setting a budget can now read what the budget counts.
 
 ## What is deferred, and why
 
-**The counting correction is not implemented, and this task is not complete.**
+**The counting correction is implemented.** This section is kept because the
+reasoning that produced the delay is the reasoning behind the rule, and because
+one piece is still deferred.
 
-**Task 084 has since landed**, so the *input* a fold needs now exists: a record
-carries `parent_span_id` and `span_lineage`. That is not the fold, and this task
-is still not complete — recording a parent id does not decide how two
-observations become one counted change. What remains is listed below and in
-[084 § What 083 still needs](084-correlation-operational-evidence.md#what-083-still-needs).
+Task 084 landed first and supplied the input: a record carries `parent_span_id`
+and `span_lineage`. That was never the fold — recording a parent id does not
+decide how two observations become one counted change — and the decision it
+was waiting for is now
+[ADR 0052](../../adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md):
+**a counted change is an added identity that is not the recorded child of
+another added identity**, where an identity is such a child only when every
+retained occurrence of it is.
+
+**What is still deferred** is the optional `max_added_behavior_changes` gate
+limit. ADR 0052 specifies it in full and does not build it: it needs new
+columns on `platform_promotions`, a schema migration, both backends and a rule
+for promotions recorded before it existed. Until it lands,
+`max_added_behaviors` is the only gate over behavioral change and counts
+identities exactly as it always has.
 
 The three facts that made the fold impossible when this task shipped, one of
 which 084 has now changed:
@@ -190,9 +207,24 @@ counting policy additionally needs:
    as one counted change with two contributing identities, or as two changes with
    a stated relationship, is a product decision and not a mechanical one.
 
-None of those is guessed at here. `TestCountingFoldIsNotImplementedYet` records
-the gap in the suite and **fails the moment it closes**, the way
-`TestFidelityIsNotPersistedYet` does for 081.
+All three are answered by ADR 0052, and none the way this section expected:
+
+1. **The bound is retention's.** Correlation is derived from task 067's
+   retained per-observation history, which already stores every column the
+   fold reads and already reports whether it is complete. No second bound and
+   no new saturation rule — a history that stopped early is a state this
+   platform already models, and adding another would be a second thing to
+   reason about saying the same thing less well.
+2. **The out-of-order rule is that there is no order.** Edges are resolved
+   over the whole retained history rather than as records stream, so
+   child-before-parent and parent-before-child produce identical results. A
+   parent that never arrives resolves to nothing and its child counts.
+3. **A folded act is one counted change with contributing identities**, which
+   keeps every identity's evidence reachable through task 085's routes.
+
+`TestCountingFoldIsNotImplementedYet` has been replaced by
+`TestOneActStaysTwoIdentitiesForTheFoldToCount`, which asserts the input the
+fold depends on, and by the contract tests in `platform/counting_test.go`.
 
 ## Non-goals
 
@@ -233,8 +265,16 @@ fingerprints as before. The existing degradation suites pass unmodified.
 | Case | Test | Where |
 |---|---|---|
 | The motivating tool-plus-HTTP act | `TestOneActProducesTwoObservationsAndTwoIdentities` | `processor` |
-| The deferral, failing when it closes | `TestCountingFoldIsNotImplementedYet` | `processor` |
-| Parent unreachable at counting time | `TestParentIsUnreachableAtCountingTime` | `processor` |
+| One act stays two identities, so the fold has something to count | `TestOneActStaysTwoIdentitiesForTheFoldToCount` | `processor` |
+| The counting rule, every case in ADR 0052's table | `platform/counting_test.go` | `platform` |
+| One act is one counted change, end to end over a real store | `TestOneNewToolCountsAsOneChangeThroughTheService` | `platform` |
+| A known tool changing destination still reaches the gate | `TestAKnownToolChangingDestinationStillReachesTheGate` | `platform` |
+| A comparison is reproducible after restart | `TestAComparisonIsReproducibleAfterRestart` | `platform` |
+| Both storage backends count the same | `TestBothBackendsCountTheSameChanges`, `TestBothBackendsCountTheReviewShapesTheSame` | `platform` |
+| One identity in mixed contexts — beneath an added and an unchanged parent, as a root, beneath a missing parent — keeps its own change | `TestMixedObservationContextsKeepTheirOwnChange`, `TestMixedObservationContextsThroughTheService`, `TestCompareKeepsAKnownToolsNewDestinationCountedBesideANewTool` | `platform`, `platform/httpapi` |
+| A cycle anywhere — reachable from another root, or beside a valid component — refuses the whole fold | `TestCyclesAnywhereRefuseTheWholeFold`, `TestCyclesRefuseTheFoldThroughTheService`, `TestCompareReportsTheIdentityCountWhenTheAddedGraphHasACycle` | `platform`, `platform/httpapi` |
+| Every arrival order produces the same changes and contributors | `TestEveryArrivalOrderProducesTheSameChanges`, `TestIngestOrderDoesNotChangeTheCountThroughTheService` | `platform` |
+| The record carries what the fold consumes | `TestTheRecordCarriesWhatTheCountingFoldConsumes` | `processor` |
 | Absent / unlinked correlation | `TestMissingCorrelationFallsBackToTwoCountedChanges` | `processor` |
 | The same tool switching destination | `TestToolSwitchingDestinationChangesTheTransportIdentity` | `processor` |
 | One tool, several destinations | `TestOneToolManyDestinationsStayDistinct` | `processor` |
@@ -267,15 +307,22 @@ Against [082's list for this item](082-agent-inspection-and-evaluation-depth.md#
 
 | # | Criterion | Status |
 |---|---|---|
-| 1 | One documented rule decides whether the two layers are one behavior or two, applied in one place | **Met.** The rule is "two, and the counting fold is deferred", stated in `docs/OPENTELEMETRY.md` and derived in `internal/semconv` only |
-| 2 | A single change produces a diff whose added count matches the number of changes a developer would name | **Not met — deferred.** Requires 084; pinned by `TestCountingFoldIsNotImplementedYet` |
+| 1 | One documented rule decides whether the two layers are one behavior or two, applied in one place | **Met.** Two rules, each in one place and each written down: *identity* is two, derived in `internal/semconv` only ([ADR 0047](../../adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md)); *counting* is one, applied in `platform/counting.go` only ([ADR 0052](../../adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)) |
+| 2 | A single change produces a diff whose added count matches the number of changes a developer would name | **Met.** `AddedChangeCount` reports it; `AddedCount` keeps counting identities so no existing gate moved. Pinned by `TestANewToolAndItsTransportChildAreOneChange` and, end to end, `TestOneNewToolCountsAsOneChangeThroughTheService` |
 | 3 | Model, tool and outbound request each distinguishable in a rendered view | **Met**, with the wording corrected: the layer distinguishes a model call, a tool call, a retrieval and a *transport operation*. It does not say "outbound", because it establishes no direction |
 | 4 | A behavior with no target renders without a dangling separator | **Met** |
 | 5 | No display label reaches `StableFeatures`, a fingerprint or a baseline key | **Met**, proven by test |
 | 6 | A producer emitting no convention sees byte-identical behavior | **Met**, existing suites unmodified |
 | 7 | If identity changes, a migration is specified and drilled; if not, a test asserts it did not | **Met** — identity does not change, and a test asserts it |
 
-Five of seven. **Criterion 2 is the task's point**, so the task stays open.
+Seven of seven. Criterion 2 was the task's point and is met.
+
+One piece of ADR 0052 is specified and not built: the optional
+`max_added_behavior_changes` gate limit. It is not an acceptance criterion of
+this task — criterion 2 asks for a diff whose count matches, not a gate over
+it — and it needs promotion-table columns, a schema migration and both
+backends, which is separable work with its own persistence risk. Tracked as
+[issue 131](https://github.com/trustvian/trustvian/issues/131).
 
 ## Documentation
 
@@ -285,12 +332,21 @@ Five of seven. **Criterion 2 is the task's point**, so the task stays open.
 `docs/cli-guide.md` (what `--max-added-behaviors` counts), the task index, the
 roadmap, and `CHANGELOG.md`.
 
-## Open questions left to the counting work
+## Open questions left to the counting work — all answered
 
-1. **What bounds the correlation structure**, and what does saturation report.
-2. **What a folded act reports** — one counted change with two contributing
-   identities, or two with a stated relationship.
-3. **What happens when the parent never arrives**, beyond the current fallback.
-4. **Whether the fold is configurable**, and if so whether a gate limit means
-   acts or identities. A limit whose unit depends on a flag is a limit nobody
-   can read.
+All four are resolved by
+[ADR 0052](../../adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md).
+
+1. **What bounds the correlation structure, and what saturation reports.**
+   Retention's bound, and retention's own state: `complete`, `partial` or
+   `unavailable`, reported on every comparison. Anything but `complete` means
+   the change count equals the identity count.
+2. **What a folded act reports.** One counted change, naming every
+   contributing identity, so each stays resolvable to its observations.
+3. **What happens when the parent never arrives.** The child is a root and
+   counts. Every unresolved case counts *more*, which is why an incomplete
+   correlation can only make a comparison stricter, never more permissive.
+4. **Whether the fold is configurable.** It is not. Two limits with two fixed
+   units — `max_added_behaviors` over identities, and
+   `max_added_behavior_changes` over changes once it ships — rather than a
+   flag that would change what the first one means.

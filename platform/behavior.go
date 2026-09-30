@@ -447,6 +447,18 @@ type BehaviorDiff struct {
 	added   int
 	removed int
 	shared  int
+
+	// Correlation-aware change counting (task 083, ADR 0052). `added` counts
+	// behavioral identities and keeps that meaning forever; these describe
+	// how many *changes* those identities amount to once recorded parentage
+	// is applied.
+	//
+	// A diff from CompareBehaviorSnapshots alone reports correlation
+	// unavailable and one change per added identity, because that function
+	// sees snapshots and snapshots hold no parentage. WithCorrelation is
+	// what applies the fold.
+	changes          []BehaviorChange
+	correlationState CorrelationState
 }
 
 // Comparison identity, so a diff is self-describing.
@@ -466,9 +478,50 @@ func (d BehaviorDiff) ReferenceObservationCount() uint64 { return d.referenceObs
 func (d BehaviorDiff) CandidateObservationCount() uint64 { return d.candidateObservations }
 func (d BehaviorDiff) ReferenceDistinctCount() int       { return d.referenceDistinctCount }
 func (d BehaviorDiff) CandidateDistinctCount() int       { return d.candidateDistinctCount }
-func (d BehaviorDiff) AddedCount() int                   { return d.added }
-func (d BehaviorDiff) RemovedCount() int                 { return d.removed }
-func (d BehaviorDiff) SharedCount() int                  { return d.shared }
+
+// AddedCount is the number of added behavioral **identities**, and that is
+// what it has always been. `max_added_behaviors` bounds this number; ADR 0052
+// left its meaning untouched so no stored promotion or existing caller
+// changed underneath.
+func (d BehaviorDiff) AddedCount() int { return d.added }
+
+// AddedChangeCount is the number of counted behavioral **changes**: added
+// identities that are not the recorded child of another added identity, where
+// an identity is such a child only when every retained occurrence of it is.
+//
+// Never greater than AddedCount, and equal to it whenever correlation is not
+// complete. ADR 0052 § every unresolved case counts more.
+func (d BehaviorDiff) AddedChangeCount() int { return len(d.changes) }
+
+// AddedChanges returns each counted change and the identities contributing to
+// it, sorted by root identity.
+//
+// A defensive copy, and bounded: at most one change per added identity, and a
+// snapshot holds at most maxBehaviorEntries.
+func (d BehaviorDiff) AddedChanges() []BehaviorChange {
+	out := make([]BehaviorChange, 0, len(d.changes))
+	for _, c := range d.changes {
+		out = append(out, BehaviorChange{
+			RootFingerprintID:          c.RootFingerprintID,
+			ContributingFingerprintIDs: slices.Clone(c.ContributingFingerprintIDs),
+		})
+	}
+	return out
+}
+
+// CorrelationState says how much recorded parentage the change count rests on.
+func (d BehaviorDiff) CorrelationState() CorrelationState {
+	if d.correlationState == "" {
+		return CorrelationUnavailable
+	}
+	return d.correlationState
+}
+
+// CountingPolicyVersion is the rule that produced the change count, so a
+// stored result carries the policy it was computed under.
+func (d BehaviorDiff) CountingPolicyVersion() string { return CountingPolicyVersion }
+func (d BehaviorDiff) RemovedCount() int             { return d.removed }
+func (d BehaviorDiff) SharedCount() int              { return d.shared }
 
 // Deltas returns every behavior in the union, sorted by FingerprintID.
 //
@@ -612,7 +665,57 @@ func CompareBehaviorSnapshots(reference, candidate BehaviorSnapshot) (BehaviorDi
 	})
 	diff.deltas = deltas
 
+	// The unfolded default: one change per added identity, correlation
+	// unavailable. A snapshot holds no parentage, so this function cannot
+	// fold — and a diff that reported zero changes beside a positive added
+	// count would be a diff nobody could safely read. WithCorrelation
+	// applies the fold when a caller has the observations.
+	diff.changes = unfoldedChanges(addedIdentities(deltas))
+	diff.correlationState = CorrelationUnavailable
+
 	return diff, nil
+}
+
+// addedIdentities lists the added fingerprints of a delta set, sorted.
+func addedIdentities(deltas []BehaviorDelta) []string {
+	added := make([]string, 0, len(deltas))
+	for _, d := range deltas {
+		if d.Presence == BehaviorAdded {
+			added = append(added, d.FingerprintID)
+		}
+	}
+	slices.Sort(added)
+	return added
+}
+
+// WithCorrelation returns the diff with ADR 0052's counting fold applied.
+//
+// `observations` must be the **candidate** run's retained history and
+// `history` must be what that history is. The candidate's alone: the added
+// set comes from the snapshots this diff was built from, and only added
+// identities have edges that matter.
+//
+// A caller that cannot supply a complete history still calls this — passing a
+// partial or unavailable history is how a diff records *why* it is not
+// folded, which is strictly better than leaving the default in place and
+// letting a reader guess.
+//
+// The receiver is unchanged. An error means the fold produced a count that
+// cannot be true of this diff, which is refused rather than reported.
+func (d BehaviorDiff) WithCorrelation(
+	observations []Observation, history ObservationHistory,
+) (BehaviorDiff, error) {
+	added := addedIdentities(d.deltas)
+	state := correlationStateFor(history)
+
+	changes, state := foldAddedChanges(added, buildBehaviorParentage(observations), state)
+	if err := validateChangeCountArithmetic(len(added), len(changes)); err != nil {
+		return BehaviorDiff{}, err
+	}
+
+	d.changes = changes
+	d.correlationState = state
+	return d, nil
 }
 
 // rate is a behavior's share of its snapshot's observations. Zero observations

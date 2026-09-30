@@ -378,13 +378,44 @@ type behaviorDeltaDTO struct {
 	CandidateObservations string                `json:"candidate_observations"`
 }
 
+// behaviorChangeDTO is one counted behavioral change and the identities that
+// contributed to it (task 083, ADR 0052).
+//
+// Contributors are fingerprints, so each resolves through the existing
+// evidence routes to the observations that carried it. No observation is
+// embedded here: a change names its evidence, it does not copy it.
+type behaviorChangeDTO struct {
+	RootFingerprintID          string   `json:"root_fingerprint_id"`
+	ContributingFingerprintIDs []string `json:"contributing_fingerprint_ids"`
+}
+
 type behaviorDiffDTO struct {
-	ReferenceObservationCount string             `json:"reference_observation_count"`
-	CandidateObservationCount string             `json:"candidate_observation_count"`
-	AddedCount                int                `json:"added_count"`
-	RemovedCount              int                `json:"removed_count"`
-	SharedCount               int                `json:"shared_count"`
-	Deltas                    []behaviorDeltaDTO `json:"deltas"`
+	ReferenceObservationCount string `json:"reference_observation_count"`
+	CandidateObservationCount string `json:"candidate_observation_count"`
+
+	// AddedCount counts added behavioral **identities** and is unchanged:
+	// `max_added_behaviors` bounds this number and always has.
+	AddedCount   int `json:"added_count"`
+	RemovedCount int `json:"removed_count"`
+	SharedCount  int `json:"shared_count"`
+
+	// AddedChangeCount counts added behavioral **changes** — added
+	// identities that are not the recorded child of another added identity,
+	// where an identity is such a child only when every retained occurrence
+	// of it is.
+	// Never greater than AddedCount, and equal to it whenever
+	// CorrelationState is not "complete".
+	AddedChangeCount int `json:"added_change_count"`
+
+	// CorrelationState is "complete", "partial" or "unavailable" and says
+	// how much recorded parentage the change count rests on.
+	CorrelationState string `json:"correlation_state"`
+
+	// CountingPolicyVersion is the rule that produced the change count.
+	CountingPolicyVersion string `json:"counting_policy_version"`
+
+	AddedChanges []behaviorChangeDTO `json:"added_changes"`
+	Deltas       []behaviorDeltaDTO  `json:"deltas"`
 }
 
 type rateDTO struct {

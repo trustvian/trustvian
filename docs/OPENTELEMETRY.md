@@ -391,12 +391,27 @@ So **`max_added_behaviors` counts behavioral identities, and one act observed at
 two layers contributes two.** A team allowing one added behavior is allowing one
 *identity*, which may be half of one act.
 
-That is misleading, it is a known gap, and **the correction is deferred**: folding
-the two requires knowing the HTTP observation is the tool observation's child, and
-no parent identity reaches the evidence boundary today. Identity is deliberately
-*not* changed to work around it — folding would drop the destination from
-behavioral identity, so a tool that started posting somewhere else would stop
-changing the behavioral surface. See
+**A comparison now also reports how many *changes* those identities amount to.**
+A counted behavioral change is an added identity that is not the recorded child
+of another added identity — where an identity is such a child only when every
+retained occurrence of it is — so the tool and its transport child above are two
+identities and one change. Both numbers are reported, named for what they count:
+
+```text
+added_count            2      behavioral identities
+added_change_count     1      counted changes
+correlation_state      complete
+```
+
+Identity is still deliberately *not* folded — folding would drop the destination
+from behavioral identity, so a tool that started posting somewhere else would
+stop changing the behavioral surface. That case keeps working precisely because
+the fold is a counting rule: the tool is present in both runs, so it is not an
+*added* parent, and the new transport identity stays a change of its own.
+
+`max_added_behaviors` still counts identities and is unchanged. See
+[ADR 0052](adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)
+for the rule, the unresolved cases and the compatibility reasoning, and see
 [task 083](tasks/v1.0/083-behavioral-layer-classification.md) for the full
 reasoning and
 [084](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#084--correlation-and-operational-evidence-on-the-record-boundary)

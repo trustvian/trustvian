@@ -8,6 +8,54 @@ actually depend on.
 
 ## Unreleased
 
+### Added
+
+- **A comparison now reports how many behavioral *changes* its added
+  behaviors amount to** (task 083, [ADR 0052](docs/adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)).
+
+  A developer adds one tool. The tool span and the transport child it calls
+  are two behavioral identities, so a comparison reported `added 2` for one
+  act. [ADR 0047](docs/adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md)
+  settled that the identities stay two — the transport target is the
+  security-relevant part, and folding identity would hide a tool that started
+  posting somewhere else — which left the correction to counting.
+
+  **A counted behavioral change is an added identity that is not the recorded
+  child of another added identity** — and an identity is such a child only when
+  every retained occurrence of it is. So the tool and its transport child are
+  two identities and one change, and a known tool changing destination is
+  still one change of its own: its parent is present in both runs, so it is
+  not an *added* parent and nothing folds. That holds even when a new tool also
+  reaches the same new destination: the occurrence beneath the known tool keeps
+  the destination counted, and it also contributes to the new tool's change.
+
+  `added_change_count`, `correlation_state`, `counting_policy_version` and
+  `added_changes` join the comparison payload, the CLI output and the browser
+  surface. Each counted change names its contributing identities, so every one
+  stays resolvable to its observations through the existing evidence routes.
+
+  **`max_added_behaviors` is unchanged and still counts identities.** No
+  stored promotion, existing pipeline or historical run changed meaning, and
+  no verdict moved. The optional limit over the new unit is specified in ADR
+  0052 and deliberately not built here: it needs promotion-table columns, a
+  migration and both backends, which is separable work with its own risk.
+
+  The rule is structural — it asks only who is whose recorded parent, never
+  what instrumentation layer an observation came from — so it is evaluable
+  from durable evidence even though the layer is not persisted. Correlation is
+  derived from the per-observation history schema 7 already stores, so there
+  is **no schema change and no migration**, and a completed comparison is
+  reproducible after a restart because the same rows produce the same edges.
+
+  **Every unresolved case counts more, never less.** A missing parent, a
+  parent in another trace, an ambiguous span reference, a cycle, a saturated
+  or pre-schema-7 history: each falls back to the identity count and says so
+  through `correlation_state`. A cycle or ambiguity anywhere in the added
+  graph refuses the whole fold, so `partial` always means the identity count,
+  contributors included. Folding only ever lowers a count, so an
+  unresolved correlation can make a comparison stricter than it needed to be
+  and cannot make one pass that should have failed.
+
 ### Changed
 
 - **The browser surface is now an admin console, and no journey through it

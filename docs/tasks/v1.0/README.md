@@ -34,7 +34,7 @@ Tasks for the `v1.0` milestone.
 | [080 — Metadata-Only Detection Evaluation](080-metadata-only-detection-evaluation.md) | Specified; not implemented |
 | 081 | Approved in [ROADMAP.md](../../ROADMAP.md#milestone-sequence); **no specification written yet** — deferred from 075 |
 | [082 — Agent Inspection and Evaluation Depth](082-agent-inspection-and-evaluation-depth.md) | Specified. Documentation and planning only; implements nothing |
-| [083 — Behavioral Layer Identity and Display Classification](083-behavioral-layer-classification.md) | Specified; **partially implemented** — classification and rendering shipped, the counting correction deferred to 084 |
+| [083 — Behavioral Layer Identity and Display Classification](083-behavioral-layer-classification.md) | Specified and implemented — classification and rendering shipped first, the counting correction folds on 084's parent identity ([ADR 0052](../../adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)). The optional gate limit over counted changes is specified and not built |
 | [084 — Correlation and Operational Evidence on the Record Boundary](084-correlation-operational-evidence.md) | Specified and implemented |
 | [085 — Evidence Resolution](085-evidence-resolution.md) | Specified and implemented |
 | 086–090 | Reserved and scoped by [082](082-agent-inspection-and-evaluation-depth.md); **no specification written yet.** 089 is **PROPOSED** rather than approved |

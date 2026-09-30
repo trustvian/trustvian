@@ -983,7 +983,7 @@ The **Gate** column says which rows the release actually depends on.
 | 080 | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md) — precision, recall and false-positive rate for the existing signals against a public agent prompt-injection benchmark | Specified | neither |
 | 081 | Persist behavior fidelity, so a comparison delta reports whether a behavior was named by telemetry or inferred from transport — a forward-only schema step in both backends, deferred from 075 | Not specified | neither |
 | 082 | [Agent inspection and evaluation depth](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md) — the planning task for the six-step developer workflow: what is implemented, what is missing, and what a decision would cost. Documentation only | Specified | neither |
-| 083 | [Behavioral layer identity and display classification](tasks/v1.0/083-behavioral-layer-classification.md) — an explicit rule for when a tool span and the HTTP request beneath it are one behavior, and a non-identity label so a model call, a tool call and an outbound request are distinguishable without changing what a fingerprint is | **Partially implemented** — classification and rendering shipped; the counting correction deferred to 084 ([ADR 0047](adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md)) | `v1.0` |
+| 083 | [Behavioral layer identity and display classification](tasks/v1.0/083-behavioral-layer-classification.md) — an explicit rule for when a tool span and the HTTP request beneath it are one behavior, and a non-identity label so a model call, a tool call and an outbound request are distinguishable without changing what a fingerprint is | **Implemented.** Classification and rendering shipped first; the counting correction folds on 084's parent identity ([ADR 0047](adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md), [ADR 0052](adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)). The optional gate limit over the new unit is specified and not built | `v1.0` |
 | 084 | [Correlation and operational evidence on the record boundary](tasks/v1.0/084-correlation-operational-evidence.md) — parent span identity, duration and error status promoted from volatile feature inputs to recorded evidence, additively | **Implemented** — carried, aggregated per run and persisted at schema 6; per-observation history is 067's and is now implemented | `v1.0` |
 | 085 | [Evidence resolution](tasks/v1.0/085-evidence-resolution.md) — from a gate check or a behavioral delta to the behaviors and observations behind it, as a resolution query rather than a payload inside a fixed-shape verdict. Authoritative at the control plane, exercised over `/v1` and the CLI, and **delivered before 076 consumes it** | **Implemented** — two `GET` routes and a CLI family, no schema change; three checks resolve and the two evidence checks are aggregate-only by construction | `v1.0` (via 17) |
 | 086 | Scenario and input versioning — a scenario-definition digest and an input digest on the evidence, and a prompt *reference* beside `Model`, so a comparison can state whether both sides ran the same thing | Not specified | neither |
@@ -1273,11 +1273,13 @@ Twelve things this diagram says, and one it does not:
 - **068 remains conditional**, exactly as its row says: an analytical backend
   arrives if measured volume justifies one, and not otherwise. It is not a
   release-gate prerequisite, and this restructuring does not make it one.
-- **083 is partially implemented and still blocks 078's re-run.** Its
-  classification half shipped; its counting half is deferred to 084, because
-  folding a tool observation and the request beneath it needs a parent identity the
-  evidence boundary does not carry. 078's k-of-N thresholds count behaviors, so the
-  re-run still waits.
+- **083 is implemented, and 078's re-run is unblocked.** Its classification half
+  shipped first; its counting half now folds on top of 084's parent identity,
+  under the rule
+  [ADR 0052](adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)
+  states. 078's k-of-N thresholds count behaviors, and there are now two units
+  to choose between — added identities and counted changes — both reported and
+  both named, which is what the re-run was waiting for.
 - **083 joins the 078 thread ahead of 078**, and that edge is the second one here
   added by a measurement rather than by design. One behavioral change was reported
   as two added behaviors, because a tool span and the HTTP request beneath it are
@@ -1290,9 +1292,10 @@ Twelve things this diagram says, and one it does not:
   `DecisionRecord` and the run aggregate. 076 can draw a timeline with timing and
   errors, 085 can link a finding to a slow call, and 087 has latency to compare —
   none of which it delivers. It also gave 083's counting fold the parent ids it
-  lacked, and 083 is still open: a fold needs a bounded correlation structure, an
-  out-of-order rule and a decision about what a folded act reports, none of which
-  a parent id supplies.
+  lacked. 083 has since closed that: the correlation structure is retention's
+  own bounded history rather than a new one, the out-of-order rule is that
+  edges resolve over the whole history rather than as records stream, and a
+  folded act reports as one change naming its contributing identities.
 - **085 is *specified* alongside 067 and *delivered* before 076**, which are two
   different orderings. Evidence resolution needs a stable, resolvable identity for
   a finding and for an observation, so 067 should choose its retention contract

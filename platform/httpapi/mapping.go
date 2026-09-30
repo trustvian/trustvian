@@ -91,12 +91,23 @@ func newBehaviorDiffDTO(d platform.BehaviorDiff) behaviorDiffDTO {
 			CandidateObservations: u64(delta.CandidateCount),
 		})
 	}
+	changes := make([]behaviorChangeDTO, 0, d.AddedChangeCount())
+	for _, change := range d.AddedChanges() {
+		changes = append(changes, behaviorChangeDTO{
+			RootFingerprintID:          change.RootFingerprintID,
+			ContributingFingerprintIDs: change.ContributingFingerprintIDs,
+		})
+	}
 	return behaviorDiffDTO{
 		ReferenceObservationCount: u64(d.ReferenceObservationCount()),
 		CandidateObservationCount: u64(d.CandidateObservationCount()),
 		AddedCount:                d.AddedCount(),
 		RemovedCount:              d.RemovedCount(),
 		SharedCount:               d.SharedCount(),
+		AddedChangeCount:          d.AddedChangeCount(),
+		CorrelationState:          d.CorrelationState().String(),
+		CountingPolicyVersion:     d.CountingPolicyVersion(),
+		AddedChanges:              changes,
 		Deltas:                    out,
 	}
 }

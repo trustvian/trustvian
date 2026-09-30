@@ -75,6 +75,7 @@ as long as its own decision holds.
 | [0049](0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md) | The evidence explorer narrows retained history, and answers a behavioral question rather than a trace question | Accepted |
 | [0050](0050-the-browser-surface-is-a-record-first-admin-console.md) | The browser surface is a record-first admin console, and an identifier is never a prerequisite | Accepted |
 | [0051](0051-the-browser-bundle-is-a-layered-design-system.md) | The browser bundle is a layered design system, not a directory of scripts | Accepted |
+| [0052](0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md) | A counted behavioral change is an added identity with no added parent | Accepted |
 
 **0046 is the first record here carried as Proposed.** Its reasoning is
 complete and no maintainer has ratified it, which is exactly what this status
