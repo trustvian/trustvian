@@ -29,7 +29,7 @@ Tasks for the `v1.0` milestone.
 | [075 — AI Semantic Telemetry Normalization](075-ai-semantic-telemetry-normalization.md) | Specified and implemented |
 | [076 — Behavioral Trace & Session Evidence Explorer](076-behavioral-evidence-explorer.md) | Specified and implemented — two presentations narrowed, both because 067 retains neither fidelity nor sequence-deviation evidence |
 | [077 — Unified OTLP Local Dev Runtime](077-unified-otlp-local-dev-runtime.md) | Specified and implemented |
-| [078 — Behavioral Scenario Suites](078-behavioral-scenario-suites.md) | Specified; not implemented — sequenced after 075, and its k-of-N thresholds await a measurement that can fail |
+| [078 — Behavioral Scenario Suites](078-behavioral-scenario-suites.md) | Specified; not implemented — the measurement re-run at tool fidelity is recorded (2026-10-01): an unchanged agent's behavior set varies, and the evidence justifies no default `k` or `j` |
 | [079 — CI Integration: A GitHub Action](079-ci-integration-github-action.md) | Specified; not implemented |
 | [080 — Metadata-Only Detection Evaluation](080-metadata-only-detection-evaluation.md) | Specified; not implemented |
 | 081 | Approved in [ROADMAP.md](../../ROADMAP.md#milestone-sequence); **no specification written yet** — deferred from 075 |

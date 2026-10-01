@@ -282,7 +282,7 @@ until then.
 |---|---|---|
 | 075 | **Implemented** | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) |
 | 077 | **Implemented** | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) |
-| 078 | Specified; awaits its own re-run at 075's fidelity | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
+| 078 | Specified; measurement re-run recorded (2026-10-01), implementation next | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
 | 079 | Specified | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
 
 **The build order inside this preview is 075 → 078 → 079**, not the four in
@@ -290,8 +290,11 @@ parallel: 078's thresholds can only be measured at 075's tool-name fidelity — 
 [the execution order](#execution-order-rather-than-numeric-order).
 
 **075 has since landed**, so that edge is satisfied and the preview's critical path
-is back to its original length. What 078 still waits on is its own measurement
-re-run, now that the fidelity it needs exists — not on another task.
+is back to its original length. 078's measurement re-run at that fidelity has
+since been recorded (2026-10-01): an unchanged agent's behavior set varies between
+isolated runs, and the evidence justifies no default `k` or `j`. What 078 waits on
+now is its implementation, starting with the decision its aggregation slice
+inherited about the unit of its repeated limit.
 
 Two pieces of 078 are exempt and can land whenever there is capacity, because
 neither depends on fidelity: a run-scoped behavior route
