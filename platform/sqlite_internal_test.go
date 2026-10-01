@@ -1278,6 +1278,7 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 	}
 }
 
-// schemaVersionV8 is issue 131's schema, named for the guards that list
-// column-only steps by version rather than by "whatever is newest".
-const schemaVersionV8 = 8
+// schemaVersionV9 is task 078's scenario-execution schema, named for the
+// guards that attribute statements and fixtures by version rather than by
+// "whatever is newest".
+const schemaVersionV9 = 9

@@ -103,6 +103,13 @@ func TestStoreConformance(t *testing.T) {
 	for _, backend := range backends {
 		t.Run(backend.name, func(t *testing.T) {
 			t.Run("projects", func(t *testing.T) { conformProjects(t, backend.open) })
+			t.Run("scenario-executions", func(t *testing.T) { conformScenarioExecutions(t, backend.open) })
+			t.Run("scenario-execution-ordering", func(t *testing.T) {
+				conformScenarioExecutionOrdering(t, backend.open)
+			})
+			t.Run("scenario-execution-contention", func(t *testing.T) {
+				conformScenarioExecutionContention(t, backend.open)
+			})
 			t.Run("agents", func(t *testing.T) { conformAgents(t, backend.open) })
 			t.Run("candidates", func(t *testing.T) { conformCandidates(t, backend.open) })
 			t.Run("environments", func(t *testing.T) { conformEnvironments(t, backend.open) })

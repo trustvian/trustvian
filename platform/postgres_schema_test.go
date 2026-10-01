@@ -98,6 +98,11 @@ func statementVersion(stmt string) (int, bool) {
 		{indexObservationsByFingerprint, schemaVersionV7},
 		{indexObservationsByTrace, schemaVersionV7},
 		{indexObservationsBySession, schemaVersionV7},
+		// v9: task 078's scenario executions — two tables and the index
+		// `last` reads.
+		{tableScenarioExecutions, schemaVersionV9},
+		{tableScenarioRepetitions, schemaVersionV9},
+		{indexScenarioExecutionsLatest, schemaVersionV9},
 	}
 
 	trimmed := strings.TrimSpace(stmt)
@@ -133,7 +138,9 @@ func statementVersion(stmt string) (int, bool) {
 // Keyed off aggregateOperationalColumns, the same list the DDL and the migration
 // derive from, so a column added later cannot be forgotten here.
 func stripLaterColumns(stmt string, version int) string {
-	if version >= SchemaVersion || !strings.Contains(stmt, "CREATE TABLE "+tableAggregates) {
+	// v7 onward has the columns. The v6 fixture strips them and re-adds them
+	// through the real migration DDL; see createV6Schema.
+	if version > schemaVersionV6 || !strings.Contains(stmt, "CREATE TABLE "+tableAggregates) {
 		return stmt
 	}
 	lines := strings.Split(stmt, "\n")
@@ -731,6 +738,10 @@ func TestPostgresMigratesV4ForwardAddingIndexesAndOperationalColumns(t *testing.
 		indexObservationsByFingerprint, indexObservationsByTrace,
 		indexObservationsBySession,
 		tableObservations + "_pkey", tableObservationHistory + "_pkey",
+		// v9: the index `last` reads, both tables' keys, and the named
+		// completion-sequence uniqueness.
+		indexScenarioExecutionsLatest, constraintScenarioSequence,
+		tableScenarioExecutions + "_pkey", tableScenarioRepetitions + "_pkey",
 	}
 	slices.Sort(want)
 	slices.Sort(added)
@@ -755,7 +766,8 @@ func TestPostgresMigratesV4ForwardAddingIndexesAndOperationalColumns(t *testing.
 			addedTables = append(addedTables, name)
 		}
 	}
-	wantTables := []string{tableObservations, tableObservationHistory}
+	wantTables := []string{tableObservations, tableObservationHistory,
+		tableScenarioExecutions, tableScenarioRepetitions}
 	slices.Sort(wantTables)
 	slices.Sort(addedTables)
 	if !slices.Equal(addedTables, wantTables) {

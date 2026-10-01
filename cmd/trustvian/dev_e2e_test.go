@@ -353,41 +353,57 @@ type realRuntime struct {
 
 func startRealRuntime(t *testing.T, binary string) *realRuntime {
 	t.Helper()
+	runtime, _ := startRealRuntimeAt(t, binary, t.TempDir())
+	return runtime
+}
 
-	stateDir := t.TempDir()
+// startRealRuntimeAt starts the control plane on an existing state directory,
+// which is what a restart is, and returns a function that stops it. Stopping
+// is also registered as cleanup, and is idempotent.
+func startRealRuntimeAt(t *testing.T, binary, stateDir string) (*realRuntime, func()) {
+	t.Helper()
+
 	logPath := filepath.Join(stateDir, "control-plane.log")
-	logFile, err := os.Create(logPath)
+	// Appended rather than truncated, so a restart keeps the first run's log.
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatalf("creating the log: %v", err)
 	}
 	t.Cleanup(func() { logFile.Close() })
+
+	discovery := filepath.Join(stateDir, localDiscoveryFile)
+	// A previous run's discovery file names an endpoint that is gone.
+	_ = os.Remove(discovery)
 
 	cmd := exec.Command(binary, "--state-dir", stateDir, "--listen", "127.0.0.1:0")
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("starting the control plane: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Signal(os.Interrupt)
-		done := make(chan struct{})
-		go func() { _, _ = cmd.Process.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			_ = cmd.Process.Kill()
-		}
-	})
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			_ = cmd.Process.Signal(os.Interrupt)
+			done := make(chan struct{})
+			go func() { _, _ = cmd.Process.Wait(); close(done) }()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				_ = cmd.Process.Kill()
+			}
+		})
+	}
+	t.Cleanup(stop)
 
-	discovery := filepath.Join(stateDir, localDiscoveryFile)
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		if url, err := readLocalDiscovery(discovery); err == nil {
-			return &realRuntime{apiURL: url}
+			return &realRuntime{apiURL: url}, stop
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("the control plane never published an endpoint\n%s", readWholeFile(t, logPath))
-	return nil
+	return nil, nil
 }
 
 // e2eProgress is the part of the progress response this test reads.

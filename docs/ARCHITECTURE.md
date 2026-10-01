@@ -720,6 +720,19 @@ it depends on. Isolation stays `READ COMMITTED`.
 [ADR 0037](adr/0037-postgresql-is-the-shared-platform-persistence-backend.md)
 records the reasoning.
 
+Task 078 added a fourth capability to both backends at schema 9:
+`ScenarioExecutionStore`, for persisted scenario executions. It is a capability
+of its own because an execution is control-plane metadata that names
+evaluation runs, and neither `ControlStore` nor `EvaluationStore` owns that.
+
+- The store records executions and their ordered run associations.
+- It assigns a per-project completion sequence under the project-row lock.
+- It answers "the latest completed execution in this scope".
+
+Whether that execution is a usable reference, and the verdict itself, stay in
+`ControlPlane`, which reuses `CompareRepeatedEvaluations` unchanged
+([ADR 0054](adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)).
+
 **Realtime remains in-process.** Two control-plane processes sharing one
 PostgreSQL database share authoritative state and do *not* share realtime
 notifications. Cross-node realtime is [task 069](tasks/v1.0/).

@@ -1,9 +1,10 @@
 # 078 — Behavioral Scenario Suites
 
-Status: partially implemented. Self-contained repeated evaluation ships —
-`trustvian eval run` and `POST /v1/evaluations/compare-repeated` ([ADR 0053](../../adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)).
-`--reference` against a recorded execution, its persistence, and suites remain;
-see [Implementation status](#implementation-status). Measurement re-run at tool
+Status: partially implemented. Repeated evaluation ships —
+`trustvian eval run` and `POST /v1/evaluations/compare-repeated` ([ADR 0053](../../adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)) —
+and so do persisted scenario executions with `--reference <execution>|last`
+at schema 9 ([ADR 0054](../../adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)).
+Suites remain; see [Implementation status](#implementation-status). Measurement re-run at tool
 fidelity recorded 2026-10-01 — see
 [The re-run at tool-name fidelity](#the-re-run-at-tool-name-fidelity-2026-10-01)
 Milestone: `v1.0`
@@ -1457,6 +1458,41 @@ The first production slice of the aggregation, recorded in
   - The server's verdict is passed through as `0` or `1`.
 - **No schema step**, because self-contained mode needs no stored execution.
 
+The second slice, recorded in
+[ADR 0054](../../adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md):
+persisted scenario executions and recorded-reference reuse.
+
+- **Schema 9**, forward-only on SQLite and PostgreSQL:
+  `platform_scenario_executions` and `platform_scenario_repetitions`. Metadata
+  only. Existing data is untouched, and no execution is reconstructed from it.
+- **`ControlPlane.BeginScenarioExecution`, `CompleteScenarioExecution`,
+  `FailScenarioExecution`, `ScenarioExecution`**, and
+  `/v1/scenario-executions`.
+  - Begin resolves and validates the reference before any candidate runs.
+  - Complete evaluates through `CompareRepeatedEvaluations` unchanged and
+    records the verdict. A gate FAIL completes the execution.
+- **Reference resolution** (open question 1, resolved).
+  - An explicit execution id, or `last`.
+  - `last` is the most recently completed execution of the same scenario name,
+    project, agent and environment, ordered by a per-project completion
+    sequence.
+  - It is chosen first and validated second, with no fallback.
+  - The reference side is reused whole: same N, recorded runs checked against
+    the runs themselves, complete evidence. The current scenario's limits
+    apply.
+- **`trustvian eval run --reference <execution-id>|last`** runs only the N
+  candidate repetitions.
+  - Every execution is recorded, and an abort records it failed.
+  - The result document adds an optional `reference` block; `execution_id`
+    stays the invocation's own.
+- **Tests:**
+  - store conformance on both backends: lifecycle, ordering, contention;
+  - v8 → v9 migration with data preserved, plus restart;
+  - damage and newer-schema refusal;
+  - service, `/v1` and CLI tests;
+  - a real-binary end-to-end that records an execution, restarts the control
+    plane and reuses its reference.
+
 Against the criteria below:
 
 | # | Status |
@@ -1468,9 +1504,8 @@ Against the criteria below:
 | 21, 22 | Met earlier (the run-scoped behavior route and `--behavioral-profile`) |
 
 **Not built:**
-- `--reference <execution>|last` against a recorded execution, with the
-  persistence and schema step it needs.
 - Suites of scenarios.
+- A listing route for scenario executions; `GET` by id exists.
 - A reorder-specific test for criterion 9.
 - A repeated limit over counted changes (ADR 0053 § 1).
 
@@ -1562,6 +1597,13 @@ Against the criteria below:
    documented convenience default is assumed. With repetition the default names
    a whole prior scenario *execution* and all N of its reference repetitions,
    never a mix drawn from two.
+
+   **Resolved** by [ADR 0054](../../adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md):
+   - an explicit execution id, or `last`;
+   - `last` is the most recently completed execution of the same scenario
+     name, project, agent and environment, by completion sequence;
+   - the latest execution is validated and never substituted;
+   - all N of its reference repetitions are reused, from that execution alone.
 2. **Where the subcommand lives** — extending the `eval` family is assumed, so
    it inherits the gate exit-code contract rather than defining one.
 3. **Whether a suite is a directory or a file listing scenarios.** A directory

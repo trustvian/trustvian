@@ -10,6 +10,37 @@ actually depend on.
 
 ### Added
 
+- **Recorded scenario references: `trustvian eval run --reference
+  <execution-id>|last`, and persisted scenario executions** (task 078,
+  [ADR 0054](docs/adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)).
+
+  - **Every `eval run` is now a recorded scenario execution** (schema 9, both
+    backends, metadata only). It begins before anything runs and completes with
+    its verdict. A gate FAIL is a completed execution. An aborted one is
+    recorded failed, and a running or failed execution is never a reference.
+  - **`--reference` reuses a recorded execution's reference side.** All N of
+    its reference runs are reused, from that one execution alone, and only N
+    new candidate repetitions run.
+  - **`last`** is the most recently completed execution of the same scenario,
+    project, agent and environment, ordered by a completion sequence rather
+    than any clock. If that execution is unusable, the command says so and
+    never falls back to an older one.
+  - **The current scenario's gate limits apply.**
+  - **A reference that cannot be used stops the command with exit `3`, before
+    any workload runs.** That covers a reference that is missing, unfinished,
+    of another N, in another project or environment, or with incomplete
+    evidence.
+  - **New `/v1` routes:** `POST /v1/scenario-executions`,
+    `GET /v1/scenario-executions/{id}` and `POST …/{id}/complete` and
+    `…/{id}/fail`.
+    - Completion evaluates through the same `CompareRepeatedEvaluations`
+      implementation, and its comparison has compare-repeated's response shape.
+    - The result document gains an optional `reference` block.
+
+  **Schema 9** is a forward-only step on SQLite and PostgreSQL. It leaves
+  existing data untouched and reconstructs no execution from it. A schema-8
+  binary refuses a schema-9 database. Suites of scenarios are not built yet.
+
 - **Behavioral scenarios: `trustvian eval run`, and repeated evaluation in the
   control plane** (task 078,
   [ADR 0053](docs/adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)).
