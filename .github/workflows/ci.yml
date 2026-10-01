@@ -336,7 +336,9 @@ jobs:
   platform:
     name: Platform module (GOWORK=off)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 30, not 20: the race step below may run up to its own 17-minute limit,
+    # and the other steps take about three minutes.
+    timeout-minutes: 30
     env:
       GOWORK: "off"
       # Task 064's PostgreSQL backend. The tests skip without this, which is
@@ -457,8 +459,14 @@ jobs:
         run: go test -count=1 ./...
 
       - name: Test with the race detector
+        # The root platform package alone runs about 580s under -race on a
+        # hosted runner, against go test's default 10-minute per-binary
+        # timeout. -timeout=15m is the margin. A hang still fails, with go
+        # test's goroutine dump; the step limit sits two minutes above it so
+        # that dump, not a cancelled step, is what a hang produces.
         working-directory: platform
-        run: go test -race ./...
+        timeout-minutes: 17
+        run: go test -race -timeout=15m ./...
 
       - name: Go vulnerability scan
         # As of task 053 the module depends on the root through a local
