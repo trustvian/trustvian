@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"slices"
 	"syscall"
 )
 
@@ -35,8 +36,17 @@ type childSpec struct {
 }
 
 // newCmd builds a fresh, unstarted command from the spec.
+//
+// A bare name is resolved against the spec's own PATH (lookPathIn), and argv[0]
+// stays the name as given. A name that does not resolve there is not resolved
+// anywhere else: the command carries the lookup error, and Start returns it.
 func (spec childSpec) newCmd() *exec.Cmd {
-	cmd := exec.Command(spec.command[0], spec.command[1:]...)
+	path, err := lookPathIn(spec.command[0], spec.env)
+	if err != nil {
+		return &exec.Cmd{Path: spec.command[0], Args: slices.Clone(spec.command), Err: err}
+	}
+	cmd := exec.Command(path, spec.command[1:]...)
+	cmd.Args[0] = spec.command[0]
 	cmd.Env = spec.env
 	cmd.Dir = ""
 	cmd.Stdin = spec.stdin

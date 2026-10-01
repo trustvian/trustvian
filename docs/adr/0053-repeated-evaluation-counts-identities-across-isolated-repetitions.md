@@ -70,8 +70,21 @@ construction**. The permutation test still asserts it. The same validation still
 applies:
 
 - an incomplete snapshot is refused;
-- a fingerprint carrying two descriptors across repetitions is refused;
+- identity must be one-to-one across every repetition, in both directions. A
+  fingerprint carrying two descriptors is refused, and so is a descriptor
+  arriving under two fingerprints (`ErrFingerprintConflict`). Counted per
+  fingerprint, the second would split one behavior's presence below `k`, and a
+  behavior every candidate run added would pass a zero budget;
 - more than 512 distinct identities across the execution is refused.
+
+Every repetition must also run in **one environment**: the same project and the
+same `EnvironmentRef`, which is what `CompareEvaluations` requires of its pair.
+Environment is a fingerprint dimension, so a repetition elsewhere presents each
+behavior under fingerprints no other repetition uses, and its presence would
+split the same way. The control plane refuses this with
+`ErrBehaviorEnvironmentMismatch` — the single-run comparison's error for it —
+before any evidence is loaded, so a run that ingested nothing is held to it as
+well.
 
 The N = 1 equivalence is proven against the real single-run chain, so the change
 of route costs no assurance.
@@ -122,7 +135,26 @@ candidate. The first repetition whose workload exits non-zero ends the scenario:
 - the exit is `3`.
 
 A verdict over fewer runs than the scenario declares would be a different test
-from the one its author wrote. A broken workload is never `1`. The exit-code
+from the one its author wrote. A broken workload is never `1`.
+
+**A repetition whose run could not be completed ends the scenario the same
+way**, even when its workload exited `0`. `trustvian dev` keeps the workload's
+status when its own completion request fails, because that is its published
+contract. But a run the control plane does not hold as completed would fail
+check 1 or 2, and that turns a bookkeeping failure into a behavioral `FAIL`. So
+`dev` reports the completion separately to the runner, and the runner treats a
+missing completion as it treats a crash.
+
+Each repetition runs as `trustvian dev` runs, with two differences that only
+the runner asks for:
+
+- the workload's standard output goes to the runner's stderr, so the runner's
+  stdout carries one result document;
+- a bare command name is resolved against the side's own `PATH`, from its
+  `env`. The parent's `PATH` is not used, so two sides that select different
+  virtualenvs run different executables.
+
+Neither difference changes a process-wide descriptor or variable. The exit-code
 contract is `eval compare`'s, unchanged: `0` PASS, `1` FAIL, `2` usage, `3`
 operational.
 

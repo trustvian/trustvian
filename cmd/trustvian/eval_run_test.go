@@ -70,24 +70,31 @@ type recordedRepetition struct {
 type recorder struct {
 	calls  []recordedRepetition
 	failOn int // 1-based call number to fail; 0 never
+	// uncompletedOn is the 1-based call whose workload succeeds but whose
+	// run is not completed; 0 never.
+	uncompletedOn int
 }
 
-func (r *recorder) run(s streams, config devConfig) int {
+func (r *recorder) run(s streams, config devConfig) devResult {
 	r.calls = append(r.calls, recordedRepetition{config: config})
 	fmt.Fprintf(s.out, "workload output for %s\n", config.runID)
-	if r.failOn == len(r.calls) {
-		return 7
+	switch len(r.calls) {
+	case r.failOn:
+		return devResult{code: 7}
+	case r.uncompletedOn:
+		return devResult{code: 0}
 	}
-	return 0
+	return devResult{code: 0, runCompleted: true}
 }
 
 func runScenario(t *testing.T, rec *recorder, apiURL string, args ...string) (int, string, string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
 	runner := scenarioRunner{
-		run:         rec.run,
-		executionID: func(string) string { return "scn-test" },
-		cliVersion:  func() string { return "cli-test" },
+		run:            rec.run,
+		executionID:    func(string) string { return "scn-test" },
+		cliVersion:     func() string { return "cli-test" },
+		workloadStdout: os.Stderr,
 	}
 	code := runner.main(streams{out: &out, err: &errOut},
 		append([]string{"--api-url", apiURL}, args...), testTimeout)
@@ -123,6 +130,9 @@ func TestEvalRunIsolatesEveryRepetitionAndRunsThemInOrder(t *testing.T) {
 		}
 		if c.env["MODE"] != wantMode || c.command[1] != wantScript {
 			t.Errorf("repetition %d ran %v with MODE=%s", i, c.command, c.env["MODE"])
+		}
+		if c.workloadStdout != os.Stderr {
+			t.Errorf("repetition %d workload stdout is %v, want this process's stderr", i, c.workloadStdout)
 		}
 		if c.apiURL != api.url() && c.apiURL != api.url()+"/" {
 			t.Errorf("repetition %d attached to %q, want the one control plane", i, c.apiURL)
@@ -165,13 +175,38 @@ func TestEvalRunStopsAtAFailedRepetitionWithExitThreeAndNoVerdict(t *testing.T) 
 	}
 }
 
+// A workload that exited 0 whose run the control plane did not complete is a
+// failed repetition: exit 3, no further repetition, no verdict requested.
+func TestEvalRunStopsWhenARunCannotBeCompleted(t *testing.T) {
+	api := newFakeAPI(t)
+	api.reply(200, repeatedReply("fail"))
+	rec := &recorder{uncompletedOn: 1}
+	code, out, errOut := runScenario(t, rec, api.url(), "--scenario", writeScenario(t, runScenarioYAML))
+	if code != exitOperational {
+		t.Fatalf("exit %d, want 3: an uncompleted run is not a behavioral FAIL", code)
+	}
+	if len(rec.calls) != 1 || len(api.captured()) != 0 {
+		t.Errorf("%d repetitions ran and %d requests were made; want 1 and 0", len(rec.calls), len(api.captured()))
+	}
+	if strings.Contains(out, "Gate:") || !strings.Contains(errOut, "could not be completed") {
+		t.Errorf("stdout:\n%s\nstderr:\n%s", out, errOut)
+	}
+}
+
 func TestEvalRunRefusesAnInvalidScenarioBeforeRunningAnything(t *testing.T) {
 	for name, scenario := range map[string]string{
-		"missing k": strings.Replace(runScenarioYAML, "  added_candidate_presence_minimum: 2\n", "", 1),
-		"k above N": strings.Replace(runScenarioYAML, "added_candidate_presence_minimum: 2", "added_candidate_presence_minimum: 4", 1),
-		"j = k":     strings.Replace(runScenarioYAML, "added_reference_presence_maximum: 0", "added_reference_presence_maximum: 2", 1),
-		"runs 65":   strings.Replace(runScenarioYAML, "runs: 3", "runs: 65", 1),
-		"no runs":   strings.Replace(runScenarioYAML, "runs: 3\n", "", 1),
+		"missing k":       strings.Replace(runScenarioYAML, "  added_candidate_presence_minimum: 2\n", "", 1),
+		"k above N":       strings.Replace(runScenarioYAML, "added_candidate_presence_minimum: 2", "added_candidate_presence_minimum: 4", 1),
+		"j = k":           strings.Replace(runScenarioYAML, "added_reference_presence_maximum: 0", "added_reference_presence_maximum: 2", 1),
+		"runs 65":         strings.Replace(runScenarioYAML, "runs: 3", "runs: 65", 1),
+		"fractional runs": strings.Replace(runScenarioYAML, "runs: 3", "runs: 2.9", 1),
+		"fractional k": strings.Replace(runScenarioYAML, "added_candidate_presence_minimum: 2",
+			"added_candidate_presence_minimum: 1.9", 1),
+		"negative fractional limit": strings.Replace(runScenarioYAML, "max_block_decisions_per_run: 0",
+			"max_block_decisions_per_run: -0.5", 1),
+		"limit past 64 bits": strings.Replace(runScenarioYAML, "max_repeated_added_behaviors: 0",
+			"max_repeated_added_behaviors: 18446744073709551616", 1),
+		"no runs": strings.Replace(runScenarioYAML, "runs: 3\n", "", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			api := newFakeAPI(t)

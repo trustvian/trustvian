@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -38,24 +39,28 @@ asks the control plane for the repeated verdict.
   3  operational — the control plane, the network, or a repetition that failed;
      a failed repetition stops the scenario and no verdict is produced`
 
-// repetitionFunc runs one repetition and returns its exit status. In
-// production it is composeAndRun — `trustvian dev`, in-process. Tests replace
-// it, which is how isolation, sequencing and abort are asserted without a
-// workload.
-type repetitionFunc func(s streams, config devConfig) int
+// repetitionFunc runs one repetition and reports its exit status and whether
+// its run was completed. In production it is composeAndRunResult — `trustvian
+// dev`, in-process. Tests replace it, which is how isolation, sequencing and
+// abort are asserted without a workload.
+type repetitionFunc func(s streams, config devConfig) devResult
 
 // scenarioRunner is one `eval run` invocation's collaborators.
 type scenarioRunner struct {
 	run         repetitionFunc
 	executionID func(name string) string
 	cliVersion  func() string
+	// workloadStdout is the file every repetition's workload writes its
+	// standard output to: this process's stderr, never its stdout.
+	workloadStdout *os.File
 }
 
 func runEvalRun(s streams, args []string, timeout time.Duration) int {
 	return scenarioRunner{
-		run:         composeAndRun,
-		executionID: newExecutionID,
-		cliVersion:  cliVersionString,
+		run:            composeAndRunResult,
+		executionID:    newExecutionID,
+		cliVersion:     cliVersionString,
+		workloadStdout: os.Stderr,
 	}.main(s, args, timeout)
 }
 
@@ -96,6 +101,9 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 
 	// The repetitions' own output — dev's banner, the workload's lines — goes
 	// to stderr, so stdout carries only the result and --json stays parseable.
+	// Both halves are needed: the streams carry what dev itself prints, and
+	// workloadStdout what the workload prints, because a child process inherits
+	// descriptors rather than this process's writers.
 	repetitionStreams := streams{out: s.err, err: s.err}
 
 	// Sequential, reference side then candidate side. Concurrent repetitions
@@ -114,7 +122,7 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 			profile := fmt.Sprintf("%s-%s-p%d", executionID, side.name, i)
 			fmt.Fprintf(s.err, "trustvian eval run: %s repetition %d of %d (run %s)\n",
 				side.name, i, runs, runID)
-			code := r.run(repetitionStreams, devConfig{
+			result := r.run(repetitionStreams, devConfig{
 				command:           side.spec.Command,
 				apiURL:            client.baseURL.String(),
 				collectorBin:      *collectorBin,
@@ -126,8 +134,9 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 				instrumentation:   instrumentationOrDefault(scenario.Instrumentation),
 				behavioralProfile: profile,
 				env:               side.spec.Env,
+				workloadStdout:    r.workloadStdout,
 			})
-			if code != 0 {
+			if code := result.code; code != 0 {
 				// One failed repetition ends the scenario. Its N is the one
 				// the limits were written for; a verdict over fewer runs
 				// would be a stricter or looser test than the author chose,
@@ -136,6 +145,18 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 				return emitError(s, *common.json, operationalErrorf(
 					"%s repetition %d of %d (run %s) exited %d; the scenario stopped "+
 						"and no verdict was produced", side.name, i, runs, runID, code))
+			}
+			if !result.runCompleted {
+				// The workload succeeded, but the control plane does not hold
+				// the run as completed — dev has said why on stderr. Asking for
+				// a verdict anyway would turn a bookkeeping failure into a
+				// behavioral FAIL (check 1 or 2), and the remaining repetitions
+				// would be measured for a scenario that can no longer pass. The
+				// same outcome as a crashed repetition, for the same reason.
+				return emitError(s, *common.json, operationalErrorf(
+					"%s repetition %d of %d (run %s) succeeded but its run could not be "+
+						"completed; the scenario stopped and no verdict was produced",
+					side.name, i, runs, runID))
 			}
 			*side.into = append(*side.into, runID)
 		}

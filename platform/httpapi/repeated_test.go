@@ -14,15 +14,30 @@ import (
 // completeIsolatedRun drives one run under its own behavioral profile.
 func (a *api) completeIsolatedRun(runID string, operations []string) {
 	a.t.Helper()
+	a.completeIsolatedRunIn(testEnvironment, runID, operations)
+}
+
+// completeIsolatedRunIn is completeIsolatedRun in a named environment. Outside
+// the test environment a behavior's fingerprint is environment-specific, as
+// the engine's is: environment is a fingerprint dimension.
+func (a *api) completeIsolatedRunIn(environment, runID string, operations []string) {
+	a.t.Helper()
 	a.seedHierarchy()
 	profile := runID + "-profile"
 	a.mustStatus(a.do("POST", "/v1/evaluation-runs", map[string]string{
 		"id": runID, "candidate_id": "cand-1",
-		"environment": testEnvironment, "behavioral_profile": profile,
+		"environment": environment, "behavioral_profile": profile,
 	}), 201, "create run")
 	a.mustStatus(a.do("POST", "/v1/evaluation-runs/"+runID+"/start", nil), 200, "start")
 	for i, op := range operations {
-		body := envelope(uint64(i+1), apiRecord(fmt.Sprintf("%s-e%d", runID, i), "fp-"+op, op))
+		fingerprint := "fp-" + op
+		record := apiRecord(fmt.Sprintf("%s-e%d", runID, i), fingerprint, op)
+		if environment != testEnvironment {
+			record.FingerprintID = fingerprint + "@" + environment
+			record.Environment = environment
+			record.Behavior.Environment = environment
+		}
+		body := envelope(uint64(i+1), record)
 		body["behavioral_profile"] = profile
 		a.mustStatus(a.do("POST", "/v1/evaluation-runs/"+runID+"/records", body), 200, "ingest")
 	}
@@ -196,4 +211,46 @@ func TestCompareRepeatedRefusesASharedProfile(t *testing.T) {
 		"gate_limits": repeatedLimitsBody("1", "0"),
 	})
 	a.mustStatus(r, 400, "shared profile")
+}
+
+// Every repetition must run in one environment. The review's reproduction over
+// /v1: the candidate's new export happens in staging in one repetition and in
+// production in the other, each fingerprint present once, below k = 2 — a
+// false PASS before this was refused. N = 1 is refused the same way.
+func TestCompareRepeatedRefusesRepetitionsAcrossEnvironments(t *testing.T) {
+	a := newAPI(t)
+	a.seedHierarchy()
+	a.mustStatus(a.do("POST", "/v1/environments", map[string]any{
+		"project_id": "proj-1", "ref": "production", "name": "Production",
+	}), 201, "create production")
+	a.completeIsolatedRun("ref-1", []string{"read"})
+	a.completeIsolatedRun("ref-2", []string{"read"})
+	a.completeIsolatedRun("can-1", []string{"read", "export"})
+	a.completeIsolatedRunIn("production", "can-2", []string{"read", "export"})
+
+	for name, sides := range map[string][2][]string{
+		"N = 2": {{"ref-1", "ref-2"}, {"can-1", "can-2"}},
+		"N = 1": {{"ref-1"}, {"can-2"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			k := fmt.Sprint(len(sides[0]))
+			r := a.do("POST", "/v1/evaluations/compare-repeated", map[string]any{
+				"reference_run_ids": sides[0], "candidate_run_ids": sides[1],
+				"gate_limits": repeatedLimitsBody(k, "0"),
+			})
+			a.mustStatus(r, 400, "cross-environment repetitions")
+			var body struct {
+				Gate  *struct{} `json:"gate"`
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(r.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body.Gate != nil || body.Error.Code != "invalid_request" {
+				t.Errorf("body = %s; want an invalid_request error and no gate", r.Body.Bytes())
+			}
+		})
+	}
 }

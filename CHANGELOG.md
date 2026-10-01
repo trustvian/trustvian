@@ -20,13 +20,16 @@ actually depend on.
   now runs each side `runs: N` times and gates over integer presence counts.
 
   - **The scenario file.** Every threshold and `runs` is required, with no
-    defaults; `1 <= runs <= 64` and `0 <= j < k <= runs`. Unknown fields are
+    defaults; `1 <= runs <= 64` and `0 <= j < k <= runs`. Counts and limits
+    must be YAML integers; a fraction or a value past 64 bits is refused. Unknown fields are
     refused and every error names its field.
   - **`trustvian eval run --scenario <file>`.**
     - Executes `2N` repetitions, one at a time, through `trustvian dev`, each
       under a fresh run id and its own `--behavioral-profile`.
     - The first repetition whose workload fails ends the scenario with exit `3`
-      and no verdict.
+      and no verdict. So does a repetition whose run could not be completed.
+    - The workload's stdout goes to stderr, and a bare command name resolves
+      on its side's own `PATH`.
     - It counts nothing itself: it submits the run ids and passes the server's
       verdict through as `0` or `1`.
   - **`POST /v1/evaluations/compare-repeated`.** The control plane reads each
@@ -34,8 +37,9 @@ actually depend on.
     presence counts, and classifies it added, removed or neither. It evaluates
     six checks; the two engine checks take the worst candidate repetition and
     carry `advisory: fresh_scope` when `runs > 1`.
-  - **Refusals.** It refuses repetitions that shared a learning scope, and it
-    refuses saturated evidence.
+  - **Refusals.** It refuses repetitions that shared a learning scope, ran in
+    more than one environment, or disagree about fingerprint identity in either
+    direction. It also refuses saturated evidence.
   - **The repeated limit's unit.** `max_repeated_added_behaviors` counts
     behavioral identities, the unit of `max_added_behaviors`. So at `runs: 1,
     k: 1, j: 0` the verdict is exactly `eval compare`'s, check for check.

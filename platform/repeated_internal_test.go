@@ -125,3 +125,30 @@ func TestPresenceIsInvariantUnderEveryPermutation(t *testing.T) {
 		}
 	}
 }
+
+// The reverse direction: one descriptor under two fingerprints, within a side
+// and across the sides, is refused rather than counted as two behaviors.
+func TestOneDescriptorUnderTwoFingerprintsAcrossRepetitionsIsRefused(t *testing.T) {
+	renamed := func(side ComparisonSide, index int) repetitionInput {
+		in := completedInput(side, index, "x")
+		in.entries[0].FingerprintID = "fp-x-again"
+		return in
+	}
+	for name, inputs := range map[string][]repetitionInput{
+		"within the candidate side": {
+			completedInput(SideReference, 1, "a"), completedInput(SideReference, 2, "a"),
+			completedInput(SideCandidate, 1, "x"), renamed(SideCandidate, 2),
+		},
+		"across the sides": {
+			completedInput(SideReference, 1, "x"), completedInput(SideReference, 2, "x"),
+			renamed(SideCandidate, 1), renamed(SideCandidate, 2),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := reduceRepeated(repeatedTestLimits(2, 0), 2, inputs)
+			if !errors.Is(err, ErrFingerprintConflict) {
+				t.Errorf("error = %v, want ErrFingerprintConflict", err)
+			}
+		})
+	}
+}

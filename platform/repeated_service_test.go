@@ -21,6 +21,31 @@ type repetition struct {
 	behaviors []string // operation names; each is its own fingerprint
 	blocks    int
 	critical  int
+
+	// environment is where the run executes; empty is the fixture's staging.
+	// Environment is a fingerprint dimension, so a behavior's fingerprint
+	// there is "fp-<op>@<environment>".
+	environment platform.EnvironmentRef
+	// fingerprints overrides an operation's fingerprint, for evidence whose
+	// identity disagrees across repetitions.
+	fingerprints map[string]string
+}
+
+func (r repetition) environmentOrDefault() platform.EnvironmentRef {
+	if r.environment == "" {
+		return fixtureEnvironment
+	}
+	return r.environment
+}
+
+func (r repetition) fingerprint(op string) string {
+	if fp, ok := r.fingerprints[op]; ok {
+		return fp
+	}
+	if r.environment != "" && r.environment != fixtureEnvironment {
+		return "fp-" + op + "@" + string(r.environment)
+	}
+	return "fp-" + op
 }
 
 func (f *controlPlaneFixture) seedRepeatedHierarchy(t *testing.T) {
@@ -30,9 +55,11 @@ func (f *controlPlaneFixture) seedRepeatedHierarchy(t *testing.T) {
 	agent, _ := platform.NewAgent("agent-1", "proj-1", "Deploy agent")
 	candidate, _ := platform.NewCandidate("cand-1", "agent-1", platform.CandidateMetadata{Label: "v1"})
 	environment, _ := platform.NewEnvironment(fixtureEnvironment, "proj-1", "Staging")
+	production, _ := platform.NewEnvironment("production", "proj-1", "Production")
 	for _, err := range []error{
 		f.plane.CreateProject(ctx, project), f.plane.CreateAgent(ctx, agent),
 		f.plane.CreateCandidate(ctx, candidate), f.plane.CreateEnvironment(ctx, environment),
+		f.plane.CreateEnvironment(ctx, production),
 	} {
 		if err != nil && !errors.Is(err, platform.ErrStoreAlreadyExists) {
 			t.Fatalf("seed error = %v", err)
@@ -48,7 +75,7 @@ func (f *controlPlaneFixture) runRepetition(
 	ctx := t.Context()
 	f.seedRepeatedHierarchy(t)
 	run, err := platform.NewEvaluationRun(platform.EvaluationRunID(runID), "cand-1",
-		fixtureEnvironment, platform.BehavioralProfileRef(profile), aggEpoch)
+		rep.environmentOrDefault(), platform.BehavioralProfileRef(profile), aggEpoch)
 	if err != nil {
 		t.Fatalf("NewEvaluationRun() error = %v", err)
 	}
@@ -68,7 +95,7 @@ func (f *controlPlaneFixture) runRepetition(
 			risk = "critical"
 		}
 		records = append(records, scorecardRecord(fmt.Sprintf("%s-e%d", runID, i),
-			"fp-"+op, op, fixtureEnvironment, decision, risk, event.ApprovalNotRequired, 0.9))
+			rep.fingerprint(op), op, rep.environmentOrDefault(), decision, risk, event.ApprovalNotRequired, 0.9))
 	}
 	for i, rec := range records {
 		if _, err := f.plane.IngestDecisionRecord(ctx, platform.IngestRequest{
@@ -416,5 +443,80 @@ func TestRepeatedRequestBoundsAreRefused(t *testing.T) {
 		Limits: repeatedLimits(2, 1, 0, 0, 0)})
 	if !errors.Is(err, platform.ErrStoreNotFound) {
 		t.Errorf("k = N, j = k - 1 with missing runs: error = %v, want ErrStoreNotFound", err)
+	}
+}
+
+// The review's reproduction: N = 2, k = 2, j = 0, every maximum zero. Every
+// candidate repetition performs a new export, one in staging and one in
+// production. Environment is a fingerprint dimension, so each environment's
+// export fingerprint is present once — below k — and the scenario passed. The
+// repetitions are now refused before any evidence is read.
+func TestRepetitionsAcrossEnvironmentsAreRefused(t *testing.T) {
+	f := newFixture(t)
+	refs, cands := f.sides(t, "env",
+		[]repetition{{behaviors: []string{"read"}}, {behaviors: []string{"read"}}},
+		[]repetition{
+			{behaviors: []string{"read", "export"}},
+			{behaviors: []string{"read", "export"}, environment: "production"},
+		})
+	_, err := f.plane.CompareRepeatedEvaluations(t.Context(), platform.RepeatedEvaluationRequest{
+		ReferenceRunIDs: refs, CandidateRunIDs: cands, Limits: repeatedLimits(2, 0, 0, 0, 0)})
+	if !errors.Is(err, platform.ErrBehaviorEnvironmentMismatch) {
+		t.Fatalf("error = %v, want ErrBehaviorEnvironmentMismatch: two environments' "+
+			"fingerprints split one export's presence below k", err)
+	}
+
+	// Within one environment the same workload is the addition it is.
+	refs, cands = f.sides(t, "one-env",
+		[]repetition{{behaviors: []string{"read"}}, {behaviors: []string{"read"}}},
+		[]repetition{{behaviors: []string{"read", "export"}}, {behaviors: []string{"read", "export"}}})
+	if got := compareRepeated(t, f, refs, cands, repeatedLimits(2, 0, 0, 0, 0)); got.Gate.Verdict() != platform.GateVerdictFail {
+		t.Errorf("one environment: verdict %s, want fail", got.Gate.Verdict())
+	}
+}
+
+// At N = 1 the repeated comparison refuses a cross-environment pair with the
+// error the single-run comparison uses for it, and it does so for a run that
+// ingested nothing, where there is no snapshot to compare environments on.
+func TestAtOneRunACrossEnvironmentPairIsRefusedAsTheSingleRunGateRefusesIt(t *testing.T) {
+	f := newFixture(t)
+	refs, cands := f.sides(t, "env1",
+		[]repetition{{behaviors: []string{"read"}}},
+		[]repetition{{behaviors: []string{"read"}, environment: "production"}})
+	_, single := f.plane.CompareEvaluations(t.Context(), refs[0], cands[0], platform.EvaluationGateLimits{})
+	if !errors.Is(single, platform.ErrBehaviorEnvironmentMismatch) {
+		t.Fatalf("single-run error = %v, want ErrBehaviorEnvironmentMismatch", single)
+	}
+	_, repeated := f.plane.CompareRepeatedEvaluations(t.Context(), platform.RepeatedEvaluationRequest{
+		ReferenceRunIDs: refs, CandidateRunIDs: cands, Limits: repeatedLimits(1, 0, 0, 0, 0)})
+	if !errors.Is(repeated, platform.ErrBehaviorEnvironmentMismatch) {
+		t.Errorf("repeated error = %v, want the single-run comparison's ErrBehaviorEnvironmentMismatch", repeated)
+	}
+
+	refs, cands = f.sides(t, "env-empty",
+		[]repetition{{behaviors: []string{"read"}}},
+		[]repetition{{environment: "production"}})
+	_, empty := f.plane.CompareRepeatedEvaluations(t.Context(), platform.RepeatedEvaluationRequest{
+		ReferenceRunIDs: refs, CandidateRunIDs: cands, Limits: repeatedLimits(1, 0, 0, 0, 0)})
+	if !errors.Is(empty, platform.ErrBehaviorEnvironmentMismatch) {
+		t.Errorf("empty candidate in another environment: error = %v, want ErrBehaviorEnvironmentMismatch", empty)
+	}
+}
+
+// The review's second reproduction: both candidate repetitions perform the same
+// new export, under different fingerprints. Counted per fingerprint, each is
+// present once, below k = 2, and a zero budget passed. The evidence is refused.
+func TestOneBehaviorUnderTwoFingerprintsAcrossRepetitionsIsRefused(t *testing.T) {
+	f := newFixture(t)
+	refs, cands := f.sides(t, "split",
+		[]repetition{{behaviors: []string{"read"}}, {behaviors: []string{"read"}}},
+		[]repetition{
+			{behaviors: []string{"read", "export"}},
+			{behaviors: []string{"read", "export"}, fingerprints: map[string]string{"export": "fp-export-again"}},
+		})
+	_, err := f.plane.CompareRepeatedEvaluations(t.Context(), platform.RepeatedEvaluationRequest{
+		ReferenceRunIDs: refs, CandidateRunIDs: cands, Limits: repeatedLimits(2, 0, 0, 0, 0)})
+	if !errors.Is(err, platform.ErrFingerprintConflict) {
+		t.Fatalf("error = %v, want ErrFingerprintConflict rather than two half-present behaviors", err)
 	}
 }

@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -94,12 +96,30 @@ func (o childOutcome) stoppedByDeveloper(forwarded bool) bool {
 // what the wrapper tests use to assert that nothing is added when nothing is
 // composed.
 //
-// The working directory and streams are inherited unconditionally and are not
-// parameters: dev has no reason to change either, and a knob that could would be
-// a knob that eventually does.
+// The working directory and streams are inherited: dev has no reason to change
+// either, and a knob that could would be a knob that eventually does. The one
+// exception is superviseChildTo's stdout, which `trustvian dev` never sets.
 func superviseChild(s streams, command []string, environment *devEnvironment,
 	relay *signalRelay) childOutcome {
+	return superviseChildTo(s, command, environment, relay, nil)
+}
+
+// superviseChildTo is superviseChild with the workload's standard output sent
+// to stdout instead of dev's own; nil inherits dev's, which is what `trustvian
+// dev` always does.
+//
+// The one caller that passes a file is `eval run` (task 078). Its stdout
+// carries exactly one result document, and the workload's lines must not reach
+// it — redirecting the in-process streams does not redirect a child, which
+// inherits descriptors, not writers. Still a file, never a pipe, for the reason
+// devStdio gives; stdin and stderr, and with them the terminal handover and
+// signal delivery, are unchanged.
+func superviseChildTo(s streams, command []string, environment *devEnvironment,
+	relay *signalRelay, stdoutOverride *os.File) childOutcome {
 	stdin, stdout, stderr := devStdio()
+	if stdoutOverride != nil {
+		stdout = stdoutOverride
+	}
 
 	// Extended, never replaced. Explicit rather than relying on exec's defaults
 	// so that adding a variable cannot accidentally construct a fresh
@@ -197,4 +217,44 @@ func signalExitCode(sig syscall.Signal) int {
 		return exitDevOperational
 	}
 	return 128 + n
+}
+
+// lookPathIn resolves a bare command name against the PATH in env — the
+// workload's environment — rather than this process's.
+//
+// exec.Command resolves a bare name against os.Getenv("PATH") when the command
+// is built, before its Env is assigned. A scenario side that sets PATH to its
+// own virtualenv would then run the parent's executable of the same name,
+// silently, under the side's variables. Setting this process's PATH instead
+// would leak one repetition's lookup into the next. So the lookup is repeated
+// here with exec.LookPath's Unix rules over the workload's PATH: a name
+// containing a separator is used as given, an empty PATH entry means the
+// current directory, the first regular executable file wins, and a match
+// found relative to the current directory is refused with exec.ErrDot, as
+// exec refuses it.
+func lookPathIn(name string, env []string) (string, error) {
+	if strings.Contains(name, "/") {
+		return name, nil
+	}
+	path := ""
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, "PATH="); ok {
+			path = value
+		}
+	}
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, name)
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+			continue
+		}
+		if !filepath.IsAbs(candidate) {
+			return candidate, &exec.Error{Name: name, Err: exec.ErrDot}
+		}
+		return candidate, nil
+	}
+	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
 }

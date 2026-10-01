@@ -263,6 +263,12 @@ func reduceRepeated(
 		reference, candidate uint64
 	}
 	seen := make(map[string]*tally)
+	// The reverse direction of the identity contract. A descriptor that
+	// arrives under two fingerprints would split one behavior's presence
+	// across two tallies, each below k, and a behavior every candidate run
+	// added would pass a zero budget. CompareBehaviorSnapshots refuses that
+	// across one pair; this refuses it across the execution.
+	fingerprintOf := make(map[trustvian.StableFeatures]string)
 	var (
 		completed           = map[ComparisonSide]uint64{}
 		failingMinimum      uint64
@@ -303,6 +309,14 @@ func reduceRepeated(
 					"%w: fingerprint %s carries two descriptors across repetitions",
 					ErrFingerprintConflict, preview(entry.FingerprintID))
 			}
+			if other, ok := fingerprintOf[entry.Behavior]; ok && other != entry.FingerprintID {
+				return RepeatedEvaluationComparison{}, fmt.Errorf(
+					"%w: behavior %s/%s is fingerprint %s in one repetition and %s in another",
+					ErrFingerprintConflict,
+					preview(string(entry.Behavior.OperationCategory)), preview(entry.Behavior.OperationName),
+					preview(other), preview(entry.FingerprintID))
+			}
+			fingerprintOf[entry.Behavior] = entry.FingerprintID
 			if in.evidence.Side == SideReference {
 				t.reference++
 			} else {
@@ -373,7 +387,8 @@ func atMostCheck(name RepeatedCheckName, actual, bound uint64, advisory string) 
 // CompareRepeatedEvaluations evaluates N isolated repetitions per side.
 //
 // Refused, never gated: a malformed request, a run that does not exist, runs
-// from more than one project, two repetitions sharing a learning scope, and
+// from more than one project or environment, two repetitions sharing a
+// learning scope, inconsistent fingerprint identity across repetitions, and
 // incomplete behavioral evidence in any completed repetition. A repetition
 // that is merely not completed is not refused: it fails check 1 or 2, so the
 // result still shows everything that was measured.
@@ -412,6 +427,22 @@ func (c *ControlPlane) CompareRepeatedEvaluations(
 		}
 		profiles[run.BehavioralProfile()] = n.id
 		if i > 0 {
+			// One Environment, which is (ProjectID, EnvironmentRef), exactly
+			// as CompareEvaluations requires of its pair. Environment is a
+			// fingerprint dimension: a candidate repetition in another
+			// environment would present each behavior under a fingerprint the
+			// other repetitions never use, so presence would split below k
+			// and a repeated addition would pass. Checked here, before any
+			// evidence is loaded, so a run that ingested nothing is held to
+			// it too.
+			if run.Environment() != runs[0].Environment() {
+				return RepeatedEvaluationComparison{}, fmt.Errorf(
+					"%w: run %s is in environment %s, run %s in %s; every repetition "+
+						"of a scenario must run in one environment",
+					ErrBehaviorEnvironmentMismatch,
+					preview(string(runs[0].ID())), preview(string(runs[0].Environment())),
+					preview(string(n.id)), preview(string(run.Environment())))
+			}
 			if err := c.requireSameProject(ctx, runs[0], run); err != nil {
 				return RepeatedEvaluationComparison{}, err
 			}

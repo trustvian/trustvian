@@ -1,3 +1,5 @@
+//go:build !windows
+
 package main
 
 // trustvian eval run against the real binaries (task 078).
@@ -14,23 +16,34 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
+
+const workloadStdoutMarker = "tv-e2e-workload-stdout-line"
 
 func writeScenarioWorkload(t *testing.T, binaries realBinaries) string {
 	t.Helper()
 	script := filepath.Join(t.TempDir(), "workload.sh")
+	// The first line is the workload's own stdout, which must reach eval run's
+	// stderr and never its stdout.
 	body := fmt.Sprintf(`#!/bin/sh
+echo %s
 OTLP_ENDPOINT="$TRUSTVIAN_DEV_OTLP_GRPC_ENDPOINT" \
 MODE=semantic \
 SERVICE_NAME=%s \
 ENVIRONMENT=%s \
 exec %q
-`, e2eServiceName, devEnvironmentDefault, binaries.agentProducer)
+`, workloadStdoutMarker, e2eServiceName, devEnvironmentDefault, binaries.agentProducer)
 	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatalf("writing the workload script: %v", err)
 	}
@@ -118,11 +131,29 @@ func TestEvalRunAgainstRealBinaries(t *testing.T) {
 	script := writeScenarioWorkload(t, binaries)
 	shScript := fmt.Sprintf("sh, %q", script)
 
-	t.Run("unchanged workload passes", func(t *testing.T) {
+	t.Run("unchanged workload passes, and stdout is the result document alone", func(t *testing.T) {
 		code, out, stderr := runEvalRunForReal(t, binaries, runtime.apiURL, home, workload,
 			scenarioFor(script, shScript, "2"))
 		if code != exitOK {
 			t.Fatalf("exit %d, want 0\nstdout: %s\nstderr: %s", code, out, stderr)
+		}
+		// Exactly one JSON value and nothing before or after it: a workload
+		// line ahead of the document is what the child inheriting this
+		// process's stdout produced.
+		decoder := json.NewDecoder(bytes.NewReader(out))
+		var document e2eRepeatedResult
+		if err := decoder.Decode(&document); err != nil {
+			t.Fatalf("stdout does not start with the result document: %v\n%s", err, out)
+		}
+		if _, err := decoder.Token(); err != io.EOF {
+			t.Errorf("stdout continues after the result document (%v):\n%s", err, out)
+		}
+		if document.Comparison.Gate.Verdict != "pass" || strings.Contains(string(out), workloadStdoutMarker) {
+			t.Errorf("verdict %q; workload output on stdout: %v\n%s", document.Comparison.Gate.Verdict,
+				strings.Contains(string(out), workloadStdoutMarker), out)
+		}
+		if n := strings.Count(stderr, workloadStdoutMarker); n != 4 {
+			t.Errorf("the workload's stdout line reached stderr %d times, want once per repetition (4):\n%s", n, stderr)
 		}
 	})
 
@@ -191,6 +222,54 @@ func TestEvalRunAgainstRealBinaries(t *testing.T) {
 			t.Errorf("the second candidate repetition ran after the first crashed:\n%s", stderr)
 		}
 		if len(bytes.TrimSpace(out)) != 0 && strings.Contains(string(out), `"verdict"`) {
+			t.Errorf("a verdict was produced: %s", out)
+		}
+	})
+
+	t.Run("a run that cannot be completed stops the scenario with exit 3", func(t *testing.T) {
+		// The real control plane behind a proxy that refuses the first
+		// completion it is asked for, as a control plane briefly unavailable
+		// would. The workload itself succeeds.
+		target, err := url.Parse(runtime.apiURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		var (
+			mu          sync.Mutex
+			completions []string
+		)
+		front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/complete") {
+				mu.Lock()
+				completions = append(completions, r.URL.Path)
+				first := len(completions) == 1
+				mu.Unlock()
+				if first {
+					http.Error(w, `{"version":"1","error":{"code":"unavailable","message":"unavailable"}}`,
+						http.StatusServiceUnavailable)
+					return
+				}
+			}
+			proxy.ServeHTTP(w, r)
+		}))
+		t.Cleanup(front.Close)
+
+		code, out, stderr := runEvalRunForReal(t, binaries, front.URL, home, workload,
+			scenarioFor(script, shScript, "2"))
+		if code != exitOperational {
+			t.Fatalf("exit %d, want 3: a run left uncompleted is not a behavioral FAIL\nstdout: %s\nstderr: %s",
+				code, out, stderr)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(completions) != 1 {
+			t.Errorf("%d completions were requested, want 1: the scenario must stop at the first", len(completions))
+		}
+		if strings.Contains(stderr, "reference repetition 2 of 2") || !strings.Contains(stderr, "could not be completed") {
+			t.Errorf("stderr:\n%s", stderr)
+		}
+		if strings.Contains(string(out), `"verdict"`) {
 			t.Errorf("a verdict was produced: %s", out)
 		}
 	})

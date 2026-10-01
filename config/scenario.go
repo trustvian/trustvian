@@ -199,6 +199,9 @@ func LoadScenario(data []byte) (ScenarioConfig, error) {
 		}
 		return ScenarioConfig{}, fmt.Errorf("%w: decode: %w", ErrInvalidScenario, err)
 	}
+	if err := requireIntegerCounts(data); err != nil {
+		return ScenarioConfig{}, err
+	}
 	if err := cfg.Validate(); err != nil {
 		return ScenarioConfig{}, err
 	}
@@ -225,4 +228,78 @@ func LoadScenarioFile(path string) (ScenarioConfig, error) {
 		return ScenarioConfig{}, fmt.Errorf("config: %s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// requireIntegerCounts refuses a count or limit written as anything but a YAML
+// integer.
+//
+// The decoder converts a float into an integer field rather than refusing it:
+// `runs: 5.9` decodes as 5, `k: 1.9` as 1, `-0.5` into an unsigned limit as 0,
+// and an integer too large for 64 bits resolves as a float and wraps. Each is a
+// threshold nobody wrote, so the scalar's resolved type is checked on the
+// document itself, before Validate reads the converted value. A null is left
+// to Validate, which reports the field as missing.
+func requireIntegerCounts(data []byte) error {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("%w: decode: %w", ErrInvalidScenario, err)
+	}
+	root := &doc
+	fields := []struct {
+		name  string
+		value *yaml.Node
+	}{{"runs", mappingValue(root, "runs")}}
+	if gate := mappingValue(root, "gate"); gate != nil {
+		for _, name := range []string{
+			"added_candidate_presence_minimum",
+			"added_reference_presence_maximum",
+			"max_repeated_added_behaviors",
+			"max_block_decisions_per_run",
+			"max_critical_risk_observations_per_run",
+		} {
+			fields = append(fields, struct {
+				name  string
+				value *yaml.Node
+			}{"gate." + name, mappingValue(gate, name)})
+		}
+	}
+	for _, field := range fields {
+		node := field.value
+		if node == nil || node.ShortTag() == "!!null" {
+			continue
+		}
+		if node.Kind != yaml.ScalarNode || node.ShortTag() != "!!int" {
+			return scenarioError("%s must be a whole number, got %q", field.name, node.Value)
+		}
+	}
+	return nil
+}
+
+// resolved follows a document or alias node to the node it stands for.
+func resolved(node *yaml.Node) *yaml.Node {
+	for node != nil {
+		switch {
+		case node.Kind == yaml.AliasNode:
+			node = node.Alias
+		case node.Kind == yaml.DocumentNode && len(node.Content) == 1:
+			node = node.Content[0]
+		default:
+			return node
+		}
+	}
+	return nil
+}
+
+// mappingValue returns the value under key when node is a mapping, or nil.
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	node = resolved(node)
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == key {
+			return resolved(node.Content[i+1])
+		}
+	}
+	return nil
 }

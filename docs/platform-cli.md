@@ -575,6 +575,8 @@ trustvian eval run --scenario scenarios/support-login.yaml --json > result.json
 **Every field and `runs` is required, and nothing has a default.**
 - `1 <= runs <= 64` and `0 <= j < k <= runs`.
 - Unknown fields are refused, and every error names its field.
+- `runs` and every gate value must be a YAML integer. `5.9`, `-0.5`, `1e1` and
+  a value past 64 bits are refused rather than converted.
 - Any of these is exit `2` before a repetition starts.
 - `k = 1, j = 0` is the documented guidance for a workload whose variance you
   have not measured. It is set semantics — "in at least one candidate run and no
@@ -589,11 +591,19 @@ trustvian eval run --scenario scenarios/support-login.yaml --json > result.json
 - The first repetition whose workload exits non-zero ends the scenario with exit
   **3**: the rest do not run and no verdict is produced. A broken workload is
   never a gate failure.
-- Repetition output goes to stderr, so `--json` stdout is the result document
-  alone.
+- So does a repetition whose run the control plane could not complete, even
+  when its workload exited `0`.
+- Repetition output goes to stderr: `dev`'s own lines and the workload's
+  standard output. `--json` stdout is the result document alone.
+- A bare command name, such as `python`, is looked up on the side's own
+  `PATH` when its `env` sets one. A `PATH` pointing into a virtualenv therefore
+  runs that virtualenv's `python`.
 
 **What decides.** The control plane, through
 `POST /v1/evaluations/compare-repeated`. The runner counts nothing.
+- It refuses repetitions that span environments or projects, or that share a
+  behavioral profile. It also refuses evidence in which one behavior appears
+  under two fingerprints, or one fingerprint names two behaviors.
 - For each behavior the server reports in how many reference runs and how many
   candidate runs it appeared.
 - It classifies a behavior *added* when `candidate_runs_present >= k` and

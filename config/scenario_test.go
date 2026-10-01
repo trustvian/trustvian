@@ -129,3 +129,70 @@ func TestScenarioFileIsBounded(t *testing.T) {
 		t.Errorf("error = %v, want ErrFileTooLarge", err)
 	}
 }
+
+// A count or limit must be a YAML integer. The decoder would otherwise convert:
+// runs 5.9 to 5, k 1.9 to 1, a negative fraction into an unsigned limit as 0,
+// and an integer past 64 bits — which resolves as a float — to a wrapped value.
+// Each of those is a threshold the author did not write.
+func TestScenarioCountsAndLimitsMustBeWholeNumbers(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, value string
+	}{
+		{"fractional runs", "runs", "5.9"},
+		{"fractional runs below one", "runs", "0.5"},
+		{"exponent runs", "runs", "1e1"},
+		{"fractional k", "added_candidate_presence_minimum", "1.9"},
+		{"fractional j", "added_reference_presence_maximum", "0.4"},
+		{"fractional budget", "max_repeated_added_behaviors", "0.5"},
+		{"negative fraction", "max_block_decisions_per_run", "-0.5"},
+		{"negative fraction near zero", "max_critical_risk_observations_per_run", "-0.0"},
+		{"past 64 bits", "max_repeated_added_behaviors", "18446744073709551616"},
+		{"far past 64 bits", "max_block_decisions_per_run", "99999999999999999999999"},
+		{"infinity", "max_critical_risk_observations_per_run", ".inf"},
+		{"not a number", "max_repeated_added_behaviors", ".nan"},
+		{"quoted integer", "runs", `"5"`},
+		{"boolean", "max_block_decisions_per_run", "true"},
+		{"through an alias", "max_repeated_added_behaviors", "*frac"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := replaceLine(t, validScenario, tc.field, tc.field+": "+tc.value)
+			if tc.value == "*frac" {
+				// The anchor sits where a float is legal, an env value.
+				doc = strings.Replace(doc, "{AGENT_MODE: reference}", "{AGENT_MODE: &frac 0.5}", 1)
+			}
+			_, err := LoadScenario([]byte(doc))
+			if !errors.Is(err, ErrInvalidScenario) {
+				t.Fatalf("error = %v, want ErrInvalidScenario", err)
+			}
+		})
+	}
+}
+
+// Whole numbers at the bounds still load, in every integer spelling YAML has.
+func TestScenarioAcceptsWholeNumbersAtTheBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, value string
+		check              func(ScenarioConfig) bool
+	}{
+		{"runs 1", "runs", "1", func(c ScenarioConfig) bool { return *c.Runs == 1 }},
+		{"runs 64", "runs", "64", func(c ScenarioConfig) bool { return *c.Runs == 64 }},
+		{"k = N", "added_candidate_presence_minimum", "5",
+			func(c ScenarioConfig) bool { return *c.Gate.AddedCandidatePresenceMinimum == 5 }},
+		{"largest unsigned limit", "max_repeated_added_behaviors", "18446744073709551615",
+			func(c ScenarioConfig) bool { return *c.Gate.MaxRepeatedAddedBehaviors == 1<<64-1 }},
+		{"hexadecimal", "max_block_decisions_per_run", "0x10",
+			func(c ScenarioConfig) bool { return *c.Gate.MaxBlockDecisionsPerRun == 16 }},
+		{"explicit plus", "max_critical_risk_observations_per_run", "+3",
+			func(c ScenarioConfig) bool { return *c.Gate.MaxCriticalRiskObservationsPerRun == 3 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadScenario([]byte(replaceLine(t, validScenario, tc.field, tc.field+": "+tc.value)))
+			if err != nil {
+				t.Fatalf("error = %v", err)
+			}
+			if !tc.check(cfg) {
+				t.Errorf("%s decoded to an unexpected value: %+v", tc.value, cfg.Gate)
+			}
+		})
+	}
+}

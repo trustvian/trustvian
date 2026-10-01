@@ -1438,15 +1438,22 @@ The first production slice of the aggregation, recorded in
   - Every threshold and `runs` is required.
   - `1 <= runs <= 64` and `0 <= j < k <= runs`.
   - Unknown fields are refused, and every error names its field.
+  - Counts and limits must be YAML integers; fractions and values past 64
+    bits are refused rather than converted.
 - `ControlPlane.CompareRepeatedEvaluations` and
   `POST /v1/evaluations/compare-repeated`.
   - Per-repetition evidence, read per run; presence, classification, and the six
     checks with the advisory marker.
   - Isolation refused when profiles repeat, and incomplete evidence refused.
+  - Repetitions spanning environments refused, and identity that is not
+    one-to-one across repetitions refused.
 - `trustvian eval run --scenario <file>`, a thin adapter.
   - 2N sequential repetitions through `trustvian dev`, each under a fresh run id
     and a fresh `--behavioral-profile`.
   - The first failed repetition ends the scenario with exit `3` and no verdict.
+    So does a repetition whose run could not be completed.
+  - Workload stdout goes to stderr, and a bare command resolves on its side's
+    `PATH`.
   - The server's verdict is passed through as `0` or `1`.
 - **No schema step**, because self-contained mode needs no stored execution.
 
