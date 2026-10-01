@@ -235,70 +235,46 @@ func LoadScenarioFile(path string) (ScenarioConfig, error) {
 //
 // The decoder converts a float into an integer field rather than refusing it:
 // `runs: 5.9` decodes as 5, `k: 1.9` as 1, `-0.5` into an unsigned limit as 0,
-// and an integer too large for 64 bits resolves as a float and wraps. Each is a
-// threshold nobody wrote, so the scalar's resolved type is checked on the
-// document itself, before Validate reads the converted value. A null is left
-// to Validate, which reports the field as missing.
+// and an integer too large for 64 bits resolves as a float and saturates. Each
+// is a threshold nobody wrote.
+//
+// So the document is decoded a second time, into the same keys typed `any`.
+// That decode is the decoder's own: merges (`<<`, including merge sequences),
+// aliased keys and aliased values, and an explicit key overriding a merged one,
+// resolve exactly as they did for the real fields — which is what makes this
+// check cover the value each field actually received, rather than the keys
+// that happen to be spelled out. Into `any` a YAML integer stays an integer
+// type and a float stays float64, so the type says what was written. A null is
+// left to Validate, which reports the field as missing.
 func requireIntegerCounts(data []byte) error {
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	var counts struct {
+		Runs any `yaml:"runs"`
+		Gate struct {
+			AddedCandidatePresenceMinimum     any `yaml:"added_candidate_presence_minimum"`
+			AddedReferencePresenceMaximum     any `yaml:"added_reference_presence_maximum"`
+			MaxRepeatedAddedBehaviors         any `yaml:"max_repeated_added_behaviors"`
+			MaxBlockDecisionsPerRun           any `yaml:"max_block_decisions_per_run"`
+			MaxCriticalRiskObservationsPerRun any `yaml:"max_critical_risk_observations_per_run"`
+		} `yaml:"gate"`
+	}
+	if err := yaml.Unmarshal(data, &counts); err != nil {
 		return fmt.Errorf("%w: decode: %w", ErrInvalidScenario, err)
 	}
-	root := &doc
-	fields := []struct {
+	for _, field := range []struct {
 		name  string
-		value *yaml.Node
-	}{{"runs", mappingValue(root, "runs")}}
-	if gate := mappingValue(root, "gate"); gate != nil {
-		for _, name := range []string{
-			"added_candidate_presence_minimum",
-			"added_reference_presence_maximum",
-			"max_repeated_added_behaviors",
-			"max_block_decisions_per_run",
-			"max_critical_risk_observations_per_run",
-		} {
-			fields = append(fields, struct {
-				name  string
-				value *yaml.Node
-			}{"gate." + name, mappingValue(gate, name)})
-		}
-	}
-	for _, field := range fields {
-		node := field.value
-		if node == nil || node.ShortTag() == "!!null" {
-			continue
-		}
-		if node.Kind != yaml.ScalarNode || node.ShortTag() != "!!int" {
-			return scenarioError("%s must be a whole number, got %q", field.name, node.Value)
-		}
-	}
-	return nil
-}
-
-// resolved follows a document or alias node to the node it stands for.
-func resolved(node *yaml.Node) *yaml.Node {
-	for node != nil {
-		switch {
-		case node.Kind == yaml.AliasNode:
-			node = node.Alias
-		case node.Kind == yaml.DocumentNode && len(node.Content) == 1:
-			node = node.Content[0]
+		value any
+	}{
+		{"runs", counts.Runs},
+		{"gate.added_candidate_presence_minimum", counts.Gate.AddedCandidatePresenceMinimum},
+		{"gate.added_reference_presence_maximum", counts.Gate.AddedReferencePresenceMaximum},
+		{"gate.max_repeated_added_behaviors", counts.Gate.MaxRepeatedAddedBehaviors},
+		{"gate.max_block_decisions_per_run", counts.Gate.MaxBlockDecisionsPerRun},
+		{"gate.max_critical_risk_observations_per_run", counts.Gate.MaxCriticalRiskObservationsPerRun},
+	} {
+		switch field.value.(type) {
+		case nil, int, int64, uint64:
 		default:
-			return node
-		}
-	}
-	return nil
-}
-
-// mappingValue returns the value under key when node is a mapping, or nil.
-func mappingValue(node *yaml.Node, key string) *yaml.Node {
-	node = resolved(node)
-	if node == nil || node.Kind != yaml.MappingNode {
-		return nil
-	}
-	for i := 0; i+1 < len(node.Content); i += 2 {
-		if node.Content[i].Value == key {
-			return resolved(node.Content[i+1])
+			return scenarioError("%s must be a whole number, got %v", field.name, field.value)
 		}
 	}
 	return nil

@@ -117,3 +117,54 @@ func TestLookPathInRefusesAMatchRelativeToTheCurrentDirectory(t *testing.T) {
 		t.Errorf("skipping a directory and a non-executable: %q, %v", got, err)
 	}
 }
+
+// An execute bit is not permission to execute. The review's reproduction: the
+// first PATH entry holds a 0601 file this user owns — executable by others,
+// not by its owner — and the second a 0700 one. exec.LookPath skips the first;
+// so must the workload's lookup, rather than choosing it and failing to start.
+func TestLookupSkipsAMatchThisUserCannotExecute(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may execute a file with any execute bit, so 0601 is runnable")
+	}
+	_, _, _, empty := toolDirs(t)
+	root := t.TempDir()
+	first, second := filepath.Join(root, "first"), filepath.Join(root, "second")
+	for _, dir := range []string{first, second} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeScript(t, filepath.Join(first, sameNamedTool), `printf first > "$OUT"`+"\n")
+	writeScript(t, filepath.Join(second, sameNamedTool), `printf second > "$OUT"`+"\n")
+	if err := os.Chmod(filepath.Join(first, sameNamedTool), 0o601); err != nil {
+		t.Fatal(err)
+	}
+	searchPath := first + string(os.PathListSeparator) + second
+
+	// The standard lookup is the reference this one must agree with.
+	t.Setenv("PATH", searchPath)
+	want, err := exec.LookPath(sameNamedTool)
+	if err != nil || want != filepath.Join(second, sameNamedTool) {
+		t.Fatalf("exec.LookPath = %q, %v; the fixture is not the reproduction", want, err)
+	}
+	if got, err := lookPathIn(sameNamedTool, []string{"PATH=" + searchPath}); err != nil || got != want {
+		t.Errorf("lookPathIn = %q, %v; want %q, as exec.LookPath chooses", got, err, want)
+	}
+	toolDirs(t) // the parent's PATH again holds a runnable tool of that name
+
+	outcome, ran := runSameNamedTool(t, sameNamedTool, map[string]string{"PATH": searchPath})
+	if outcome.code != 0 || ran != "second" {
+		t.Errorf("exit %d, ran %q; want 0 and the second entry's executable", outcome.code, ran)
+	}
+
+	// Only the unusable match on the side's PATH: a clean start failure, and
+	// the parent's runnable executable of the same name is not a fallback.
+	outcome, ran = runSameNamedTool(t, sameNamedTool,
+		map[string]string{"PATH": first + string(os.PathListSeparator) + empty})
+	if !outcome.startFailed || ran != "" {
+		t.Errorf("startFailed %v, ran %q; want a start failure and nothing run", outcome.startFailed, ran)
+	}
+	if _, err := lookPathIn(sameNamedTool, []string{"PATH=" + first}); !errors.Is(err, exec.ErrNotFound) {
+		t.Errorf("only an unusable match: error = %v, want exec.ErrNotFound", err)
+	}
+}

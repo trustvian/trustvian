@@ -21,7 +21,8 @@ actually depend on.
 
   - **The scenario file.** Every threshold and `runs` is required, with no
     defaults; `1 <= runs <= 64` and `0 <= j < k <= runs`. Counts and limits
-    must be YAML integers; a fraction or a value past 64 bits is refused. Unknown fields are
+    must be YAML integers; a fraction or a value past 64 bits is refused,
+    including one that arrives through a merge or an alias. Unknown fields are
     refused and every error names its field.
   - **`trustvian eval run --scenario <file>`.**
     - Executes `2N` repetitions, one at a time, through `trustvian dev`, each

@@ -196,3 +196,113 @@ func TestScenarioAcceptsWholeNumbersAtTheBounds(t *testing.T) {
 		})
 	}
 }
+
+// scenarioWith is a valid scenario with root in place of its `runs` line and
+// gate as its whole gate mapping. A top-level `x-…` key would be an unknown
+// field, so anchors are defined inside env values, which the schema allows.
+func scenarioWith(root, gate string) string {
+	return `version: v1
+name: support-login
+reference:
+  command: [python, agent.py]
+  env: {AGENT_MODE: reference}
+candidate:
+  command: [python, agent.py]
+  env: {AGENT_MODE: candidate}
+` + root + "\ngate:\n" + gate + "\n"
+}
+
+const fullGate = `  added_candidate_presence_minimum: 1
+  added_reference_presence_maximum: 0
+  max_repeated_added_behaviors: 0
+  max_block_decisions_per_run: 0
+  max_critical_risk_observations_per_run: 0`
+
+// The decoder resolves merges and aliased keys before it converts a number, so
+// the integer check must see what the decoder assigned, not only keys spelled
+// out. Every document here decoded to a truncated, zeroed or saturated
+// threshold on 63bdacb.
+func TestScenarioIntegerCheckSeesMergesAndAliases(t *testing.T) {
+	gateWithout := func(drop string) string {
+		var kept []string
+		for _, line := range strings.Split(fullGate, "\n") {
+			if !strings.Contains(line, drop+":") {
+				kept = append(kept, line)
+			}
+		}
+		return strings.Join(kept, "\n")
+	}
+	for name, doc := range map[string]string{
+		"root merge carrying a fractional runs": scenarioWith(
+			"<<: {runs: 2.9}", fullGate),
+		"gate merge carrying a fractional k": scenarioWith("runs: 5",
+			"  <<: {added_candidate_presence_minimum: 1.9}\n"+gateWithout("added_candidate_presence_minimum")),
+		"merged negative fraction": scenarioWith("runs: 5",
+			"  <<: {max_block_decisions_per_run: -0.5}\n"+gateWithout("max_block_decisions_per_run")),
+		"merge sequence, the first carrying the fraction": scenarioWith("runs: 5",
+			"  <<: [{max_repeated_added_behaviors: 0.5}, {max_repeated_added_behaviors: 0}]\n"+
+				gateWithout("max_repeated_added_behaviors")),
+		"merge of an anchored mapping": strings.Replace(scenarioWith("runs: 5",
+			"  <<: *limits\n"+gateWithout("max_critical_risk_observations_per_run")),
+			"env: {AGENT_MODE: candidate}", "env: &limits {max_critical_risk_observations_per_run: 1.5}", 1),
+		"aliased runs key": strings.Replace(scenarioWith("*runskey : 5.9", fullGate),
+			"env: {AGENT_MODE: reference}", "env: {AGENT_MODE: &runskey runs}", 1),
+		"aliased limit key past 64 bits": strings.Replace(scenarioWith("runs: 5",
+			gateWithout("max_repeated_added_behaviors")+"\n  *limitkey : 18446744073709551616"),
+			"env: {AGENT_MODE: reference}", "env: {AGENT_MODE: &limitkey max_repeated_added_behaviors}", 1),
+		"aliased fractional value": strings.Replace(scenarioWith("runs: *five", fullGate),
+			"env: {AGENT_MODE: reference}", "env: {AGENT_MODE: &five 5.9}", 1),
+		"merged overflow": scenarioWith("runs: 5",
+			"  <<: {max_block_decisions_per_run: 99999999999999999999999}\n"+gateWithout("max_block_decisions_per_run")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := LoadScenario([]byte(doc))
+			if !errors.Is(err, ErrInvalidScenario) {
+				t.Fatalf("error = %v (runs %v, gate %+v), want ErrInvalidScenario\n%s",
+					err, cfg.Runs, cfg.Gate, doc)
+			}
+		})
+	}
+}
+
+// Integer merges and aliases are ordinary YAML and still load, with the
+// decoder's precedence: an explicit key overrides a merged one, and the first
+// mapping of a merge sequence wins over later ones.
+func TestScenarioAcceptsIntegerMergesAndAliases(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		doc   string
+		check func(ScenarioConfig) bool
+	}{
+		{"root merge", scenarioWith("<<: {runs: 64}", fullGate),
+			func(c ScenarioConfig) bool { return *c.Runs == 64 }},
+		{"gate merge at the bounds", scenarioWith("runs: 1",
+			"  <<: {added_candidate_presence_minimum: 1, max_repeated_added_behaviors: 18446744073709551615}\n"+
+				"  added_reference_presence_maximum: 0\n  max_block_decisions_per_run: 0\n"+
+				"  max_critical_risk_observations_per_run: 0"),
+			func(c ScenarioConfig) bool {
+				return *c.Gate.AddedCandidatePresenceMinimum == 1 && *c.Gate.MaxRepeatedAddedBehaviors == 1<<64-1
+			}},
+		{"an explicit integer overrides a merged fraction", scenarioWith("runs: 5",
+			"  <<: {max_block_decisions_per_run: 0.5}\n"+fullGate),
+			func(c ScenarioConfig) bool { return *c.Gate.MaxBlockDecisionsPerRun == 0 }},
+		{"a merge sequence's first mapping wins", scenarioWith("runs: 5",
+			"  <<: [{max_block_decisions_per_run: 2}, {max_block_decisions_per_run: 0.5}]\n"+
+				"  added_candidate_presence_minimum: 1\n  added_reference_presence_maximum: 0\n"+
+				"  max_repeated_added_behaviors: 0\n  max_critical_risk_observations_per_run: 0"),
+			func(c ScenarioConfig) bool { return *c.Gate.MaxBlockDecisionsPerRun == 2 }},
+		{"aliased key and value", strings.Replace(scenarioWith("*runskey : *three", fullGate),
+			"env: {AGENT_MODE: reference}", "env: {AGENT_MODE: &runskey runs, OTHER: &three 3}", 1),
+			func(c ScenarioConfig) bool { return *c.Runs == 3 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadScenario([]byte(tc.doc))
+			if err != nil {
+				t.Fatalf("error = %v\n%s", err, tc.doc)
+			}
+			if !tc.check(cfg) {
+				t.Errorf("decoded runs %v, gate %+v", *cfg.Runs, cfg.Gate)
+			}
+		})
+	}
+}

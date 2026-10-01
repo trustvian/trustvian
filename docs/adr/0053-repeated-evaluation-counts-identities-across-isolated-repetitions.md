@@ -152,7 +152,9 @@ the runner asks for:
   stdout carries one result document;
 - a bare command name is resolved against the side's own `PATH`, from its
   `env`. The parent's `PATH` is not used, so two sides that select different
-  virtualenvs run different executables.
+  virtualenvs run different executables. The lookup follows `exec.LookPath`:
+  the first match the effective user may execute wins, because an execute bit
+  alone is not enough. A match relative to the current directory is refused.
 
 Neither difference changes a process-wide descriptor or variable. The exit-code
 contract is `eval compare`'s, unchanged: `0` PASS, `1` FAIL, `2` usage, `3`

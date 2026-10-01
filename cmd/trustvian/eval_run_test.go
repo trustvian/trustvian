@@ -206,6 +206,12 @@ func TestEvalRunRefusesAnInvalidScenarioBeforeRunningAnything(t *testing.T) {
 			"max_block_decisions_per_run: -0.5", 1),
 		"limit past 64 bits": strings.Replace(runScenarioYAML, "max_repeated_added_behaviors: 0",
 			"max_repeated_added_behaviors: 18446744073709551616", 1),
+		"merged fractional runs": strings.Replace(runScenarioYAML, "runs: 3", "<<: {runs: 2.9}", 1),
+		"merged negative fractional limit": strings.Replace(runScenarioYAML, "  max_block_decisions_per_run: 0",
+			"  <<: {max_block_decisions_per_run: -0.5}", 1),
+		"aliased limit key past 64 bits": strings.Replace(strings.Replace(runScenarioYAML,
+			"  max_repeated_added_behaviors: 0", "  *key : 18446744073709551616", 1),
+			"{MODE: reference}", "{MODE: &key max_repeated_added_behaviors}", 1),
 		"no runs": strings.Replace(runScenarioYAML, "runs: 3\n", "", 1),
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -576,7 +576,8 @@ trustvian eval run --scenario scenarios/support-login.yaml --json > result.json
 - `1 <= runs <= 64` and `0 <= j < k <= runs`.
 - Unknown fields are refused, and every error names its field.
 - `runs` and every gate value must be a YAML integer. `5.9`, `-0.5`, `1e1` and
-  a value past 64 bits are refused rather than converted.
+  a value past 64 bits are refused rather than converted. This includes values
+  that arrive through a `<<` merge or an alias.
 - Any of these is exit `2` before a repetition starts.
 - `k = 1, j = 0` is the documented guidance for a workload whose variance you
   have not measured. It is set semantics — "in at least one candidate run and no
@@ -597,7 +598,8 @@ trustvian eval run --scenario scenarios/support-login.yaml --json > result.json
   standard output. `--json` stdout is the result document alone.
 - A bare command name, such as `python`, is looked up on the side's own
   `PATH` when its `env` sets one. A `PATH` pointing into a virtualenv therefore
-  runs that virtualenv's `python`.
+  runs that virtualenv's `python`. As with the shell, the first match you may
+  execute wins. The parent's `PATH` is never a fallback.
 
 **What decides.** The control plane, through
 `POST /v1/evaluations/compare-repeated`. The runner counts nothing.
