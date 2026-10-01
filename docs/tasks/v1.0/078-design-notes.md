@@ -79,6 +79,32 @@ papered over.
 
 ---
 
+### Update 2026-10-01: the re-run exists
+
+The section above is kept as written; it was true when written. The tool-fidelity
+re-run has now been performed: Phase C2 of the companion repository, against
+Trustvian `07cb4e3`, ten isolated repetitions per side at T = 0.7 and 1.3. It is
+recorded in task 078 §
+[The re-run at tool-name fidelity](078-behavioral-scenario-suites.md#the-re-run-at-tool-name-fidelity-2026-10-01),
+with the full results at the companion commit `a19d7f4`.
+
+It changes three things here:
+
+- **Acceptance criterion 17 is no longer "partially satisfied" for want of a
+  sweep.** The sweep exists and found variance: unchanged pairs FAIL 48/90 and
+  59/90 at a single-run zero.
+- **The `k`/`j` decision is unchanged, but its basis is.** Both stay required,
+  with no default. The reason is no longer that nothing was measured: it is that
+  at T = 1.3 no `k` removed every unchanged crossing. The second branch of the
+  brief's conditional — "if they recommend a `k`" — did not fire, because the
+  numbers do not recommend one.
+- **Slice 4 gains a decision it did not have: the unit of
+  `max_repeated_added_behaviors`** (078 open question 8). Per-identity presence
+  moves a tool and its HTTP child together, so a nonzero budget double-counts.
+  Pairwise `added_change_count` is not a stable unit to aggregate instead.
+
+---
+
 ## 1. Reference association
 
 ### The flag in the brief names the wrong kind of thing

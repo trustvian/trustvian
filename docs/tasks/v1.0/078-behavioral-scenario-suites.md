@@ -1,6 +1,7 @@
 # 078 — Behavioral Scenario Suites
 
-Status: specified; not implemented
+Status: specified; not implemented. Measurement re-run at tool fidelity recorded
+2026-10-01 — see [The re-run at tool-name fidelity](#the-re-run-at-tool-name-fidelity-2026-10-01)
 Milestone: `v1.0`
 Depends on: [054](054-behavioral-diff.md),
 [055](055-evaluation-scorecards.md),
@@ -612,6 +613,16 @@ at N > 1, with per-repetition profiles:
     check 6   worst candidate critical-risk count     advisory: fresh scope
 ```
 
+**Revised by the 2026-10-01 re-run: "report `0` by construction" is too strong.**
+One candidate repetition at T = 1.3, against a fresh scope, recorded one
+critical-risk observation, so check 6 did fire on fresh-scope evidence. Once in
+forty runs, and in the direction this section described: the scope had learned
+nothing, so the reading is not a learned one.
+
+The advisory marker is therefore more accurate than before. A fresh-scope check
+can pass *or* fail, and in neither case does it answer the learned-policy
+question. The decision below is unchanged.
+
 Both are still evaluated, still reported with their actual values, and still
 contribute to the verdict when they fail — nothing is removed and no limit is
 ignored. What changes is that the runner and the
@@ -743,6 +754,101 @@ When either condition holds, the sweep is re-run and this section is revisited
 with the new numbers. Until then the guidance below is written so that a scenario
 which has measured nothing gets set semantics rather than a threshold somebody
 guessed.
+
+### The re-run at tool-name fidelity (2026-10-01)
+
+**Both conditions held, and the measurement found the phenomenon.** Everything
+above is the 2026-09-27 sweep and stands as measured; this is the re-run it asked
+for. Recorded in the companion repository at commit `a19d7f4`:
+[`docs/results/2026-10-01-stability-tool-fidelity.md`](https://github.com/trustvian/trustvian-python-agent-demo/blob/a19d7f4/docs/results/2026-10-01-stability-tool-fidelity.md)
+— method, deviations, limitations, every attempt — with privacy-safe raw JSON
+[beside it](https://github.com/trustvian/trustvian-python-agent-demo/tree/a19d7f4/docs/results).
+
+**Conditions.**
+
+- **Trustvian.** `07cb4e3`, after #132's counting correction and #133's optional
+  limit.
+- **Model.** `gemma3:4b`, digest `a2af6cc3eb7f`, Ollama 0.34.4, unseeded, at
+  T = 0.7 and 1.3.
+- **Workload.** The companion agent under a harness that emits one GenAI
+  `execute_tool` span per dispatch, so a behavior is a tool name.
+- **Toolset.** Eight tools over five tickets (nine on the candidate side,
+  `export_customer` added). Four tools are optional on at least one ticket, and
+  one is needed by none.
+- **Isolation.** Ten repetitions per side, strictly sequential and alternating,
+  each under a fresh `trustvian dev --behavioral-profile` with its baseline file
+  checked absent first.
+- **Outcomes.** All 40 repetitions completed; none failed, timed out, or produced
+  empty or incomplete evidence.
+- **Gate.** All four behavior and engine limits at 0.
+
+```text
+                                            T = 0.7            T = 1.3        2026-09-27
+unchanged reference pairs FAIL (eval compare)   48 / 90            59 / 90           0 / 90
+positive control: reference vs candidate     100 / 100          100 / 100              —
+added_change_count / added_count, all pairs        ½                  ½                 —
+correlation_state, all 560 comparisons       complete           complete               —
+fresh-scope critical-risk observations             0                  1                 0
+```
+
+**What varies is which optional tools the model reaches.**
+
+- `attach_diagnostics` appeared in 4/10 and 5/10 reference runs, `billing_lookup`
+  in 6/10 at both temperatures, and `account_history` in 9/10 and 8/10.
+- Within each sweep, all ten reference runs had distinct tool *sequences* but only
+  five distinct tool *sets*. Order varied far more than identity did, and as
+  [Ordering](#ordering-the-runner-asserts-none-the-engine-may-still-care)
+  requires, only identity reached the diff.
+
+**The per-identity rule, evaluated offline over those behavior sets.**
+
+```text
+groups of 5, j = 0            splits with ≥ 1 repeatedly-added identity, of 252
+                              k=1    k=2    k=3    k=4    k=5
+unchanged, T = 0.7              6      6      6      6      0
+unchanged, T = 1.3              1      1      1      1      1
+positive control, both T       every split, at every k (63,504 / 63,504)
+```
+
+This is offline experimental analysis over server-returned behavior sets, not the
+platform's aggregation.
+
+**What it supports.**
+
+- The phenomenon the k-of-N machinery was designed to absorb exists for this
+  workload. An unchanged agent's identity set moves between isolated runs, and a
+  single-run gate at zero FAILs 53–66 % of unchanged pairs.
+- `runs: N` is what moves that number, and in this data mostly through
+  `j = 0` across five reference runs: an identity seen in any reference run is not
+  "added". `k` contributed less.
+- The measurement detects a real added behavior, `export_customer` at 0/10 →
+  10/10, at every `k`.
+
+**What it does not support.**
+
+- **Any default `k` or `j`.** At T = 1.3 no `k` from 1 to 5 removed every
+  unchanged crossing. At T = 0.7, `k = 5` did, but only because the most variable
+  tool happened to sit at 4/10. So `k` and `j` stay required and explicit,
+  exactly as specified, and no default is introduced here.
+- **A reliability claim from forty clean completions.**
+- **Generalization past one agent, one model and one toolset.**
+- **Anything about checks 5 and 6 under a learned policy.** See
+  [Checks 5 and 6](#checks-5-and-6-are-advisory-against-a-fresh-scope) for what
+  this run adds about them.
+
+**Reconciling the per-identity rule with counted changes (ADR 0052).**
+
+- The rule above counts **identities**. A tool and its HTTP child had identical
+  presence in every run measured, so they cross `k` together, and
+  `max_repeated_added_behaviors` would count one act twice. That is ADR 0052's
+  single-pair defect one level up; it is invisible at a limit of 0 and real at any
+  other.
+- It cannot be fixed by aggregating pairwise `added_change_count`. That number is
+  computed per pair, from that pair's added set and that candidate run's recorded
+  parentage, so it is not a stable cross-repetition unit. Here every change root
+  happened to be the tool-level identity; a root is still a property of a pair.
+- So the repeated limit's unit is an open decision for the aggregation slice. See
+  [open question 8](#open-questions-left-to-implementation).
 
 ## Sequencing: 078 follows 075
 
@@ -1373,6 +1479,15 @@ a future reader will ask "why not the obvious thing":
     guidance is `k = 1, j = 0`, which is set semantics and asserts no threshold.
     It closes when a sweep against one of the
     [two re-run conditions](#the-section-stays-with-two-re-run-conditions) exists.
+
+    **Re-run 2026-10-01, at both conditions:**
+    [recorded above](#the-re-run-at-tool-name-fidelity-2026-10-01).
+    - **Performed and recorded.** Met, for a workload that can fail.
+    - **Guidance that a measurement justifies.** Now answered by evidence rather
+      than by its absence: the measurement justifies *no* default. At T = 1.3 no
+      `k` removed every unchanged crossing, so `k` and `j` remain required, with
+      no default and documented as the caller's measured choice.
+    - Pending review of the change that records it.
 18. **Repeatedly removed behaviors are classified by the control plane** under
     the mirrored rule, reported in the result document, and gate nothing. No
     consumer derives the classification for itself.
@@ -1423,6 +1538,27 @@ a future reader will ask "why not the obvious thing":
    `N` is a cost-versus-evidence choice rather than a threshold, and the
    measurement supports stating `10` as a usable figure: forty runs at `N = 10`
    completed in roughly two hours of model time on a laptop.
+
+   **After the 2026-10-01 re-run, `k` is still not recommended, now on
+   evidence.**
+   - Presence variance exists for that workload.
+   - No `k` removed every unchanged crossing at T = 1.3.
+   - `j = 0` across the reference runs did most of the reduction.
+   - The tool-fidelity sweep took about 2.7 minutes per repetition, so a
+     `runs: 10` scenario with both sides is roughly an hour of model time on the
+     same laptop.
+8. **The unit of `max_repeated_added_behaviors`.** Added by the 2026-10-01
+   re-run.
+   - The per-identity presence count moves a tool and its transport child
+     together, so a nonzero repeated budget counts one act twice: ADR 0052's
+     pair-level defect, one level up.
+   - Pairwise `added_change_count` is not a stable cross-repetition unit to
+     aggregate instead.
+   - The aggregation slice must decide, before it ships, between two options:
+     keep identities, documented as such beside `max_added_behaviors`; or define
+     a repeated counterpart of ADR 0052 with a change key that is stable across
+     runs.
+   - The measurement does not choose between them.
 
 ## Amendment — task 082
 
