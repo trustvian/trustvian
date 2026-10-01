@@ -228,6 +228,24 @@ type devConfig struct {
 	// instrumentation is the ownership mode, as given. Parsed in composeAndRun so
 	// an unknown value is a usage error before anything starts.
 	instrumentation string
+
+	// env adds variables to the inherited environment, as if the developer had
+	// exported them. Task 078: a scenario declares each side's variables in its
+	// own file, read from the developer's own repository, so they belong on the
+	// trusted side of the snapshot — and passing them here rather than through
+	// os.Setenv keeps one repetition's variables out of the next. The dev command
+	// line never sets this.
+	env map[string]string
+}
+
+// inheritedEnvironment is the developer's environment for this invocation: the
+// process environment, plus any variables the configuration adds.
+func (c devConfig) inheritedEnvironment() *devEnvironment {
+	environment := environmentSnapshot()
+	for name, value := range c.env {
+		environment.snapshot[name] = value
+	}
+	return environment
 }
 
 // composeAndRun brings up what the workload needs, runs it, and tears down.
@@ -278,12 +296,12 @@ func composeAndRun(s streams, config devConfig) int {
 	// Identity before any process starts. A run that cannot be named
 	// deterministically should fail before a control plane, a Collector or a
 	// workload has been launched — nothing has to be torn down to report it.
-	identity, err := deriveIdentity(config, workloadDir, environmentSnapshot(), time.Now())
+	identity, err := deriveIdentity(config, workloadDir, config.inheritedEnvironment(), time.Now())
 	if err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
 		return exitDevUsage
 	}
-	environment := environmentSnapshot()
+	environment := config.inheritedEnvironment()
 	if err := environment.declareIdentity(identity); err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
 		return exitDevUsage

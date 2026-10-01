@@ -282,7 +282,7 @@ until then.
 |---|---|---|
 | 075 | **Implemented** | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) |
 | 077 | **Implemented** | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) |
-| 078 | Specified; measurement re-run recorded (2026-10-01), implementation next | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
+| 078 | Partially implemented: self-contained `eval run` and repeated evaluation ship; `--reference` and suites remain | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
 | 079 | Specified | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
 
 **The build order inside this preview is 075 → 078 → 079**, not the four in

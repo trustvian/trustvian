@@ -103,6 +103,7 @@ trustvian eval compare      --reference-run <id> --candidate-run <id>
                             --max-added-behaviors <n> --max-block-decisions <n>
                             --max-critical-risk-observations <n>
                             [--max-added-behavior-changes <n>]
+trustvian eval run          --scenario <file> [--collector-bin <path>]
 
 trustvian env create   --project-id <id> --ref <ref> --name <name> [--rank <n>]
 trustvian env get      --project-id <id> --ref <ref>
@@ -488,9 +489,10 @@ reading once rather than assuming.
 | `analyze`, `baseline`, `version` | success | command failed | top-level usage | — |
 | `project`, `agent`, `candidate`, most of `eval` | success | *unused* | usage | API or network failure |
 | `eval compare` | gate **PASS** | gate **FAIL** | usage | API or network failure |
+| `eval run` | gate **PASS** | gate **FAIL** | usage — the scenario, before anything runs | API or network failure, or a repetition whose workload failed |
 | `dev` | the command’s own | the command’s own | usage | could not start |
 
-**Exit 1 means gate failure only for `eval compare`.** It does not change what
+**Exit 1 means gate failure only for `eval compare` and `eval run`.** It does not change what
 `1` has always meant for `analyze` and `baseline`.
 
 `dev` is the exception to the whole table: once the command it wraps has started,
@@ -539,6 +541,99 @@ is the strictest limit there is; defaulting to it would fail your build under a
 policy you never chose, and it would look exactly like a real regression.
 `--max-added-behavior-changes` is the one optional limit: omitting it means
 that check is not evaluated, which is also not zero.
+
+## Behavioral scenarios: `trustvian eval run`
+
+One run of a model-driven agent is not evidence: task 078's measurement found an
+unchanged agent's behavior set moving between isolated runs, so a single
+comparison at zero failed half the unchanged pairs. A scenario runs each side
+`runs: N` times and gates over integer presence counts instead.
+
+```yaml
+version: v1
+name: support-login
+runs: 5
+instrumentation: existing          # optional; dev's own modes
+reference:
+  command: [python, agent.py]
+  env: {AGENT_MODE: reference}
+candidate:
+  command: [python, agent.py]
+  env: {AGENT_MODE: candidate}
+gate:
+  added_candidate_presence_minimum: 1        # k
+  added_reference_presence_maximum: 0        # j
+  max_repeated_added_behaviors: 0
+  max_block_decisions_per_run: 0
+  max_critical_risk_observations_per_run: 0
+```
+
+```bash
+trustvian eval run --scenario scenarios/support-login.yaml --json > result.json
+```
+
+**Every field and `runs` is required, and nothing has a default.**
+- `1 <= runs <= 64` and `0 <= j < k <= runs`.
+- Unknown fields are refused, and every error names its field.
+- Any of these is exit `2` before a repetition starts.
+- `k = 1, j = 0` is the documented guidance for a workload whose variance you
+  have not measured. It is set semantics — "in at least one candidate run and no
+  reference run" — at every N. It is guidance, not a default, and the
+  measurement does not justify any other value as one.
+
+**What runs.**
+- `2N` repetitions, one at a time: the reference side, then the candidate side.
+- Each repetition is a full `trustvian dev` run against the one control plane
+  `--api-url` resolves to. Each has a fresh run id and its own
+  `--behavioral-profile`, so no repetition meets a baseline another one taught.
+- The first repetition whose workload exits non-zero ends the scenario with exit
+  **3**: the rest do not run and no verdict is produced. A broken workload is
+  never a gate failure.
+- Repetition output goes to stderr, so `--json` stdout is the result document
+  alone.
+
+**What decides.** The control plane, through
+`POST /v1/evaluations/compare-repeated`. The runner counts nothing.
+- For each behavior the server reports in how many reference runs and how many
+  candidate runs it appeared.
+- It classifies a behavior *added* when `candidate_runs_present >= k` and
+  `reference_runs_present <= j`, *removed* by the mirror rule (reported, never
+  gated), or *neither*.
+- It evaluates six checks: both sides completed `N` repetitions, no completed
+  repetition was empty, repeatedly added behaviors against
+  `max_repeated_added_behaviors`, and the worst candidate repetition's block
+  decisions and critical-risk observations against the two `_per_run` limits.
+
+```text
+support-login   runs 5
+
+Behavior                                  reference   candidate
+  tool/crm_lookup                               5/5         5/5
+  tool/export_customer                          0/5         5/5   + added
+
+Gate (k = 1, j = 0)
+  PASS reference repetitions completed: 5 (== 5)
+  ...
+  FAIL repeatedly added behaviors: 1 (<= 0)
+  PASS worst candidate block decisions: 0 (<= 0)   advisory: fresh scope
+```
+
+- **`max_repeated_added_behaviors` counts behavioral identities**, the unit of
+  `--max-added-behaviors`. A tool and the HTTP request it makes are two, so at
+  any nonzero budget one act consumes two
+  ([ADR 0053](adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)).
+- **Checks 5 and 6 are marked `advisory: fresh scope` when `runs > 1`.** Each
+  repetition's learning scope is new, so neither a pass nor a fail there is a
+  learned-policy verdict. The marker changes no verdict.
+- At `runs: 1, k: 1, j: 0` the verdict is exactly `eval compare`'s, check for
+  check.
+
+**`--json`** writes the result document: the scenario name and `runs`, the
+execution id, both producer versions (`cli_version`, `control_plane_version`),
+and the server's repeated result under `comparison`.
+
+**Not yet:** comparing against a *recorded* reference execution
+(`--reference`), and suites of scenarios. Every `eval run` executes both sides.
 
 ## `--json`
 

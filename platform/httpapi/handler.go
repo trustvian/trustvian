@@ -42,8 +42,13 @@ const maxAPIRequestBody = 256 << 10
 // Handler serves the /v1 control-plane API.
 type Handler struct {
 	controlPlane *platform.ControlPlane
-	now          func() time.Time
-	mux          *http.ServeMux
+
+	// producerVersion is this control plane's build, reported in a repeated
+	// result's producer block so the result says what produced it.
+	producerVersion string
+
+	now func() time.Time
+	mux *http.ServeMux
 
 	// realtimeSubscriber is optional. A subscriber and never a publisher: a
 	// transport able to publish could fabricate state a client would believe.
@@ -138,6 +143,7 @@ func NewHandler(controlPlane *platform.ControlPlane, options ...Option) (http.Ha
 		mux:                  http.NewServeMux(),
 		heartbeatInterval:    defaultHeartbeatInterval,
 		realtimeWriteTimeout: defaultRealtimeWriteTimeout,
+		producerVersion:      buildVersion(),
 	}
 	for _, option := range options {
 		option(h)
@@ -211,6 +217,9 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /v1/projects/{project_id}/promotions", h.listPromotions)
 
 	h.mux.HandleFunc("POST /v1/evaluations/compare", h.compare)
+	// Task 078: N isolated repetitions per side. A separate route, so the
+	// single-pair contract above is untouched.
+	h.mux.HandleFunc("POST /v1/evaluations/compare-repeated", h.compareRepeated)
 
 	// Task 085's evidence resolution. GET rather than POST, although compare
 	// beside it is a POST: a resolution takes no body, and the point of the
@@ -385,7 +394,12 @@ func classify(err error) (int, string, string) {
 		// from a record the ingest boundary would also refuse, so it is the
 		// caller's record rather than a server fault.
 		errors.Is(err, platform.ErrInvalidObservation),
-		errors.Is(err, platform.ErrFingerprintConflict):
+		errors.Is(err, platform.ErrFingerprintConflict),
+		// A repeated comparison asked with a bad run count, unequal sides, a
+		// run named twice or k/j out of bounds, or over repetitions that shared
+		// a learning scope. Neither can succeed as asked whatever the state.
+		errors.Is(err, platform.ErrInvalidRepeatedRequest),
+		errors.Is(err, platform.ErrRepeatedIsolation):
 		return http.StatusBadRequest, codeInvalidRequest, err.Error()
 
 	default:

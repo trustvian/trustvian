@@ -10,6 +10,40 @@ actually depend on.
 
 ### Added
 
+- **Behavioral scenarios: `trustvian eval run`, and repeated evaluation in the
+  control plane** (task 078,
+  [ADR 0053](docs/adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)).
+
+  One run of a model-driven agent is not evidence: the 2026-10-01 measurement
+  found an unchanged agent failing a single-run gate at zero on half its pairs,
+  because which optional tools it reaches varies between runs. A scenario file
+  now runs each side `runs: N` times and gates over integer presence counts.
+
+  - **The scenario file.** Every threshold and `runs` is required, with no
+    defaults; `1 <= runs <= 64` and `0 <= j < k <= runs`. Unknown fields are
+    refused and every error names its field.
+  - **`trustvian eval run --scenario <file>`.**
+    - Executes `2N` repetitions, one at a time, through `trustvian dev`, each
+      under a fresh run id and its own `--behavioral-profile`.
+    - The first repetition whose workload fails ends the scenario with exit `3`
+      and no verdict.
+    - It counts nothing itself: it submits the run ids and passes the server's
+      verdict through as `0` or `1`.
+  - **`POST /v1/evaluations/compare-repeated`.** The control plane reads each
+    repetition's evidence, reports every behavior's reference and candidate
+    presence counts, and classifies it added, removed or neither. It evaluates
+    six checks; the two engine checks take the worst candidate repetition and
+    carry `advisory: fresh_scope` when `runs > 1`.
+  - **Refusals.** It refuses repetitions that shared a learning scope, and it
+    refuses saturated evidence.
+  - **The repeated limit's unit.** `max_repeated_added_behaviors` counts
+    behavioral identities, the unit of `max_added_behaviors`. So at `runs: 1,
+    k: 1, j: 0` the verdict is exactly `eval compare`'s, check for check.
+
+  `eval compare`, its limits and its result are unchanged. No schema change.
+  Comparing against a *recorded* reference execution (`--reference`) and suites
+  of scenarios are not built yet.
+
 - **An optional gate limit over counted behavioral changes:
   `max_added_behavior_changes`** ([issue 131](https://github.com/trustvian/trustvian/issues/131),
   [ADR 0052](docs/adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)).

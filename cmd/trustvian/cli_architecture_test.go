@@ -89,6 +89,32 @@ var forbiddenIdentifiers = []string{
 	"ObservationFilter",
 	"FindingRef",
 	"planForCheck",
+	// Task 078's repeated aggregation. The scenario runner drives repetitions
+	// and submits run identifiers; it never counts presence, classifies a
+	// behavior or composes a repeated verdict.
+	"CompareRepeatedEvaluations",
+	"RepeatedEvaluationGateLimits",
+	"reduceRepeated",
+	"classifyPresence",
+}
+
+// TestScenarioRunnerCountsNothing pins task 078's prohibition at the source of
+// eval run: no presence arithmetic and no verdict assignment, whatever the
+// identifiers are called.
+func TestScenarioRunnerCountsNothing(t *testing.T) {
+	source, err := os.ReadFile("eval_run.go")
+	if err != nil {
+		t.Fatalf("eval_run.go is gone; this check would pass vacuously: %v", err)
+	}
+	for _, forbidden := range []string{
+		"Present++", "Present +=", "Present+=", "Verdict =", "Verdict=",
+		"Classification =", "Classification=", "Passed =", "Passed=",
+	} {
+		if strings.Contains(string(source), forbidden) {
+			t.Errorf("eval_run.go contains %q; presence, classification and the "+
+				"verdict are the control plane's", forbidden)
+		}
+	}
 }
 
 // TestCLIImportsNothingFromThePlatform walks the package's own source.

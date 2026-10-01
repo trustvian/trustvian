@@ -103,6 +103,21 @@ It changes three things here:
   moves a tool and its HTTP child together, so a nonzero budget double-counts.
   Pairwise `added_change_count` is not a stable unit to aggregate instead.
 
+### Update: the first aggregation slice, and where it departs from these notes
+
+[ADR 0053](../../adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)
+records the shipped decisions. Two depart from §§ 3–4 below:
+
+- **Presence is read per repetition, not from N pairwise diffs.** Each run's
+  persisted snapshot and aggregate are read with no pair formed, so a run's counts
+  never depend on its partner completing, and permutation invariance holds by
+  construction. N = 1 equivalence is still proven against the real
+  `EvaluateEvaluationGate`.
+- **No schema step yet.** § 4's persisted executions serve `--reference`, which
+  is not in this slice, so nothing is stored and the schema version is unchanged.
+
+Open question 8 is resolved as identities (ADR 0053 § 1).
+
 ---
 
 ## 1. Reference association
