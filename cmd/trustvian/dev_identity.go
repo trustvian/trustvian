@@ -82,7 +82,13 @@ const devEnvironmentDefault = "local"
 // make the agent name a function of dev rather than of the workload.
 func deriveIdentity(config devConfig, workloadDir string,
 	environment *devEnvironment, now time.Time) (devIdentity, error) {
-	repository := inspectRepository(workloadDir)
+	// The invocation's deadline, when it has one (task 078 suites), bounds the
+	// inspection as well; `trustvian dev` itself has none.
+	inspection := context.Background()
+	if config.deadline != nil {
+		inspection = config.deadline
+	}
+	repository := inspectRepository(inspection, workloadDir)
 
 	identity := devIdentity{Environment: devEnvironmentDefault}
 	if config.environment != "" {
@@ -306,10 +312,14 @@ const gitTimeout = 5 * time.Second
 // Every failure is silent and leaves the field unset. That is deliberate — the
 // caller decides what a missing commit means, and it decides differently for a
 // project name (fall back to the directory) than for a candidate (refuse).
-func inspectRepository(workloadDir string) repositoryInfo {
+//
+// ctx bounds the whole inspection: a query in flight when it ends is killed,
+// and no further query starts. What was learned by then is returned, and the
+// caller, which owns ctx, decides what an interrupted inspection means.
+func inspectRepository(ctx context.Context, workloadDir string) repositoryInfo {
 	info := repositoryInfo{}
 
-	root, err := runGit(workloadDir, "rev-parse", "--show-toplevel")
+	root, err := runGit(ctx, workloadDir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return info
 	}
@@ -318,22 +328,29 @@ func inspectRepository(workloadDir string) repositoryInfo {
 
 	// --short rather than the full hash: a candidate identifier is read by
 	// people, and the full hash adds 33 characters of nothing.
-	if sha, err := runGit(workloadDir, "rev-parse", "--short", "HEAD"); err == nil {
+	if ctx.Err() != nil {
+		return info
+	}
+	if sha, err := runGit(ctx, workloadDir, "rev-parse", "--short", "HEAD"); err == nil {
 		info.shortSHA = sha
+	}
+	if ctx.Err() != nil {
+		return info
 	}
 
 	// --porcelain is the stable, parseable form; any output at all means the
 	// worktree differs from HEAD. Untracked files count: a new file the agent
 	// imports changes its behavior as much as an edited one.
-	if status, err := runGit(workloadDir, "status", "--porcelain"); err == nil {
+	if status, err := runGit(ctx, workloadDir, "status", "--porcelain"); err == nil {
 		info.dirty = status != ""
 	}
 	return info
 }
 
-// runGit runs one git query in the workload's directory.
-func runGit(workloadDir string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), gitTimeout)
+// runGit runs one git query in the workload's directory, bounded by gitTimeout
+// and by parent, whichever ends first.
+func runGit(parent context.Context, workloadDir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, gitTimeout)
 	defer cancel()
 
 	// --no-optional-locks is not optional here, despite the name.

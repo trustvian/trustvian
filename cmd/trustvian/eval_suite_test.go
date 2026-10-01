@@ -449,3 +449,58 @@ func TestSuiteCancellationSkipsTheRest(t *testing.T) {
 		t.Errorf("exit %d after %d repetitions; want 3 and 2", run.code, len(rec.calls))
 	}
 }
+
+// Cancellation outranks --fail-fast: a suite cancelled mid-member skips the
+// rest as cancelled, launches nothing more and exits 3, while an ordinary
+// failure under --fail-fast still skips as fail_fast. A member's own deadline
+// does not cancel the suite.
+func TestSuiteCancellationOutranksFailFast(t *testing.T) {
+	dir := writeSuite(t, map[string]string{
+		"a.yaml": suiteScenario("alpha", 2), "b.yaml": suiteScenario("bravo", 1),
+		"c.yaml": suiteScenario("charlie", 1),
+	})
+	api := newScenarioAPI(t, "pass")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rec := &recorder{onCall: func(n int, c devConfig) bool {
+		if c.runID == "scn-alpha-reference-2" {
+			cancel()
+		}
+		return false
+	}}
+	run := runSuite(t, rec, api, func(r *scenarioRunner) {
+		r.suiteContext = func() (context.Context, context.CancelFunc) { return ctx, func() {} }
+	}, "--suite", dir, "--scenario-timeout", "1m", "--fail-fast")
+	if got := run.outcomes(); !slices.Equal(got, []string{"a.yaml:error", "b.yaml:skipped", "c.yaml:skipped"}) {
+		t.Fatalf("members %v", got)
+	}
+	if a := run.doc.Members[0]; a.Error == nil || a.Error.Code != "cancelled" {
+		t.Errorf("active member = %+v; want a cancelled error", a)
+	}
+	for _, m := range run.doc.Members[1:] {
+		if m.SkippedReason != skippedCancelled {
+			t.Errorf("%s skipped for %q, want cancelled: cancellation outranks fail-fast", m.File, m.SkippedReason)
+		}
+	}
+	if run.code != exitOperational || len(rec.calls) != 2 {
+		t.Errorf("exit %d after %d repetitions; want 3 and no workload after the cancellation",
+			run.code, len(rec.calls))
+	}
+
+	// A member timing out under --fail-fast is a fail-fast stop, not a
+	// cancellation of the suite.
+	api = newScenarioAPI(t, "pass")
+	rec = &recorder{onCall: func(n int, c devConfig) bool { return c.runID == "scn-alpha-reference-1" }}
+	run = runSuite(t, rec, api, nil, "--suite", dir, "--scenario-timeout", "1s", "--fail-fast")
+	if got := run.outcomes(); !slices.Equal(got, []string{"a.yaml:error", "b.yaml:skipped", "c.yaml:skipped"}) {
+		t.Fatalf("timeout under fail-fast: members %v", got)
+	}
+	if run.doc.Members[0].Error.Code != "scenario_timeout" {
+		t.Errorf("timed-out member = %+v", run.doc.Members[0])
+	}
+	for _, m := range run.doc.Members[1:] {
+		if m.SkippedReason != skippedFailFast {
+			t.Errorf("%s skipped for %q after a member timeout, want fail_fast", m.File, m.SkippedReason)
+		}
+	}
+}

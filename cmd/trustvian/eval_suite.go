@@ -267,7 +267,13 @@ func (r scenarioRunner) suiteMain(s streams, common commonFlags, opts suiteOptio
 		doc.ExitCode = moreSevere(doc.ExitCode, exit)
 		doc.Members = append(doc.Members, member)
 
-		if exit != exitOK && opts.failFast {
+		// Cancellation first: a member stopped because the suite was
+		// cancelled leaves the rest skipped as cancelled, fail-fast or not.
+		// A member's own deadline never cancels the suite.
+		switch {
+		case suiteCtx.Err() != nil:
+			stopScheduling = skippedCancelled
+		case exit != exitOK && opts.failFast:
 			stopScheduling = skippedFailFast
 		}
 	}

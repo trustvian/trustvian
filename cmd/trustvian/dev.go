@@ -332,6 +332,13 @@ func composeAndRunResult(s streams, config devConfig) devResult {
 	// deterministically should fail before a control plane, a Collector or a
 	// workload has been launched — nothing has to be torn down to report it.
 	identity, err := deriveIdentity(config, workloadDir, config.inheritedEnvironment(), time.Now())
+	if config.deadline != nil && config.deadline.Err() != nil {
+		// The deadline passed while the repository was being inspected. The
+		// inspection stopped early, so whatever identity it produced is not
+		// one to provision — and nothing has started.
+		fmt.Fprintf(s.err, "trustvian dev: the deadline passed before the run could be named\n")
+		return devResult{code: exitDevOperational}
+	}
 	if err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
 		return devResult{code: exitDevUsage}
@@ -546,7 +553,10 @@ func (d *devSession) finish(outcome childOutcome) int {
 	defer cancel()
 
 	switch {
-	case d.relay.Expired():
+	case d.relay.Expired() || d.deadlineDone():
+		// deadlineDone as well as Expired: a suite cancellation reaches the
+		// deadline context and the relay through two goroutines, and the
+		// workload can be reaped before the watcher has marked the relay.
 		// The deadline ended the workload. Whatever it exited with — a
 		// workload that traps SIGTERM can exit 0 — it did not finish, so the
 		// run is failed and nothing downstream reads it as evidence.
@@ -562,6 +572,20 @@ func (d *devSession) finish(outcome childOutcome) int {
 		// earlier version recorded "the workload exited 3", which is the code dev
 		// chose for its own failure and not anything the workload did.
 		d.failRunWith(ctx, "the workload could not be started under trustvian dev")
+		return outcome.code
+
+	case outcome.ok() && d.config.deadline != nil:
+		// A suite member's workload succeeded; the run is completed only
+		// within the scenario's deadline. finalize says how it ended.
+		return d.finalizeWithinDeadline(outcome)
+
+	case d.config.deadline != nil && outcome.stoppedByDeveloper(d.relay.Forwarded()):
+		// In a suite a forwarded signal is the suite being cancelled, not a
+		// developer ending an interactive run: the run did not finish, so it
+		// is failed rather than completed, even if the cancellation has not
+		// reached the deadline context yet.
+		d.failRunWith(ctx, "the suite was cancelled before the workload finished")
+		fmt.Fprintf(d.s.out, "\nRun %s failed: the suite was cancelled.\n", d.identity.Run)
 		return outcome.code
 
 	case outcome.stoppedByDeveloper(d.relay.Forwarded()):
@@ -596,6 +620,48 @@ func (d *devSession) finish(outcome childOutcome) int {
 			d.identity.Run, outcome.code)
 		return outcome.code
 	}
+}
+
+// deadlineDone reports whether the invocation's deadline context has ended —
+// expired, or cancelled with its suite. Always false for `trustvian dev`
+// itself, which has none.
+func (d *devSession) deadlineDone() bool {
+	return d.config.deadline != nil && d.config.deadline.Err() != nil
+}
+
+// finalizeWithinDeadline completes a suite member's run, bounded by the
+// scenario's deadline as well as the usual request timeout.
+//
+// The completion request is cancelled when the deadline passes or the suite
+// is cancelled, so a stalled control plane cannot complete the run after the
+// scenario has already failed. A completion that did not finish within the
+// deadline is not reported as one: the run is failed under a fresh, bounded
+// context — the deadline's own is already done — and the status is
+// operational. Should the server have committed the completion just as the
+// request was cancelled, the fail is refused and said on stderr; the
+// execution is failed either way, so the run is never read as a reference.
+func (d *devSession) finalizeWithinDeadline(outcome childOutcome) int {
+	ctx, cancel := context.WithTimeout(d.config.deadline, provisionTimeout)
+	err := d.completeRun(ctx)
+	cancel()
+	if err == nil && !d.deadlineDone() {
+		fmt.Fprintf(d.s.out, "\nRun %s complete.\n", d.identity.Run)
+		return outcome.code
+	}
+	d.runCompleted = false
+	if d.deadlineDone() {
+		cleanup, done := lifecycleContext()
+		defer done()
+		if d.provision != nil {
+			if err := d.provision.failRunReason(cleanup,
+				"the deadline passed before the run could be completed"); err != nil {
+				fmt.Fprintf(d.s.err, "trustvian dev: could not fail run %s: %v\n", d.identity.Run, err)
+			}
+		}
+		fmt.Fprintf(d.s.out, "\nRun %s failed: the deadline passed during finalization.\n",
+			d.identity.Run)
+	}
+	return exitDevOperational
 }
 
 // completeRun records success, and never changes the workload's status.

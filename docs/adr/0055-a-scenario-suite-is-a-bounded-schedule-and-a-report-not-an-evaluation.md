@@ -110,6 +110,16 @@ When the deadline passes:
   reference.
 - **The member is an operational error** with code `scenario_timeout`.
 
+The deadline also bounds the two `dev` phases that talk to things other than
+the workload:
+
+- **Naming the run.** The repository's git queries are cancelled when the
+  deadline passes, and no further query starts. Nothing is provisioned or
+  launched afterwards.
+- **Completing the run.** A completion request still in flight when the
+  deadline passes, or when the suite is cancelled, is cancelled. The run is
+  then failed under a fresh, bounded context, never reported complete.
+
 The pending SIGKILL is cancelled as soon as the leader is reaped. A stale
 timer can therefore never signal a process-group id the system has since
 reused, for example for the next member's processes.
@@ -125,7 +135,9 @@ so their signal, terminal, stdin and exit-status behavior is unchanged.
 **SIGINT or SIGTERM to a suite:**
 - The running member is stopped, through the same relay that forwards the
   signal to its workload, and recorded failed with code `cancelled`.
-- Every member not yet scheduled is `skipped` with reason `cancelled`.
+- Every member not yet scheduled is `skipped` with reason `cancelled`, even
+  under `--fail-fast`: cancellation outranks it. A member's own deadline never
+  cancels the suite.
 - The suite exits `3`.
 
 ### 5. One bounded, versioned document
