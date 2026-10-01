@@ -1513,7 +1513,8 @@ suites.
   - Members are the directory's immediate regular `.yaml`/`.yml` files in name
     order: at most 64, with at most 4096 entries examined.
   - Every member is validated, names are checked distinct and scopes are
-    derived before anything runs.
+    derived before anything runs: exit `2` for the invocation or its files,
+    `3` for an unreadable environment.
   - Members run sequentially through the single-scenario path.
 - **Default continuation:** a failure does not stop the rest. `--fail-fast`
   stops scheduling, and the rest are reported `skipped`.
@@ -1524,7 +1525,14 @@ suites.
     leftover group members are killed.
   - The run and the execution are failed, and the member is an operational
     error even if the workload exits 0.
-- **SIGINT or SIGTERM** stops the running member and skips the rest.
+  - A completion racing the deadline is settled by the control plane's
+    compare-and-swap. A member reported timed out or cancelled is never a
+    completed execution; one the server had completed is reported
+    `completed_without_response`.
+- **SIGINT or SIGTERM** is owned by the suite alone.
+  - It stops the running member: one SIGTERM to its workload's group.
+  - The rest are skipped as `cancelled`, also under `--fail-fast`.
+- **`--suite` is refused on Windows**; `--scenario` is unaffected.
 - **One versioned suite document.**
   - Member result documents are embedded unchanged.
   - Errors are bounded.

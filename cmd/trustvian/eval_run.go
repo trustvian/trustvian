@@ -97,16 +97,20 @@ type scenarioRunner struct {
 	// outputLimit caps the encoded suite document; zero means
 	// maxSuiteDocumentBytes. Tests lower it to reach the overflow.
 	outputLimit int
+	// platformSupported refuses suites where deadlines cannot be enforced:
+	// devPlatformSupported in production, replaced by tests.
+	platformSupported func() error
 }
 
 func runEvalRun(s streams, args []string, timeout time.Duration) int {
 	return scenarioRunner{
-		run:            composeAndRunResult,
-		scope:          deriveExecutionScope,
-		executionID:    newExecutionID,
-		cliVersion:     cliVersionString,
-		workloadStdout: os.Stderr,
-		suiteContext:   suiteSignalContext,
+		run:               composeAndRunResult,
+		scope:             deriveExecutionScope,
+		executionID:       newExecutionID,
+		cliVersion:        cliVersionString,
+		workloadStdout:    os.Stderr,
+		suiteContext:      suiteSignalContext,
+		platformSupported: devPlatformSupported,
 	}.main(s, args, timeout)
 }
 
@@ -137,6 +141,13 @@ var (
 	errRunNotCompleted   = errors.New("a run could not be completed")
 	errScenarioTimeout   = errors.New("the scenario deadline passed")
 	errScenarioCancelled = errors.New("the scenario was cancelled")
+	// errCompletedWithoutResponse: the control plane completed the execution,
+	// but its answer never arrived. The execution is completed — a recorded
+	// reference — and no verdict is reported for it.
+	errCompletedWithoutResponse = errors.New("the execution was completed without a response")
+	// errExecutionStateUnknown: the completion's outcome could not be
+	// learned, so whether the execution completed is unknown.
+	errExecutionStateUnknown = errors.New("the execution's state is unknown")
 )
 
 // scenarioCleanupTimeout bounds the best-effort request that records an
@@ -166,13 +177,6 @@ type scenarioOutcome struct {
 }
 
 func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) int {
-	// Every repetition is a `trustvian dev` session, so eval run refuses
-	// exactly where dev does: a platform that cannot stop what it starts
-	// cannot honour a scenario deadline either.
-	if err := devPlatformSupported(); err != nil {
-		fmt.Fprintf(s.err, "trustvian eval run: %v\n", err)
-		return exitUsage
-	}
 	fs := newFlagSet("eval run")
 	common := registerCommonFlags(fs)
 	scenarioPath := fs.String("scenario", "", "scenario file")
@@ -385,7 +389,13 @@ func (r scenarioRunner) execute(ctx context.Context, s streams, client *platform
 			config := repetitionConfig(scenario, side.spec, client.baseURL.String(), collectorBin,
 				runID, profile, r.workloadStdout)
 			if ctx.Done() != nil {
+				// A suite member: the scenario context bounds the session,
+				// the suite owns SIGINT/SIGTERM — its cancellation reaches
+				// the workload through this deadline, once — and an
+				// unattended member never takes the terminal.
 				config.deadline = ctx
+				config.callerOwnsSignals = true
+				config.detachStdin = true
 			}
 			result := r.run(repetitionStreams, config)
 			if ctx.Err() != nil {
@@ -438,11 +448,17 @@ func (r scenarioRunner) execute(ctx context.Context, s streams, client *platform
 			MaxCriticalRiskObservationsPerRun: u64Text(*gate.MaxCriticalRiskObservationsPerRun),
 		},
 	}, "scenario-executions", executionID, "complete")
-	if err != nil && ctx.Err() != nil {
-		return abort(stopReason(ctx, scenario.Name))
-	}
 	if err != nil {
-		return abort(err)
+		// No answer — the deadline, a cancellation or the transport ended
+		// the request. A cancelled request is not a rolled-back one: the
+		// control plane may have committed the completion. It decides.
+		cause := err
+		if ctx.Err() != nil {
+			cause = stopReason(ctx, scenario.Name)
+		}
+		out := r.reconcileCompletion(s, client, executionID, cause)
+		out.executionID = executionID
+		return out
 	}
 	if err := checkStatus(result); err != nil {
 		return abort(err)
@@ -525,6 +541,68 @@ func (r scenarioRunner) begin(ctx context.Context, client *platformClient,
 		return beginExecutionResponse{}, err
 	}
 	return begun, nil
+}
+
+// reconcileCompletion settles a completion request that ended without an
+// answer, by asking the control plane — which alone knows whether it
+// committed — rather than inferring it from the cancelled request.
+//
+// The execution is failed first. Completing and failing are both
+// compare-and-swaps from running (ADR 0054 § 2), so the server orders them:
+//
+//   - the fail is accepted: the completion did not commit and now never can,
+//     so cause — the deadline, the cancellation, the transport — is reported;
+//   - the fail is refused because the execution completed: the completion
+//     won. The execution is a completed, reusable reference, and that is
+//     reported as such — never as a timeout or cancellation, and never as a
+//     verdict this runner did not receive;
+//   - neither answer arrives: the state is reported unknown.
+//
+// Nothing is retried: a second completion could not complete it twice, and
+// would only blur which request decided.
+func (r scenarioRunner) reconcileCompletion(s streams, client *platformClient,
+	executionID string, cause error) scenarioOutcome {
+	stopped := func(err error) scenarioOutcome { return scenarioOutcome{exit: exitCodeFor(err), err: err} }
+	ctx, cancel := context.WithTimeout(context.Background(), scenarioCleanupTimeout)
+	defer cancel()
+
+	result, err := client.post(ctx, struct{}{}, "scenario-executions", executionID, "fail")
+	if err == nil && checkStatus(result) == nil {
+		return stopped(cause)
+	}
+
+	// Refused or unanswered: read what the control plane holds.
+	read, err := client.get(ctx, "scenario-executions", executionID)
+	if err == nil {
+		err = checkStatus(read)
+	}
+	var stored struct {
+		Execution struct {
+			Status  string `json:"status"`
+			Verdict string `json:"verdict"`
+		} `json:"execution"`
+	}
+	if err == nil {
+		err = decodeJSON(read.body, &stored)
+	}
+	if err != nil {
+		fmt.Fprintf(s.err, "trustvian eval run: WARNING: execution %s could not be recorded failed "+
+			"and could not be read (%v)\n", executionID, err)
+		return stopped(operationalErrorf("%w: execution %s may have completed — its completion "+
+			"request ended without an answer (%v) and its state could not be read; check it before "+
+			"relying on it as a reference", errExecutionStateUnknown, executionID, cause))
+	}
+	switch stored.Execution.Status {
+	case "failed":
+		return stopped(cause)
+	case "completed":
+		return stopped(operationalErrorf("%w: the control plane completed execution %s (verdict %s), "+
+			"but its answer did not arrive (%v). The execution is completed and can be a recorded "+
+			"reference; no verdict is reported here, because none was received",
+			errCompletedWithoutResponse, executionID, stored.Execution.Verdict, cause))
+	}
+	return stopped(operationalErrorf("%w: execution %s is %s after its completion request ended "+
+		"without an answer (%v)", errExecutionStateUnknown, executionID, stored.Execution.Status, cause))
 }
 
 // fail records the execution failed. Best effort, under its own bounded

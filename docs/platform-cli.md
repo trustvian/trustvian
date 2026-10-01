@@ -706,8 +706,10 @@ trustvian eval run --suite scenarios/ --scenario-timeout 10m --reference last --
   - At most 64 scenarios, and at most 4096 directory entries examined.
   - `--suite` and `--scenario` cannot be combined.
 - **Everything is checked first.** Every file is validated, scenario names must
-  be distinct, and every scope is derived. Any problem is exit `2` before a
-  workload or request.
+  be distinct, and every scope is derived, before any workload or request.
+  - A problem with the invocation or its files is exit `2`.
+  - An environment that cannot be read (the working directory, repository
+    inspection, locating the control plane) is exit `3`.
 - **Each member runs exactly as `--scenario` would.** It keeps its own `runs`,
   its own limits, its own recorded execution and the control plane's verdict.
   The suite pools nothing and recomputes nothing.
@@ -721,19 +723,31 @@ trustvian eval run --suite scenarios/ --scenario-timeout 10m --reference last --
   1. no further repetition of that scenario starts;
   2. its workload's process group gets SIGTERM, then SIGKILL after 5s, and any
      leftover group members are killed;
-  3. the execution is recorded failed;
+  3. the execution is failed;
   4. the scenario is an operational error, `scenario_timeout`, even if the
      workload trapped the signal and exited `0`.
 
-  The suite continues. Like `dev`, `eval run` is not supported on Windows: use
-  WSL2.
+  The suite continues.
+- **If the deadline passes while the execution is being completed,** the
+  control plane decides which happened first. Either the execution is failed
+  (`scenario_timeout` or `cancelled`), or it had already completed. The
+  second case is reported as `completed_without_response`, exit `3`: the
+  execution is complete and reusable as a reference, but no verdict was
+  received for it.
+- **`--suite` is not supported on Windows** (exit `2`), because deadlines are
+  enforced by stopping process groups. Use WSL2. `--scenario` is unaffected.
 - **`--reference last`** is resolved per scenario: the most recent completed
   execution of *that* scenario's name, project, agent and environment, with
   its N. A missing or unusable one is that scenario's error, before it runs
   anything. An explicit execution id is refused with `--suite`; use it with
   `--scenario`.
-- **Ctrl-C (or SIGTERM)** stops the running scenario, records its execution
-  failed, and marks the rest `skipped: cancelled`. The suite exits `3`.
+- **Ctrl-C (or SIGTERM)** stops the running scenario: its workload's process
+  group gets one SIGTERM from the suite. The execution is failed, and the rest
+  are marked `skipped: cancelled`, also with `--fail-fast`. The suite exits
+  `3`.
+  - The suite is the only receiver of these signals.
+  - Its workloads run without the terminal (stdin is `/dev/null`), so
+    Ctrl-C never reaches a workload twice.
 - **Exit code:** the most severe scenario's, `3` over `2` over `1` over `0`.
 
 **`--json`** writes one suite document:
@@ -745,7 +759,7 @@ trustvian eval run --suite scenarios/ --scenario-timeout 10m --reference last --
   - `file`, `scenario` (`name`, `runs`), `outcome` (`pass`, `fail`, `error`,
     `skipped`), `exit_code`, `execution_id`;
   - `result` (the single-scenario document, unchanged) for a PASS or FAIL;
-  - `error` (`code`, `message` of at most 1024 bytes);
+  - `error` (`code`, `message` of at most 1024 bytes of valid UTF-8);
   - `skipped_reason`;
 - `summary`, `exit_code`, `producers.cli_version`.
 

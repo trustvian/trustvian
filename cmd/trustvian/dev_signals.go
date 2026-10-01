@@ -50,6 +50,10 @@ type signalRelay struct {
 	// stopping the workload, and a workload that traps the termination and
 	// exits 0 has still not succeeded.
 	expired bool
+	// subscribed records that this relay registered for SIGINT and SIGTERM. A
+	// suite member's relay does not: the suite owns them.
+	subscribed bool
+
 	// grace is how long a workload has between SIGTERM and SIGKILL once the
 	// deadline has passed.
 	grace time.Duration
@@ -64,14 +68,26 @@ type signalRelay struct {
 // Called before any process is started. Between Notify and the first thing dev
 // launches there is no window where the default disposition applies.
 func newSignalRelay() *signalRelay {
+	return newSignalRelayOwning(true)
+}
+
+// newSignalRelayOwning is newSignalRelay, subscribing to SIGINT and SIGTERM
+// only when subscribe is set. Without it the relay receives no process
+// signal: the caller owns them, and stops the session through its deadline.
+// Everything else — composition cancellation, the deadline, forwarding to a
+// target — is the same relay.
+func newSignalRelayOwning(subscribe bool) *signalRelay {
 	ctx, cancel := context.WithCancel(context.Background())
 	relay := &signalRelay{
-		ctx:     ctx,
-		cancel:  cancel,
-		signals: make(chan os.Signal, signalQueueDepth),
-		done:    make(chan struct{}),
+		ctx:        ctx,
+		cancel:     cancel,
+		signals:    make(chan os.Signal, signalQueueDepth),
+		done:       make(chan struct{}),
+		subscribed: subscribe,
 	}
-	signal.Notify(relay.signals, os.Interrupt, syscall.SIGTERM)
+	if subscribe {
+		signal.Notify(relay.signals, os.Interrupt, syscall.SIGTERM)
+	}
 	go relay.run()
 	return relay
 }
@@ -240,7 +256,9 @@ func (r *signalRelay) Interrupted() bool { return r.Received() != 0 }
 // second Ctrl-C during teardown should still reach the helpers rather than
 // killing dev with the default disposition and orphaning them.
 func (r *signalRelay) Stop() {
-	signal.Stop(r.signals)
+	if r.subscribed {
+		signal.Stop(r.signals)
+	}
 	close(r.signals)
 	<-r.done
 	r.cancel()

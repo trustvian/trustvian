@@ -41,12 +41,18 @@ trustvian eval run --suite DIRECTORY --scenario-timeout DURATION
   arbitrarily large directory is refused rather than read into memory.
 - Each file is already bounded by the config loader.
 
-**Preflight, all before any workload or request:**
+**Preflight, all before any workload or control-plane request:**
 - every file is loaded and validated;
 - duplicate scenario names are refused, because a name is what `last` matches;
 - every member's scope is derived.
 
-Any failure exits `2`.
+A preflight failure starts no workload and makes no request, and its exit code
+says whose problem it is:
+
+| Kind | Examples | Exit |
+|---|---|---|
+| Usage — the invocation or its files | an invalid or missing timeout; a malformed or invalid scenario; duplicate names; too many files or entries; a symlinked member; an explicit reference id with `--suite`; an identity the files cannot name | `2` |
+| Operational — the environment | the working directory cannot be resolved; repository or environment inspection fails; the control plane cannot be located | `3` |
 
 ### 2. Members run sequentially, each exactly as a single scenario
 
@@ -105,10 +111,26 @@ When the deadline passes:
   survive the scenario.
 - **The run is failed, never completed,** whatever the workload exits with. A
   workload that traps SIGTERM and exits 0 has not succeeded.
-- **The execution is recorded failed,** best effort, under its own 10s cleanup
-  context rather than the expired one. A failed execution is never a
-  reference.
+- **The execution is failed,** under its own 10s cleanup context rather than
+  the expired one.
 - **The member is an operational error** with code `scenario_timeout`.
+
+**Whether the execution completed is the control plane's to say.** Completing
+and failing an execution are both compare-and-swaps from `running` (ADR 0054
+§ 2), so the server orders them. A cancelled request is not a rolled-back one.
+When the completion request ends without an answer — the deadline, a
+cancellation, or the transport — the runner fails the execution and the server
+decides:
+
+| The server... | Meaning | The member reports |
+|---|---|---|
+| accepts the fail | the completion did not commit, and the compare-and-swap means it never can | `scenario_timeout` or `cancelled` |
+| refuses it: the execution is `completed` | the completion committed before the deadline took effect | `completed_without_response`, exit `3`, naming the execution and its stored verdict. It is a completed execution and can be a recorded reference; no verdict is reported for the member, because none was received |
+| answers neither | — | `execution_state_unknown`, exit `3` |
+
+So a member reported `scenario_timeout` or `cancelled` is never a completed —
+and never a reusable — execution. Nothing is retried; a second completion
+could not complete it twice.
 
 The deadline also bounds the two `dev` phases that talk to things other than
 the workload:
@@ -116,25 +138,37 @@ the workload:
 - **Naming the run.** The repository's git queries are cancelled when the
   deadline passes, and no further query starts. Nothing is provisioned or
   launched afterwards.
-- **Completing the run.** A completion request still in flight when the
-  deadline passes, or when the suite is cancelled, is cancelled. The run is
-  then failed under a fresh, bounded context, never reported complete.
+- **Completing the run.** A run completion still in flight when the deadline
+  passes, or when the suite is cancelled, is cancelled and never reported
+  complete. The run is then failed under a fresh, bounded context. If the
+  server had already committed the run's completion, the fail is refused and
+  said on stderr. The scenario still stops before its execution completes, so
+  the execution is failed and is not a reference.
 
 The pending SIGKILL is cancelled as soon as the leader is reaped. A stale
 timer can therefore never signal a process-group id the system has since
 reused, for example for the next member's processes.
 
-`eval run` refuses on Windows, as `trustvian dev` does. Every repetition is a
-`dev` session, and a platform that cannot stop what it starts cannot honour a
-deadline.
+**`--suite` is refused where `trustvian dev` is not supported (Windows).**
+Deadlines are enforced by terminating process groups, which that platform
+cannot do. The refusal is exit `2` before anything runs. Single-scenario mode
+has no deadline, so it keeps the behavior it had before suites existed.
 
 The deadline reaches `trustvian dev` as an optional field of its in-process
 configuration. Neither `dev`'s command line nor single-scenario mode sets it,
 so their signal, terminal, stdin and exit-status behavior is unchanged.
 
-**SIGINT or SIGTERM to a suite:**
-- The running member is stopped, through the same relay that forwards the
-  signal to its workload, and recorded failed with code `cancelled`.
+**SIGINT or SIGTERM to a suite: one owner, one path.** The suite process is
+the only subscriber to SIGINT and SIGTERM. Its members' in-process `dev`
+sessions do not subscribe, and their workloads get no terminal (stdin is
+`/dev/null`). A terminal's Ctrl-C therefore reaches the suite, never a
+member's workload directly. One signal:
+- cancels the suite, which ends the running member's scenario context;
+- that ends its `dev` session through the deadline path, so its workload's
+  process group gets **exactly one SIGTERM**, then SIGKILL after the grace if
+  still running;
+- the member is `cancelled`, and its execution is failed — or, if its
+  completion had already committed, reported as above.
 - Every member not yet scheduled is `skipped` with reason `cancelled`, even
   under `--fail-fast`: cancellation outranks it. A member's own deadline never
   cancels the suite.
@@ -153,8 +187,8 @@ so their signal, terminal, stdin and exit-status behavior is unchanged.
   - `execution_id`;
   - for a PASS or FAIL, its single-scenario result document **embedded
     unchanged** as `result`;
-  - for an error, a bounded `error` (`code` and a message of at most 1024
-    bytes);
+  - for an error, a bounded `error`: a `code`, and a `message` of at most
+    1024 bytes of valid UTF-8, a truncation marker included;
   - for a skip, `skipped_reason`;
 - a summary, `exit_code`, and the CLI producer version.
 
@@ -162,7 +196,7 @@ Workload output and progress go to stderr, as in single-scenario mode.
 
 **The suite's exit code is the most severe of its members': `3`, then `2`,
 then `1`, then `0`.** This keeps every existing meaning. A suite whose
-preflight fails exits `2` before anything runs.
+preflight fails exits `2` or `3` as described in § 1, before anything runs.
 
 **The encoded document is capped at 32 MiB.**
 - Member results stop being retained once they would exceed the cap, so memory

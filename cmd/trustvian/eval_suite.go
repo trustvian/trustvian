@@ -139,6 +139,17 @@ func (r scenarioRunner) suiteMain(s streams, common commonFlags, opts suiteOptio
 	httpTimeout time.Duration) int {
 	usage := func(err error) int { return usageFailure(s, evalRunUsage, err) }
 
+	// A suite's deadlines are enforced by terminating process groups, which
+	// only a platform `trustvian dev` supports can do. Refused there before
+	// anything else; single-scenario mode keeps its earlier behavior.
+	supported := r.platformSupported
+	if supported == nil {
+		supported = devPlatformSupported
+	}
+	if err := supported(); err != nil {
+		return usage(usageErrorf("--suite is not supported on this platform: %v", err))
+	}
+
 	// Global preflight: every check here exits 2 before any workload runs.
 	if strings.TrimSpace(opts.directory) == "" {
 		return usage(usageErrorf("--suite needs a directory"))
@@ -398,10 +409,12 @@ func memberError(err error) *suiteError {
 		}
 	}
 	for sentinel, name := range map[error]string{
-		errScenarioTimeout:   "scenario_timeout",
-		errScenarioCancelled: "cancelled",
-		errRepetitionFailed:  "repetition_failed",
-		errRunNotCompleted:   "run_not_completed",
+		errScenarioTimeout:          "scenario_timeout",
+		errScenarioCancelled:        "cancelled",
+		errRepetitionFailed:         "repetition_failed",
+		errRunNotCompleted:          "run_not_completed",
+		errCompletedWithoutResponse: "completed_without_response",
+		errExecutionStateUnknown:    "execution_state_unknown",
 	} {
 		if errors.Is(err, sentinel) {
 			code = name
@@ -410,16 +423,29 @@ func memberError(err error) *suiteError {
 	return &suiteError{Code: code, Message: boundText(err.Error(), maxMemberErrorBytes)}
 }
 
-// boundText cuts s to at most limit bytes on a rune boundary.
+// truncationMarker ends a shortened message, and counts against its bound.
+const truncationMarker = "…"
+
+// boundText returns s as valid UTF-8 of at most limit bytes — the marker
+// included when s is shortened. Invalid bytes are replaced first, because an
+// encoder would replace them anyway, with three bytes each.
 func boundText(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	s = strings.ToValidUTF8(s, "\uFFFD")
 	if len(s) <= limit {
 		return s
 	}
-	cut := limit
+	marker := truncationMarker
+	if limit < len(marker) {
+		marker = ""
+	}
+	cut := limit - len(marker)
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
-	return s[:cut] + "…"
+	return s[:cut] + marker
 }
 
 // incompleteSuiteDocument is what an overflowing suite writes instead: the

@@ -21,17 +21,26 @@ actually depend on.
     recorded execution and control-plane verdict. Nothing is pooled or
     recomputed.
   - **Everything is validated first.** At most 64 scenarios, with distinct
-    names, no symlinks and at most 4096 entries examined. Any problem is exit
-    `2` before a workload runs.
+    names, no symlinks and at most 4096 entries examined. A problem with the
+    invocation or its files is exit `2`, and an unreadable environment is exit
+    `3`; neither starts a workload or makes a request.
   - **Scheduling:**
     - A failure does not stop the rest; `--fail-fast` does.
     - Members not run are reported `skipped`, never as passes.
-    - Ctrl-C stops the running scenario and skips the rest.
+    - Ctrl-C or SIGTERM stops the running scenario and skips the rest as
+      `cancelled`, also with `--fail-fast`. The suite is the only receiver of
+      these signals, so the workload's process group gets one SIGTERM.
+      Members run without the terminal.
   - **`--scenario-timeout` is a real deadline (1s–24h).**
     - The workload's process group gets SIGTERM, then SIGKILL after 5s, and
       leftover group members are killed.
-    - The run and execution are recorded failed.
+    - The run and execution are failed.
     - The scenario is an operational error even if its workload exited `0`.
+    - **A completion racing the deadline is settled by the control plane.**
+      The runner fails the execution; if the server had already completed it,
+      the member reports `completed_without_response`, a completed execution
+      for which no verdict is reported. A member reported `scenario_timeout`
+      or `cancelled` is never a completed execution.
   - **`--reference last` resolves per scenario.** An explicit execution id is
     `--scenario`-only.
   - **Output and exit code:**
@@ -42,7 +51,9 @@ actually depend on.
       incomplete document that claims no outcomes.
 
   No `/v1` or schema change. `trustvian dev` and single-scenario behavior are
-  unchanged.
+  unchanged. `--suite` is refused on Windows, where `dev` is unsupported;
+  `--scenario` is not. Member error messages are at most 1024 bytes of valid
+  UTF-8.
 
 - **Recorded scenario references: `trustvian eval run --reference
   <execution-id>|last`, and persisted scenario executions** (task 078,

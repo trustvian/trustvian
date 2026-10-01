@@ -244,6 +244,21 @@ type devConfig struct {
 	// whatever the workload exits with. The dev command line never sets this.
 	deadline context.Context
 
+	// callerOwnsSignals means the caller — a suite — owns SIGINT and SIGTERM
+	// for the whole process, so this session does not subscribe to them. The
+	// caller's cancellation reaches the session through deadline, which
+	// terminates the workload's process group once: one owner, one path, no
+	// second signal from a second subscriber. The dev command line never sets
+	// this.
+	callerOwnsSignals bool
+
+	// detachStdin gives the workload no standard input and never the terminal:
+	// an unattended suite member reading the terminal would stop, and a
+	// workload in the terminal's foreground would receive the terminal's
+	// Ctrl-C directly, beside the suite's own stop. The dev command line
+	// never sets this.
+	detachStdin bool
+
 	// workloadStdout, when set, receives the workload's standard output instead
 	// of dev's own. Task 078: `eval run` sends it to its stderr, so its stdout
 	// carries one result document and nothing else. Per invocation, never by
@@ -300,7 +315,7 @@ func composeAndRunResult(s streams, config devConfig) devResult {
 	// running. Each is in its own process group, so the terminal's own SIGINT
 	// never reached them: the developer got their shell back and two orphans
 	// holding ports.
-	relay := newSignalRelay()
+	relay := newSignalRelayOwning(!config.callerOwnsSignals)
 	// Stopped after teardown, not before: shutting down still has work to do, and
 	// a second Ctrl-C during it should reach the helpers rather than killing dev.
 	defer relay.Stop()
@@ -471,7 +486,9 @@ func composeAndRunResult(s streams, config devConfig) devResult {
 
 	printDevBanner(s, stateDir, apiURL, otlp, environment, identity, baseline, owner, config)
 
-	outcome := superviseChildTo(s, config.command, environment, relay, config.workloadStdout)
+	outcome := superviseChildWith(s, config.command, environment, relay, childStreams{
+		stdout: config.workloadStdout, detachStdin: config.detachStdin,
+	})
 
 	// The Collector stops *before* the run reaches a terminal state, and the
 	// order is not cosmetic: ingest is refused once a run is terminal, so a span

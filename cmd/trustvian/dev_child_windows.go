@@ -70,7 +70,10 @@ type childSpec struct {
 func startChild(spec childSpec) (*exec.Cmd, bool, error) {
 	cmd := exec.Command(spec.command[0], spec.command[1:]...)
 	cmd.Env = spec.env
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = spec.stdin, spec.stdout, spec.stderr
+	cmd.Stdout, cmd.Stderr = spec.stdout, spec.stderr
+	if spec.stdin != nil {
+		cmd.Stdin = spec.stdin
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, false, err
 	}

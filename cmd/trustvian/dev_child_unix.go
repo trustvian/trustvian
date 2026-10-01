@@ -54,7 +54,11 @@ func (spec childSpec) newCmd() *exec.Cmd {
 	cmd.Args[0] = spec.command[0]
 	cmd.Env = spec.env
 	cmd.Dir = ""
-	cmd.Stdin = spec.stdin
+	// Only a real file: a nil *os.File in the interface would start the
+	// child with descriptor 0 closed, where a nil Stdin gives it /dev/null.
+	if spec.stdin != nil {
+		cmd.Stdin = spec.stdin
+	}
 	cmd.Stdout = spec.stdout
 	cmd.Stderr = spec.stderr
 	return cmd
