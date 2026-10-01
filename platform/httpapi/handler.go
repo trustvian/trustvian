@@ -221,6 +221,12 @@ func (h *Handler) routes() {
 	// single-pair contract above is untouched.
 	h.mux.HandleFunc("POST /v1/evaluations/compare-repeated", h.compareRepeated)
 
+	// Task 078: persisted scenario executions and recorded-reference reuse.
+	h.mux.HandleFunc("POST /v1/scenario-executions", h.beginScenarioExecution)
+	h.mux.HandleFunc("GET /v1/scenario-executions/{execution_id}", h.getScenarioExecution)
+	h.mux.HandleFunc("POST /v1/scenario-executions/{execution_id}/complete", h.completeScenarioExecution)
+	h.mux.HandleFunc("POST /v1/scenario-executions/{execution_id}/fail", h.failScenarioExecution)
+
 	// Task 085's evidence resolution. GET rather than POST, although compare
 	// beside it is a POST: a resolution takes no body, and the point of the
 	// capability is that its URL is the citable link 079 renders into a pull
@@ -352,6 +358,15 @@ func classify(err error) (int, string, string) {
 		errors.Is(err, platform.ErrEnvironmentLimit):
 		return http.StatusConflict, codeConflict, err.Error()
 
+	case errors.Is(err, platform.ErrScenarioReference),
+		errors.Is(err, platform.ErrScenarioExecutionState):
+		// A recorded reference that is unfinished, has another N, lies in
+		// another scope or no longer matches its runs; or an execution asked
+		// to complete or fail from a state that does not allow it. The
+		// request is coherent and the stored state refuses it — the message
+		// names which, because a runner reports it verbatim.
+		return http.StatusConflict, codeConflict, err.Error()
+
 	case errors.Is(err, platform.ErrPromotionOrder):
 		// The configuration may legitimately change, so this is a conflict
 		// rather than a permanently invalid request — the same distinction
@@ -399,7 +414,9 @@ func classify(err error) (int, string, string) {
 		// run named twice or k/j out of bounds, or over repetitions that shared
 		// a learning scope. Neither can succeed as asked whatever the state.
 		errors.Is(err, platform.ErrInvalidRepeatedRequest),
-		errors.Is(err, platform.ErrRepeatedIsolation):
+		errors.Is(err, platform.ErrRepeatedIsolation),
+		// A run submitted to a scenario execution it does not belong to.
+		errors.Is(err, platform.ErrScenarioScope):
 		return http.StatusBadRequest, codeInvalidRequest, err.Error()
 
 	default:

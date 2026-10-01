@@ -1239,3 +1239,82 @@ var (
 	_ evidenceQuerier = pgxQuerier{}
 	_ rowIterator     = (pgx.Rows)(nil)
 )
+
+// ---------------------------------------------------------------------
+// Scenario executions (schema v9)
+// ---------------------------------------------------------------------
+
+// CreateScenarioExecution stores a running execution.
+func (s *PostgresStore) CreateScenarioExecution(ctx context.Context, execution ScenarioExecution) error {
+	return s.withTx(ctx, func(tx pgx.Tx) error {
+		return insertScenarioExecution(ctx, pgxTxQuerier{tx}, execution)
+	})
+}
+
+// ScenarioExecution loads one execution with its associations, from one
+// snapshot so the row and its associations cannot come from two moments.
+func (s *PostgresStore) ScenarioExecution(ctx context.Context, id ScenarioExecutionID) (ScenarioExecution, error) {
+	if id == "" {
+		return ScenarioExecution{}, fmt.Errorf("%w: scenario execution id is empty", ErrInvalidID)
+	}
+	var out ScenarioExecution
+	err := s.withReadSnapshot(ctx, func(tx pgx.Tx) error {
+		var err error
+		out, err = loadScenarioExecution(ctx, pgxQuerier{q: tx}, id)
+		return err
+	})
+	return out, err
+}
+
+// CompleteScenarioExecution completes a running execution. The project row is
+// locked FOR UPDATE before the sequence is read, so completions within a
+// project serialize and completions in different projects do not wait.
+func (s *PostgresStore) CompleteScenarioExecution(
+	ctx context.Context, id ScenarioExecutionID,
+	repetitions []ScenarioRepetition, verdict GateVerdict, at time.Time,
+) (ScenarioExecution, error) {
+	if id == "" {
+		return ScenarioExecution{}, fmt.Errorf("%w: scenario execution id is empty", ErrInvalidID)
+	}
+	var out ScenarioExecution
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		out, err = completeScenarioExecutionTx(ctx, pgxTxQuerier{tx}, id, repetitions, verdict, at)
+		return err
+	})
+	return out, err
+}
+
+// FailScenarioExecution fails a running execution.
+func (s *PostgresStore) FailScenarioExecution(
+	ctx context.Context, id ScenarioExecutionID, at time.Time,
+) (ScenarioExecution, error) {
+	if id == "" {
+		return ScenarioExecution{}, fmt.Errorf("%w: scenario execution id is empty", ErrInvalidID)
+	}
+	var out ScenarioExecution
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		var err error
+		out, err = failScenarioExecutionTx(ctx, pgxTxQuerier{tx}, id, at)
+		return err
+	})
+	return out, err
+}
+
+// LatestCompletedScenarioExecution returns what `last` names in this scope,
+// choosing and loading it from one snapshot.
+func (s *PostgresStore) LatestCompletedScenarioExecution(
+	ctx context.Context, scenarioName string, scope ScenarioScope,
+) (ScenarioExecution, error) {
+	var out ScenarioExecution
+	err := s.withReadSnapshot(ctx, func(tx pgx.Tx) error {
+		q := pgxQuerier{q: tx}
+		id, err := latestCompletedScenarioExecutionID(ctx, q, scenarioName, scope)
+		if err != nil {
+			return err
+		}
+		out, err = loadScenarioExecution(ctx, q, id)
+		return err
+	})
+	return out, err
+}

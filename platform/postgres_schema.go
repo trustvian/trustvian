@@ -187,7 +187,10 @@ func postgresSchemaStatements() []string {
 	}, append(observationSchemaStatements(`TEXT COLLATE "C"`, "DOUBLE PRECISION"),
 		// v8: issue 131's promotion columns, the same statements the
 		// v7 -> v8 migration applies.
-		promotionChangeGateColumnStatements(`TEXT COLLATE "C"`)...)...)
+		append(promotionChangeGateColumnStatements(`TEXT COLLATE "C"`),
+			// v9: task 078's scenario executions, the statements the
+			// v8 -> v9 migration applies.
+			scenarioExecutionSchemaStatements(`TEXT COLLATE "C"`, "BIGINT")...)...)...)
 }
 
 // postgresPromotionsStatement is v4's only table, kept separate so the
@@ -351,7 +354,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 				if err := migratePostgresV6ToV7(ctx, tx); err != nil {
 					return err
 				}
-				return migratePostgresV7ToV8(ctx, tx)
+				if err := migratePostgresV7ToV8(ctx, tx); err != nil {
+					return err
+				}
+				return migratePostgresV8ToV9(ctx, tx)
 			case schemaVersionV5:
 				if err := migratePostgresV5ToV6(ctx, tx); err != nil {
 					return err
@@ -359,29 +365,55 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 				if err := migratePostgresV6ToV7(ctx, tx); err != nil {
 					return err
 				}
-				return migratePostgresV7ToV8(ctx, tx)
+				if err := migratePostgresV7ToV8(ctx, tx); err != nil {
+					return err
+				}
+				return migratePostgresV8ToV9(ctx, tx)
 			case schemaVersionV6:
 				if err := migratePostgresV6ToV7(ctx, tx); err != nil {
 					return err
 				}
-				return migratePostgresV7ToV8(ctx, tx)
+				if err := migratePostgresV7ToV8(ctx, tx); err != nil {
+					return err
+				}
+				return migratePostgresV8ToV9(ctx, tx)
 			}
 			// Not v4, v5 or v6 and holding exactly their tables: a v7 stamp
 			// without v7's tables is damage, and verifyPostgresVersion refuses
 			// it rather than creating what is missing.
 			return verifyPostgresVersion(ctx, tx)
 
-		case slices.Equal(present, sortedSchemaTables()):
-			// The current table set, which v7 also holds: v8 adds columns
-			// only. A v7 stamp migrates forward; anything else must be the
-			// current stamp, and a newer one fails closed.
+		case slices.Equal(present, sortedSchemaTablesV8()):
+			// v7's and v8's table set — v8 added columns only — and the last
+			// one without task 078's scenario executions. A v7 stamp migrates
+			// forward through v8; a v8 stamp migrates to v9.
 			version, err := postgresStoredVersion(ctx, tx)
 			if err != nil {
 				return err
 			}
-			if version == schemaVersionV7 {
-				return migratePostgresV7ToV8(ctx, tx)
+			switch version {
+			case schemaVersionV7:
+				if err := migratePostgresV7ToV8(ctx, tx); err != nil {
+					return err
+				}
+				return migratePostgresV8ToV9(ctx, tx)
+			case schemaVersionV8:
+				return migratePostgresV8ToV9(ctx, tx)
+			case SchemaVersion:
+				// The current stamp without the current tables is damage, and
+				// verifyPostgresVersion would accept the stamp alone. Refused
+				// rather than repaired: whatever removed two tables may have
+				// removed more.
+				return fmt.Errorf("%w: schema version %d is missing its scenario execution tables",
+					ErrStoreSchemaVersion, version)
 			}
+			// Anything else — newer than this binary included — fails closed.
+			return verifyPostgresVersion(ctx, tx)
+
+		case slices.Equal(present, sortedSchemaTables()):
+			// The current table set. The stamp must be the current version;
+			// an older stamp beside newer tables, and a newer stamp, both
+			// fail closed.
 			return verifyPostgresVersion(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV1()):
@@ -405,7 +437,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV6ToV7(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV7ToV8(ctx, tx)
+			if err := migratePostgresV7ToV8(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV8ToV9(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV2()):
 			if err := migratePostgresV2ToV3(ctx, tx); err != nil {
@@ -423,7 +458,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV6ToV7(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV7ToV8(ctx, tx)
+			if err := migratePostgresV7ToV8(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV8ToV9(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV3()):
 			if err := migratePostgresV3ToV4(ctx, tx); err != nil {
@@ -438,7 +476,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV6ToV7(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV7ToV8(ctx, tx)
+			if err := migratePostgresV7ToV8(ctx, tx); err != nil {
+				return err
+			}
+			return migratePostgresV8ToV9(ctx, tx)
 
 		default:
 			// A recognized subset that is neither version. Nothing here knows
@@ -620,6 +661,24 @@ func migratePostgresV7ToV8(ctx context.Context, tx pgx.Tx) error {
 			return mapPostgresError("schema migration", "", err)
 		}
 	}
+	// schemaVersionV8, not SchemaVersion: v9 is where they stop being equal.
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
+		schemaVersionV8); err != nil {
+		return mapPostgresError("schema version", "", err)
+	}
+	return nil
+}
+
+// migratePostgresV8ToV9 adds task 078's scenario execution tables, mirroring
+// SQLite's migrateV8ToV9 from the same definitions. It invents no execution:
+// existing runs were never recorded as part of one, and are untouched.
+func migratePostgresV8ToV9(ctx context.Context, tx pgx.Tx) error {
+	for _, stmt := range scenarioExecutionSchemaStatements(`TEXT COLLATE "C"`, "BIGINT") {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return mapPostgresError("schema migration", "", err)
+		}
+	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
 		SchemaVersion); err != nil {
@@ -754,6 +813,14 @@ func sortedSchemaTablesV2() []string {
 // one at all.
 func sortedSchemaTablesV6() []string {
 	sorted := slices.Clone(schemaTablesV6)
+	slices.Sort(sorted)
+	return sorted
+}
+
+// sortedSchemaTablesV8 is what a complete v7 or v8 database holds, sorted:
+// task 067's tables, before task 078's scenario executions.
+func sortedSchemaTablesV8() []string {
+	sorted := slices.Clone(schemaTablesV8)
 	slices.Sort(sorted)
 	return sorted
 }

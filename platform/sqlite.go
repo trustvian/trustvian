@@ -35,7 +35,7 @@ import (
 // schema version. They change for different reasons, and coupling them would
 // force a migration on an unrelated release or hide a real one behind an
 // unchanged number.
-const SchemaVersion = 8
+const SchemaVersion = 9
 
 // Table names. Compile-time constants: these are the only identifiers that
 // ever appear in assembled SQL. Every caller-supplied value is a bound
@@ -123,7 +123,7 @@ const (
 // schemaTables is every table this schema owns, and the allowlist a test
 // asserts against so an event, scorecard, or gate-result table cannot appear
 // without something failing.
-var schemaTables = schemaTablesV7
+var schemaTables = schemaTablesV9
 
 // SQLiteStore is the local persistence adapter.
 //
@@ -261,13 +261,24 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 	case SchemaVersion:
 		return s.requireTables(ctx, SchemaVersion, schemaTables)
 
+	case schemaVersionV8:
+		// Issue 131's schema, before task 078's scenario executions: the
+		// last version without them.
+		if err := s.requireTables(ctx, schemaVersionV8, schemaTablesV8); err != nil {
+			return err
+		}
+		return s.migrateV8ToV9(ctx)
+
 	case schemaVersionV7:
 		// Task 067's tables, before issue 131's promotion columns. v8 adds
 		// columns only, so the table set is the current one.
 		if err := s.requireTables(ctx, schemaVersionV7, schemaTablesV7); err != nil {
 			return err
 		}
-		return s.migrateV7ToV8(ctx)
+		if err := s.migrateV7ToV8(ctx); err != nil {
+			return err
+		}
+		return s.migrateV8ToV9(ctx)
 
 	case schemaVersionV1:
 		// A task 057 database. Its own schema must be complete before it is
@@ -296,7 +307,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV6ToV7(ctx); err != nil {
 			return err
 		}
-		return s.migrateV7ToV8(ctx)
+		if err := s.migrateV7ToV8(ctx); err != nil {
+			return err
+		}
+		return s.migrateV8ToV9(ctx)
 
 	case schemaVersionV2:
 		if err := s.requireTables(ctx, schemaVersionV2, schemaTablesV2); err != nil {
@@ -317,7 +331,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV6ToV7(ctx); err != nil {
 			return err
 		}
-		return s.migrateV7ToV8(ctx)
+		if err := s.migrateV7ToV8(ctx); err != nil {
+			return err
+		}
+		return s.migrateV8ToV9(ctx)
 
 	case schemaVersionV3:
 		if err := s.requireTables(ctx, schemaVersionV3, schemaTablesV3); err != nil {
@@ -335,7 +352,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV6ToV7(ctx); err != nil {
 			return err
 		}
-		return s.migrateV7ToV8(ctx)
+		if err := s.migrateV7ToV8(ctx); err != nil {
+			return err
+		}
+		return s.migrateV8ToV9(ctx)
 
 	case schemaVersionV6:
 		// A task 084 database: v4's tables, v5's indexes and v6's columns, and
@@ -347,7 +367,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV6ToV7(ctx); err != nil {
 			return err
 		}
-		return s.migrateV7ToV8(ctx)
+		if err := s.migrateV7ToV8(ctx); err != nil {
+			return err
+		}
+		return s.migrateV8ToV9(ctx)
 
 	case schemaVersionV5:
 		// v5 and v6 hold the same tables — schema 6 adds columns, not tables —
@@ -362,7 +385,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV6ToV7(ctx); err != nil {
 			return err
 		}
-		return s.migrateV7ToV8(ctx)
+		if err := s.migrateV7ToV8(ctx); err != nil {
+			return err
+		}
+		return s.migrateV8ToV9(ctx)
 
 	case schemaVersionV4:
 		// v4 and v5 hold the same tables, so the table check cannot tell them
@@ -381,7 +407,10 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV6ToV7(ctx); err != nil {
 			return err
 		}
-		return s.migrateV7ToV8(ctx)
+		if err := s.migrateV7ToV8(ctx); err != nil {
+			return err
+		}
+		return s.migrateV8ToV9(ctx)
 
 	default:
 		// No path from anything else. Newer is refused too: this binary
@@ -736,7 +765,7 @@ func (s *SQLiteStore) migrateV6ToV7Once(ctx context.Context) error {
 // stored verdict and outcome are untouched.
 func (s *SQLiteStore) migrateV7ToV8(ctx context.Context) error {
 	if err := s.migrateV7ToV8Once(ctx); err != nil {
-		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+		if s.migrationRaceRecovered(ctx, schemaVersionV8) {
 			return nil
 		}
 		return err
@@ -756,13 +785,57 @@ func (s *SQLiteStore) migrateV7ToV8Once(ctx context.Context) error {
 			return fmt.Errorf("platform: migrate schema v7 to v8: %w", err)
 		}
 	}
+	// Literal schemaVersionV8: stamping the current version here would mark a
+	// v7 database fully migrated while skipping v9's tables.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
-		SchemaVersion); err != nil {
+		schemaVersionV8); err != nil {
 		return fmt.Errorf("platform: migrate schema v7 to v8: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("platform: migrate schema v7 to v8: %w", err)
+	}
+	return nil
+}
+
+// migrateV8ToV9 adds task 078's scenario executions: two new tables, empty.
+//
+// **It invents no execution.** Every evaluation run a schema-8 database holds
+// was created outside any persisted scenario execution — task 078's first
+// slice ran its repetitions and recorded nothing about them — so there is no
+// execution to reconstruct, and grouping existing runs into one by their
+// identifiers' shape would assert a scenario, an N and a reference side that
+// nobody recorded. Existing data is untouched. `--reference last` against a
+// migrated database finds nothing until an execution completes on it.
+func (s *SQLiteStore) migrateV8ToV9(ctx context.Context) error {
+	if err := s.migrateV8ToV9Once(ctx); err != nil {
+		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateV8ToV9Once(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: migrate schema v8 to v9: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, statement := range scenarioExecutionSchemaStatements("TEXT", "INTEGER") {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("platform: migrate schema v8 to v9: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
+		SchemaVersion); err != nil {
+		return fmt.Errorf("platform: migrate schema v8 to v9: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: migrate schema v8 to v9: %w", err)
 	}
 	return nil
 }
@@ -949,6 +1022,11 @@ const schemaVersionV6 = 6
 // apart by the stamped version alone, the way v4, v5 and v6 are.
 const schemaVersionV7 = 7
 
+// schemaVersionV8 is issue 131's schema, the last version before task 078's
+// scenario executions. v9 adds two tables, so a v8 database is told apart from
+// a current one by its table set as well as its stamp.
+const schemaVersionV8 = 8
+
 // schemaTablesV1 is what a complete v1 database holds.
 var schemaTablesV1 = []string{
 	tableSchemaVersion, tableProjects, tableAgents, tableCandidates,
@@ -978,6 +1056,15 @@ var schemaTablesV6 = schemaTablesV4
 var schemaTablesV7 = append(append([]string{}, schemaTablesV6...),
 	tableObservations, tableObservationHistory)
 
+// schemaTablesV8 is what a complete v8 database holds: v7's tables, because
+// v8 added columns only.
+var schemaTablesV8 = schemaTablesV7
+
+// schemaTablesV9 is what a complete v9 database holds: v8's tables and task
+// 078's two scenario execution tables.
+var schemaTablesV9 = append(append([]string{}, schemaTablesV8...),
+	tableScenarioExecutions, tableScenarioRepetitions)
+
 // schemaTablesByVersion maps every schema version this binary can recognize to
 // the tables a complete database at that version holds.
 //
@@ -1001,6 +1088,7 @@ var schemaTablesByVersion = map[int][]string{
 	schemaVersionV5: schemaTablesV4,
 	schemaVersionV6: schemaTablesV6,
 	schemaVersionV7: schemaTablesV7,
+	schemaVersionV8: schemaTablesV8,
 	SchemaVersion:   schemaTables,
 }
 
@@ -1218,7 +1306,10 @@ func schemaStatements() []string {
 	}, append(observationSchemaStatements("TEXT", "REAL"),
 		// v8: the optional counted-change gate columns, issue 131 — the
 		// same ALTER statements the v7 -> v8 migration applies.
-		promotionChangeGateColumnStatements("TEXT")...)...)
+		append(promotionChangeGateColumnStatements("TEXT"),
+			// v9: task 078's scenario executions, the statements the
+			// v8 -> v9 migration applies.
+			scenarioExecutionSchemaStatements("TEXT", "INTEGER")...)...)...)
 }
 
 // observationSchemaStatements is schema v7's whole addition, written once so
@@ -3339,4 +3430,94 @@ func (s *SQLiteStore) FindObservations(
 		return ObservationPage{}, fmt.Errorf("platform: read observations: %w", err)
 	}
 	return page, nil
+}
+
+// ---------------------------------------------------------------------
+// Scenario executions (schema v9)
+// ---------------------------------------------------------------------
+
+// CreateScenarioExecution stores a running execution.
+func (s *SQLiteStore) CreateScenarioExecution(ctx context.Context, execution ScenarioExecution) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: create scenario execution: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	if err := insertScenarioExecution(ctx, sqlExecQuerier{tx}, execution); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: create scenario execution: %w", err)
+	}
+	return nil
+}
+
+// ScenarioExecution loads one execution with its associations.
+func (s *SQLiteStore) ScenarioExecution(ctx context.Context, id ScenarioExecutionID) (ScenarioExecution, error) {
+	if id == "" {
+		return ScenarioExecution{}, fmt.Errorf("%w: scenario execution id is empty", ErrInvalidID)
+	}
+	return loadScenarioExecution(ctx, sqlQuerier{s.db}, id)
+}
+
+// CompleteScenarioExecution completes a running execution in one write
+// transaction. Writing the project row is the first write, so the transaction
+// holds SQLite's write intent before the sequence is read — the BEGIN
+// IMMEDIATE equivalent CreateEnvironment uses.
+func (s *SQLiteStore) CompleteScenarioExecution(
+	ctx context.Context, id ScenarioExecutionID,
+	repetitions []ScenarioRepetition, verdict GateVerdict, at time.Time,
+) (ScenarioExecution, error) {
+	if id == "" {
+		return ScenarioExecution{}, fmt.Errorf("%w: scenario execution id is empty", ErrInvalidID)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ScenarioExecution{}, fmt.Errorf("platform: complete scenario execution: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	completed, err := completeScenarioExecutionTx(ctx, sqlExecQuerier{tx}, id, repetitions, verdict, at)
+	if err != nil {
+		return ScenarioExecution{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ScenarioExecution{}, fmt.Errorf("platform: complete scenario execution: %w", err)
+	}
+	return completed, nil
+}
+
+// FailScenarioExecution fails a running execution.
+func (s *SQLiteStore) FailScenarioExecution(
+	ctx context.Context, id ScenarioExecutionID, at time.Time,
+) (ScenarioExecution, error) {
+	if id == "" {
+		return ScenarioExecution{}, fmt.Errorf("%w: scenario execution id is empty", ErrInvalidID)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ScenarioExecution{}, fmt.Errorf("platform: fail scenario execution: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	failed, err := failScenarioExecutionTx(ctx, sqlExecQuerier{tx}, id, at)
+	if err != nil {
+		return ScenarioExecution{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ScenarioExecution{}, fmt.Errorf("platform: fail scenario execution: %w", err)
+	}
+	return failed, nil
+}
+
+// LatestCompletedScenarioExecution returns what `last` names in this scope.
+func (s *SQLiteStore) LatestCompletedScenarioExecution(
+	ctx context.Context, scenarioName string, scope ScenarioScope,
+) (ScenarioExecution, error) {
+	id, err := latestCompletedScenarioExecutionID(ctx, sqlQuerier{s.db}, scenarioName, scope)
+	if err != nil {
+		return ScenarioExecution{}, err
+	}
+	return loadScenarioExecution(ctx, sqlQuerier{s.db}, id)
 }

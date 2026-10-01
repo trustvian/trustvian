@@ -1,6 +1,8 @@
 # 0053 — Repeated evaluation counts identities across isolated repetitions
 
-**Status:** Accepted
+**Status:** Accepted. § 6 (no persistence) is superseded by
+[ADR 0054](0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md),
+which persists scenario executions at schema 9 for `--reference`.
 
 ## Context
 

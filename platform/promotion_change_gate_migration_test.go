@@ -42,6 +42,7 @@ func historicalPromotions(t testing.TB, store Store) (accepted, rejected Promoti
 // gone, version 7 stamped. exec runs one statement against it.
 func downgradeToV7(t testing.TB, exec func(string) error) {
 	t.Helper()
+	downgradeToV8(t, exec)
 	for _, column := range promotionChangeGateColumnNames() {
 		if err := exec(`ALTER TABLE ` + tablePromotions + ` DROP COLUMN ` + column); err != nil {
 			t.Fatalf("drop v8 column %s: %v", column, err)

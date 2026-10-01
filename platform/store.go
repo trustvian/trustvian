@@ -76,6 +76,11 @@ type Store interface {
 	// the conformance suite would have no way to assert the two are equivalent.
 	ObservationStore
 
+	// ScenarioExecutionStore persists task 078's scenario executions (schema
+	// v9). Part of the full-backend contract: `--reference` is meaningless on
+	// a backend that cannot record what it would reuse.
+	ScenarioExecutionStore
+
 	io.Closer
 }
 

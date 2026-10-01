@@ -174,6 +174,7 @@ func TestSchemaV4MigratesForwardAddingOnlyTheIntendedSchema(t *testing.T) {
 		indexAgentsByProject, indexCandidatesByAgent, indexRunsByCandidate,
 		indexObservationsByFingerprint, indexObservationsByTrace,
 		indexObservationsBySession,
+		indexScenarioExecutionsLatest,
 	}
 	slices.Sort(want)
 	slices.Sort(added)
@@ -186,7 +187,7 @@ func TestSchemaV4MigratesForwardAddingOnlyTheIntendedSchema(t *testing.T) {
 		}
 	}
 
-	// Exactly v7's two tables added, and none dropped.
+	// Exactly v7's two tables and v9's two added, and none dropped.
 	afterTables := sqliteTableNames(t, store.db)
 	var addedTables []string
 	for _, name := range afterTables {
@@ -194,7 +195,8 @@ func TestSchemaV4MigratesForwardAddingOnlyTheIntendedSchema(t *testing.T) {
 			addedTables = append(addedTables, name)
 		}
 	}
-	wantTables := []string{tableObservations, tableObservationHistory}
+	wantTables := []string{tableObservations, tableObservationHistory,
+		tableScenarioExecutions, tableScenarioRepetitions}
 	slices.Sort(wantTables)
 	slices.Sort(addedTables)
 	if !slices.Equal(addedTables, wantTables) {

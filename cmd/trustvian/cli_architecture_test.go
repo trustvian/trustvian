@@ -96,6 +96,13 @@ var forbiddenIdentifiers = []string{
 	"RepeatedEvaluationGateLimits",
 	"reduceRepeated",
 	"classifyPresence",
+	// Task 078's recorded references. Which execution `last` names, whether a
+	// reference is usable and which runs it reuses are the control plane's
+	// answers; the runner sends a mode and reports what came back.
+	"LatestCompletedScenarioExecution",
+	"usableReference",
+	"ScenarioExecutionStore",
+	"SideRepetitions",
 }
 
 // TestScenarioRunnerCountsNothing pins task 078's prohibition at the source of

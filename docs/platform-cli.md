@@ -103,7 +103,8 @@ trustvian eval compare      --reference-run <id> --candidate-run <id>
                             --max-added-behaviors <n> --max-block-decisions <n>
                             --max-critical-risk-observations <n>
                             [--max-added-behavior-changes <n>]
-trustvian eval run          --scenario <file> [--collector-bin <path>]
+trustvian eval run          --scenario <file> [--reference <execution-id>|last]
+                            [--collector-bin <path>]
 
 trustvian env create   --project-id <id> --ref <ref> --name <name> [--rank <n>]
 trustvian env get      --project-id <id> --ref <ref>
@@ -489,7 +490,7 @@ reading once rather than assuming.
 | `analyze`, `baseline`, `version` | success | command failed | top-level usage | — |
 | `project`, `agent`, `candidate`, most of `eval` | success | *unused* | usage | API or network failure |
 | `eval compare` | gate **PASS** | gate **FAIL** | usage | API or network failure |
-| `eval run` | gate **PASS** | gate **FAIL** | usage — the scenario, before anything runs | API or network failure, or a repetition whose workload failed |
+| `eval run` | gate **PASS** | gate **FAIL** | usage — the scenario or `--reference`, before anything runs | API or network failure, a reference the control plane refused (before any workload), or a repetition whose workload or run failed |
 | `dev` | the command’s own | the command’s own | usage | could not start |
 
 **Exit 1 means gate failure only for `eval compare` and `eval run`.** It does not change what
@@ -585,7 +586,11 @@ trustvian eval run --scenario scenarios/support-login.yaml --json > result.json
   measurement does not justify any other value as one.
 
 **What runs.**
+- Every invocation is a recorded **scenario execution**, named by the
+  `execution_id` in the result. It begins before anything runs and completes
+  with the verdict, or is recorded failed when the scenario stops.
 - `2N` repetitions, one at a time: the reference side, then the candidate side.
+  With `--reference`, only the `N` candidate repetitions — see below.
 - Each repetition is a full `trustvian dev` run against the one control plane
   `--api-url` resolves to. Each has a fresh run id and its own
   `--behavioral-profile`, so no repetition meets a baseline another one taught.
@@ -601,8 +606,9 @@ trustvian eval run --scenario scenarios/support-login.yaml --json > result.json
   runs that virtualenv's `python`. As with the shell, the first match you may
   execute wins. The parent's `PATH` is never a fallback.
 
-**What decides.** The control plane, through
-`POST /v1/evaluations/compare-repeated`. The runner counts nothing.
+**What decides.** The control plane, completing the execution through the
+same comparison `POST /v1/evaluations/compare-repeated` serves. The runner
+counts nothing.
 - It refuses repetitions that span environments or projects, or that share a
   behavioral profile. It also refuses evidence in which one behavior appears
   under two fingerprints, or one fingerprint names two behaviors.
@@ -642,10 +648,49 @@ Gate (k = 1, j = 0)
 
 **`--json`** writes the result document: the scenario name and `runs`, the
 execution id, both producer versions (`cli_version`, `control_plane_version`),
-and the server's repeated result under `comparison`.
+and the server's repeated result under `comparison`. With `--reference` it also
+carries `reference`: the mode asked for and the execution that was reused.
 
-**Not yet:** comparing against a *recorded* reference execution
-(`--reference`), and suites of scenarios. Every `eval run` executes both sides.
+### Reusing a recorded reference: `--reference`
+
+```bash
+# Record a reference once (both sides run).
+trustvian eval run --scenario scenarios/support-login.yaml
+
+# Later: run only the candidate side against it.
+trustvian eval run --scenario scenarios/support-login.yaml --reference last
+trustvian eval run --scenario scenarios/support-login.yaml \
+  --reference scn-support-login-20261001T120000-1a2b3c4d
+```
+
+- **Only the `N` candidate repetitions run.** The reference side is the recorded
+  execution's `N` reference runs, all of them, from that one execution. It is
+  never mixed with another execution's runs, never truncated and never padded.
+  The recorded execution's *candidate* runs are never used.
+- **`last`** is the most recently completed execution of the same scenario
+  `name`, for the same project, agent and environment this invocation derives.
+  "Most recent" is the order completions were recorded, not a clock. If that
+  execution cannot be used, the command says so by name and stops. It never
+  falls back to an older one.
+- **An explicit id** may name an execution of another scenario name or agent,
+  because you chose it. It must still be in the same project and environment.
+- **A usable reference is completed**, which includes a gate FAIL: completed
+  means "evaluated", not "passed". Its `runs` must equal this scenario's, and
+  its recorded runs must still exist, be completed, carry their recorded
+  profiles and have complete evidence.
+- **Anything else is exit `3` before any workload runs:** a reference that is
+  missing, still running, failed, of another `N` or incomplete. A recorded run
+  with zero records is not an error here. It fails the minimum-evidence check,
+  as it would in a self-contained run.
+- **This scenario's gate limits apply**, whatever limits the recorded execution
+  was evaluated under. Recorded executions keep no limits to inherit.
+- **The scenario file is validated whole.** `reference.command` is still
+  required, although `--reference` does not run it.
+
+The control plane resolves and validates the reference; the runner only names
+it ([ADR 0054](adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)).
+
+**Not yet:** suites of scenarios.
 
 ## `--json`
 
