@@ -36,7 +36,8 @@ actually depend on.
       leftover group members are killed.
     - The run and execution are failed.
     - The scenario is an operational error even if its workload exited `0`.
-    - **A completion racing the deadline is settled by the control plane.**
+    - **A completion racing the deadline, or answered by a gateway's
+      502/503/504, is settled by the control plane.**
       The runner fails the execution; if the server had already completed it,
       the member reports `completed_without_response`, a completed execution
       for which no verdict is reported. A member reported `scenario_timeout`

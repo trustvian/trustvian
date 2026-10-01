@@ -25,6 +25,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -460,23 +461,38 @@ func (r scenarioRunner) execute(ctx context.Context, s streams, client *platform
 		out.executionID = executionID
 		return out
 	}
+	// An answer that is not the control plane's own cannot rule out a
+	// commit either: a gateway in front of it can answer 502 after the
+	// completion committed. Only a definitive /v1 refusal — its error
+	// envelope, from the control plane itself — shows nothing was completed.
+	reconcile := func(cause error) scenarioOutcome {
+		out := r.reconcileCompletion(s, client, executionID, cause)
+		out.executionID = executionID
+		return out
+	}
 	if err := checkStatus(result); err != nil {
+		if !definitiveRefusal(result, err) {
+			return reconcile(err)
+		}
 		return abort(err)
 	}
+	// A 2xx is a commit. An answer that cannot be read is still one, so it is
+	// reconciled rather than failed: failing would be refused, and saying the
+	// execution stayed running would be false.
 	if err := requireJSONBody(result.body); err != nil {
-		return abort(err)
+		return reconcile(err)
 	}
 	var completed completeExecutionResponse
 	if err := decodeJSON(result.body, &completed); err != nil {
-		return abort(err)
+		return reconcile(err)
 	}
 	if len(completed.Comparison) == 0 {
-		return abort(operationalErrorf("the control plane completed execution %s without a comparison",
+		return reconcile(operationalErrorf("the control plane completed execution %s without a comparison",
 			executionID))
 	}
 	var comparison repeatedDTO
 	if err := decodeJSON(completed.Comparison, &comparison); err != nil {
-		return abort(err)
+		return reconcile(err)
 	}
 	// Classified before anything is written, exactly as eval compare does: a
 	// verdict the CLI does not recognize is not publishable CI evidence. The
@@ -541,6 +557,20 @@ func (r scenarioRunner) begin(ctx context.Context, client *platformClient,
 		return beginExecutionResponse{}, err
 	}
 	return begun, nil
+}
+
+// definitiveRefusal reports whether a non-2xx completion answer is the
+// control plane's own refusal: a well-formed /v1 error envelope, and not a
+// gateway status. A refusal means nothing was completed. Anything else —
+// 502, 503, 504, or a body that is not the control plane's — leaves the
+// commit undecided.
+func definitiveRefusal(result apiResult, err error) bool {
+	switch result.status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return false
+	}
+	var perr *platformError
+	return errors.As(err, &perr) && perr.envelope != nil
 }
 
 // reconcileCompletion settles a completion request that ended without an
@@ -618,7 +648,8 @@ func (r scenarioRunner) fail(s streams, client *platformClient, executionID stri
 	}
 	if err != nil {
 		fmt.Fprintf(s.err, "trustvian eval run: WARNING: execution %s could not be recorded "+
-			"failed (%v); it stays running and is never used as a reference\n", executionID, err)
+			"failed (%v); it was never completed, so it stays running, and a running execution "+
+			"is never used as a reference\n", executionID, err)
 	}
 }
 

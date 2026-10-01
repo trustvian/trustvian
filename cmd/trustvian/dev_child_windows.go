@@ -55,6 +55,10 @@ func applyChildProcessAttributes(*exec.Cmd) {}
 // forwardSignal is unreachable on Windows, for the same reason.
 func forwardSignal(*os.Process, os.Signal) {}
 
+// cancelWithProcessGroup keeps exec's default cancellation on Windows, where
+// there are no process groups to signal; WaitDelay still bounds the wait.
+func cancelWithProcessGroup(*exec.Cmd) {}
+
 // killProcessGroup is unreachable on Windows, for the same reason.
 func killProcessGroup(*os.Process) {}
 

@@ -315,3 +315,28 @@ func TestOnlySuiteMembersYieldSignalsAndTheTerminal(t *testing.T) {
 		}
 	}
 }
+
+// Only the control plane's own /v1 refusal shows a completion was not
+// committed; a gateway status or a foreign body leaves it undecided.
+func TestOnlyTheServersOwnRefusalIsDefinitive(t *testing.T) {
+	envelope := `{"version":"1","error":{"code":"conflict","message":"not running"}}`
+	for _, tc := range []struct {
+		status int
+		body   string
+		want   bool
+	}{
+		{409, envelope, true},
+		{400, envelope, true},
+		{404, envelope, true},
+		{502, envelope, false},
+		{503, envelope, false},
+		{504, envelope, false},
+		{502, "<html>Bad Gateway</html>", false},
+		{500, "internal error", false},
+	} {
+		result := apiResult{status: tc.status, body: []byte(tc.body)}
+		if got := definitiveRefusal(result, checkStatus(result)); got != tc.want {
+			t.Errorf("HTTP %d %q: definitive %v, want %v", tc.status, tc.body, got, tc.want)
+		}
+	}
+}

@@ -728,8 +728,10 @@ trustvian eval run --suite scenarios/ --scenario-timeout 10m --reference last --
      workload trapped the signal and exited `0`.
 
   The suite continues.
-- **If the deadline passes while the execution is being completed,** the
-  control plane decides which happened first. Either the execution is failed
+- **If the deadline passes while the execution is being completed** — or a
+  gateway answers 502, 503 or 504, or anything other than the control plane's
+  own `/v1` answer comes back — the control plane decides which happened
+  first. Either the execution is failed
   (`scenario_timeout` or `cancelled`), or it had already completed. The
   second case is reported as `completed_without_response`, exit `3`: the
   execution is complete and reusable as a reference, but no verdict was

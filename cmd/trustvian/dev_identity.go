@@ -303,6 +303,11 @@ func (r repositoryInfo) projectName(workloadDir string) string {
 // milliseconds; this only bounds the pathological case.
 const gitTimeout = 5 * time.Second
 
+// gitWaitDelay bounds how long a git query waits, once its context has ended
+// and git has been killed, for pipes a descendant still holds. After it the
+// pipes are closed and the query returns.
+const gitWaitDelay = 500 * time.Millisecond
+
 // inspectRepository asks git about the working directory.
 //
 // git is a subprocess, not a dependency: nothing is imported, and its absence is
@@ -368,6 +373,21 @@ func runGit(parent context.Context, workloadDir string, args ...string) (string,
 	// git reads configuration from the environment; inheriting it is correct.
 	// Nothing here passes a caller-supplied value as an argument: every element
 	// of args is a literal in this file.
+
+	// Killing git is not enough to end the query. git can start hooks — a
+	// configured core.fsmonitor, for one — that inherit its stdout and
+	// stderr, and Output waits for those pipes to close, not only for git.
+	// WaitDelay bounds that wait once the context has ended: the pipes are
+	// closed and the query returns, whatever a descendant still holds.
+	cmd.WaitDelay = gitWaitDelay
+	if parent.Done() != nil {
+		// Under a caller's deadline (a suite member), git and everything it
+		// starts share a process group of their own, and cancellation kills
+		// that group at once — so a hook does not outlive the query. Not for
+		// `trustvian dev` itself, whose git stays in the terminal's group and
+		// so keeps receiving the developer's Ctrl-C as before.
+		cancelWithProcessGroup(cmd)
+	}
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err

@@ -207,6 +207,23 @@ func forwardSignal(process *os.Process, received os.Signal) {
 	}
 }
 
+// cancelWithProcessGroup runs cmd in a process group of its own and makes its
+// context's cancellation kill that whole group, synchronously, rather than
+// the process alone: a helper's hooks and other descendants end with it.
+//
+// The group is cmd's own, created by Setpgid at start, and the kill happens
+// while exec still holds the unreaped leader — so the group id cannot have
+// been reused, and nothing is left scheduled to fire later.
+func cancelWithProcessGroup(cmd *exec.Cmd) {
+	childProcessAttributes(cmd).Setpgid = true
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+}
+
 // killProcessGroup sends SIGKILL to the workload's whole process group.
 //
 // Used only when a scenario deadline passed (task 078): after the grace

@@ -118,9 +118,16 @@ When the deadline passes:
 **Whether the execution completed is the control plane's to say.** Completing
 and failing an execution are both compare-and-swaps from `running` (ADR 0054
 § 2), so the server orders them. A cancelled request is not a rolled-back one.
-When the completion request ends without an answer — the deadline, a
-cancellation, or the transport — the runner fails the execution and the server
-decides:
+When the completion request ends without the control plane's own answer, the
+runner fails the execution and the server decides. That covers:
+
+- the deadline, a cancellation, or the transport ending the request;
+- a gateway's 502, 503 or 504, which a proxy can return after the completion
+  committed;
+- any other non-2xx without a `/v1` error envelope;
+- a 2xx whose body cannot be read.
+
+Only a well-formed `/v1` refusal is taken as definitive.
 
 | The server... | Meaning | The member reports |
 |---|---|---|
@@ -138,6 +145,9 @@ the workload:
 - **Naming the run.** The repository's git queries are cancelled when the
   deadline passes, and no further query starts. Nothing is provisioned or
   launched afterwards.
+  - Each query runs in a process group of its own, which cancellation kills
+    whole, so a git hook such as `core.fsmonitor` ends with it.
+  - Pipes still held after the kill are closed within 500ms.
 - **Completing the run.** A run completion still in flight when the deadline
   passes, or when the suite is cancelled, is cancelled and never reported
   complete. The run is then failed under a fresh, bounded context. If the
