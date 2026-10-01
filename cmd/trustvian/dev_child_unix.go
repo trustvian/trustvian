@@ -203,6 +203,20 @@ func forwardSignal(process *os.Process, received os.Signal) {
 	}
 }
 
+// killProcessGroup sends SIGKILL to the workload's whole process group.
+//
+// Used only when a scenario deadline passed (task 078): after the grace
+// period, and again once the group leader has been reaped, so a descendant
+// that ignored SIGTERM — or outlived a leader that trapped it — does not
+// survive the scenario. The group is the one startChild created; an empty
+// group answers ESRCH, which is ignored.
+func killProcessGroup(process *os.Process) {
+	if process == nil {
+		return
+	}
+	_ = syscall.Kill(-process.Pid, syscall.SIGKILL)
+}
+
 // processAliveForBaseline reports whether a pid can still be signalled.
 //
 // Signal 0 performs the existence and permission checks without delivering

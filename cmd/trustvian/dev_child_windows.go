@@ -55,6 +55,9 @@ func applyChildProcessAttributes(*exec.Cmd) {}
 // forwardSignal is unreachable on Windows, for the same reason.
 func forwardSignal(*os.Process, os.Signal) {}
 
+// killProcessGroup is unreachable on Windows, for the same reason.
+func killProcessGroup(*os.Process) {}
+
 // childSpec mirrors the Unix shape so the portable supervisor compiles here.
 type childSpec struct {
 	command               []string

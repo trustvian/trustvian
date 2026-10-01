@@ -148,7 +148,20 @@ func superviseChildTo(s streams, command []string, environment *devEnvironment,
 		defer relay.clearTarget()
 	}
 
-	outcome := childExitOutcome(s, command, cmd.Wait())
+	waitErr := cmd.Wait()
+	if relay != nil {
+		// Cleared at once, not only by the deferred call: that stops a
+		// pending deadline escalation before anything below can race it.
+		relay.clearTarget()
+		if relay.Expired() {
+			// The deadline ended this workload. Its leader is reaped;
+			// anything left in its group — a descendant that ignored SIGTERM,
+			// or one that outlived a leader that trapped it — is killed now
+			// rather than outliving the scenario.
+			killProcessGroup(cmd.Process)
+		}
+	}
+	outcome := childExitOutcome(s, command, waitErr)
 	outcome.terminalHandover = handover
 	return outcome
 }

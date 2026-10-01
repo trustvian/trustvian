@@ -105,6 +105,8 @@ trustvian eval compare      --reference-run <id> --candidate-run <id>
                             [--max-added-behavior-changes <n>]
 trustvian eval run          --scenario <file> [--reference <execution-id>|last]
                             [--collector-bin <path>]
+trustvian eval run          --suite <dir> --scenario-timeout <duration>
+                            [--fail-fast] [--reference last] [--collector-bin <path>]
 
 trustvian env create   --project-id <id> --ref <ref> --name <name> [--rank <n>]
 trustvian env get      --project-id <id> --ref <ref>
@@ -490,7 +492,7 @@ reading once rather than assuming.
 | `analyze`, `baseline`, `version` | success | command failed | top-level usage | — |
 | `project`, `agent`, `candidate`, most of `eval` | success | *unused* | usage | API or network failure |
 | `eval compare` | gate **PASS** | gate **FAIL** | usage | API or network failure |
-| `eval run` | gate **PASS** | gate **FAIL** | usage — the scenario or `--reference`, before anything runs | API or network failure, a reference the control plane refused (before any workload), or a repetition whose workload or run failed |
+| `eval run` | gate **PASS** | gate **FAIL** | usage — the scenario, the suite or `--reference`, before anything runs | API or network failure, a reference the control plane refused (before any workload), a repetition whose workload or run failed, or a scenario past its `--scenario-timeout`. A suite exits with its most severe scenario: 3, then 2, then 1, then 0 |
 | `dev` | the command’s own | the command’s own | usage | could not start |
 
 **Exit 1 means gate failure only for `eval compare` and `eval run`.** It does not change what
@@ -690,7 +692,67 @@ trustvian eval run --scenario scenarios/support-login.yaml \
 The control plane resolves and validates the reference; the runner only names
 it ([ADR 0054](adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)).
 
-**Not yet:** suites of scenarios.
+### A suite of scenarios: `--suite`
+
+```bash
+trustvian eval run --suite scenarios/ --scenario-timeout 10m --json > suite.json
+trustvian eval run --suite scenarios/ --scenario-timeout 10m --reference last --fail-fast
+```
+
+- **Members.** Every `.yaml` and `.yml` file directly inside the directory, in
+  byte order of their names.
+  - No subdirectories.
+  - A symbolic link is refused.
+  - At most 64 scenarios, and at most 4096 directory entries examined.
+  - `--suite` and `--scenario` cannot be combined.
+- **Everything is checked first.** Every file is validated, scenario names must
+  be distinct, and every scope is derived. Any problem is exit `2` before a
+  workload or request.
+- **Each member runs exactly as `--scenario` would.** It keeps its own `runs`,
+  its own limits, its own recorded execution and the control plane's verdict.
+  The suite pools nothing and recomputes nothing.
+- **A failure does not stop the others** unless you pass `--fail-fast`, which
+  stops after the first scenario that is not a PASS. Members that did not run
+  are reported `skipped` with a reason (`fail_fast` or `cancelled`), never as
+  passes.
+- **`--scenario-timeout` is required: 1s to 24h, per scenario.** It covers
+  begin, every repetition (including `dev`'s startup and teardown) and
+  completion. When it passes:
+  1. no further repetition of that scenario starts;
+  2. its workload's process group gets SIGTERM, then SIGKILL after 5s, and any
+     leftover group members are killed;
+  3. the execution is recorded failed;
+  4. the scenario is an operational error, `scenario_timeout`, even if the
+     workload trapped the signal and exited `0`.
+
+  The suite continues. Like `dev`, `eval run` is not supported on Windows: use
+  WSL2.
+- **`--reference last`** is resolved per scenario: the most recent completed
+  execution of *that* scenario's name, project, agent and environment, with
+  its N. A missing or unusable one is that scenario's error, before it runs
+  anything. An explicit execution id is refused with `--suite`; use it with
+  `--scenario`.
+- **Ctrl-C (or SIGTERM)** stops the running scenario, records its execution
+  failed, and marks the rest `skipped: cancelled`. The suite exits `3`.
+- **Exit code:** the most severe scenario's, `3` over `2` over `1` over `0`.
+
+**`--json`** writes one suite document:
+
+- `version`, `complete`;
+- `suite` (`directory`, `scenario_count`);
+- `options` (`scenario_timeout`, `fail_fast`, `reference`);
+- `members[]`, each with:
+  - `file`, `scenario` (`name`, `runs`), `outcome` (`pass`, `fail`, `error`,
+    `skipped`), `exit_code`, `execution_id`;
+  - `result` (the single-scenario document, unchanged) for a PASS or FAIL;
+  - `error` (`code`, `message` of at most 1024 bytes);
+  - `skipped_reason`;
+- `summary`, `exit_code`, `producers.cli_version`.
+
+The document is capped at **32 MiB**. Over that, the suite exits `3` and writes
+a document with `complete: false` and an `output_too_large` error, listing each
+member's file and scenario but no outcomes or results.
+([ADR 0055](adr/0055-a-scenario-suite-is-a-bounded-schedule-and-a-report-not-an-evaluation.md))
 
 ## `--json`
 

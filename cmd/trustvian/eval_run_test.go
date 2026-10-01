@@ -76,11 +76,27 @@ type recorder struct {
 	// uncompletedOn is the 1-based call whose workload succeeds but whose
 	// run is not completed; 0 never.
 	uncompletedOn int
+	// crashRunsWith fails every repetition whose run id has this prefix.
+	crashRunsWith string
+	// onCall runs before each repetition returns, with its 1-based number;
+	// returning true makes the repetition wait for its deadline and then
+	// exit 0, as a workload trapping SIGTERM would.
+	onCall func(n int, config devConfig) (hang bool)
 }
 
 func (r *recorder) run(s streams, config devConfig) devResult {
 	r.calls = append(r.calls, recordedRepetition{config: config})
 	fmt.Fprintf(s.out, "workload output for %s\n", config.runID)
+	if r.onCall != nil && r.onCall(len(r.calls), config) {
+		if config.deadline == nil {
+			panic("a hanging repetition was given no deadline")
+		}
+		<-config.deadline.Done()
+		return devResult{code: 0}
+	}
+	if r.crashRunsWith != "" && strings.HasPrefix(config.runID, r.crashRunsWith) {
+		return devResult{code: 9}
+	}
 	switch len(r.calls) {
 	case r.failOn:
 		return devResult{code: 7}
@@ -99,6 +115,10 @@ type scenarioAPI struct {
 	beginError, completeError   string
 	verdict                     string
 	reference                   string
+	// Per-execution overrides, keyed by execution id, for suites.
+	verdicts          map[string]string
+	completeStatusFor map[string]int
+	beginErrors       map[string]string
 }
 
 func newScenarioAPI(t *testing.T, verdict string) *scenarioAPI {
@@ -109,16 +129,21 @@ func newScenarioAPI(t *testing.T, verdict string) *scenarioAPI {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/v1/scenario-executions":
-			if api.beginStatus != 201 {
-				w.WriteHeader(api.beginStatus)
-				fmt.Fprint(w, api.beginError)
-				return
-			}
 			var body struct {
 				ID        string          `json:"id"`
 				Reference json.RawMessage `json:"reference"`
 			}
 			_ = json.Unmarshal(api.lastBody(), &body)
+			if e, ok := api.beginErrors[body.ID]; ok {
+				w.WriteHeader(404)
+				fmt.Fprint(w, e)
+				return
+			}
+			if api.beginStatus != 201 {
+				w.WriteHeader(api.beginStatus)
+				fmt.Fprint(w, api.beginError)
+				return
+			}
 			reference := ""
 			if len(body.Reference) > 0 {
 				reference = fmt.Sprintf(`,"reference_execution":{"id":%q,"status":"completed"}`, api.reference)
@@ -126,14 +151,24 @@ func newScenarioAPI(t *testing.T, verdict string) *scenarioAPI {
 			w.WriteHeader(201)
 			fmt.Fprintf(w, `{"version":"1","execution":{"id":%q,"status":"running"}%s}`, body.ID, reference)
 		case strings.HasSuffix(r.URL.Path, "/complete"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/scenario-executions/"), "/complete")
+			if status, ok := api.completeStatusFor[id]; ok && status != 200 {
+				w.WriteHeader(status)
+				fmt.Fprint(w, `{"version":"1","error":{"code":"incomplete_evidence","message":"saturated"}}`)
+				return
+			}
 			if api.completeStatus != 200 {
 				w.WriteHeader(api.completeStatus)
 				fmt.Fprint(w, api.completeError)
 				return
 			}
+			verdict := api.verdict
+			if v, ok := api.verdicts[id]; ok {
+				verdict = v
+			}
 			w.WriteHeader(200)
-			fmt.Fprintf(w, `{"version":"1","execution":{"id":"scn-test","status":"completed"},"comparison":%s}`,
-				repeatedReply(api.verdict))
+			fmt.Fprintf(w, `{"version":"1","execution":{"id":%q,"status":"completed"},"comparison":%s}`,
+				id, repeatedReply(verdict))
 		case strings.HasSuffix(r.URL.Path, "/fail"):
 			w.WriteHeader(200)
 			fmt.Fprint(w, `{"version":"1","execution":{"id":"scn-test","status":"failed"}}`)

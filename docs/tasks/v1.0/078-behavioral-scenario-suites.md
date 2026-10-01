@@ -3,8 +3,9 @@
 Status: partially implemented. Repeated evaluation ships —
 `trustvian eval run` and `POST /v1/evaluations/compare-repeated` ([ADR 0053](../../adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)) —
 and so do persisted scenario executions with `--reference <execution>|last`
-at schema 9 ([ADR 0054](../../adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)).
-Suites remain; see [Implementation status](#implementation-status). Measurement re-run at tool
+at schema 9 ([ADR 0054](../../adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)),
+and suites of scenarios with per-scenario deadlines ([ADR 0055](../../adr/0055-a-scenario-suite-is-a-bounded-schedule-and-a-report-not-an-evaluation.md)).
+Acceptance criteria 9 and 11 remain open; see [Implementation status](#implementation-status). Measurement re-run at tool
 fidelity recorded 2026-10-01 — see
 [The re-run at tool-name fidelity](#the-re-run-at-tool-name-fidelity-2026-10-01)
 Milestone: `v1.0`
@@ -1503,9 +1504,51 @@ Against the criteria below:
 | 17 | Met by the 2026-10-01 measurement |
 | 21, 22 | Met earlier (the run-scoped behavior route and `--behavioral-profile`) |
 
+The third slice, recorded in
+[ADR 0055](../../adr/0055-a-scenario-suite-is-a-bounded-schedule-and-a-report-not-an-evaluation.md):
+suites.
+
+- **`trustvian eval run --suite DIR --scenario-timeout D [--fail-fast]
+  [--reference last]`.**
+  - Members are the directory's immediate regular `.yaml`/`.yml` files in name
+    order: at most 64, with at most 4096 entries examined.
+  - Every member is validated, names are checked distinct and scopes are
+    derived before anything runs.
+  - Members run sequentially through the single-scenario path.
+- **Default continuation:** a failure does not stop the rest. `--fail-fast`
+  stops scheduling, and the rest are reported `skipped`.
+- **`--reference last` per member.** An explicit id is refused for a suite.
+- **A real deadline per scenario**, covering begin, repetitions with `dev`'s
+  composition and teardown, and completion.
+  - The workload's process group gets SIGTERM, then SIGKILL after 5s, and any
+    leftover group members are killed.
+  - The run and the execution are failed, and the member is an operational
+    error even if the workload exits 0.
+- **SIGINT or SIGTERM** stops the running member and skips the rest.
+- **One versioned suite document.**
+  - Member result documents are embedded unchanged.
+  - Errors are bounded.
+  - Exit precedence is 3, then 2, then 1, then 0.
+  - The document is capped at 32 MiB; overflow is a bounded, explicitly
+    incomplete document and exit 3.
+- **No schema step and no `/v1` change.**
+- **Tests:**
+  - discovery and preflight bounds;
+  - continuation, fail-fast and cancellation;
+  - precedence;
+  - per-member `last`;
+  - overflow;
+  - deadline cleanup of a hung workload with a SIGTERM-ignoring descendant,
+    a trapped exit 0 and SIGKILL escalation;
+  - a real-binary, model-free suite end to end.
+
+**What the suite does not change.** The measured nondeterminism in criterion 11
+applies to each member, as it does to a single scenario. A suite composes
+members' verdicts by precedence and makes none of them more reliable.
+
 **Not built:**
-- Suites of scenarios.
 - A listing route for scenario executions; `GET` by id exists.
+- Per-member reference maps, suite manifests, and parallel members.
 - A reorder-specific test for criterion 9.
 - A repeated limit over counted changes (ADR 0053 § 1).
 
@@ -1607,7 +1650,9 @@ Against the criteria below:
 2. **Where the subcommand lives** — extending the `eval` family is assumed, so
    it inherits the gate exit-code contract rather than defining one.
 3. **Whether a suite is a directory or a file listing scenarios.** A directory
-   is assumed.
+   is assumed. **Resolved** by [ADR 0055](../../adr/0055-a-scenario-suite-is-a-bounded-schedule-and-a-report-not-an-evaluation.md):
+   - a directory's immediate `.yaml`/`.yml` files, in name order;
+   - a manifest is deferred.
 4. **Whether scenarios run against `trustvian dev` only**, or can attach to an
    already-running runtime. Both, with the latter as the CI path, is assumed.
 5. **Whether repetitions run sequentially or concurrently.** Sequential is

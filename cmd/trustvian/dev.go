@@ -237,6 +237,13 @@ type devConfig struct {
 	// line never sets this.
 	env map[string]string
 
+	// deadline, when set, bounds the whole invocation: composition, the
+	// workload and the run's finalization (task 078 suites). When it is done
+	// the workload's process group is terminated — SIGTERM, then SIGKILL after
+	// deadlineTerminationGrace — and the run is failed, never completed,
+	// whatever the workload exits with. The dev command line never sets this.
+	deadline context.Context
+
 	// workloadStdout, when set, receives the workload's standard output instead
 	// of dev's own. Task 078: `eval run` sends it to its stderr, so its stdout
 	// carries one result document and nothing else. Per invocation, never by
@@ -297,6 +304,9 @@ func composeAndRunResult(s streams, config devConfig) devResult {
 	// Stopped after teardown, not before: shutting down still has work to do, and
 	// a second Ctrl-C during it should reach the helpers rather than killing dev.
 	defer relay.Stop()
+	// Registered after Stop, so it runs first: the watcher ends before the
+	// relay it would expire.
+	defer relay.watchDeadline(config.deadline, deadlineTerminationGrace)()
 
 	workloadDir, err := resolveWorkloadDir()
 	if err != nil {
@@ -494,6 +504,11 @@ type devSession struct {
 // the relay's context, so this catches the gap between them — where a signal would
 // otherwise be noticed only after the next thing had been started.
 func (d *devSession) interrupted() (int, bool) {
+	if d.relay.Expired() {
+		fmt.Fprintf(d.s.err, "trustvian dev: the deadline passed before the workload finished\n")
+		d.failRunIfStarted("the deadline passed before the workload finished")
+		return exitDevOperational, true
+	}
 	sig := d.relay.Received()
 	if sig == 0 {
 		return 0, false
@@ -510,6 +525,11 @@ func (d *devSession) interrupted() (int, bool) {
 // a wait makes it fail, and calling that an error would blame dev for doing what
 // it was asked.
 func (d *devSession) fail(err error) int {
+	if d.relay.Expired() {
+		fmt.Fprintf(d.s.err, "trustvian dev: the deadline passed before the workload finished\n")
+		d.failRunIfStarted("the deadline passed before the workload finished")
+		return exitDevOperational
+	}
 	if sig := d.relay.Received(); sig != 0 {
 		fmt.Fprintf(d.s.out, "\nInterrupted.\n")
 		d.failRunIfStarted("interrupted by the developer before the workload finished")
@@ -526,6 +546,17 @@ func (d *devSession) finish(outcome childOutcome) int {
 	defer cancel()
 
 	switch {
+	case d.relay.Expired():
+		// The deadline ended the workload. Whatever it exited with — a
+		// workload that traps SIGTERM can exit 0 — it did not finish, so the
+		// run is failed and nothing downstream reads it as evidence.
+		d.failRunWith(ctx, "the deadline passed before the workload finished")
+		fmt.Fprintf(d.s.out, "\nRun %s failed: the deadline passed.\n", d.identity.Run)
+		if outcome.code == exitDevOK {
+			return exitDevOperational
+		}
+		return outcome.code
+
 	case outcome.startFailed:
 		// No workload ran, so the reason must not claim a workload status. An
 		// earlier version recorded "the workload exited 3", which is the code dev
@@ -749,6 +780,10 @@ const (
 	// at all — a command that does not exist, or one that cannot be executed.
 	exitDevOperational = 3
 )
+
+// deadlineTerminationGrace is how long a workload has, once a deadline has
+// passed, between SIGTERM to its process group and SIGKILL.
+const deadlineTerminationGrace = 5 * time.Second
 
 // devCommandName renders a command for a diagnostic.
 //

@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // signalRelay traps SIGINT and SIGTERM for the whole session.
@@ -42,6 +43,20 @@ type signalRelay struct {
 	// forwarded records that at least one signal was passed to a workload.
 	// This is what makes Ctrl-C distinguishable from a crash.
 	forwarded bool
+
+	// expired records that the session's deadline passed (task 078 suites).
+	// Never set by `trustvian dev` itself, which has no deadline. It is not a
+	// signal: nobody asked for the stop, so it is never read as the developer
+	// stopping the workload, and a workload that traps the termination and
+	// exits 0 has still not succeeded.
+	expired bool
+	// grace is how long a workload has between SIGTERM and SIGKILL once the
+	// deadline has passed.
+	grace time.Duration
+	// escalation is the pending SIGKILL for the current target. Stopped when
+	// the target is cleared, so it can never fire at a process group whose
+	// leader has been reaped and whose id the system may have reused.
+	escalation *time.Timer
 }
 
 // newSignalRelay installs the handler and starts relaying.
@@ -114,13 +129,88 @@ func (r *signalRelay) setTarget(process *os.Process) {
 		r.forwarded = true
 		forwardSignal(process, r.received)
 	}
+	// Likewise a deadline that passed during exec.
+	if r.expired && process != nil {
+		r.terminate(process)
+	}
 }
 
-// clearTarget stops forwarding, once the workload is reaped.
+// watchDeadline ends the session when deadline is done: composition is
+// cancelled, and a running workload's process group gets SIGTERM, then
+// SIGKILL after grace. The returned function stops watching; call it before
+// Stop.
+//
+// A nil deadline watches nothing, which is `trustvian dev`'s own case.
+func (r *signalRelay) watchDeadline(deadline context.Context, grace time.Duration) func() {
+	if deadline == nil {
+		return func() {}
+	}
+	stop := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		select {
+		case <-deadline.Done():
+			r.expire(grace)
+		case <-stop:
+		}
+	}()
+	return func() {
+		close(stop)
+		<-finished
+	}
+}
+
+func (r *signalRelay) expire(grace time.Duration) {
+	r.mu.Lock()
+	r.expired = true
+	r.grace = grace
+	target := r.target
+	if target != nil {
+		r.terminate(target)
+	}
+	r.mu.Unlock()
+	r.cancel()
+}
+
+// terminate sends SIGTERM to the workload's group and schedules SIGKILL for
+// whatever of the group is left after the grace. Called with mu held.
+//
+// The escalation fires only while process is still the relay's target: once
+// the leader is reaped the target is cleared and the timer stopped, and the
+// supervisor kills what is left of the group itself. A timer that outlived
+// the reap could otherwise signal a recycled process-group id.
+func (r *signalRelay) terminate(process *os.Process) {
+	forwardSignal(process, syscall.SIGTERM)
+	if r.escalation != nil {
+		r.escalation.Stop()
+	}
+	r.escalation = time.AfterFunc(r.grace, func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.target == process {
+			killProcessGroup(process)
+		}
+	})
+}
+
+// Expired reports whether the session's deadline passed.
+func (r *signalRelay) Expired() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.expired
+}
+
+// clearTarget stops forwarding, once the workload is reaped, and cancels a
+// pending deadline escalation against it.
 func (r *signalRelay) clearTarget() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.target = nil
+	if r.escalation != nil {
+		r.escalation.Stop()
+		r.escalation = nil
+	}
 }
 
 // Received reports the first signal seen, or 0.

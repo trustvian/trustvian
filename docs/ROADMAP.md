@@ -282,7 +282,7 @@ until then.
 |---|---|---|
 | 075 | **Implemented** | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) |
 | 077 | **Implemented** | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) |
-| 078 | Partially implemented: `eval run`, repeated evaluation, and persisted executions with `--reference <execution>\|last` (schema 9) ship; suites remain | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
+| 078 | Partially implemented: `eval run`, repeated evaluation, persisted executions with `--reference <execution>\|last` (schema 9) and suites (`--suite`, per-scenario deadlines) ship; acceptance criteria 9 and 11 remain open | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
 | 079 | Specified | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
 
 **The build order inside this preview is 075 → 078 → 079**, not the four in
@@ -981,7 +981,7 @@ The **Gate** column says which rows the release actually depends on.
 | 075 | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) — read agent-oriented OpenTelemetry where a producer emits it, so a tool call is a tool call rather than an HTTP POST | **Implemented** | `v1.0` |
 | 076 | [Behavioral trace and session evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md) — see *why* behavior was familiar, new or anomalous, from metadata alone | **Implemented** — an Evidence surface over 085's resolution and 067's history; three narrowings on the existing observation route, no schema change; fidelity and sequence deviation narrowed because neither is retained | `v1.0` |
 | 077 | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — one command wraps an existing agent, composes the runtime, and needs no change to the application | **Implemented** | `v1.0` |
-| 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) — run the same scenario N times per side, diff the behavior, gate the difference over k-of-N evidence | Specified | `v1.0` |
+| 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) — run the same scenario N times per side, diff the behavior, gate the difference over k-of-N evidence | Partially implemented — repeated evaluation, recorded references and suites ship; criteria 9 and 11 remain open | `v1.0` |
 | 079 | [CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md) — the 078 verdict rendered on the pull request, exit codes passed through, no `pull_request_target` with an untrusted checkout | Specified | preview only |
 | 080 | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md) — precision, recall and false-positive rate for the existing signals against a public agent prompt-injection benchmark | Specified | neither |
 | 081 | Persist behavior fidelity, so a comparison delta reports whether a behavior was named by telemetry or inferred from transport — a forward-only schema step in both backends, deferred from 075 | Not specified | neither |
