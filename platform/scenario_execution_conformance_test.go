@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -298,5 +299,105 @@ func conformScenarioExecutionContention(t *testing.T, open func(testing.TB) Stor
 	stored, err := store.ScenarioExecution(ctx, "contended")
 	if err != nil || len(stored.Repetitions()) != 2 {
 		t.Fatalf("contended execution = %+v, %v; want exactly one set of associations", stored, err)
+	}
+}
+
+// A read concurrent with a completion sees one state or the other, never a
+// mixture. The execution row and its associations are read in separate
+// queries, and a completion that commits between them would pair a running
+// row with completed associations — which restore rightly calls corrupt, of a
+// database that is not. Readers poll until they observe the completion, so
+// every read races it; the bound is an iteration count, not a sleep.
+func TestSQLiteScenarioExecutionReadsAreConsistentWithConcurrentCompletion(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	store, err := OpenSQLiteStore(ctx, filepath.Join(t.TempDir(), "p.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	seedProject(t, store, "proj-1")
+	scope := scenarioScope("proj-1")
+
+	const (
+		executions = 24
+		readers    = 4
+		maxReads   = 2000
+	)
+	for i := 0; i < executions; i++ {
+		if err := store.CreateScenarioExecution(ctx, newRunningExecution(t,
+			fmt.Sprintf("exec-%d", i), "support", scope, 2, "", scenarioEpoch)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var failures []string
+	report := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		failures = append(failures, fmt.Sprintf(format, args...))
+	}
+	for i := 0; i < executions; i++ {
+		id := ScenarioExecutionID(fmt.Sprintf("exec-%d", i))
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := store.CompleteScenarioExecution(ctx, id, associations(string(id), 2),
+				GateVerdictPass, scenarioEpoch.Add(time.Minute)); err != nil {
+				report("complete %s: %v", id, err)
+			}
+		}()
+		for r := 0; r < readers; r++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				for n := 0; n < maxReads && ctx.Err() == nil; n++ {
+					e, err := store.ScenarioExecution(ctx, id)
+					if err != nil {
+						report("read %s: %v", id, err)
+						return
+					}
+					switch {
+					case e.Status() == ScenarioExecutionRunning && len(e.Repetitions()) == 0:
+					case e.Status() == ScenarioExecutionCompleted && len(e.Repetitions()) == 4:
+						return
+					default:
+						report("read %s: %s with %d associations", id, e.Status(), len(e.Repetitions()))
+						return
+					}
+				}
+			}()
+		}
+	}
+	close(start)
+	wg.Wait()
+	if ctx.Err() != nil {
+		t.Fatalf("timed out: %v", ctx.Err())
+	}
+	if len(failures) > 0 {
+		t.Fatalf("%d inconsistent reads or failed completions, first: %s", len(failures), failures[0])
+	}
+
+	for i := 0; i < executions; i++ {
+		id := ScenarioExecutionID(fmt.Sprintf("exec-%d", i))
+		e, err := store.ScenarioExecution(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Status() != ScenarioExecutionCompleted ||
+			fmt.Sprint(e.Repetitions()) != fmt.Sprint(associations(string(id), 2)) {
+			t.Errorf("%s = %s %v; want completed with its own associations", id, e.Status(), e.Repetitions())
+		}
+	}
+	// `last` reads the same way, and over a settled store names one of them.
+	if latest, err := store.LatestCompletedScenarioExecution(ctx, "support", scope); err != nil ||
+		latest.CompletionSequence() != executions {
+		t.Errorf("latest = %s (sequence %d), %v; want sequence %d",
+			latest.ID(), latest.CompletionSequence(), err, executions)
 	}
 }

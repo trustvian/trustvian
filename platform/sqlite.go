@@ -3453,12 +3453,48 @@ func (s *SQLiteStore) CreateScenarioExecution(ctx context.Context, execution Sce
 	return nil
 }
 
-// ScenarioExecution loads one execution with its associations.
+// ScenarioExecution loads one execution with its associations, from one
+// snapshot.
 func (s *SQLiteStore) ScenarioExecution(ctx context.Context, id ScenarioExecutionID) (ScenarioExecution, error) {
 	if id == "" {
 		return ScenarioExecution{}, fmt.Errorf("%w: scenario execution id is empty", ErrInvalidID)
 	}
-	return loadScenarioExecution(ctx, sqlQuerier{s.db}, id)
+	var out ScenarioExecution
+	err := s.readScenarioExecutions(ctx, func(q sqlQuerier) error {
+		var err error
+		out, err = loadScenarioExecution(ctx, q, id)
+		return err
+	})
+	return out, err
+}
+
+// readScenarioExecutions runs fn's queries inside one read transaction.
+//
+// An execution is read in two queries — its row, then its associations — and
+// a completion writes both. Outside a transaction a completion can commit
+// between the two, and the reader pairs a running row with completed
+// associations, which restore refuses as corrupt in a database that is not.
+// SetMaxOpenConns(1) does not close that gap: the connection returns to the
+// pool between statements, and the completing writer takes it. A transaction
+// holds the connection, and SQLite's read snapshot, for every query fn makes —
+// the pattern FindObservations uses for the same reason.
+//
+// The deferred rollback covers errors, cancellation and panics; the explicit
+// one reports a failure to end the transaction on the success path.
+func (s *SQLiteStore) readScenarioExecutions(ctx context.Context, fn func(q sqlQuerier) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: read scenario execution: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // read-only; nothing to lose on rollback
+
+	if err := fn(sqlQuerier{tx}); err != nil {
+		return err
+	}
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return fmt.Errorf("platform: read scenario execution: %w", err)
+	}
+	return nil
 }
 
 // CompleteScenarioExecution completes a running execution in one write
@@ -3511,13 +3547,19 @@ func (s *SQLiteStore) FailScenarioExecution(
 	return failed, nil
 }
 
-// LatestCompletedScenarioExecution returns what `last` names in this scope.
+// LatestCompletedScenarioExecution returns what `last` names in this scope,
+// choosing and loading it from one snapshot.
 func (s *SQLiteStore) LatestCompletedScenarioExecution(
 	ctx context.Context, scenarioName string, scope ScenarioScope,
 ) (ScenarioExecution, error) {
-	id, err := latestCompletedScenarioExecutionID(ctx, sqlQuerier{s.db}, scenarioName, scope)
-	if err != nil {
-		return ScenarioExecution{}, err
-	}
-	return loadScenarioExecution(ctx, sqlQuerier{s.db}, id)
+	var out ScenarioExecution
+	err := s.readScenarioExecutions(ctx, func(q sqlQuerier) error {
+		id, err := latestCompletedScenarioExecutionID(ctx, q, scenarioName, scope)
+		if err != nil {
+			return err
+		}
+		out, err = loadScenarioExecution(ctx, q, id)
+		return err
+	})
+	return out, err
 }
