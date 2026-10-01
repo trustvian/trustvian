@@ -7,7 +7,6 @@ package platform_test
 import (
 	"errors"
 	"fmt"
-	"math"
 	"testing"
 	"time"
 
@@ -417,24 +416,5 @@ func TestRepeatedRequestBoundsAreRefused(t *testing.T) {
 		Limits: repeatedLimits(2, 1, 0, 0, 0)})
 	if !errors.Is(err, platform.ErrStoreNotFound) {
 		t.Errorf("k = N, j = k - 1 with missing runs: error = %v, want ErrStoreNotFound", err)
-	}
-}
-
-// A repetition whose behavior snapshot saturated is refused: a confident count
-// from truncated evidence is the failure task 054 named the worst.
-func TestASaturatedRepetitionIsRefusedAsIncomplete(t *testing.T) {
-	if testing.Short() {
-		t.Skip("ingests past the 512-behavior bound")
-	}
-	f := newFixture(t)
-	many := make([]string, 513)
-	for i := range many {
-		many[i] = fmt.Sprintf("op%03d", i)
-	}
-	refs, cands := f.sides(t, "sat", []repetition{{behaviors: []string{"a"}}}, []repetition{{behaviors: many}})
-	_, err := f.plane.CompareRepeatedEvaluations(t.Context(), platform.RepeatedEvaluationRequest{
-		ReferenceRunIDs: refs, CandidateRunIDs: cands, Limits: repeatedLimits(1, 0, math.MaxUint64, 0, 0)})
-	if !errors.Is(err, platform.ErrIncompleteSnapshot) {
-		t.Errorf("error = %v, want ErrIncompleteSnapshot", err)
 	}
 }

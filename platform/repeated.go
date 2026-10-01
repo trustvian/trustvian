@@ -434,16 +434,29 @@ func (c *ControlPlane) CompareRepeatedEvaluations(
 		if err != nil {
 			return RepeatedEvaluationComparison{}, err
 		}
-		if !snapshot.Complete() {
-			return RepeatedEvaluationComparison{}, fmt.Errorf(
-				"%w: %s repetition %d (run %s) saturated its behavior snapshot",
-				ErrIncompleteSnapshot, n.side, n.index, preview(string(run.ID())))
+		input, err := completedRepetition(evidence, aggregate, snapshot)
+		if err != nil {
+			return RepeatedEvaluationComparison{}, err
 		}
-		evidence.RecordCount = aggregate.RecordCount()
-		evidence.DistinctBehaviors = snapshot.DistinctBehaviorCount()
-		evidence.BlockDecisions = aggregate.Decisions().Block
-		evidence.CriticalRiskObservations = aggregate.Risks().Critical
-		inputs = append(inputs, repetitionInput{evidence: evidence, entries: snapshot.Entries()})
+		inputs = append(inputs, input)
 	}
 	return reduceRepeated(request.Limits, request.Runs(), inputs)
+}
+
+// completedRepetition turns one completed run's persisted evidence into a
+// reduction input. A snapshot that saturated is refused: a confident presence
+// count from truncated evidence is the failure task 054 named the worst.
+func completedRepetition(
+	evidence RepetitionEvidence, aggregate EvaluationAggregate, snapshot BehaviorSnapshot,
+) (repetitionInput, error) {
+	if !snapshot.Complete() {
+		return repetitionInput{}, fmt.Errorf(
+			"%w: %s repetition %d (run %s) saturated its behavior snapshot",
+			ErrIncompleteSnapshot, evidence.Side, evidence.Index, preview(string(evidence.RunID)))
+	}
+	evidence.RecordCount = aggregate.RecordCount()
+	evidence.DistinctBehaviors = snapshot.DistinctBehaviorCount()
+	evidence.BlockDecisions = aggregate.Decisions().Block
+	evidence.CriticalRiskObservations = aggregate.Risks().Critical
+	return repetitionInput{evidence: evidence, entries: snapshot.Entries()}, nil
 }
