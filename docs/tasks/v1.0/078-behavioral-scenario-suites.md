@@ -1,7 +1,11 @@
 # 078 — Behavioral Scenario Suites
 
-Status: specified; not implemented. Measurement re-run at tool fidelity recorded
-2026-10-01 — see [The re-run at tool-name fidelity](#the-re-run-at-tool-name-fidelity-2026-10-01)
+Status: partially implemented. Self-contained repeated evaluation ships —
+`trustvian eval run` and `POST /v1/evaluations/compare-repeated` ([ADR 0053](../../adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)).
+`--reference` against a recorded execution, its persistence, and suites remain;
+see [Implementation status](#implementation-status). Measurement re-run at tool
+fidelity recorded 2026-10-01 — see
+[The re-run at tool-name fidelity](#the-re-run-at-tool-name-fidelity-2026-10-01)
 Milestone: `v1.0`
 Depends on: [054](054-behavioral-diff.md),
 [055](055-evaluation-scorecards.md),
@@ -1425,6 +1429,51 @@ a future reader will ask "why not the obvious thing":
 - **Why checks 5 and 6 are advisory rather than warmed or dropped**, with the
   measured confidence floor that forced the choice.
 
+## Implementation status
+
+The first production slice of the aggregation, recorded in
+[ADR 0053](../../adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md):
+
+- `config.LoadScenarioFile`: the scenario file, schema `v1`.
+  - Every threshold and `runs` is required.
+  - `1 <= runs <= 64` and `0 <= j < k <= runs`.
+  - Unknown fields are refused, and every error names its field.
+  - Counts and limits must be YAML integers; fractions and values past 64
+    bits are refused rather than converted.
+- `ControlPlane.CompareRepeatedEvaluations` and
+  `POST /v1/evaluations/compare-repeated`.
+  - Per-repetition evidence, read per run; presence, classification, and the six
+    checks with the advisory marker.
+  - Isolation refused when profiles repeat, and incomplete evidence refused.
+  - Repetitions spanning environments refused, and identity that is not
+    one-to-one across repetitions refused.
+- `trustvian eval run --scenario <file>`, a thin adapter.
+  - 2N sequential repetitions through `trustvian dev`, each under a fresh run id
+    and a fresh `--behavioral-profile`.
+  - The first failed repetition ends the scenario with exit `3` and no verdict.
+    So does a repetition whose run could not be completed.
+  - Workload stdout goes to stderr, and a bare command resolves on its side's
+    `PATH`.
+  - The server's verdict is passed through as `0` or `1`.
+- **No schema step**, because self-contained mode needs no stored execution.
+
+Against the criteria below:
+
+| # | Status |
+|---|---|
+| 1–8, 10, 12–16, 18–20 | Met by the slice above, with tests at the config, control-plane, `/v1`, CLI and real-binary end-to-end levels |
+| 9 | **Partly.** The scenario asserts no ordering, and engine block and critical-risk evidence reaches checks 5 and 6. No reorder-specific test drives the engine to a block yet |
+| 11 | **Not met as written.** CI asserts it for a deterministic unchanged workload. The 2026-10-01 measurement shows an unchanged *nondeterministic* workload can fail the documented `k = 1, j = 0` limits (6/252 and 1/252 splits at N = 5), and at T = 1.3 no `k` removed every crossing |
+| 17 | Met by the 2026-10-01 measurement |
+| 21, 22 | Met earlier (the run-scoped behavior route and `--behavioral-profile`) |
+
+**Not built:**
+- `--reference <execution>|last` against a recorded execution, with the
+  persistence and schema step it needs.
+- Suites of scenarios.
+- A reorder-specific test for criterion 9.
+- A repeated limit over counted changes (ADR 0053 § 1).
+
 ## Acceptance criteria
 
 1. One scenario file describes how to run a workload, **how many times**, and
@@ -1559,6 +1608,18 @@ a future reader will ask "why not the obvious thing":
      a repeated counterpart of ADR 0052 with a change key that is stable across
      runs.
    - The measurement does not choose between them.
+
+   **Resolved by [ADR 0053](../../adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md):
+   identities.**
+   - `max_repeated_added_behaviors` counts repeatedly added behavioral
+     identities, the unit of `max_added_behaviors`. That is what makes N = 1,
+     k = 1, j = 0 reproduce the single-run gate check for check; any other unit
+     would redefine that limit at N = 1.
+   - The double count is documented wherever the limit is: at any nonzero
+     budget, a tool and its transport child consume two units.
+   - Pairwise `added_change_count` is not aggregated. A repeated limit over
+     changes needs a cross-run change key and would be a separate, optional
+     limit with its own review.
 
 ## Amendment — task 082
 

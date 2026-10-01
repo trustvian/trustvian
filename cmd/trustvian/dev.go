@@ -228,6 +228,43 @@ type devConfig struct {
 	// instrumentation is the ownership mode, as given. Parsed in composeAndRun so
 	// an unknown value is a usage error before anything starts.
 	instrumentation string
+
+	// env adds variables to the inherited environment, as if the developer had
+	// exported them. Task 078: a scenario declares each side's variables in its
+	// own file, read from the developer's own repository, so they belong on the
+	// trusted side of the snapshot — and passing them here rather than through
+	// os.Setenv keeps one repetition's variables out of the next. The dev command
+	// line never sets this.
+	env map[string]string
+
+	// workloadStdout, when set, receives the workload's standard output instead
+	// of dev's own. Task 078: `eval run` sends it to its stderr, so its stdout
+	// carries one result document and nothing else. Per invocation, never by
+	// changing this process's descriptors. The dev command line never sets this.
+	workloadStdout *os.File
+}
+
+// devResult is how one invocation ended: the status dev exits with, and whether
+// the run it started reached `completed`.
+//
+// Two facts, because dev's exit status is the workload's, unmodified, once the
+// workload has started (docs/compatibility.md) — a successful workload whose run
+// could not be completed still exits 0. `trustvian dev` publishes only the
+// first. `eval run` needs the second: a repetition the control plane does not
+// hold as completed is not a successful repetition, whatever the workload did.
+type devResult struct {
+	code         int
+	runCompleted bool
+}
+
+// inheritedEnvironment is the developer's environment for this invocation: the
+// process environment, plus any variables the configuration adds.
+func (c devConfig) inheritedEnvironment() *devEnvironment {
+	environment := environmentSnapshot()
+	for name, value := range c.env {
+		environment.snapshot[name] = value
+	}
+	return environment
 }
 
 // composeAndRun brings up what the workload needs, runs it, and tears down.
@@ -242,6 +279,12 @@ type devConfig struct {
 // half-way leaves nothing running. That is what "nothing it started is left"
 // means when there is more than one thing to start.
 func composeAndRun(s streams, config devConfig) int {
+	return composeAndRunResult(s, config).code
+}
+
+// composeAndRunResult is composeAndRun, also reporting whether the run was
+// completed.
+func composeAndRunResult(s streams, config devConfig) devResult {
 	// Signals first, before anything exists to orphan.
 	//
 	// The first version installed the handler inside superviseChild, which is
@@ -258,7 +301,7 @@ func composeAndRun(s streams, config devConfig) int {
 	workloadDir, err := resolveWorkloadDir()
 	if err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-		return exitDevOperational
+		return devResult{code: exitDevOperational}
 	}
 
 	home, err := os.UserHomeDir()
@@ -266,33 +309,33 @@ func composeAndRun(s streams, config devConfig) int {
 		fmt.Fprintf(s.err,
 			"trustvian dev: cannot determine your home directory, so there is "+
 				"nowhere outside your repository to keep state: %v\n", err)
-		return exitDevOperational
+		return devResult{code: exitDevOperational}
 	}
 
 	stateDir, err := devStateDir(home, workloadDir)
 	if err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-		return exitDevOperational
+		return devResult{code: exitDevOperational}
 	}
 
 	// Identity before any process starts. A run that cannot be named
 	// deterministically should fail before a control plane, a Collector or a
 	// workload has been launched — nothing has to be torn down to report it.
-	identity, err := deriveIdentity(config, workloadDir, environmentSnapshot(), time.Now())
+	identity, err := deriveIdentity(config, workloadDir, config.inheritedEnvironment(), time.Now())
 	if err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-		return exitDevUsage
+		return devResult{code: exitDevUsage}
 	}
-	environment := environmentSnapshot()
+	environment := config.inheritedEnvironment()
 	if err := environment.declareIdentity(identity); err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-		return exitDevUsage
+		return devResult{code: exitDevUsage}
 	}
 
 	mode, err := parseInstrumentationMode(config.instrumentation)
 	if err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n\n%s\n", err, devUsage)
-		return exitDevUsage
+		return devResult{code: exitDevUsage}
 	}
 	// Ownership is resolved before *anything* is started or provisioned. A
 	// refusal then leaves nothing to tear down and no run to fail — which is the
@@ -301,7 +344,7 @@ func composeAndRun(s streams, config devConfig) int {
 	owner, err := resolveOwnership(mode, environment, config.command)
 	if err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-		return exitDevUsage
+		return devResult{code: exitDevUsage}
 	}
 
 	// The engine's learned baseline is a file, and a file store has no
@@ -310,7 +353,7 @@ func composeAndRun(s streams, config devConfig) int {
 	baseline, err := acquireBaseline(stateDir, identity.Profile)
 	if err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-		return exitDevOperational
+		return devResult{code: exitDevOperational}
 	}
 	defer baseline.release()
 
@@ -318,7 +361,7 @@ func composeAndRun(s streams, config devConfig) int {
 	defer session.teardown()
 
 	if code, done := session.interrupted(); done {
-		return code
+		return devResult{code: code}
 	}
 
 	apiURL := config.apiURL
@@ -332,7 +375,7 @@ func composeAndRun(s streams, config devConfig) int {
 		}.resolve()
 		if err != nil {
 			fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
-			return exitDevOperational
+			return devResult{code: exitDevOperational}
 		}
 
 		// The control plane starts before the workload, and a failure here must
@@ -341,14 +384,14 @@ func composeAndRun(s streams, config devConfig) int {
 		// waste a developer's run and look like a Trustvian success.
 		runtime, err := startLocalRuntime(relay.Context(), binary, stateDir)
 		if err != nil {
-			return session.fail(err)
+			return devResult{code: session.fail(err)}
 		}
 		session.runtime = runtime
 		apiURL = runtime.APIURL()
 	}
 
 	if code, done := session.interrupted(); done {
-		return code
+		return devResult{code: code}
 	}
 
 	// Provisioning happens before the Collector, because the Collector's
@@ -357,22 +400,22 @@ func composeAndRun(s streams, config devConfig) int {
 	// startup.
 	provision, err := newProvisioner(apiURL, identity)
 	if err != nil {
-		return session.fail(err)
+		return devResult{code: session.fail(err)}
 	}
 	session.provision = provision
 
 	if err := provision.ensureHierarchy(relay.Context()); err != nil {
-		return session.fail(err)
+		return devResult{code: session.fail(err)}
 	}
 	if err := provision.startRun(relay.Context()); err != nil {
-		return session.fail(err)
+		return devResult{code: session.fail(err)}
 	}
 	// From here on a failure has to leave the run terminal: one stuck in
 	// `running` forever is indistinguishable from one still in progress.
 	session.runStarted = true
 
 	if code, done := session.interrupted(); done {
-		return code
+		return devResult{code: code}
 	}
 
 	collectorBin, err := helper{
@@ -383,7 +426,7 @@ func composeAndRun(s streams, config devConfig) int {
 		envVar:    collectorBinaryEnv,
 	}.resolve()
 	if err != nil {
-		return session.fail(err)
+		return devResult{code: session.fail(err)}
 	}
 
 	otlp, err := startCollector(relay.Context(), collectorBin, stateDir, collectorConfigData{
@@ -394,12 +437,12 @@ func composeAndRun(s streams, config devConfig) int {
 		BaselinePath:     baseline.path,
 	})
 	if err != nil {
-		return session.fail(err)
+		return devResult{code: session.fail(err)}
 	}
 	session.collector = otlp
 
 	if code, done := session.interrupted(); done {
-		return code
+		return devResult{code: code}
 	}
 
 	// `none` means dev manages no instrumentation, which includes not routing:
@@ -411,7 +454,7 @@ func composeAndRun(s streams, config devConfig) int {
 
 	printDevBanner(s, stateDir, apiURL, otlp, environment, identity, baseline, owner, config)
 
-	outcome := superviseChild(s, config.command, environment, relay)
+	outcome := superviseChildTo(s, config.command, environment, relay, config.workloadStdout)
 
 	// The Collector stops *before* the run reaches a terminal state, and the
 	// order is not cosmetic: ingest is refused once a run is terminal, so a span
@@ -420,7 +463,8 @@ func composeAndRun(s streams, config devConfig) int {
 	otlp.stop()
 	session.collector = nil
 
-	return session.finish(outcome)
+	code := session.finish(outcome)
+	return devResult{code: code, runCompleted: session.runCompleted}
 }
 
 // devSession owns what one invocation started, and how it ends.
@@ -439,6 +483,9 @@ type devSession struct {
 	collector  *collector
 	provision  *provisioner
 	runStarted bool
+	// runCompleted is set only when the control plane accepted the run's
+	// completion.
+	runCompleted bool
 }
 
 // interrupted reports whether a signal arrived, and what to exit with.
@@ -532,6 +579,7 @@ func (d *devSession) completeRun(ctx context.Context) error {
 		return nil
 	}
 	err := d.provision.completeRun(ctx)
+	d.runCompleted = err == nil
 	if err != nil {
 		fmt.Fprintf(d.s.err,
 			"trustvian dev: WARNING: the workload succeeded but run %s could not be "+

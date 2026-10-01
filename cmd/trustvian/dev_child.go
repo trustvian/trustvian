@@ -94,12 +94,30 @@ func (o childOutcome) stoppedByDeveloper(forwarded bool) bool {
 // what the wrapper tests use to assert that nothing is added when nothing is
 // composed.
 //
-// The working directory and streams are inherited unconditionally and are not
-// parameters: dev has no reason to change either, and a knob that could would be
-// a knob that eventually does.
+// The working directory and streams are inherited: dev has no reason to change
+// either, and a knob that could would be a knob that eventually does. The one
+// exception is superviseChildTo's stdout, which `trustvian dev` never sets.
 func superviseChild(s streams, command []string, environment *devEnvironment,
 	relay *signalRelay) childOutcome {
+	return superviseChildTo(s, command, environment, relay, nil)
+}
+
+// superviseChildTo is superviseChild with the workload's standard output sent
+// to stdout instead of dev's own; nil inherits dev's, which is what `trustvian
+// dev` always does.
+//
+// The one caller that passes a file is `eval run` (task 078). Its stdout
+// carries exactly one result document, and the workload's lines must not reach
+// it — redirecting the in-process streams does not redirect a child, which
+// inherits descriptors, not writers. Still a file, never a pipe, for the reason
+// devStdio gives; stdin and stderr, and with them the terminal handover and
+// signal delivery, are unchanged.
+func superviseChildTo(s streams, command []string, environment *devEnvironment,
+	relay *signalRelay, stdoutOverride *os.File) childOutcome {
 	stdin, stdout, stderr := devStdio()
+	if stdoutOverride != nil {
+		stdout = stdoutOverride
+	}
 
 	// Extended, never replaced. Explicit rather than relying on exec's defaults
 	// so that adding a variable cannot accidentally construct a fresh

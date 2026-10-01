@@ -8,9 +8,15 @@ package main
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
+	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // devPlatformSupported reports nil on Unix.
@@ -35,8 +41,17 @@ type childSpec struct {
 }
 
 // newCmd builds a fresh, unstarted command from the spec.
+//
+// A bare name is resolved against the spec's own PATH (lookPathIn), and argv[0]
+// stays the name as given. A name that does not resolve there is not resolved
+// anywhere else: the command carries the lookup error, and Start returns it.
 func (spec childSpec) newCmd() *exec.Cmd {
-	cmd := exec.Command(spec.command[0], spec.command[1:]...)
+	path, err := lookPathIn(spec.command[0], spec.env)
+	if err != nil {
+		return &exec.Cmd{Path: spec.command[0], Args: slices.Clone(spec.command), Err: err}
+	}
+	cmd := exec.Command(path, spec.command[1:]...)
+	cmd.Args[0] = spec.command[0]
 	cmd.Env = spec.env
 	cmd.Dir = ""
 	cmd.Stdin = spec.stdin
@@ -200,4 +215,70 @@ func processAliveForBaseline(pid int) bool {
 	}
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+// lookPathIn resolves a bare command name against the PATH in env — the
+// workload's environment — rather than this process's.
+//
+// exec.Command resolves a bare name against os.Getenv("PATH") when the command
+// is built, before its Env is assigned. A scenario side that sets PATH to its
+// own virtualenv would then run the parent's executable of the same name,
+// silently, under the side's variables. Setting this process's PATH instead
+// would leak one repetition's lookup into the next. So the lookup is repeated
+// here with exec.LookPath's Unix rules over the workload's PATH: a name
+// containing a separator is used as given, an empty PATH entry means the
+// current directory, the first file this user may execute wins
+// (findExecutable), and a match found relative to the current directory is
+// refused with exec.ErrDot, as exec refuses it. No match is an error; the
+// parent's PATH is never consulted.
+func lookPathIn(name string, env []string) (string, error) {
+	if strings.Contains(name, "/") {
+		return name, nil
+	}
+	path := ""
+	for _, entry := range env {
+		if value, ok := strings.CutPrefix(entry, "PATH="); ok {
+			path = value
+		}
+	}
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			dir = "."
+		}
+		candidate := filepath.Join(dir, name)
+		if findExecutable(candidate) != nil {
+			continue
+		}
+		if !filepath.IsAbs(candidate) {
+			return candidate, &exec.Error{Name: name, Err: exec.ErrDot}
+		}
+		return candidate, nil
+	}
+	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
+}
+
+// findExecutable reports whether this process's effective user may execute
+// file, as exec.LookPath decides it.
+//
+// An execute bit alone is not that: a 0601 file its owner cannot run has one.
+// So the kernel is asked, with the effective ids (faccessat with AT_EACCESS),
+// which also answers for groups and root. Where that call is unavailable
+// (ENOSYS) or refused by a seccomp filter (EPERM), the mode bits are the
+// fallback, exactly as the standard library falls back.
+func findExecutable(file string) error {
+	info, err := os.Stat(file)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return syscall.EISDIR
+	}
+	err = unix.Faccessat(unix.AT_FDCWD, file, unix.X_OK, unix.AT_EACCESS)
+	if err == nil || (!errors.Is(err, syscall.ENOSYS) && !errors.Is(err, syscall.EPERM)) {
+		return err
+	}
+	if info.Mode()&0o111 != 0 {
+		return nil
+	}
+	return fs.ErrPermission
 }
