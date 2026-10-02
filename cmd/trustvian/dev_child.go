@@ -114,9 +114,27 @@ func superviseChild(s streams, command []string, environment *devEnvironment,
 // signal delivery, are unchanged.
 func superviseChildTo(s streams, command []string, environment *devEnvironment,
 	relay *signalRelay, stdoutOverride *os.File) childOutcome {
+	return superviseChildWith(s, command, environment, relay, childStreams{stdout: stdoutOverride})
+}
+
+// childStreams overrides the workload's inherited streams for one invocation.
+type childStreams struct {
+	// stdout, when set, replaces dev's own standard output.
+	stdout *os.File
+	// detachStdin gives the workload no standard input — /dev/null, as exec
+	// does for a nil reader — and therefore never the terminal.
+	detachStdin bool
+}
+
+// superviseChildWith is superviseChild with per-invocation stream overrides.
+func superviseChildWith(s streams, command []string, environment *devEnvironment,
+	relay *signalRelay, overrides childStreams) childOutcome {
 	stdin, stdout, stderr := devStdio()
-	if stdoutOverride != nil {
-		stdout = stdoutOverride
+	if overrides.stdout != nil {
+		stdout = overrides.stdout
+	}
+	if overrides.detachStdin {
+		stdin = nil
 	}
 
 	// Extended, never replaced. Explicit rather than relying on exec's defaults
@@ -148,7 +166,20 @@ func superviseChildTo(s streams, command []string, environment *devEnvironment,
 		defer relay.clearTarget()
 	}
 
-	outcome := childExitOutcome(s, command, cmd.Wait())
+	waitErr := cmd.Wait()
+	if relay != nil {
+		// Cleared at once, not only by the deferred call: that stops a
+		// pending deadline escalation before anything below can race it.
+		relay.clearTarget()
+		if relay.Expired() {
+			// The deadline ended this workload. Its leader is reaped;
+			// anything left in its group — a descendant that ignored SIGTERM,
+			// or one that outlived a leader that trapped it — is killed now
+			// rather than outliving the scenario.
+			killProcessGroup(cmd.Process)
+		}
+	}
+	outcome := childExitOutcome(s, command, waitErr)
 	outcome.terminalHandover = handover
 	return outcome
 }

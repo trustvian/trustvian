@@ -54,7 +54,11 @@ func (spec childSpec) newCmd() *exec.Cmd {
 	cmd.Args[0] = spec.command[0]
 	cmd.Env = spec.env
 	cmd.Dir = ""
-	cmd.Stdin = spec.stdin
+	// Only a real file: a nil *os.File in the interface would start the
+	// child with descriptor 0 closed, where a nil Stdin gives it /dev/null.
+	if spec.stdin != nil {
+		cmd.Stdin = spec.stdin
+	}
 	cmd.Stdout = spec.stdout
 	cmd.Stderr = spec.stderr
 	return cmd
@@ -201,6 +205,37 @@ func forwardSignal(process *os.Process, received os.Signal) {
 		// be reachable.
 		_ = process.Signal(received)
 	}
+}
+
+// cancelWithProcessGroup runs cmd in a process group of its own and makes its
+// context's cancellation kill that whole group, synchronously, rather than
+// the process alone: a helper's hooks and other descendants end with it.
+//
+// The group is cmd's own, created by Setpgid at start, and the kill happens
+// while exec still holds the unreaped leader — so the group id cannot have
+// been reused, and nothing is left scheduled to fire later.
+func cancelWithProcessGroup(cmd *exec.Cmd) {
+	childProcessAttributes(cmd).Setpgid = true
+	cmd.Cancel = func() error {
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			return cmd.Process.Kill()
+		}
+		return nil
+	}
+}
+
+// killProcessGroup sends SIGKILL to the workload's whole process group.
+//
+// Used only when a scenario deadline passed (task 078): after the grace
+// period, and again once the group leader has been reaped, so a descendant
+// that ignored SIGTERM — or outlived a leader that trapped it — does not
+// survive the scenario. The group is the one startChild created; an empty
+// group answers ESRCH, which is ignored.
+func killProcessGroup(process *os.Process) {
+	if process == nil {
+		return
+	}
+	_ = syscall.Kill(-process.Pid, syscall.SIGKILL)
 }
 
 // processAliveForBaseline reports whether a pid can still be signalled.

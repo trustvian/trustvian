@@ -10,6 +10,52 @@ actually depend on.
 
 ### Added
 
+- **Scenario suites: `trustvian eval run --suite DIR --scenario-timeout D`**
+  (task 078,
+  [ADR 0055](docs/adr/0055-a-scenario-suite-is-a-bounded-schedule-and-a-report-not-an-evaluation.md)).
+
+  Runs every `.yaml`/`.yml` scenario directly inside a directory, in name
+  order, one at a time, and reports them as one versioned document.
+
+  - **Each scenario runs exactly as `--scenario` would.** Its own N, limits,
+    recorded execution and control-plane verdict. Nothing is pooled or
+    recomputed.
+  - **Everything is validated first.** At most 64 scenarios, with distinct
+    names, no symlinks and at most 4096 entries examined. A problem with the
+    invocation or its files is exit `2`, and an unreadable environment is exit
+    `3`; neither starts a workload or makes a request.
+  - **Scheduling:**
+    - A failure does not stop the rest; `--fail-fast` does.
+    - Members not run are reported `skipped`, never as passes.
+    - Ctrl-C or SIGTERM stops the running scenario and skips the rest as
+      `cancelled`, also with `--fail-fast`. The suite is the only receiver of
+      these signals, so the workload's process group gets one SIGTERM.
+      Members run without the terminal.
+  - **`--scenario-timeout` is a real deadline (1s–24h).**
+    - The workload's process group gets SIGTERM, then SIGKILL after 5s, and
+      leftover group members are killed.
+    - The run and execution are failed.
+    - The scenario is an operational error even if its workload exited `0`.
+    - **A completion racing the deadline, or answered by a gateway's
+      502/503/504, is settled by the control plane.**
+      The runner fails the execution; if the server had already completed it,
+      the member reports `completed_without_response`, a completed execution
+      for which no verdict is reported. A member reported `scenario_timeout`
+      or `cancelled` is never a completed execution.
+  - **`--reference last` resolves per scenario.** An explicit execution id is
+    `--scenario`-only.
+  - **Output and exit code:**
+    - The suite exits with its most severe scenario: `3`, then `2`, then `1`,
+      then `0`.
+    - Member result documents are embedded unchanged.
+    - The document is capped at 32 MiB; overflow exits `3` with an explicitly
+      incomplete document that claims no outcomes.
+
+  No `/v1` or schema change. `trustvian dev` and single-scenario behavior are
+  unchanged. `--suite` is refused on Windows, where `dev` is unsupported;
+  `--scenario` is not. Member error messages are at most 1024 bytes of valid
+  UTF-8.
+
 - **Recorded scenario references: `trustvian eval run --reference
   <execution-id>|last`, and persisted scenario executions** (task 078,
   [ADR 0054](docs/adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)).

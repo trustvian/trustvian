@@ -55,6 +55,13 @@ func applyChildProcessAttributes(*exec.Cmd) {}
 // forwardSignal is unreachable on Windows, for the same reason.
 func forwardSignal(*os.Process, os.Signal) {}
 
+// cancelWithProcessGroup keeps exec's default cancellation on Windows, where
+// there are no process groups to signal; WaitDelay still bounds the wait.
+func cancelWithProcessGroup(*exec.Cmd) {}
+
+// killProcessGroup is unreachable on Windows, for the same reason.
+func killProcessGroup(*os.Process) {}
+
 // childSpec mirrors the Unix shape so the portable supervisor compiles here.
 type childSpec struct {
 	command               []string
@@ -67,7 +74,10 @@ type childSpec struct {
 func startChild(spec childSpec) (*exec.Cmd, bool, error) {
 	cmd := exec.Command(spec.command[0], spec.command[1:]...)
 	cmd.Env = spec.env
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = spec.stdin, spec.stdout, spec.stderr
+	cmd.Stdout, cmd.Stderr = spec.stdout, spec.stderr
+	if spec.stdin != nil {
+		cmd.Stdin = spec.stdin
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, false, err
 	}

@@ -598,7 +598,7 @@ func newGitFixture(t *testing.T) string {
 
 func gitOutput(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	output, err := runGit(dir, args...)
+	output, err := runGit(context.Background(), dir, args...)
 	if err != nil {
 		t.Fatalf("git %v: %v", args, err)
 	}

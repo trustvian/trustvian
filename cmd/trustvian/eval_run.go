@@ -21,9 +21,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -36,6 +38,9 @@ import (
 const evalRunUsage = `usage:
   trustvian eval run --scenario <file> [--reference <execution-id>|last]
                      [--collector-bin <path>] [--api-url <url>] [--json]
+  trustvian eval run --suite <directory> --scenario-timeout <duration>
+                     [--fail-fast] [--reference last]
+                     [--collector-bin <path>] [--api-url <url>] [--json]
 
 Runs the scenario's reference and candidate sides runs: N times each, one
 repetition at a time, each under its own run and its own learning scope, then
@@ -46,10 +51,17 @@ it: an execution id, or last — the most recently completed execution of this
 scenario for the same project, agent and environment. Only the N candidate
 repetitions run. The scenario's own gate limits apply.
 
+--suite runs every .yaml and .yml file directly inside a directory, in
+filename order, one scenario at a time, each within --scenario-timeout (1s to
+24h). Every file is validated first. A failing scenario does not stop the
+others unless --fail-fast is given; skipped scenarios are reported as skipped.
+With a suite, --reference accepts only last, resolved for each scenario.
+
   0  gate PASS     1  gate FAIL     2  usage — the scenario, before anything runs
   3  operational — the control plane, the network, a reference that is missing,
-     unfinished, of another N or incomplete, or a repetition that failed; a
-     failed repetition stops the scenario and no verdict is produced`
+     unfinished, of another N or incomplete, a repetition that failed, or a
+     scenario that ran out of time; no verdict is produced for it
+  A suite exits with the most severe of its scenarios: 3, then 2, then 1, then 0.`
 
 // referenceLast is the --reference value that asks for the most recent
 // completed execution. Any other value names one execution.
@@ -80,15 +92,26 @@ type scenarioRunner struct {
 	// workloadStdout is the file every repetition's workload writes its
 	// standard output to: this process's stderr, never its stdout.
 	workloadStdout *os.File
+	// suiteContext is a suite's cancellation: SIGINT and SIGTERM in
+	// production. Tests cancel it directly.
+	suiteContext func() (context.Context, context.CancelFunc)
+	// outputLimit caps the encoded suite document; zero means
+	// maxSuiteDocumentBytes. Tests lower it to reach the overflow.
+	outputLimit int
+	// platformSupported refuses suites where deadlines cannot be enforced:
+	// devPlatformSupported in production, replaced by tests.
+	platformSupported func() error
 }
 
 func runEvalRun(s streams, args []string, timeout time.Duration) int {
 	return scenarioRunner{
-		run:            composeAndRunResult,
-		scope:          deriveExecutionScope,
-		executionID:    newExecutionID,
-		cliVersion:     cliVersionString,
-		workloadStdout: os.Stderr,
+		run:               composeAndRunResult,
+		scope:             deriveExecutionScope,
+		executionID:       newExecutionID,
+		cliVersion:        cliVersionString,
+		workloadStdout:    os.Stderr,
+		suiteContext:      suiteSignalContext,
+		platformSupported: devPlatformSupported,
 	}.main(s, args, timeout)
 }
 
@@ -111,32 +134,85 @@ func deriveExecutionScope(config devConfig) (executionScope, error) {
 	}, nil
 }
 
+// Why a scenario has no verdict, for the runner's own failures. Wrapped in
+// operational errors, so the exit code stays 3; a suite reads them to name the
+// failure in its document.
+var (
+	errRepetitionFailed  = errors.New("a repetition failed")
+	errRunNotCompleted   = errors.New("a run could not be completed")
+	errScenarioTimeout   = errors.New("the scenario deadline passed")
+	errScenarioCancelled = errors.New("the scenario was cancelled")
+	// errCompletedWithoutResponse: the control plane completed the execution,
+	// but its answer never arrived. The execution is completed — a recorded
+	// reference — and no verdict is reported for it.
+	errCompletedWithoutResponse = errors.New("the execution was completed without a response")
+	// errExecutionStateUnknown: the completion's outcome could not be
+	// learned, so whether the execution completed is unknown.
+	errExecutionStateUnknown = errors.New("the execution's state is unknown")
+)
+
+// scenarioCleanupTimeout bounds the best-effort request that records an
+// execution failed. Its own context, never the scenario's: by then the
+// scenario's may be the deadline that expired.
+const scenarioCleanupTimeout = 10 * time.Second
+
+// scenarioJob is one scenario ready to run: its validated file, and the scope
+// its candidate repetitions will run in.
+type scenarioJob struct {
+	scenario config.ScenarioConfig
+	scope    executionScope
+}
+
+// scenarioOutcome is how one scenario ended.
+type scenarioOutcome struct {
+	// exit is the scenario's exit code: 0 or 1 with a verdict, 2 or 3 without.
+	exit int
+	// document is the result document, present exactly when there is a
+	// verdict.
+	document []byte
+	// err says why there is no verdict.
+	err error
+	// executionID names the recorded execution, once one was begun.
+	executionID string
+	render      func(io.Writer) error
+}
+
 func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) int {
 	fs := newFlagSet("eval run")
 	common := registerCommonFlags(fs)
-	scenarioPath := fs.String("scenario", "", "scenario file (required)")
+	scenarioPath := fs.String("scenario", "", "scenario file")
+	suitePath := fs.String("suite", "", "directory of scenario files")
+	scenarioTimeout := fs.String("scenario-timeout", "",
+		"each suite scenario's deadline, 1s to 24h (required with --suite)")
+	failFast := fs.Bool("fail-fast", false, "with --suite: stop scheduling after the first scenario that is not a PASS")
 	referenceFlag := fs.String("reference", "",
 		"reuse a recorded execution's reference side: an execution id, or "+referenceLast)
 	collectorBin := fs.String("collector-bin", "", "path to "+collectorBinary)
 	if err := parseFlags(fs, args); err != nil {
 		return usageFailure(s, evalRunUsage, err)
 	}
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+
+	switch {
+	case set["scenario"] && set["suite"]:
+		return usageFailure(s, evalRunUsage, usageErrorf("--scenario and --suite are mutually exclusive"))
+	case set["suite"]:
+		return r.suiteMain(s, common, suiteOptions{
+			directory: *suitePath, timeoutFlag: *scenarioTimeout, timeoutSet: set["scenario-timeout"],
+			failFast: *failFast, reference: *referenceFlag, referenceSet: set["reference"],
+			collectorBin: *collectorBin,
+		}, timeout)
+	case set["scenario-timeout"] || set["fail-fast"]:
+		return usageFailure(s, evalRunUsage,
+			usageErrorf("--scenario-timeout and --fail-fast apply only to --suite"))
+	}
 	if err := requireAll(fs, map[string]string{"scenario": *scenarioPath}); err != nil {
 		return usageFailure(s, evalRunUsage, err)
 	}
-	var reference *scenarioReferenceBody
-	referenceSet := false
-	fs.Visit(func(f *flag.Flag) { referenceSet = referenceSet || f.Name == "reference" })
-	if referenceSet {
-		switch value := strings.TrimSpace(*referenceFlag); value {
-		case "":
-			return usageFailure(s, evalRunUsage,
-				usageErrorf("--reference needs an execution id or %q", referenceLast))
-		case referenceLast:
-			reference = &scenarioReferenceBody{Mode: referenceModeLast}
-		default:
-			reference = &scenarioReferenceBody{Mode: referenceModeExecution, ExecutionID: value}
-		}
+	reference, err := parseReferenceFlag(*referenceFlag, set["reference"], true)
+	if err != nil {
+		return usageFailure(s, evalRunUsage, err)
 	}
 
 	// Everything about the scenario is decided before anything runs: a
@@ -161,26 +237,7 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 		return emitError(s, *common.json, err)
 	}
 
-	executionID := r.executionID(scenario.Name)
-	runs := *scenario.Runs
-	repetitionConfig := func(side config.ScenarioSide, runID, profile string) devConfig {
-		return devConfig{
-			command:           side.Command,
-			apiURL:            client.baseURL.String(),
-			collectorBin:      *collectorBin,
-			project:           scenario.Project,
-			agent:             scenario.Agent,
-			candidate:         side.Candidate,
-			environment:       scenario.Environment,
-			runID:             runID,
-			instrumentation:   instrumentationOrDefault(scenario.Instrumentation),
-			behavioralProfile: profile,
-			env:               side.Env,
-			workloadStdout:    r.workloadStdout,
-		}
-	}
-
-	scope, err := r.scope(repetitionConfig(scenario.Candidate, "", ""))
+	scope, err := r.scope(repetitionConfig(scenario, scenario.Candidate, "", *collectorBin, "", "", r.workloadStdout))
 	if err != nil {
 		if exitCodeFor(err) == exitUsage {
 			return usageFailure(s, evalRunUsage, err)
@@ -188,23 +245,110 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 		return emitError(s, *common.json, err)
 	}
 
+	outcome := r.execute(context.Background(), s, client, scenarioJob{scenario: scenario, scope: scope},
+		reference, *collectorBin)
+	if outcome.err != nil {
+		return emitError(s, *common.json, outcome.err)
+	}
+	if err := emitSuccess(s, *common.json, outcome.document, outcome.render); err != nil {
+		return emitError(s, *common.json, err)
+	}
+	return outcome.exit
+}
+
+// parseReferenceFlag reads --reference. allowExplicit is false for a suite,
+// where only last has a meaning for every scenario at once.
+func parseReferenceFlag(value string, set, allowExplicit bool) (*scenarioReferenceBody, error) {
+	if !set {
+		return nil, nil
+	}
+	switch value = strings.TrimSpace(value); value {
+	case "":
+		return nil, usageErrorf("--reference needs an execution id or %q", referenceLast)
+	case referenceLast:
+		return &scenarioReferenceBody{Mode: referenceModeLast}, nil
+	}
+	if !allowExplicit {
+		return nil, usageErrorf("with --suite, --reference accepts only %q: one execution id "+
+			"cannot be every scenario's reference", referenceLast)
+	}
+	return &scenarioReferenceBody{Mode: referenceModeExecution, ExecutionID: value}, nil
+}
+
+// repetitionConfig is one repetition's `trustvian dev` configuration.
+func repetitionConfig(scenario config.ScenarioConfig, side config.ScenarioSide,
+	apiURL, collectorBin, runID, profile string, workloadStdout *os.File) devConfig {
+	return devConfig{
+		command:           side.Command,
+		apiURL:            apiURL,
+		collectorBin:      collectorBin,
+		project:           scenario.Project,
+		agent:             scenario.Agent,
+		candidate:         side.Candidate,
+		environment:       scenario.Environment,
+		runID:             runID,
+		instrumentation:   instrumentationOrDefault(scenario.Instrumentation),
+		behavioralProfile: profile,
+		env:               side.Env,
+		workloadStdout:    workloadStdout,
+	}
+}
+
+// stopReason names why ctx ended a scenario: its deadline, or cancellation.
+func stopReason(ctx context.Context, name string) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return operationalErrorf("%w: scenario %s did not finish before its deadline; "+
+			"no verdict was produced", errScenarioTimeout, name)
+	}
+	return operationalErrorf("%w: scenario %s was stopped before it finished; "+
+		"no verdict was produced", errScenarioCancelled, name)
+}
+
+// execute runs one scenario to its outcome: begin the execution, run the
+// repetitions, complete it. Single-scenario mode and every suite member run
+// through here, so they cannot differ.
+//
+// ctx bounds the whole scenario. A suite gives it a deadline and its
+// cancellation; single-scenario mode gives it none, and nothing about
+// `trustvian dev`'s signal handling changes. When ctx ends, no further
+// repetition starts, a running workload's process group is terminated, and
+// the execution is recorded failed — operationally, whatever any workload
+// exited with.
+func (r scenarioRunner) execute(ctx context.Context, s streams, client *platformClient,
+	job scenarioJob, reference *scenarioReferenceBody, collectorBin string) scenarioOutcome {
+	scenario, scope := job.scenario, job.scope
+	executionID := r.executionID(scenario.Name)
+	runs := *scenario.Runs
+	stopped := func(err error) scenarioOutcome {
+		return scenarioOutcome{exit: exitCodeFor(err), err: err}
+	}
+
 	// Begin before anything runs. With --reference this is where the control
 	// plane resolves and validates the recorded execution, so a missing,
 	// unfinished, mismatched or incomplete reference costs no workload.
-	begun, err := r.begin(client, beginExecutionBody{
+	begun, err := r.begin(ctx, client, beginExecutionBody{
 		ID: executionID, ScenarioName: scenario.Name, Runs: runs,
 		ProjectID: scope.project, AgentID: scope.agent, Environment: scope.environment,
 		Reference: reference,
 	})
 	if err != nil {
-		return emitError(s, *common.json, err)
+		if ctx.Err() != nil {
+			// The begin may or may not have landed; recording a failure is
+			// harmless either way, and an execution left running is never a
+			// reference.
+			r.fail(s, client, executionID)
+			return stopped(stopReason(ctx, scenario.Name))
+		}
+		return stopped(err)
 	}
 
 	// From here an execution exists, and every way out that is not a verdict
 	// records it failed, so it can never be mistaken for a reference.
-	abort := func(err error) int {
+	abort := func(err error) scenarioOutcome {
 		r.fail(s, client, executionID)
-		return emitError(s, *common.json, err)
+		out := stopped(err)
+		out.executionID = executionID
+		return out
 	}
 	if reference != nil {
 		if begun.ReferenceExecution == nil {
@@ -236,11 +380,31 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 	// rather than the workload (task 078, open question 5).
 	for _, side := range sides {
 		for i := 1; i <= runs; i++ {
+			if ctx.Err() != nil {
+				return abort(stopReason(ctx, scenario.Name))
+			}
 			runID := fmt.Sprintf("%s-%s-%d", executionID, side.name, i)
 			profile := fmt.Sprintf("%s-%s-p%d", executionID, side.name, i)
 			fmt.Fprintf(s.err, "trustvian eval run: %s repetition %d of %d (run %s)\n",
 				side.name, i, runs, runID)
-			result := r.run(repetitionStreams, repetitionConfig(side.spec, runID, profile))
+			config := repetitionConfig(scenario, side.spec, client.baseURL.String(), collectorBin,
+				runID, profile, r.workloadStdout)
+			if ctx.Done() != nil {
+				// A suite member: the scenario context bounds the session,
+				// the suite owns SIGINT/SIGTERM — its cancellation reaches
+				// the workload through this deadline, once — and an
+				// unattended member never takes the terminal.
+				config.deadline = ctx
+				config.callerOwnsSignals = true
+				config.detachStdin = true
+			}
+			result := r.run(repetitionStreams, config)
+			if ctx.Err() != nil {
+				// The deadline or a cancellation ended this repetition, and
+				// whatever it exited with — a workload that traps SIGTERM can
+				// exit 0 — it did not finish.
+				return abort(stopReason(ctx, scenario.Name))
+			}
 			if code := result.code; code != 0 {
 				// One failed repetition ends the scenario. Its N is the one
 				// the limits were written for; a verdict over fewer runs
@@ -248,8 +412,8 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 				// silently. And it is 3, never 1: a broken workload is not a
 				// behavioral regression.
 				return abort(operationalErrorf(
-					"%s repetition %d of %d (run %s) exited %d; the scenario stopped "+
-						"and no verdict was produced", side.name, i, runs, runID, code))
+					"%w: %s repetition %d of %d (run %s) exited %d; the scenario stopped "+
+						"and no verdict was produced", errRepetitionFailed, side.name, i, runs, runID, code))
 			}
 			if !result.runCompleted {
 				// The workload succeeded, but the control plane does not hold
@@ -259,9 +423,9 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 				// would be measured for a scenario that can no longer pass. The
 				// same outcome as a crashed repetition, for the same reason.
 				return abort(operationalErrorf(
-					"%s repetition %d of %d (run %s) succeeded but its run could not be "+
+					"%w: %s repetition %d of %d (run %s) succeeded but its run could not be "+
 						"completed; the scenario stopped and no verdict was produced",
-					side.name, i, runs, runID))
+					errRunNotCompleted, side.name, i, runs, runID))
 			}
 			if side.name == "reference" {
 				referenceIDs = append(referenceIDs, runID)
@@ -272,7 +436,7 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 	}
 
 	gate := scenario.Gate
-	result, err := client.post(context.Background(), completeExecutionBody{
+	result, err := client.post(ctx, completeExecutionBody{
 		// Empty with --reference: the control plane supplies the recorded
 		// reference side itself, so this client cannot mix it with others.
 		ReferenceRunIDs: referenceIDs,
@@ -286,25 +450,49 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 		},
 	}, "scenario-executions", executionID, "complete")
 	if err != nil {
-		return abort(err)
+		// No answer — the deadline, a cancellation or the transport ended
+		// the request. A cancelled request is not a rolled-back one: the
+		// control plane may have committed the completion. It decides.
+		cause := err
+		if ctx.Err() != nil {
+			cause = stopReason(ctx, scenario.Name)
+		}
+		out := r.reconcileCompletion(s, client, executionID, cause)
+		out.executionID = executionID
+		return out
+	}
+	// An answer that is not the control plane's own cannot rule out a
+	// commit either: a gateway in front of it can answer 502 after the
+	// completion committed. Only a definitive /v1 refusal — its error
+	// envelope, from the control plane itself — shows nothing was completed.
+	reconcile := func(cause error) scenarioOutcome {
+		out := r.reconcileCompletion(s, client, executionID, cause)
+		out.executionID = executionID
+		return out
 	}
 	if err := checkStatus(result); err != nil {
+		if !definitiveRefusal(result, err) {
+			return reconcile(err)
+		}
 		return abort(err)
 	}
+	// A 2xx is a commit. An answer that cannot be read is still one, so it is
+	// reconciled rather than failed: failing would be refused, and saying the
+	// execution stayed running would be false.
 	if err := requireJSONBody(result.body); err != nil {
-		return abort(err)
+		return reconcile(err)
 	}
 	var completed completeExecutionResponse
 	if err := decodeJSON(result.body, &completed); err != nil {
-		return abort(err)
+		return reconcile(err)
 	}
 	if len(completed.Comparison) == 0 {
-		return abort(operationalErrorf("the control plane completed execution %s without a comparison",
+		return reconcile(operationalErrorf("the control plane completed execution %s without a comparison",
 			executionID))
 	}
 	var comparison repeatedDTO
 	if err := decodeJSON(completed.Comparison, &comparison); err != nil {
-		return abort(err)
+		return reconcile(err)
 	}
 	// Classified before anything is written, exactly as eval compare does: a
 	// verdict the CLI does not recognize is not publishable CI evidence. The
@@ -312,7 +500,9 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 	// — so an unrecognized one is reported, not failed.
 	exit, err := gateExitCode(comparison.Gate.Verdict)
 	if err != nil {
-		return emitError(s, *common.json, err)
+		out := stopped(err)
+		out.executionID = executionID
+		return out
 	}
 
 	var provenance *referenceProvenance
@@ -336,20 +526,23 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 		Comparison: completed.Comparison,
 	})
 	if err != nil {
-		return emitError(s, *common.json, operationalErrorf("encoding the result: %v", err))
+		out := stopped(operationalErrorf("encoding the result: %v", err))
+		out.executionID = executionID
+		return out
 	}
-	if err := emitSuccess(s, *common.json, document, func(w io.Writer) error {
-		return renderScenarioResult(w, scenario.Name, executionID, provenance, comparison)
-	}); err != nil {
-		return emitError(s, *common.json, err)
+	return scenarioOutcome{
+		exit: exit, document: document, executionID: executionID,
+		render: func(w io.Writer) error {
+			return renderScenarioResult(w, scenario.Name, executionID, provenance, comparison)
+		},
 	}
-	return exit
 }
 
 // begin records the execution, and with a reference, has the control plane
 // resolve it.
-func (r scenarioRunner) begin(client *platformClient, body beginExecutionBody) (beginExecutionResponse, error) {
-	result, err := client.post(context.Background(), body, "scenario-executions")
+func (r scenarioRunner) begin(ctx context.Context, client *platformClient,
+	body beginExecutionBody) (beginExecutionResponse, error) {
+	result, err := client.post(ctx, body, "scenario-executions")
 	if err != nil {
 		return beginExecutionResponse{}, err
 	}
@@ -366,18 +559,97 @@ func (r scenarioRunner) begin(client *platformClient, body beginExecutionBody) (
 	return begun, nil
 }
 
-// fail records the execution failed. Best effort: the original error is what
-// the caller reports, and a failure to record the failure is said on stderr.
-// An execution left running is never a reference either.
+// definitiveRefusal reports whether a non-2xx completion answer is the
+// control plane's own refusal: a well-formed /v1 error envelope, and not a
+// gateway status. A refusal means nothing was completed. Anything else —
+// 502, 503, 504, or a body that is not the control plane's — leaves the
+// commit undecided.
+func definitiveRefusal(result apiResult, err error) bool {
+	switch result.status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return false
+	}
+	var perr *platformError
+	return errors.As(err, &perr) && perr.envelope != nil
+}
+
+// reconcileCompletion settles a completion request that ended without an
+// answer, by asking the control plane — which alone knows whether it
+// committed — rather than inferring it from the cancelled request.
+//
+// The execution is failed first. Completing and failing are both
+// compare-and-swaps from running (ADR 0054 § 2), so the server orders them:
+//
+//   - the fail is accepted: the completion did not commit and now never can,
+//     so cause — the deadline, the cancellation, the transport — is reported;
+//   - the fail is refused because the execution completed: the completion
+//     won. The execution is a completed, reusable reference, and that is
+//     reported as such — never as a timeout or cancellation, and never as a
+//     verdict this runner did not receive;
+//   - neither answer arrives: the state is reported unknown.
+//
+// Nothing is retried: a second completion could not complete it twice, and
+// would only blur which request decided.
+func (r scenarioRunner) reconcileCompletion(s streams, client *platformClient,
+	executionID string, cause error) scenarioOutcome {
+	stopped := func(err error) scenarioOutcome { return scenarioOutcome{exit: exitCodeFor(err), err: err} }
+	ctx, cancel := context.WithTimeout(context.Background(), scenarioCleanupTimeout)
+	defer cancel()
+
+	result, err := client.post(ctx, struct{}{}, "scenario-executions", executionID, "fail")
+	if err == nil && checkStatus(result) == nil {
+		return stopped(cause)
+	}
+
+	// Refused or unanswered: read what the control plane holds.
+	read, err := client.get(ctx, "scenario-executions", executionID)
+	if err == nil {
+		err = checkStatus(read)
+	}
+	var stored struct {
+		Execution struct {
+			Status  string `json:"status"`
+			Verdict string `json:"verdict"`
+		} `json:"execution"`
+	}
+	if err == nil {
+		err = decodeJSON(read.body, &stored)
+	}
+	if err != nil {
+		fmt.Fprintf(s.err, "trustvian eval run: WARNING: execution %s could not be recorded failed "+
+			"and could not be read (%v)\n", executionID, err)
+		return stopped(operationalErrorf("%w: execution %s may have completed — its completion "+
+			"request ended without an answer (%v) and its state could not be read; check it before "+
+			"relying on it as a reference", errExecutionStateUnknown, executionID, cause))
+	}
+	switch stored.Execution.Status {
+	case "failed":
+		return stopped(cause)
+	case "completed":
+		return stopped(operationalErrorf("%w: the control plane completed execution %s (verdict %s), "+
+			"but its answer did not arrive (%v). The execution is completed and can be a recorded "+
+			"reference; no verdict is reported here, because none was received",
+			errCompletedWithoutResponse, executionID, stored.Execution.Verdict, cause))
+	}
+	return stopped(operationalErrorf("%w: execution %s is %s after its completion request ended "+
+		"without an answer (%v)", errExecutionStateUnknown, executionID, stored.Execution.Status, cause))
+}
+
+// fail records the execution failed. Best effort, under its own bounded
+// context: the original error is what the caller reports, and a failure to
+// record the failure is said on stderr. An execution left running is never a
+// reference either.
 func (r scenarioRunner) fail(s streams, client *platformClient, executionID string) {
-	result, err := client.post(context.Background(), struct{}{},
-		"scenario-executions", executionID, "fail")
+	ctx, cancel := context.WithTimeout(context.Background(), scenarioCleanupTimeout)
+	defer cancel()
+	result, err := client.post(ctx, struct{}{}, "scenario-executions", executionID, "fail")
 	if err == nil {
 		err = checkStatus(result)
 	}
 	if err != nil {
 		fmt.Fprintf(s.err, "trustvian eval run: WARNING: execution %s could not be recorded "+
-			"failed (%v); it stays running and is never used as a reference\n", executionID, err)
+			"failed (%v); it was never completed, so it stays running, and a running execution "+
+			"is never used as a reference\n", executionID, err)
 	}
 }
 
