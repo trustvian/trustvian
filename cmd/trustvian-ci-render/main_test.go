@@ -148,8 +148,13 @@ func TestRendererImportsOnlyWhatItNeeds(t *testing.T) {
 }
 
 // Counts, limits and thresholds are text from the document, never numbers
-// this renderer computes with: nothing outside main.go — which parses only
-// the caller's --exit-code — converts text to a number.
+// this renderer computes with. The test scans every non-test source file
+// except main.go — which parses only the caller's --exit-code — for
+// "strconv.", "Sscan", "ParseUint", "ParseInt" and "Atoi", the ways Go turns
+// text into a number. JSON integers (runs, exit codes, the suite summary,
+// scenario_count) are read through json.Number.Int64, range-checked and
+// re-printed in canonical form; that is not a text conversion this scan
+// covers, and the renderer does no arithmetic with them.
 func TestRendererParsesNoCount(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {

@@ -96,9 +96,19 @@ that says two things is not one document.
 ### 3. It transcribes; it computes nothing
 
 Every count, limit, threshold, classification, check outcome, verdict and
-suite summary is printed as stored. Counts stay the decimal text the control
-plane wrote; no source file but `main.go` (which parses only the caller's
-`--exit-code`) converts text to a number, and a test asserts it.
+suite summary is printed as stored.
+
+- **No decimal-string count or limit becomes a number.** Presence counts,
+  check actuals and bounds, and the five gate limits are the decimal text the
+  control plane wrote. They are matched against a canonical-decimal pattern
+  and printed as that same text.
+- **JSON integers are range-checked, not computed with.** `runs`, exit codes,
+  the suite summary and `scenario_count` are JSON numbers. Each is read through
+  `json.Number`, checked to be a canonical integer within its range, and
+  re-printed in canonical form.
+- A test scans every source file but `main.go` for `strconv` and other
+  text-to-number conversions. `main.go` parses only the caller's
+  `--exit-code`.
 
 The only comparisons are **equality checks between two stored copies of one
 fact**: `scenario.runs` against `comparison.runs`, the two producer versions,
@@ -153,7 +163,10 @@ only through one function:
   code span, and an escaped `\|` can interact with a preceding backslash in
   the value, so no ASCII pipe ever comes from the artifact.
 - Each value is capped at 256 bytes, cut on a UTF-8 boundary, and marked
-  *(truncated)* outside the span.
+  *(truncated)* outside the span. The cap applies **before** the pipe
+  substitution, and `｜` is three bytes, so a value can render larger than
+  256 bytes, as can its fence and padding. The body cap below is what bounds
+  the output.
 
 The whole body is capped at 60,000 bytes, below GitHub's 65,536-character
 comment limit, and the same bound serves a job summary:
@@ -199,10 +212,19 @@ the document.
   next slice.
 - The Markdown is OBSERVATIONAL: no wording, layout or ordering is promised.
   The flags and exit codes are OPERATIONALLY STABLE.
-- The renderer's tests run on artifacts the real producers wrote:
-  `testdata/generate.sh` drives the action's `run.sh` against the real CLI,
-  control plane, Collector and the model-free `agent-producer`. A schema change
-  in the producer that the renderer does not follow fails them.
+- **Two things guard against drift between the producers and the renderer.**
+  - **Checked-in fixtures pin the output.** The renderer's tests run on
+    artifacts the real producers wrote: `testdata/generate.sh` drives the
+    action's `run.sh` against the real CLI, control plane, Collector and the
+    model-free `agent-producer`. Golden renderings pin the result.
+  - **The end-to-end workflow renders live output.**
+    `.github/workflows/trustvian-run-action.yml` builds the renderer from the
+    same commit and renders every artifact the run job produced through the
+    pinned runtime. It passes the run job's asserted exit codes as the context
+    and requires no rejection. That workflow also runs when
+    `cmd/trustvian-ci-render` changes.
+  - A producer change the renderer does not follow therefore fails a real end
+    to end, not only a fixture that might be stale.
 - **What it cannot prove.** The artifact is as authentic as the job that wrote
   it, and that job ran the pull request's code. A workload that rewrites
   `result.json` and the digest beside it can present any member outcomes,

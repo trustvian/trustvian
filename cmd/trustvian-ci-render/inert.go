@@ -21,7 +21,10 @@ package main
 //     preceding backslash is the table scanner's business; with no ASCII
 //     pipe in any value, no value can add a cell, whatever precedes it;
 //   - the value is cut to a byte limit at a UTF-8 boundary, and a cut value
-//     is marked, outside the span, as truncated.
+//     is marked, outside the span, as truncated. The limit applies to the
+//     value before the pipe substitution — ｜ is three bytes — and before
+//     the fence and padding, so a rendered span can be larger than the
+//     limit. The total body limit is what bounds the output.
 
 import (
 	"strings"
@@ -38,8 +41,9 @@ var invisibleLetter = map[rune]bool{
 	'\u2800': true, // braille pattern blank
 }
 
-// inert returns s as one inert, single-line code span of at most limit bytes
-// of content, the truncation ellipsis included.
+// inert returns s as one inert, single-line code span. The value is cut to at
+// most limit bytes, the truncation ellipsis included, before its pipes are
+// substituted and it is fenced.
 func inert(s string, limit int) string {
 	s = strings.ToValidUTF8(s, "�")
 	s = strings.Map(func(r rune) rune {

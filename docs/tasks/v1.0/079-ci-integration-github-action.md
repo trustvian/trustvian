@@ -976,8 +976,9 @@ posts nothing.
 - **Inert, bounded output.**
   - Every artifact string is one code span on one line, with control
     characters replaced, backticks fenced and pipes substituted.
-  - Each string is capped at 256 bytes and the body at 60,000 bytes, with
-    truncation marked.
+  - Each value is capped at 256 bytes before the pipe substitution, so a
+    value can render a little larger. The 60,000-byte body cap bounds the
+    output. Truncation is marked.
   - Unclassified behaviors give way before any evidence a verdict rests on.
   - GitHub's own renderer, given the hostile fixture, produced no link,
     image, mention, issue reference or extra row.
@@ -991,7 +992,12 @@ posts nothing.
   - exit `2` and `3`;
   - three suites: mixed, fail-fast skip, and an errored member.
 
-  Golden renderings pin them. Mutations of those artifacts cover:
+  Golden renderings pin them. The end-to-end workflow also renders, with the
+  renderer built from the same commit, every artifact the pinned runtime
+  produces there, and fails on any rejection. That guards against drift the
+  fixtures cannot see.
+
+  Mutations of those artifacts cover:
   - metadata mismatches, and digest and size failures;
   - malformed JSON and duplicate keys;
   - absent versus zero and false;
@@ -1020,7 +1026,7 @@ Against the criteria below:
 | 10 | **Met for the artifact, the summary and the renderer**, which takes the head commit from the caller and requires the artifact to agree |
 | 11 | **Met for the run job**, asserted structurally on the shipped example and the test workflow. The comment job does not exist yet |
 | 12 | Met for the action, the example and the guide's YAML blocks; the action also refuses the event at run time |
-| 14 | Met for the run side, asserted by a source scan; the renderer converts no count to a number, asserted by a source scan and a contradiction test |
+| 14 | Met for the run side, asserted by a source scan. The renderer converts no decimal-string count or limit to a number: JSON integers (`runs`, exit codes, the suite summary, `scenario_count`) are range-checked through `json.Number` and re-printed in canonical form. This is asserted by a source scan and a contradiction test |
 | 15 | **Met for the renderer**: both producer versions come from the document |
 | 16 | **Met for the job summary and the renderer**, whose output is the same for a comment and a summary |
 | 7, 8, 13 | **Not met.** They are about posting the comment and its job — the next slice |

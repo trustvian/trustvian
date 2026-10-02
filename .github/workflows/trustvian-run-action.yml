@@ -13,7 +13,10 @@
 #   usage        a suite with no deadline      → exit 2, no result document
 #
 # A second job downloads the artifacts the first uploaded and checks them,
-# which is the hand-off the reporting slice will rely on.
+# which is the hand-off the reporting slice will rely on. It then renders each
+# one with cmd/trustvian-ci-render, built from this same commit, so the
+# renderer is held to what the pinned runtime actually produces rather than
+# only to its checked-in fixtures.
 #
 # Read-only, like ci.yml: no job holds a write scope or a secret, and no
 # checkout keeps a credential. This workflow is itself shaped as the run-side
@@ -30,6 +33,7 @@ on:
       - ".github/workflows/trustvian-run-action.yml"
       - "scripts/testdata/trustvian-run/**"
       - "processor/cmd/agent-producer/**"
+      - "cmd/trustvian-ci-render/**"
   push:
     branches: [main]
     paths:
@@ -37,6 +41,7 @@ on:
       - ".github/workflows/trustvian-run-action.yml"
       - "scripts/testdata/trustvian-run/**"
       - "processor/cmd/agent-producer/**"
+      - "cmd/trustvian-ci-render/**"
 
 # No workflow-level permissions: each job states its own.
 
@@ -51,6 +56,13 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    # The exit codes the final step asserted, handed to the artifacts job as
+    # the independent context the renderer checks each artifact against.
+    outputs:
+      pass-exit-code: ${{ steps.pass.outputs.exit-code }}
+      suite-exit-code: ${{ steps.suite.outputs.exit-code }}
+      operational-exit-code: ${{ steps.operational.outputs.exit-code }}
+      usage-exit-code: ${{ steps.usage.outputs.exit-code }}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -194,6 +206,22 @@ jobs:
       contents: read
 
     steps:
+      # This commit's source, for the renderer alone: the job runs no
+      # scenario and holds no write scope, and the checkout keeps no
+      # credential.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Build the renderer
+        run: go build -o "$RUNNER_TEMP/trustvian-ci-render" ./cmd/trustvian-ci-render
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: trustvian-run-*
@@ -229,4 +257,57 @@ jobs:
           expect suite 1 present
           expect operational 3 absent
           expect usage 2 absent
+          exit "$failed"
+
+      # Each artifact rendered as the comment job will render it, against the
+      # identity this job knows independently: the event's head, this run,
+      # and the exit codes the run job asserted. A rejection (exit 3) means
+      # the renderer and the producer disagree about the contract.
+      - name: Render every artifact
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          PASS_CODE: ${{ needs.run.outputs.pass-exit-code }}
+          SUITE_CODE: ${{ needs.run.outputs.suite-exit-code }}
+          OPERATIONAL_CODE: ${{ needs.run.outputs.operational-exit-code }}
+          USAGE_CODE: ${{ needs.run.outputs.usage-exit-code }}
+        run: |
+          set -euo pipefail
+          failed=0
+          # name, the exit code to pass, the renderer exit wanted, and text
+          # its first line must contain ("" for none).
+          render() {
+            local out="$RUNNER_TEMP/render-$1.md" err="$RUNNER_TEMP/render-$1.err" code=0
+            "$RUNNER_TEMP/trustvian-ci-render" \
+              --artifact-dir "artifacts/trustvian-run-$1" \
+              --head-sha "$EXPECTED_HEAD" \
+              --repository "$GITHUB_REPOSITORY" \
+              --run-id "$GITHUB_RUN_ID" \
+              --run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --exit-code "$2" >"$out" 2>"$err" || code=$?
+            if [ "$code" = 3 ]; then
+              echo "::error::$1: the renderer rejected the artifact"
+              cat "$err"
+              failed=1
+              return
+            fi
+            if [ "$code" != "$3" ]; then
+              echo "::error::$1: the renderer exited $code, want $3"
+              cat "$err"
+              failed=1
+              return
+            fi
+            local first=""
+            IFS= read -r first <"$out" || true
+            if [ -n "$4" ] && [[ "$first" != *"$4"* ]]; then
+              echo "::error::$1: the rendering's first line lacks '$4'"
+              cat "$out"
+              failed=1
+              return
+            fi
+            echo "ok: $1 rendered, exit $code"
+          }
+          render pass "$PASS_CODE" 0 "— PASS"
+          render suite "$SUITE_CODE" 0 "behavioral suite"
+          render operational "$OPERATIONAL_CODE" 1 ""
+          render usage "$USAGE_CODE" 1 ""
           exit "$failed"

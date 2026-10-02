@@ -288,18 +288,39 @@ both ([ADR 0057](adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md
 
 It posts nothing; that is the next slice.
 
-```sh
-go build -o "$RUNNER_TEMP/trustvian-ci-render" ./cmd/trustvian-ci-render
+Build it from a trusted, commit-pinned checkout of `trustvian/trustvian` in a
+path of its own — the commit you reviewed, never the pull request's:
 
-"$RUNNER_TEMP/trustvian-ci-render" \
-  --artifact-dir "$ARTIFACT_DIR" \
-  --head-sha "$HEAD_SHA" \
-  --repository "$GITHUB_REPOSITORY" \
-  --run-id "$GITHUB_RUN_ID" \
-  --run-attempt "$GITHUB_RUN_ATTEMPT" \
-  --exit-code "$RUN_EXIT_CODE" \
-  > comment.md
+```yaml
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  with:
+    repository: trustvian/trustvian
+    ref: REPLACE_WITH_A_REVIEWED_TRUSTVIAN_COMMIT_SHA # the full 40-character commit
+    path: trustvian-renderer
+    persist-credentials: false
+
+- name: Build the renderer
+  working-directory: trustvian-renderer
+  run: go build -o "$RUNNER_TEMP/trustvian-ci-render" ./cmd/trustvian-ci-render
+
+- name: Render
+  env:
+    HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    RUN_EXIT_CODE: ${{ needs.run.outputs.exit-code }}
+  run: |
+    "$RUNNER_TEMP/trustvian-ci-render" \
+      --artifact-dir "$RUNNER_TEMP/artifact" \
+      --head-sha "$HEAD_SHA" \
+      --repository "$GITHUB_REPOSITORY" \
+      --run-id "$GITHUB_RUN_ID" \
+      --run-attempt "$GITHUB_RUN_ATTEMPT" \
+      --exit-code "$RUN_EXIT_CODE" \
+      > "$RUNNER_TEMP/comment.md"
 ```
+
+The write-enabled job that will post this never checks out, builds or runs
+anything from the pull request: its only inputs from the pull request are the
+artifact, read as data, and the event's head commit.
 
 **Every identity comes from the caller, never from the artifact.** Each flag
 but `--server-url` is required:
@@ -433,8 +454,9 @@ no link, image, HTML, emphasis, `@mention` or `#issue` reference from it:
 - **Backticks.** The span's fence is longer than any run of backticks in the
   value.
 - **Pipes.** `|` is shown as `｜`, so no value can add a table cell.
-- **Length.** Each value is capped at 256 bytes on a UTF-8 boundary and marked
-  *(truncated)*.
+- **Length.** Each value is capped at 256 bytes on a UTF-8 boundary, before
+  the pipe substitution, and marked *(truncated)*. A value can therefore
+  render slightly larger; the body cap below bounds the output.
 
 The body is capped at 60,000 bytes, below GitHub's comment limit:
 

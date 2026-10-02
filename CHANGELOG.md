@@ -49,8 +49,9 @@ actually depend on.
   - **Inert, bounded Markdown.**
     - Every artifact string is one code span on one line, with control
       characters replaced, backticks fenced and pipes substituted.
-    - Each string is capped at 256 bytes and the body at 60,000 bytes, with
-      truncation marked visibly.
+    - Each value is capped at 256 bytes before the pipe substitution, and the
+      body at 60,000 bytes, which bounds the output. Truncation is marked
+      visibly.
   - **Tested against real producer output.** `testdata/generate.sh` drives the
     run action through the real CLI, control plane and Collector. Golden
     renderings pin the result.
