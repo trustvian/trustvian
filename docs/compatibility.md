@@ -61,6 +61,7 @@ reconstructed later. Everything else in this table is already released.
 | `trustvian-run` job summary | OBSERVATIONAL | Not a machine interface | Any change | None |
 | `trustvian-ci-render` flags and exit codes | OPERATIONALLY STABLE | See [GitHub Action](#github-action) | New optional flags | Major to remove or repurpose |
 | `trustvian-ci-render` Markdown | OBSERVATIONAL | Not a machine interface | Any change | None |
+| `trustvian-ci-comment` flags, exit codes and marker line | OPERATIONALLY STABLE | See [GitHub Action](#github-action) | New optional flags | Major to remove or repurpose; changing the marker orphans existing comments |
 | CLI human-readable output | OBSERVATIONAL | Not a machine interface — no wording, spacing, or ordering promise | Any change | None |
 | Environment variables read by shipped binaries | OPERATIONALLY STABLE | See [environment variables](#environment-variables) | New variables | Major to remove or rename |
 | Collector processor type name and config fields | OPERATIONALLY STABLE | `policy`, `storage`, `health`, `evaluation` keys and their meaning | New optional keys | Major |
@@ -768,8 +769,16 @@ Nothing posts that Markdown yet.
 | What it accepts | OPERATIONALLY STABLE | `trustvian-run.json` and the `eval run` result document at version `"1"`, each as this page defines them. Unknown fields are tolerated and never rendered; an unknown version, or a value outside a closed vocabulary, renders no verdict |
 | Markdown wording, layout and ordering | OBSERVATIONAL | A verdict names the head commit, transcribes every behavior, all six checks, the thresholds and both producers; a no-verdict rendering carries the head commit, the run link and a reason, and no number from the result. Nothing else is promised |
 
-The job summary still carries no verdict, and the pull request comment does
-not exist yet. The rendering, and the comment when it exists, are
+`cmd/trustvian-ci-comment` posts a rendering as the pull request's one gate
+comment ([ADR 0058](adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)).
+
+| Surface | Class | Promise |
+|---|---|---|
+| Flags `--repository`, `--pull-request`, `--head-sha`, `--marker-id`, `--body-file`; `GITHUB_TOKEN` and `GITHUB_API_URL` | OPERATIONALLY STABLE | Keep their names and meanings; the token is never a flag |
+| Exit codes | OPERATIONALLY STABLE | `0` posted, superseded, or not permitted (a warning); `1` the API failed; `2` usage |
+| The marker line `<!-- trustvian-behavioral-gate:<id> -->` and ownership rule | OPERATIONALLY STABLE | A comment is the poster's only if `github-actions[bot]` wrote it and its first line is the marker |
+
+The job summary still carries no verdict, and no job posts the comment yet. The rendering, and the comment when it exists, are
 OBSERVATIONAL, like CLI human-readable output: anyone parsing it is parsing
 the wrong thing, and the result document is right there.
 
