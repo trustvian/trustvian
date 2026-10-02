@@ -10,6 +10,51 @@ actually depend on.
 
 ### Added
 
+- **An offline renderer for behavioral CI artifacts:
+  `cmd/trustvian-ci-render`** (task 079, still partially implemented;
+  [ADR 0057](docs/adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md),
+  [guide](docs/ci-github-action.md#rendering-the-artifact)).
+
+  Turns a downloaded `trustvian-run` artifact into Markdown for a future pull
+  request comment or job summary. It works offline, needs no credential,
+  executes nothing from the artifact, and is built from the Go standard library
+  alone. It posts nothing: the comment job is the next slice.
+
+  - **The caller supplies the identity.** The head commit, repository, run id
+    and attempt, and the run job's exit code are flags. `trustvian-run.json`
+    must equal each one, and its size and SHA-256 must match `result.json` —
+    consistency, not authenticity.
+  - **The artifact is untrusted.**
+    - Only the two fixed file names are opened, never a symbolic link, under
+      bounded reads.
+    - JSON is parsed strictly: duplicate keys, trailing data, invalid UTF-8
+      and deep nesting are refused, and absent, `null`, `0` and `false` stay
+      distinct.
+    - Closed vocabularies are closed, and outcome shapes must be coherent.
+    - Unknown fields are tolerated, as the compatibility contract requires, and
+      never rendered.
+  - **Transcription only.**
+    - **A scenario verdict** shows every behavior, with both `k/N` counts and
+      its stored classification, plus the `k` and `j` thresholds, all six
+      checks with their advisory markers, reference reuse and both producer
+      versions.
+    - **A suite report** shows the recorded summary, its members (errors and
+      skips included) and each member's own verdict. No suite verdict is
+      composed.
+    - Nothing is computed.
+  - **An explicit no-verdict state.** It covers exit `2` and `3`, a missing
+    artifact, a validation failure, and evidence that cannot fit. It carries
+    the head commit, the run link and a fixed reason, and no number. A rejected
+    artifact exits `3`, distinct from a run with no verdict (`1`).
+  - **Inert, bounded Markdown.**
+    - Every artifact string is one code span on one line, with control
+      characters replaced, backticks fenced and pipes substituted.
+    - Each string is capped at 256 bytes and the body at 60,000 bytes, with
+      truncation marked visibly.
+  - **Tested against real producer output.** `testdata/generate.sh` drives the
+    run action through the real CLI, control plane and Collector. Golden
+    renderings pin the result.
+
 - **A GitHub Action for the run side of the behavioral gate:
   `.github/actions/trustvian-run`** (task 079, partially implemented;
   [ADR 0056](docs/adr/0056-the-run-action-builds-a-pinned-source-commit.md),

@@ -59,6 +59,8 @@ reconstructed later. Everything else in this table is already released.
 | `trustvian-run` GitHub Action inputs and outputs | OPERATIONALLY STABLE | See [GitHub Action](#github-action) | New inputs and outputs | Major to remove or repurpose |
 | `trustvian-run` artifact (`result.json`, `trustvian-run.json` v`1`) | OPERATIONALLY STABLE | See [GitHub Action](#github-action) | New metadata fields | Major, or a new metadata version |
 | `trustvian-run` job summary | OBSERVATIONAL | Not a machine interface | Any change | None |
+| `trustvian-ci-render` flags and exit codes | OPERATIONALLY STABLE | See [GitHub Action](#github-action) | New optional flags | Major to remove or repurpose |
+| `trustvian-ci-render` Markdown | OBSERVATIONAL | Not a machine interface | Any change | None |
 | CLI human-readable output | OBSERVATIONAL | Not a machine interface — no wording, spacing, or ordering promise | Any change | None |
 | Environment variables read by shipped binaries | OPERATIONALLY STABLE | See [environment variables](#environment-variables) | New variables | Major to remove or rename |
 | Collector processor type name and config fields | OPERATIONALLY STABLE | `policy`, `storage`, `health`, `evaluation` keys and their meaning | New optional keys | Major |
@@ -755,10 +757,21 @@ classes below say what a newer commit may change.
 | The pinned runtime commit and Go version (`runtime.env`) | OBSERVATIONAL | Change with the action's commit; the artifact records which were used |
 | Job summary wording and layout | OBSERVATIONAL | Head commit, run link, exit code and artifact availability are present; nothing else is promised |
 
-The job summary carries no verdict in this slice, and the pull request comment
-does not exist yet. When it does, its body is OBSERVATIONAL, like CLI
-human-readable output: anyone parsing it is parsing the wrong thing, and the
-result document is right there.
+`cmd/trustvian-ci-render` renders a downloaded artifact as Markdown, offline
+([ADR 0057](adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md)).
+Nothing posts that Markdown yet.
+
+| Surface | Class | Promise |
+|---|---|---|
+| Flags `--artifact-dir`, `--head-sha`, `--repository`, `--run-id`, `--run-attempt`, `--exit-code`, `--server-url` | OPERATIONALLY STABLE | Keep their names and meanings; an empty `--exit-code` means the CLI did not run |
+| Exit codes | OPERATIONALLY STABLE | `0` evidence rendered, `1` no verdict, `2` usage (nothing rendered), `3` no verdict because the artifact was rejected |
+| What it accepts | OPERATIONALLY STABLE | `trustvian-run.json` and the `eval run` result document at version `"1"`, each as this page defines them. Unknown fields are tolerated and never rendered; an unknown version, or a value outside a closed vocabulary, renders no verdict |
+| Markdown wording, layout and ordering | OBSERVATIONAL | A verdict names the head commit, transcribes every behavior, all six checks, the thresholds and both producers; a no-verdict rendering carries the head commit, the run link and a reason, and no number from the result. Nothing else is promised |
+
+The job summary still carries no verdict, and the pull request comment does
+not exist yet. The rendering, and the comment when it exists, are
+OBSERVATIONAL, like CLI human-readable output: anyone parsing it is parsing
+the wrong thing, and the result document is right there.
 
 ## Behavioral compatibility
 
