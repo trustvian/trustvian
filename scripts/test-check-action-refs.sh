@@ -129,6 +129,37 @@ rm -rf "$local_action"
 
 run "missing local action fails" 1 "no action.yml" "./no-such-local-action"
 
+# --- composite actions are scanned too -------------------------------
+# A bad ref inside an action fails every workflow that uses the action, so
+# TRUSTVIAN_ACTION_DIR is scanned alongside the workflows.
+action_wf="$work/action-wf"
+action_dir="$work/actions"
+mkdir -p "$action_wf" "$action_dir/a"
+printf 'name: f\non: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@known-tag\n' \
+    >"$action_wf/w.yml"
+printf 'runs:\n  using: composite\n  steps:\n    - uses: actions/upload-artifact@missing-ref\n' \
+    >"$action_dir/a/action.yml"
+for want in "1:has no tag, branch, or commit missing-ref" "0:ok:"; do
+    set +e
+    if [ "${want%%:*}" = 1 ]; then
+        out="$(TRUSTVIAN_WORKFLOW_DIR="$action_wf" TRUSTVIAN_ACTION_DIR="$action_dir" \
+            TRUSTVIAN_ACTION_REF_RESOLVER="$work/resolver.sh" bash "$SCRIPT" 2>&1)"
+    else
+        # Without TRUSTVIAN_ACTION_DIR, a test's WORKFLOW_DIR is scanned alone.
+        out="$(TRUSTVIAN_WORKFLOW_DIR="$action_wf" \
+            TRUSTVIAN_ACTION_REF_RESOLVER="$work/resolver.sh" bash "$SCRIPT" 2>&1)"
+    fi
+    status=$?
+    set -e
+    if [ "$status" -eq "${want%%:*}" ] && grep -qF "${want#*:}" <<<"$out"; then
+        echo "ok    action directory scanning (exit ${want%%:*})"
+        pass_count=$((pass_count + 1))
+    else
+        printf 'FAIL  action directory scanning: exit %d, want %s\n%s\n' "$status" "$want" "$out" >&2
+        fail_count=$((fail_count + 1))
+    fi
+done
+
 # --- the suite must not pass vacuously --------------------------------
 empty="$work/empty"
 mkdir -p "$empty"

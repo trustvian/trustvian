@@ -79,6 +79,7 @@ as long as its own decision holds.
 | [0053](0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md) | Repeated evaluation counts identities across isolated repetitions | Accepted; § 6 superseded by 0054 |
 | [0054](0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md) | Scenario executions are persisted, and references are resolved by the control plane | Accepted |
 | [0055](0055-a-scenario-suite-is-a-bounded-schedule-and-a-report-not-an-evaluation.md) | A scenario suite is a bounded schedule and a report, not an evaluation | Accepted |
+| [0056](0056-the-run-action-builds-a-pinned-source-commit.md) | The run action is an in-repository composite action that builds a pinned source commit | Accepted |
 
 **0046 is the first record here carried as Proposed.** Its reasoning is
 complete and no maintainer has ratified it, which is exactly what this status

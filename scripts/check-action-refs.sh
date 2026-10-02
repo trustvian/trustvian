@@ -48,6 +48,19 @@ cd "$(dirname "$0")/.."
 
 readonly WORKFLOW_DIR="${TRUSTVIAN_WORKFLOW_DIR:-.github/workflows}"
 
+# The repository's own composite actions reference actions too, and a bad
+# ref there fails every workflow that uses them. Scanned by default; when a
+# test points WORKFLOW_DIR elsewhere, only TRUSTVIAN_ACTION_DIR, if given.
+if [ -n "${TRUSTVIAN_WORKFLOW_DIR:-}" ]; then
+    readonly ACTION_DIR="${TRUSTVIAN_ACTION_DIR:-}"
+else
+    readonly ACTION_DIR="${TRUSTVIAN_ACTION_DIR:-.github/actions}"
+fi
+scan_dirs=("$WORKFLOW_DIR")
+if [ -n "$ACTION_DIR" ] && [ -d "$ACTION_DIR" ]; then
+    scan_dirs+=("$ACTION_DIR")
+fi
+
 # resolve_ref prints the kind of ref that was found (tag, branch, or
 # commit) and exits 0; exits 2 when the repository has no such ref; exits 1
 # when the lookup could not be performed at all.
@@ -123,7 +136,8 @@ unverified_count=0
 # `|| true` on the grep alone: no matches is grep's exit 1, and with
 # pipefail that would abort the script silently — the explicit guard below
 # is what must report it, loudly and by name.
-refs="$( { grep -rhoE '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*[^[:space:]#]+' "$WORKFLOW_DIR" || true; } |
+refs="$( { grep -rhoE --include='*.yml' --include='*.yaml' \
+    '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*[^[:space:]#]+' "${scan_dirs[@]}" || true; } |
     sed -E 's/.*uses:[[:space:]]*//' | tr -d '"'"'" | sort -u)"
 
 [ -n "$refs" ] || {

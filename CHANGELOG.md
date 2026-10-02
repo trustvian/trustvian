@@ -10,6 +10,54 @@ actually depend on.
 
 ### Added
 
+- **A GitHub Action for the run side of the behavioral gate:
+  `.github/actions/trustvian-run`** (task 079, partially implemented;
+  [ADR 0056](docs/adr/0056-the-run-action-builds-a-pinned-source-commit.md),
+  [guide](docs/ci-github-action.md)).
+
+  Runs `trustvian eval run --json` for a scenario or a suite and uploads the
+  result document as an artifact. Its final step exits with the CLI's own code.
+
+  - **Exit codes pass through exactly.** `0`, `1`, `2` and `3` reach the job
+    unchanged, and the `exit-code` output carries the code. `3` is never
+    reported as `1`, and the action sets no `continue-on-error`.
+  - **The result is preserved whatever the code.**
+    - `result.json` is the CLI's stdout, byte for byte.
+    - `trustvian-run.json` records:
+      - the pull request's head commit, from the event, never the merge
+        commit;
+      - the exact exit code;
+      - the result's status, size and SHA-256;
+      - the runtime commit.
+    - Output that is missing after a verdict, invalid, or larger than
+      32 MiB + 64 KiB fails the action. It is never truncated or stored.
+  - **Inputs** mirror the CLI: `scenario`, `suite`, `reference`,
+    `scenario-timeout`, `fail-fast` and `api-url`, plus `working-directory`
+    and `artifact-name`. Each value reaches the CLI as one argument, never
+    through a shell string. There is no gate configuration in workflow YAML.
+  - **A reproducible runtime.** No release ships `eval run` yet, so the action
+    builds `trustvian`, `trustvian-local` and `trustvian-collector` from one
+    reviewed commit pinned in `runtime.env`.
+    - It uses a pinned, digest-verified Go 1.27.1, entirely under
+      `$RUNNER_TEMP`.
+    - Every binary must record that exact commit, unmodified, in its own Go
+      build information. No version is injected.
+  - **Its own control plane**, started on loopback and stopped by PID, or an
+    existing one through `api-url`.
+  - **Refuses `pull_request_target` and `workflow_run`.**
+  - **A minimal job summary:** head commit, run link, exit code and artifact
+    availability. No verdict is rendered.
+  - **A run-only example workflow**,
+    `examples/github-actions/behavioral-gate-run.yml`:
+    - `pull_request` only;
+    - `contents: read` per job;
+    - commit-pinned actions and `persist-credentials: false`;
+    - no secrets.
+  - **Not yet:** the pull request comment, which will be a separate job that
+    never checks out or runs pull request code; the strict renderer; and
+    caching. Task 078's criteria 9 and 11 remain open. Running a scenario in
+    CI does not make a nondeterministic workload's verdict any more reliable.
+
 - **Scenario suites: `trustvian eval run --suite DIR --scenario-timeout D`**
   (task 078,
   [ADR 0055](docs/adr/0055-a-scenario-suite-is-a-bounded-schedule-and-a-report-not-an-evaluation.md)).

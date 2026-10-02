@@ -1,6 +1,11 @@
 # 079 — CI Integration: A GitHub Action
 
-Status: specified; not implemented
+Status: partially implemented. The run side ships — `.github/actions/trustvian-run`
+runs a scenario or suite, passes the exit code through and preserves the result
+document as an artifact
+([ADR 0056](../../adr/0056-the-run-action-builds-a-pinned-source-commit.md)).
+The pull request comment, its job and the strict renderer remain; see
+[Implementation status](#implementation-status)
 Milestone: `v0.10.0` — the
 [developer preview](../../ROADMAP.md#v0100--developer-preview)
 Depends on: [078](078-behavioral-scenario-suites.md)
@@ -852,6 +857,100 @@ exposures, and the mitigation for one is not the mitigation for the other.
 Whether the exit-code passthrough needs its own ADR is doubtful: it inherits
 ADR 0033 § 9 and § 10 rather than deciding anything new, and the ADR should say
 so rather than restating them.
+
+## Implementation status
+
+**The first slice is the run side**, recorded in
+[ADR 0056](../../adr/0056-the-run-action-builds-a-pinned-source-commit.md) and
+documented in [Running behavioral scenarios in GitHub Actions](../../ci-github-action.md).
+
+- **An in-repository composite action**, `.github/actions/trustvian-run`
+  (open questions 1 and 3, resolved). Four steps: setup, run, upload and
+  finish.
+  - Inputs reach the scripts only through the environment.
+  - The CLI gets each value as one argument attached to its flag.
+  - The action reads no field of the result document.
+- **The runtime is built from one reviewed commit** (open question 4,
+  resolved).
+  - No release ships `eval run`: `v0.9.0`'s binary answers
+    `unknown command "eval"` and its archive has no helpers.
+  - `runtime.env` pins commit `576da8f…` (after #137) and Go 1.27.1, with
+    go.dev's archive digests.
+  - The build is isolated under `$RUNNER_TEMP`, in a cleared environment.
+  - Each binary's Go build information must record that exact commit,
+    unmodified. Nothing is injected.
+- **A control plane per invocation**, or `api-url` to attach to one. The action
+  stops only the process it started.
+- **Exit codes pass through.** The final step exits with exactly the CLI's code,
+  and the `exit-code` output carries it. No `continue-on-error`.
+- **The result is preserved, whatever the code.**
+  - `result.json` is the CLI's stdout, byte for byte.
+  - `trustvian-run.json` holds the head commit from the event, the exact exit
+    code, and the result's status, size and digest.
+  - Missing-after-a-verdict, invalid or oversized output fails the action and
+    is never stored, truncated or repaired.
+- **The head commit comes from the event**: `pull_request.head.sha`, never the
+  merge commit `github.sha`.
+- **A minimal job summary**: head commit, run link, exit code and artifact
+  availability. No verdict. Every value is shape-checked before it is written,
+  and prose values are escaped and capped.
+- **`pull_request_target` and `workflow_run` are refused** by the action
+  itself.
+- **A run-only example workflow**,
+  `examples/github-actions/behavioral-gate-run.yml`:
+  - `pull_request` only;
+  - `contents: read` per job, and nothing at workflow level;
+  - commit-pinned actions and `persist-credentials: false`;
+  - no secrets.
+- **Tests:**
+  - `scripts/trustvian_run_action_test.go`, against fake binaries:
+    - each of `0`–`3` (and an out-of-contract code) passed through;
+    - hostile inputs passed as single arguments, never evaluated;
+    - preservation after FAIL and operational errors;
+    - missing, invalid and oversized output;
+    - head identity per event, and refusal of privileged events;
+    - control-plane cleanup, including one that ignores SIGTERM, with an
+      unrelated process left running;
+    - summary inertness and the runtime pin's shape;
+    - structural checks of the action, the example and the test workflow,
+      and of every YAML block in the guide.
+  - `.github/workflows/trustvian-run-action.yml` runs the action itself
+    against model-free scenarios through the real CLI, control plane and
+    Collector:
+    - exit `0`, `1`, `2` and `3`;
+    - a second job downloads and verifies the artifacts with no
+      `GITHUB_TOKEN` scope.
+
+Against the criteria below:
+
+| # | Status |
+|---|---|
+| 1 | **Met for the run side**: one action step runs a scenario or suite |
+| 2, 3 | Met |
+| 10 | **Met for the artifact and the summary**; the comment does not exist yet |
+| 11 | **Met for the run job**, asserted structurally on the shipped example and the test workflow. The comment job does not exist yet |
+| 12 | Met for the action, the example and the guide's YAML blocks; the action also refuses the event at run time |
+| 14 | Met for the run side, asserted by a source scan |
+| 16 | **Met for the job summary**; the comment does not exist yet |
+| 4–9, 13, 15 | **Not met.** They are about the comment and its job — the next slice |
+
+**Not built:**
+- The comment job and its packaging (open question 2).
+- The comment API and its scope (open question 5).
+- The strict result-document renderer.
+- One comment per pull request.
+- The no-verdict state.
+- Fork-path degradation of the comment.
+- Caching the runtime across jobs.
+- A release-archive runtime.
+- Windows runners.
+
+**What this does not change.** The action passes task 078's verdicts on; it does
+not make them more reliable. [Task 078](078-behavioral-scenario-suites.md)'s
+acceptance criteria 9 and 11 remain open. In particular, an unchanged
+*nondeterministic* workload can still fail the documented `k = 1, j = 0` limits,
+as the 2026-10-01 measurement recorded, and running it in CI changes nothing
+about that.
 
 ## Acceptance criteria
 
