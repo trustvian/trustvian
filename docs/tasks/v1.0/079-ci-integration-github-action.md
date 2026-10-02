@@ -1,10 +1,14 @@
 # 079 — CI Integration: A GitHub Action
 
-Status: partially implemented. The run side ships — `.github/actions/trustvian-run`
-runs a scenario or suite, passes the exit code through and preserves the result
-document as an artifact
-([ADR 0056](../../adr/0056-the-run-action-builds-a-pinned-source-commit.md)).
-The pull request comment, its job and the strict renderer remain; see
+Status: partially implemented. Two slices have shipped:
+- **The run side.** `.github/actions/trustvian-run` runs a scenario or suite,
+  passes the exit code through and preserves the result document as an
+  artifact ([ADR 0056](../../adr/0056-the-run-action-builds-a-pinned-source-commit.md)).
+- **The strict renderer.** `cmd/trustvian-ci-render` validates that artifact
+  and renders it as inert Markdown, or as an explicit no-verdict state,
+  offline ([ADR 0057](../../adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md)).
+
+The pull request comment and its job remain; see
 [Implementation status](#implementation-status)
 Milestone: `v0.10.0` — the
 [developer preview](../../ROADMAP.md#v0100--developer-preview)
@@ -921,26 +925,119 @@ documented in [Running behavioral scenarios in GitHub Actions](../../ci-github-a
     - a second job downloads and verifies the artifacts with no
       `GITHUB_TOKEN` scope.
 
+**The second slice is the strict renderer**, recorded in
+[ADR 0057](../../adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md)
+and documented in
+[Rendering the artifact](../../ci-github-action.md#rendering-the-artifact). It
+posts nothing.
+
+- **`cmd/trustvian-ci-render`, a standard-library-only command.** It works
+  offline, needs no credential, and imports no process, network, plugin or
+  `unsafe` package — asserted by an import scan and `go list -deps`.
+- **The caller supplies the run's identity**: head commit, repository, run id
+  and attempt, and the run job's exit code. The artifact's metadata must equal
+  each one.
+- **The artifact is untrusted data.**
+  - Only the two fixed file names are opened, each only as a regular file,
+    under the run action's own size bounds.
+  - The recorded size and SHA-256 must match `result.json` — consistency, not
+    authenticity.
+  - JSON is parsed strictly: duplicate keys at any depth, trailing data,
+    invalid UTF-8 and deep nesting are refused.
+  - Absent, `null`, `0` and `false` stay distinct.
+  - Versions, verdicts, classifications, the six checks in order, rules,
+    advisories, member outcomes, skip reasons and metadata vocabularies are
+    closed.
+  - Outcome shapes must be coherent.
+  - Unknown fields are tolerated, per the compatibility contract, and never
+    rendered.
+- **Transcription only.** A scenario verdict carries everything criterion 5
+  names:
+  - every behavior with both `k/N` counts and its stored classification
+    (added, removed or unclassified);
+  - the `k` and `j` thresholds;
+  - all six checks with advisory markers;
+  - reference reuse;
+  - both producer versions.
+
+  A suite renders its recorded summary, its members (errors and skips
+  included), and each member's own verdict, with no suite verdict composed. A
+  test proves a document contradicting its own counts is rendered as stored.
+- **An explicit no-verdict state.** It covers:
+  - exit `2` and `3`;
+  - a missing artifact or exit code;
+  - a result that was not preserved;
+  - an incomplete suite;
+  - any validation failure;
+  - evidence that cannot fit.
+
+  It carries the head commit, the run link and a fixed reason — no number, no
+  check, nothing retained. A rejection is its own exit code.
+- **Inert, bounded output.**
+  - Every artifact string is one code span on one line, with control
+    characters replaced, backticks fenced and pipes substituted.
+  - Each value is capped at 256 bytes before the pipe substitution, so a
+    value can render a little larger. The 60,000-byte body cap bounds the
+    output. Truncation is marked.
+  - Unclassified behaviors give way before any evidence a verdict rests on.
+  - GitHub's own renderer, given the hostile fixture, produced no link,
+    image, mention, issue reference or extra row.
+- **Tests:** `cmd/trustvian-ci-render`, against artifacts the real producers
+  wrote. `testdata/generate.sh` drives the action's `run.sh` through the real
+  CLI, control plane, Collector and `agent-producer`. The artifacts cover:
+  - PASS and FAIL;
+  - a removed behavior;
+  - reference reuse;
+  - N = 1 with no advisory;
+  - exit `2` and `3`;
+  - three suites: mixed, fail-fast skip, and an errored member.
+
+  Golden renderings pin them. The end-to-end workflow also renders, with the
+  renderer built from the same commit, every artifact the pinned runtime
+  produces there, and fails on any rejection. That guards against drift the
+  fixtures cannot see.
+
+  Mutations of those artifacts cover:
+  - metadata mismatches, and digest and size failures;
+  - malformed JSON and duplicate keys;
+  - absent versus zero and false;
+  - closed vocabularies and incompatible shapes;
+  - unknown fields and hostile strings;
+  - output limits, and an incomplete suite.
+
+**The comment job's security requirement, settled here.** The future
+write-enabled job:
+- builds the renderer and its comment code from a **trusted, commit-pinned**
+  source of this repository;
+- **never runs a local action, script or program from the pull request's
+  checkout** — it has no checkout of the pull request at all;
+- consumes the artifact as **data only**.
+
 Against the criteria below:
 
 | # | Status |
 |---|---|
 | 1 | **Met for the run side**: one action step runs a scenario or suite |
 | 2, 3 | Met |
-| 10 | **Met for the artifact and the summary**; the comment does not exist yet |
+| 4 | **Met for the renderer**: rendered from the result document alone, no number computed, and a missing required field renders no verdict naming it. Nothing posts it yet |
+| 5 | **Met for the renderer**: added, removed and unclassified behaviors with both counts and the stored classification, both thresholds, every check |
+| 6 | **Met for the renderer**: an uninterpretable result renders no verdict and the reason |
+| 9 | **The no-verdict rendering is met**: head commit, no numbers, created from the context alone. Replacing a stale comment with it, and writing nothing on cancellation, are the comment job's |
+| 10 | **Met for the artifact, the summary and the renderer**, which takes the head commit from the caller and requires the artifact to agree |
 | 11 | **Met for the run job**, asserted structurally on the shipped example and the test workflow. The comment job does not exist yet |
 | 12 | Met for the action, the example and the guide's YAML blocks; the action also refuses the event at run time |
-| 14 | Met for the run side, asserted by a source scan |
-| 16 | **Met for the job summary**; the comment does not exist yet |
-| 4–9, 13, 15 | **Not met.** They are about the comment and its job — the next slice |
+| 14 | Met for the run side, asserted by a source scan. The renderer converts no decimal-string count or limit to a number: JSON integers (`runs`, exit codes, the suite summary, `scenario_count`) are range-checked through `json.Number` and re-printed in canonical form. This is asserted by a source scan and a contradiction test |
+| 15 | **Met for the renderer**: both producer versions come from the document |
+| 16 | **Met for the job summary and the renderer**, whose output is the same for a comment and a summary |
+| 7, 8, 13 | **Not met.** They are about posting the comment and its job — the next slice |
 
 **Not built:**
 - The comment job and its packaging (open question 2).
 - The comment API and its scope (open question 5).
-- The strict result-document renderer.
-- One comment per pull request.
-- The no-verdict state.
-- Fork-path degradation of the comment.
+- One comment per pull request: the marker and its ownership.
+- Replacing a stale comment with the no-verdict state.
+- Fork-path and permission degradation of the comment.
+- The real end-to-end comment against GitHub's API.
 - Caching the runtime across jobs.
 - A release-archive runtime.
 - Windows runners.

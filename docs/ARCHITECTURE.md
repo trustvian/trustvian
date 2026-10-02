@@ -163,6 +163,7 @@ trustvian/
 ├── alert/                                              # public: Alert, Severity, Condition/Rule/Evaluate, Sink, WebhookSink
 ├── config/                                             # public: PolicyConfig/Rule/Condition, CompilePolicy
 ├── cmd/trustvian/                                       # CLI (in-module, can import internal/*)
+├── cmd/trustvian-ci-render/                             # CI artifact → Markdown (stdlib only; ADR 0057)
 ├── examples/                                           # separate module: genuinely-external-consumer demos
 ├── processor/                                          # separate module: standalone OTel Collector processor
 └── internal/
@@ -279,6 +280,7 @@ internal/semconv     → (stdlib only)   ← the convention table; no OTel impor
 internal/otel        → event, internal/features, internal/semconv   (+ go.opentelemetry.io/otel*)
 trustvian (root)     → event, internal/{anomaly,baseline,features,fingerprint,policy,store,trust}
 cmd/trustvian        → trustvian (root), event, internal/policy, internal/trust
+cmd/trustvian-ci-render → (stdlib only)   ← reads the run artifact as data; imports nothing in this module
 ```
 
 Every edge points strictly toward an earlier pipeline stage or a leaf

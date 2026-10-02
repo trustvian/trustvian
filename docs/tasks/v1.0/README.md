@@ -30,7 +30,7 @@ Tasks for the `v1.0` milestone.
 | [076 — Behavioral Trace & Session Evidence Explorer](076-behavioral-evidence-explorer.md) | Specified and implemented — two presentations narrowed, both because 067 retains neither fidelity nor sequence-deviation evidence |
 | [077 — Unified OTLP Local Dev Runtime](077-unified-otlp-local-dev-runtime.md) | Specified and implemented |
 | [078 — Behavioral Scenario Suites](078-behavioral-scenario-suites.md) | Partially implemented — `trustvian eval run` and `POST /v1/evaluations/compare-repeated` ship self-contained repeated evaluation ([ADR 0053](../../adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)); `--reference` against a recorded execution and suites remain. Measurement re-run recorded 2026-10-01 |
-| [079 — CI Integration: A GitHub Action](079-ci-integration-github-action.md) | Partially implemented — the run side; the comment job remains |
+| [079 — CI Integration: A GitHub Action](079-ci-integration-github-action.md) | Partially implemented — the run side and the offline renderer; the comment job remains |
 | [080 — Metadata-Only Detection Evaluation](080-metadata-only-detection-evaluation.md) | Specified; not implemented |
 | 081 | Approved in [ROADMAP.md](../../ROADMAP.md#milestone-sequence); **no specification written yet** — deferred from 075 |
 | [082 — Agent Inspection and Evaluation Depth](082-agent-inspection-and-evaluation-depth.md) | Specified. Documentation and planning only; implements nothing |

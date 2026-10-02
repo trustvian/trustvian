@@ -1,0 +1,17 @@
+# Fixture for trustvian-ci-render's real-schema artifacts; see ../generate.sh.
+version: v1
+name: render-single-run
+runs: 1
+instrumentation: existing
+reference:
+  command: [sh, scripts/testdata/trustvian-run/workload.sh]
+  env: {SPAN_COUNT: "2", OTEL_SERVICE_NAME: trustvian-ci-render}
+candidate:
+  command: [sh, scripts/testdata/trustvian-run/workload.sh]
+  env: {SPAN_COUNT: "3", OTEL_SERVICE_NAME: trustvian-ci-render}
+gate:
+  added_candidate_presence_minimum: 1
+  added_reference_presence_maximum: 0
+  max_repeated_added_behaviors: 0
+  max_block_decisions_per_run: 0
+  max_critical_risk_observations_per_run: 0

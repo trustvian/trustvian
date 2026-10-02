@@ -1,0 +1,28 @@
+{
+  "version": "1",
+  "head": {
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "source": "event.pull_request.head.sha"
+  },
+  "event": "pull_request",
+  "repository": "trustvian/trustvian",
+  "run": {
+    "id": "1000000001",
+    "attempt": "1"
+  },
+  "mode": "scenario",
+  "control_plane": "attached",
+  "cli": {
+    "exit_code": 1
+  },
+  "result": {
+    "status": "present",
+    "file": "result.json",
+    "bytes": 3360,
+    "sha256": "479d6876c25354c2c37dadf174fc88b82dd0dcd36e8941cd7ddd1c2b9d1389a6"
+  },
+  "runtime": {
+    "source_commit": "3e86f9cead2586e7ee90e14185a8f34074b54240",
+    "go_version": "go1.27.0"
+  }
+}

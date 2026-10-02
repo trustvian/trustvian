@@ -38,7 +38,7 @@ earlier in the project's life is kept separately under
 | [OpenTelemetry Adapter](OPENTELEMETRY.md) | How a span maps to an `Event`, the attribute table, what is not yet implemented |
 | [Collector Processor](../processor/README.md) | The standalone OTel Collector processor and its configuration |
 | [Examples](../examples/README.md) | Runnable programs, each demonstrating one behavior end to end |
-| [GitHub Actions](ci-github-action.md) | Running a behavioral scenario on every pull request: the run action, its permissions, and what it preserves |
+| [GitHub Actions](ci-github-action.md) | Running a behavioral scenario on every pull request: the run action, its permissions, what it preserves, and the offline renderer for its artifact |
 
 ## Operate Trustvian
 

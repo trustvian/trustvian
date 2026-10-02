@@ -283,7 +283,7 @@ until then.
 | 075 | **Implemented** | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) |
 | 077 | **Implemented** | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) |
 | 078 | Partially implemented: `eval run`, repeated evaluation, persisted executions with `--reference <execution>\|last` (schema 9) and suites (`--suite`, per-scenario deadlines) ship; acceptance criteria 9 and 11 remain open | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
-| 079 | Partially implemented: the run side ships — `.github/actions/trustvian-run` runs a scenario or suite, passes the exit code through and preserves the result as an artifact ([ADR 0056](adr/0056-the-run-action-builds-a-pinned-source-commit.md)); the pull request comment and its job are the next slice | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
+| 079 | Partially implemented: the run side ships — `.github/actions/trustvian-run` runs a scenario or suite, passes the exit code through and preserves the result as an artifact ([ADR 0056](adr/0056-the-run-action-builds-a-pinned-source-commit.md)), and `cmd/trustvian-ci-render` renders that artifact as inert Markdown or an explicit no-verdict state, offline ([ADR 0057](adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md)); the pull request comment and its job are the next slice | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
 
 **The build order inside this preview is 075 → 078 → 079**, not the four in
 parallel: 078's thresholds can only be measured at 075's tool-name fidelity — see

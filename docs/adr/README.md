@@ -80,6 +80,7 @@ as long as its own decision holds.
 | [0054](0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md) | Scenario executions are persisted, and references are resolved by the control plane | Accepted |
 | [0055](0055-a-scenario-suite-is-a-bounded-schedule-and-a-report-not-an-evaluation.md) | A scenario suite is a bounded schedule and a report, not an evaluation | Accepted |
 | [0056](0056-the-run-action-builds-a-pinned-source-commit.md) | The run action is an in-repository composite action that builds a pinned source commit | Accepted |
+| [0057](0057-the-ci-renderer-is-a-standalone-offline-transcriber.md) | The CI renderer is a standalone, offline transcriber of the run artifact | Accepted |
 
 **0046 is the first record here carried as Proposed.** Its reasoning is
 complete and no maintainer has ratified it, which is exactly what this status
