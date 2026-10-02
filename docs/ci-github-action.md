@@ -238,9 +238,16 @@ the script itself. While the CLI runs, SIGINT and SIGTERM are forwarded to the
 CLI — which stops its workload, as a suite does on Ctrl-C — and the step waits
 for it, stops the control plane it started, and exits `130` or `143`. A
 signal that arrives while that control plane is stopping — even after the CLI
-finished on its own — lets the stop run to completion, SIGKILL deadline
-included, and the step then exits with the first signal's status. A cancelled
-run reports no exit code. An attached control plane is never signalled.
+finished on its own — lets the stop run to completion, and the step then exits
+with the first signal's status. A cancelled run reports no exit code. An
+attached control plane is never signalled.
+
+A cancellation shortens the control plane's 10s grace: it is killed no later
+than 5s after the first signal. GitHub's runner sends a cancelled step SIGINT,
+then SIGTERM 7.5s later, then kills the step's process tree 2.5s after that; a
+step killed there could leave its control plane running. Stopping by 5s
+leaves the rest of that 10s window for the kill, the reap and the exit. Every
+deadline is measured as elapsed time, and a later signal never extends one.
 
 `working-directory` is a literal path: a relative one is resolved against the
 job's directory, never through `CDPATH`, and a name such as `-P` is a

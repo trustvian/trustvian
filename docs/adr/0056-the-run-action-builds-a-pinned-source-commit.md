@@ -139,7 +139,19 @@ foreground CLI exited would leave it running. Instead:
 The stop keeps the control plane's PID until the process is gone and reaped,
 and signals it only while it is still the script's own child. A signal that
 arrives during the stop is recorded, not acted on, so it can neither abandon
-the stop — the SIGKILL deadline still applies — nor start a second one.
+the stop nor start a second one.
+
+**A cancelled stop must fit the runner's window.** GitHub's runner cancels a
+step with SIGINT, then SIGTERM after 7.5s, then kills its process tree 2.5s
+later (`actions/runner`, `src/Runner.Sdk/ProcessInvoker.cs`). A stop that
+waited its full 10s grace after a cancellation would be killed with the step
+and could leave the control plane running. So the first cancellation signal
+sets a deadline 5s later, and the stop waits for whichever of its two
+deadlines is sooner: it can only shorten, never restart or extend. 5s falls
+before the runner's own SIGTERM and leaves 5s for SIGKILL, the reap and the
+exit. Both deadlines are measured as elapsed time (`EPOCHREALTIME`, or whole
+seconds on a bash older than 5), not as a count of sleeps, which overran 10s
+by about 0.8s. An uncancelled stop keeps its 10s grace.
 
 Nothing is matched by process name.
 

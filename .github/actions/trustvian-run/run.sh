@@ -107,37 +107,73 @@ mkdir -p "$artifact_dir"
 control_plane_pid=""
 stopping=""
 
+# Deadlines are elapsed time, in milliseconds, never a count of sleeps: a
+# sleep plus the commands around it always takes longer than it says.
+#
+# Without a cancellation, the control plane gets 10s after SIGTERM before
+# SIGKILL. A cancellation shortens that: the control plane is killed no later
+# than 5s after the first cancellation signal. GitHub's runner sends a
+# cancelled step SIGINT, then SIGTERM 7.5s later, then kills the step's
+# process tree 2.5s after that (actions/runner, ProcessInvoker.cs); a step
+# killed there would leave its control plane behind. 5s is before the
+# runner's own SIGTERM, and leaves 5s for SIGKILL, the reap, and the exit.
+readonly stop_grace_ms=10000 cancel_budget_ms=5000 kill_wait_ms=2000
+cancel_deadline_ms=""
+
+# now_ms prints the wall clock in milliseconds: bash 5's EPOCHREALTIME,
+# whatever the locale's decimal separator, or whole seconds from date on an
+# older bash. Bash offers no monotonic clock; a deadline is only ever compared
+# with a later reading taken within the same few seconds.
+now_ms() {
+    if [ -n "${EPOCHREALTIME:-}" ]; then
+        local us="${EPOCHREALTIME//[!0-9]/}"
+        echo $((10#$us / 1000))
+    else
+        echo $(($(date +%s) * 1000))
+    fi
+}
+
 # stop_control_plane stops the control plane this step started, by the PID
 # this step recorded: SIGTERM, which it handles as a clean shutdown, then
-# SIGKILL if it is still running after 10s. Not SIGINT: a non-interactive
-# shell starts a background process with SIGINT ignored. It touches no other
-# process — the Collector each repetition starts is `trustvian dev`'s, and dev
-# stops it.
+# SIGKILL at the stop's deadline — 10s, or the cancellation deadline if that
+# is sooner. Not SIGINT: a non-interactive shell starts a background process
+# with SIGINT ignored. It touches no other process — the Collector each
+# repetition starts is `trustvian dev`'s, and dev stops it.
 #
 # The PID is kept until the process is gone and reaped, so an exit path that
 # runs while a stop is under way still knows what this step owns, and a
 # signal is sent only while that PID is still this shell's child. A signal
-# that arrives during the stop is recorded by on_signal and neither cuts the
-# stop short nor starts a second one; the caller acts on it afterwards.
+# that arrives during the stop is recorded by on_signal and starts no second
+# stop; it sets the cancellation deadline, which the wait below re-reads on
+# every pass, so it can only shorten the wait, never restart or extend it.
+# The caller acts on the signal afterwards.
 stop_control_plane() {
     [ -n "$control_plane_pid" ] || return 0
     [ -z "$stopping" ] || return 0
     stopping=1
-    local pid="$control_plane_pid" waited=0
+    local pid="$control_plane_pid" deadline now
+    deadline=$(($(now_ms) + stop_grace_ms))
     ! owns_child "$pid" || kill -TERM "$pid" 2>/dev/null || true
-    while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 100 ]; do
+    while kill -0 "$pid" 2>/dev/null; do
+        now=$(now_ms)
+        if [ -n "$cancel_deadline_ms" ] && [ "$cancel_deadline_ms" -lt "$deadline" ]; then
+            deadline=$cancel_deadline_ms
+        fi
+        [ "$now" -lt "$deadline" ] || break
         sleep 0.1
-        waited=$((waited + 1))
     done
     if owns_child "$pid"; then
-        warn "the control plane did not stop within 10s of SIGTERM; killing it"
+        if [ -n "$cancel_deadline_ms" ]; then
+            warn "the control plane did not stop before the cancellation deadline; killing it"
+        else
+            warn "the control plane did not stop within 10s of SIGTERM; killing it"
+        fi
         kill -KILL "$pid" 2>/dev/null || true
         # SIGKILL cannot be caught; this bounds only how long the kernel
         # takes to deliver it.
-        waited=0
-        while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 50 ]; do
-            sleep 0.1
-            waited=$((waited + 1))
+        deadline=$(($(now_ms) + kill_wait_ms))
+        while kill -0 "$pid" 2>/dev/null && [ "$(now_ms)" -lt "$deadline" ]; do
+            sleep 0.05
         done
         ! kill -0 "$pid" 2>/dev/null || warn "the control plane $pid did not exit after SIGKILL"
     fi
@@ -162,9 +198,9 @@ owns_child() {
 # exited would leave it running, so the CLI runs in the background and the
 # signal is forwarded to it, and to nothing else: it owns its workload's
 # cleanup (ADR 0055 § 4). This step waits for it, stops its own control
-# plane, and still exits with the signal's status. A signal during that stop
-# lets the stop finish, and the step then exits with the first signal's
-# status.
+# plane — by the cancellation deadline — and still exits with the signal's
+# status. A signal during that stop lets the stop finish, no later than that
+# deadline, and the step then exits with the first signal's status.
 cli_pid=""
 launching=""
 cancel_signal=""
@@ -178,12 +214,15 @@ exit_cancelled() {
 }
 
 on_signal() {
-    [ -n "$cancel_signal" ] || cancel_signal="$1"
+    if [ -z "$cancel_signal" ]; then
+        cancel_signal="$1"
+        cancel_deadline_ms=$(($(now_ms) + cancel_budget_ms))
+    fi
     signals_seen=$((signals_seen + 1))
     if [ -n "$cli_pid" ]; then
         kill -s "$1" "$cli_pid" 2>/dev/null || true
     elif [ -n "$stopping" ]; then
-        echo "SIG$1 received while the control plane is stopping; finishing that stop first"
+        echo "SIG$1 received while the control plane is stopping; finishing it by the cancellation deadline"
     elif [ -z "$launching" ]; then
         stop_control_plane
         exit_cancelled
