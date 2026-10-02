@@ -544,6 +544,137 @@ func TestRunActionForwardsCancellation(t *testing.T) {
 	}
 }
 
+// A cancellation that arrives after the CLI has finished, while the step is
+// stopping its control plane, neither abandons nor restarts that shutdown: the
+// control plane gets SIGTERM once, then SIGKILL at the deadline, and is gone
+// before the step exits with the first signal's status. A second signal
+// changes none of that, and nothing the step did not start is touched.
+func TestRunActionCancellationDuringShutdownStillStopsTheControlPlane(t *testing.T) {
+	requireTools(t)
+	if testing.Short() {
+		t.Skip("includes the 10s SIGTERM grace")
+	}
+	tests := []struct {
+		name    string
+		signals []syscall.Signal
+		want    int
+	}{
+		{"SIGINT", []syscall.Signal{syscall.SIGINT}, 130},
+		{"SIGTERM", []syscall.Signal{syscall.SIGTERM}, 143},
+		{"SIGINT twice", []syscall.Signal{syscall.SIGINT, syscall.SIGINT}, 130},
+		{"SIGTERM twice", []syscall.Signal{syscall.SIGTERM, syscall.SIGTERM}, 143},
+		{"SIGINT then SIGTERM", []syscall.Signal{syscall.SIGINT, syscall.SIGTERM}, 130},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel() // each case spends the 10s grace
+			decoy := exec.Command("sleep", "60")
+			if err := decoy.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = decoy.Process.Kill(); _, _ = decoy.Process.Wait() })
+
+			f := newFakeRuntime(t)
+			e := newActionEnv(t, f)
+			// The CLI finishes normally, with a valid document; the control
+			// plane records SIGTERM and keeps running.
+			e.vars["FAKE_STDOUT"] = stdoutFile(t, passDocument)
+			termMarker := filepath.Join(t.TempDir(), "control-plane-term")
+			e.vars["FAKE_CP_TERM_MARKER"] = termMarker
+			abs, _ := filepath.Abs(actionDir)
+			e.vars["GITHUB_ACTION_PATH"] = abs
+			if err := os.WriteFile(e.output, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command("bash", "--noprofile", "--norc", "-eo", "pipefail", stepWrapper(t))
+			cmd.Dir = t.TempDir()
+			for k, v := range e.vars {
+				cmd.Env = append(cmd.Env, k+"="+v)
+			}
+			logPath := filepath.Join(t.TempDir(), "step.log")
+			logFile, err := os.Create(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer logFile.Close()
+			cmd.Stdout = logFile
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			exited := make(chan error, 1)
+			go func() { exited <- cmd.Wait() }()
+			t.Cleanup(func() { _ = cmd.Process.Kill() })
+			t.Cleanup(func() {
+				// Never leave the control plane behind, whatever the outcome.
+				var pid int
+				if raw, err := os.ReadFile(f.cpPID); err == nil {
+					if _, err := fmt.Sscan(string(raw), &pid); err == nil && pid > 0 {
+						_ = syscall.Kill(pid, syscall.SIGKILL)
+					}
+				}
+			})
+
+			// The step is now inside its SIGTERM grace, waiting for a control
+			// plane that will not stop on its own.
+			waitForFile(t, termMarker, 20*time.Second)
+			cpPID := readPID(t, f.cpPID)
+			// Each signal is sent once the step has acknowledged the one
+			// before, so a repeated signal is two deliveries, not one.
+			for i, sig := range tt.signals {
+				if err := cmd.Process.Signal(sig); err != nil {
+					t.Fatal(err)
+				}
+				waitForLog(t, logPath, "while the control plane is stopping", i+1, 20*time.Second)
+			}
+			select {
+			case <-exited:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the step did not exit within 30s of the cancellation")
+			}
+
+			log := readFile(t, logPath)
+			if got := cmd.ProcessState.ExitCode(); got != tt.want {
+				t.Errorf("step exited %d, want %d\n%s", got, tt.want, log)
+			}
+			if got := readFile(t, termMarker); got != "TERM\n" {
+				t.Errorf("the control plane received %q, want exactly one SIGTERM", got)
+			}
+			if !strings.Contains(log, "did not stop within 10s of SIGTERM; killing it") {
+				t.Errorf("the SIGKILL fallback did not run:\n%s", log)
+			}
+			// Gone, not a zombie: the step reaped it. Its exit was waited on
+			// above, so this is bounded only by the kernel's own bookkeeping.
+			deadline := time.Now().Add(5 * time.Second)
+			for syscall.Kill(cpPID, 0) == nil && time.Now().Before(deadline) {
+				time.Sleep(20 * time.Millisecond)
+			}
+			if err := syscall.Kill(cpPID, 0); err == nil {
+				t.Errorf("the control plane the step started (%d) is still running or unreaped", cpPID)
+			}
+			if !alive(decoy.Process.Pid) {
+				t.Error("an unrelated process was stopped")
+			}
+			if strings.Contains(readFile(t, e.output), "exit-code=") {
+				t.Error("a cancelled run reported a CLI exit code")
+			}
+		})
+	}
+}
+
+// waitForLog waits until path holds at least n occurrences of text.
+func waitForLog(t *testing.T, path, text string, n int, limit time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(limit)
+	for time.Now().Before(deadline) {
+		if raw, err := os.ReadFile(path); err == nil && strings.Count(string(raw), text) >= n {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("%s did not log %q %d times within %s:\n%s", path, text, n, limit, readFile(t, path))
+}
+
 // Finding 5: an unwritable job summary is reported, and the CLI's code —
 // every one of them — still passes through. A CLI that never ran still fails.
 func TestRunActionFinishSurvivesAnUnwritableSummary(t *testing.T) {

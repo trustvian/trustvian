@@ -136,6 +136,11 @@ foreground CLI exited would leave it running. Instead:
   to exit;
 - the script then stops its own control plane and exits `130` or `143`.
 
+The stop keeps the control plane's PID until the process is gone and reaped,
+and signals it only while it is still the script's own child. A signal that
+arrives during the stop is recorded, not acted on, so it can neither abandon
+the stop — the SIGKILL deadline still applies — nor start a second one.
+
 Nothing is matched by process name.
 
 ### 5. The artifact is the CLI's stdout, untouched, and minimal metadata

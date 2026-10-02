@@ -237,8 +237,10 @@ SIGTERM, then SIGKILL after 10s. The Collector each repetition starts belongs to
 the script itself. While the CLI runs, SIGINT and SIGTERM are forwarded to the
 CLI — which stops its workload, as a suite does on Ctrl-C — and the step waits
 for it, stops the control plane it started, and exits `130` or `143`. A
-cancelled run reports no exit code. An attached control plane is never
-signalled.
+signal that arrives while that control plane is stopping — even after the CLI
+finished on its own — lets the stop run to completion, SIGKILL deadline
+included, and the step then exits with the first signal's status. A cancelled
+run reports no exit code. An attached control plane is never signalled.
 
 `working-directory` is a literal path: a relative one is resolved against the
 job's directory, never through `CDPATH`, and a name such as `-P` is a

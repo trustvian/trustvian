@@ -99,6 +99,7 @@ while [ $# -gt 0 ]; do
 done
 echo $$ > "$FAKE_CP_PID"
 [ "${FAKE_CP_IGNORE_TERM:-}" != 1 ] || trap '' TERM
+[ -z "${FAKE_CP_TERM_MARKER:-}" ] || trap 'echo TERM >> "$FAKE_CP_TERM_MARKER"' TERM
 url="${FAKE_CP_URL:-http://127.0.0.1:`+fakeAPIPort+`}"
 printf '{"version":"1","api_url":"%s"}\n' "$url" > "$state/runtime.json"
 while :; do sleep 0.2; done

@@ -105,6 +105,7 @@ mkdir -p "$artifact_dir"
 # --- The control plane ----------------------------------------------------
 
 control_plane_pid=""
+stopping=""
 
 # stop_control_plane stops the control plane this step started, by the PID
 # this step recorded: SIGTERM, which it handles as a clean shutdown, then
@@ -112,22 +113,48 @@ control_plane_pid=""
 # shell starts a background process with SIGINT ignored. It touches no other
 # process — the Collector each repetition starts is `trustvian dev`'s, and dev
 # stops it.
+#
+# The PID is kept until the process is gone and reaped, so an exit path that
+# runs while a stop is under way still knows what this step owns, and a
+# signal is sent only while that PID is still this shell's child. A signal
+# that arrives during the stop is recorded by on_signal and neither cuts the
+# stop short nor starts a second one; the caller acts on it afterwards.
 stop_control_plane() {
     [ -n "$control_plane_pid" ] || return 0
+    [ -z "$stopping" ] || return 0
+    stopping=1
     local pid="$control_plane_pid" waited=0
-    control_plane_pid=""
-    kill -0 "$pid" 2>/dev/null || return 0
-    kill -TERM "$pid" 2>/dev/null || true
+    ! owns_child "$pid" || kill -TERM "$pid" 2>/dev/null || true
     while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 100 ]; do
         sleep 0.1
         waited=$((waited + 1))
     done
-    if kill -0 "$pid" 2>/dev/null; then
+    if owns_child "$pid"; then
         warn "the control plane did not stop within 10s of SIGTERM; killing it"
         kill -KILL "$pid" 2>/dev/null || true
+        # SIGKILL cannot be caught; this bounds only how long the kernel
+        # takes to deliver it.
+        waited=0
+        while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt 50 ]; do
+            sleep 0.1
+            waited=$((waited + 1))
+        done
+        ! kill -0 "$pid" 2>/dev/null || warn "the control plane $pid did not exit after SIGKILL"
     fi
+    # The shell reaps a background child as it exits; this collects its
+    # status, and is a no-op if a trapped signal interrupts it.
     wait "$pid" 2>/dev/null || true
+    control_plane_pid=""
+    stopping=""
 }
+
+# owns_child reports whether pid is still a process this shell started — not
+# a later process that has reused the number.
+owns_child() {
+    kill -0 "$1" 2>/dev/null &&
+        [ "$(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ')" = "$$" ]
+}
+
 # Cancellation. GitHub cancels a step by signalling its process, which —
 # because the action's step execs this script — is this script. Before the
 # CLI runs, a signal stops what this step started and exits with the
@@ -135,7 +162,9 @@ stop_control_plane() {
 # exited would leave it running, so the CLI runs in the background and the
 # signal is forwarded to it, and to nothing else: it owns its workload's
 # cleanup (ADR 0055 § 4). This step waits for it, stops its own control
-# plane, and still exits with the signal's status.
+# plane, and still exits with the signal's status. A signal during that stop
+# lets the stop finish, and the step then exits with the first signal's
+# status.
 cli_pid=""
 launching=""
 cancel_signal=""
@@ -149,10 +178,12 @@ exit_cancelled() {
 }
 
 on_signal() {
-    cancel_signal="$1"
+    [ -n "$cancel_signal" ] || cancel_signal="$1"
     signals_seen=$((signals_seen + 1))
     if [ -n "$cli_pid" ]; then
         kill -s "$1" "$cli_pid" 2>/dev/null || true
+    elif [ -n "$stopping" ]; then
+        echo "SIG$1 received while the control plane is stopping; finishing that stop first"
     elif [ -z "$launching" ]; then
         stop_control_plane
         exit_cancelled
@@ -161,7 +192,12 @@ on_signal() {
     # CLI's PID is known.
 }
 
-trap stop_control_plane EXIT
+on_exit() {
+    stop_control_plane
+    [ -z "$cancel_signal" ] || exit_cancelled
+}
+
+trap on_exit EXIT
 trap 'on_signal INT' INT
 trap 'on_signal TERM' TERM
 
@@ -238,10 +274,11 @@ if [ -n "$cancel_signal" ]; then
     stop_control_plane
     exit_cancelled
 fi
-set_output exit-code "$cli_exit"
 echo "trustvian exited $cli_exit"
 
 stop_control_plane
+[ -z "$cancel_signal" ] || exit_cancelled
+set_output exit-code "$cli_exit"
 
 # --- Preservation ---------------------------------------------------------
 
