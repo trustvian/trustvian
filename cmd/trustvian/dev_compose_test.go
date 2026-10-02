@@ -306,7 +306,11 @@ while :; do sleep 0.05; done
 
 func TestStartLocalRuntimeStopsWhatItStartedOnFailure(t *testing.T) {
 	restore := runtimeReadyTimeout
-	runtimeReadyTimeout = 300 * time.Millisecond
+	// Long enough for the fake to write its PID before the timeout kills it.
+	// At 300ms a loaded machine — go test ./... runs packages in parallel —
+	// could kill it first, and the test then failed for want of a PID rather
+	// than for a process left running.
+	runtimeReadyTimeout = 2 * time.Second
 	t.Cleanup(func() { runtimeReadyTimeout = restore })
 
 	stateDir := t.TempDir()

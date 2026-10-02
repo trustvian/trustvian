@@ -1,0 +1,17 @@
+# Fixture for the trustvian-run action's end-to-end workflow; see workload.sh.
+version: v1
+name: run-crash
+runs: 2
+instrumentation: existing
+reference:
+  command: [sh, scripts/testdata/trustvian-run/workload.sh]
+  env: {SPAN_COUNT: "2", OTEL_SERVICE_NAME: trustvian-run-e2e}
+candidate:
+  command: [sh, -c, "exit 5"]
+  env: {SPAN_COUNT: "2", OTEL_SERVICE_NAME: trustvian-run-e2e}
+gate:
+  added_candidate_presence_minimum: 2
+  added_reference_presence_maximum: 0
+  max_repeated_added_behaviors: 0
+  max_block_decisions_per_run: 0
+  max_critical_risk_observations_per_run: 0

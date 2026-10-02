@@ -56,6 +56,9 @@ reconstructed later. Everything else in this table is already released.
 | CLI commands and flags | OPERATIONALLY STABLE | `analyze`, `baseline`, `version`, `--config`, `--anomaly-config`, `--storage-config` keep working | New commands and flags | Major to remove or repurpose |
 | `dev --instrumentation` values | OPERATIONALLY STABLE | `existing`, `none` and `auto` keep their meaning; `auto` never injects on absence of evidence | New modes — `python-zero-code` is reserved and currently refused | Major to remove or repurpose a value |
 | CLI exit codes | OPERATIONALLY STABLE | Scoped by command family; `1` means gate failure only for `eval compare` — see [CLI](#cli) | Adding a code, or a new family with its own scoped contract | Major |
+| `trustvian-run` GitHub Action inputs and outputs | OPERATIONALLY STABLE | See [GitHub Action](#github-action) | New inputs and outputs | Major to remove or repurpose |
+| `trustvian-run` artifact (`result.json`, `trustvian-run.json` v`1`) | OPERATIONALLY STABLE | See [GitHub Action](#github-action) | New metadata fields | Major, or a new metadata version |
+| `trustvian-run` job summary | OBSERVATIONAL | Not a machine interface | Any change | None |
 | CLI human-readable output | OBSERVATIONAL | Not a machine interface — no wording, spacing, or ordering promise | Any change | None |
 | Environment variables read by shipped binaries | OPERATIONALLY STABLE | See [environment variables](#environment-variables) | New variables | Major to remove or rename |
 | Collector processor type name and config fields | OPERATIONALLY STABLE | `policy`, `storage`, `health`, `evaluation` keys and their meaning | New optional keys | Major |
@@ -732,6 +735,30 @@ Release artifacts are named `trustvian_<version>_<os>_<arch>` with a
 SBOM, provenance attestations, and a Cosign signature. The naming
 pattern and the presence of those files are stable; the internal layout
 of an archive is not.
+
+## GitHub Action
+
+`.github/actions/trustvian-run` is the run side of
+[task 079](tasks/v1.0/079-ci-integration-github-action.md), documented in
+[Running behavioral scenarios in GitHub Actions](ci-github-action.md). It is
+pinned by commit, so a caller only ever gets the version they named; the
+classes below say what a newer commit may change.
+
+| Surface | Class | Promise |
+|---|---|---|
+| Inputs `scenario`, `suite`, `reference`, `scenario-timeout`, `fail-fast`, `api-url`, `working-directory`, `artifact-name` | OPERATIONALLY STABLE | Keep their names and meanings; each maps to the CLI flag of the same name, or is the action's own (`working-directory`, `artifact-name`) |
+| Outputs `exit-code`, `result`, `head-sha`, `artifact-id`, `runtime-commit` | OPERATIONALLY STABLE | `exit-code` is exactly the CLI's code, empty when it did not run; `result` is one of `present`, `absent`, `invalid`, `oversized` |
+| Final exit status | OPERATIONALLY STABLE | Exactly the CLI's code whenever the CLI ran; the [`eval run` row](#cli) defines the codes |
+| Artifact files `result.json` and `trustvian-run.json` | OPERATIONALLY STABLE | `result.json` is the CLI's stdout, byte for byte, present only when it is one JSON object within 32 MiB + 64 KiB |
+| `trustvian-run.json` fields (`version` `"1"`) | OPERATIONALLY STABLE | Fields keep their names and meanings; new fields may appear and consumers must tolerate them |
+| Refusal of `pull_request_target` and `workflow_run` | OPERATIONALLY STABLE | Never relaxed by a minor |
+| The pinned runtime commit and Go version (`runtime.env`) | OBSERVATIONAL | Change with the action's commit; the artifact records which were used |
+| Job summary wording and layout | OBSERVATIONAL | Head commit, run link, exit code and artifact availability are present; nothing else is promised |
+
+The job summary carries no verdict in this slice, and the pull request comment
+does not exist yet. When it does, its body is OBSERVATIONAL, like CLI
+human-readable output: anyone parsing it is parsing the wrong thing, and the
+result document is right there.
 
 ## Behavioral compatibility
 

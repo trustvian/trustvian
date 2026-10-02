@@ -812,5 +812,7 @@ is a decision for your script, which knows what it was doing.
 - [ADR 0040](adr/0040-promotions-are-immutable-evidence-backed-platform-decisions.md)
   — why a promotion records a decision and never a deployment
 - [Local development](local-development.md) — the `trustvian dev` guide
+- [GitHub Actions](ci-github-action.md) — running `eval run` on every pull
+  request
 - [Task 077](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — the `dev`
   specification

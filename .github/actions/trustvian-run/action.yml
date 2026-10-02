@@ -1,0 +1,120 @@
+# trustvian-run — the run side of task 079.
+#
+# Runs one Trustvian behavioral scenario or suite with `trustvian eval run
+# --json`, preserves the result document as an artifact, and exits with the
+# CLI's own code. It renders no verdict and writes nothing to the pull request:
+# commenting is the next slice, in a separate job that never checks out or runs
+# pull request code. See docs/ci-github-action.md and
+# docs/adr/0056-the-run-action-builds-a-pinned-source-commit.md.
+#
+# The steps below receive every input through the environment and never
+# through ${{ }} inside a script, so no input is ever spliced into shell text.
+#
+# Each script step execs its script, so the step's process is the script: a
+# cancellation signal reaches it directly rather than ending a wrapper shell
+# and leaving the script — and what it started — running.
+
+name: Trustvian run
+description: Run a Trustvian behavioral scenario or suite and preserve its result document. Run side only.
+author: Trustvian
+
+inputs:
+  scenario:
+    description: Path to one scenario file, relative to working-directory. Exactly one of scenario and suite.
+    required: false
+    default: ""
+  suite:
+    description: Path to a directory of scenario files, relative to working-directory. Exactly one of scenario and suite.
+    required: false
+    default: ""
+  reference:
+    description: Passed as --reference. An execution id or `last` with scenario; only `last` with suite. Needs a control plane that keeps executions between runs (api-url).
+    required: false
+    default: ""
+  scenario-timeout:
+    description: Passed as --scenario-timeout, each suite member's deadline (1s to 24h). Required by the CLI with suite.
+    required: false
+    default: ""
+  fail-fast:
+    description: "`true` passes --fail-fast: a suite stops scheduling after its first member that is not a PASS."
+    required: false
+    default: "false"
+  api-url:
+    description: A control plane to attach to, passed as --api-url. When empty, the action starts a private one under the runner's temporary directory and stops it afterwards.
+    required: false
+    default: ""
+  working-directory:
+    description: The directory the CLI runs in — the workload's git checkout, from which `trustvian dev` derives project, agent and candidate.
+    required: false
+    default: "."
+  artifact-name:
+    description: Name of the uploaded artifact. Distinct per invocation within one workflow run.
+    required: false
+    default: trustvian-run
+
+outputs:
+  exit-code:
+    description: The exact exit code of `trustvian eval run` — 0 PASS, 1 FAIL, 2 usage, 3 operational. Empty when the CLI did not run.
+    value: ${{ steps.run.outputs.exit-code }}
+  result:
+    description: "Whether stdout held a result document: present, absent, invalid or oversized."
+    value: ${{ steps.run.outputs.result }}
+  head-sha:
+    description: The commit this run describes, from the event context — the pull request's head commit on pull_request, never its merge commit.
+    value: ${{ steps.run.outputs.head-sha }}
+  artifact-id:
+    description: The uploaded artifact's id. Empty when nothing was uploaded.
+    value: ${{ steps.upload.outputs.artifact-id }}
+  runtime-commit:
+    description: The Trustvian commit the runtime was built from.
+    value: ${{ steps.setup.outputs.runtime-commit }}
+
+runs:
+  using: composite
+  steps:
+    - id: setup
+      name: Provide the Trustvian runtime
+      shell: bash
+      run: 'exec "$GITHUB_ACTION_PATH/setup.sh"'
+
+    - id: run
+      name: Run trustvian eval run
+      shell: bash
+      env:
+        TRUSTVIAN_RUN_BIN_DIR: ${{ steps.setup.outputs.bin-dir }}
+        TRUSTVIAN_RUN_RUNTIME_COMMIT: ${{ steps.setup.outputs.runtime-commit }}
+        TRUSTVIAN_RUN_GO_VERSION: ${{ steps.setup.outputs.go-version }}
+        INPUT_SCENARIO: ${{ inputs.scenario }}
+        INPUT_SUITE: ${{ inputs.suite }}
+        INPUT_REFERENCE: ${{ inputs.reference }}
+        INPUT_SCENARIO_TIMEOUT: ${{ inputs.scenario-timeout }}
+        INPUT_FAIL_FAST: ${{ inputs.fail-fast }}
+        INPUT_API_URL: ${{ inputs.api-url }}
+        INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+      run: 'exec "$GITHUB_ACTION_PATH/run.sh"'
+
+    # Whatever the CLI returned: a FAIL or an operational error is exactly
+    # when the result matters. Skipped only when there is nothing to upload
+    # (the CLI never ran) or the workflow was cancelled.
+    - id: upload
+      name: Upload the result
+      if: ${{ !cancelled() && steps.run.outputs.artifact-dir != '' }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.run.outputs.artifact-dir }}
+        if-no-files-found: error
+
+    - id: finish
+      name: Report and pass the exit code through
+      if: ${{ !cancelled() }}
+      shell: bash
+      env:
+        TRUSTVIAN_RUN_EXIT_CODE: ${{ steps.run.outputs.exit-code }}
+        TRUSTVIAN_RUN_HEAD_SHA: ${{ steps.run.outputs.head-sha }}
+        TRUSTVIAN_RUN_RESULT: ${{ steps.run.outputs.result }}
+        TRUSTVIAN_RUN_UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+        TRUSTVIAN_RUN_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        TRUSTVIAN_RUN_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+      run: 'exec "$GITHUB_ACTION_PATH/finish.sh"'

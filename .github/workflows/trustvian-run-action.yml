@@ -1,0 +1,232 @@
+# End-to-end test of the trustvian-run action (task 079, run side).
+#
+# Runs the action itself — the real pinned runtime build, the real CLI, the
+# real control plane and the real Collector — against model-free scenarios
+# (scripts/testdata/trustvian-run), and checks that every outcome is passed
+# through and preserved:
+#
+#   pass         a single scenario PASS        → exit 0, result present,
+#                under a hostile Go, Git and CDPATH environment, first, so
+#                the runtime is fetched and built under it
+#   suite        a suite with a FAIL member    → exit 1, result present
+#   operational  a crashing candidate          → exit 3, no result document
+#   usage        a suite with no deadline      → exit 2, no result document
+#
+# A second job downloads the artifacts the first uploaded and checks them,
+# which is the hand-off the reporting slice will rely on.
+#
+# Read-only, like ci.yml: no job holds a write scope or a secret, and no
+# checkout keeps a credential. This workflow is itself shaped as the run-side
+# foundation is documented to be — see docs/ci-github-action.md. It is not the
+# copyable example; that is examples/github-actions/behavioral-gate-run.yml.
+
+name: trustvian-run action
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/actions/trustvian-run/**"
+      - ".github/workflows/trustvian-run-action.yml"
+      - "scripts/testdata/trustvian-run/**"
+      - "processor/cmd/agent-producer/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/actions/trustvian-run/**"
+      - ".github/workflows/trustvian-run-action.yml"
+      - "scripts/testdata/trustvian-run/**"
+      - "processor/cmd/agent-producer/**"
+
+# No workflow-level permissions: each job states its own.
+
+concurrency:
+  group: trustvian-run-action-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run:
+    name: Run the action end to end
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The token is not written into .git/config, so the workload this
+          # job runs cannot read it back.
+          persist-credentials: false
+
+      # The workload's own toolchain, for the fixture only. The action never
+      # uses it: it brings its own pinned Go under $RUNNER_TEMP.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: processor/go.mod
+          cache: false
+
+      - name: Build the model-free workload
+        working-directory: processor
+        env:
+          GOWORK: "off"
+        run: go build -o "$RUNNER_TEMP/agent-producer" ./cmd/agent-producer
+
+      - name: Record the workspace before the action runs
+        run: |
+          git rev-parse HEAD > "$RUNNER_TEMP/workspace-head"
+          git status --porcelain=v1 --untracked-files=all > "$RUNNER_TEMP/workspace-status"
+          mkdir -p "$RUNNER_TEMP/cdpath/scripts"
+
+      # The job's own Go, Git and shell settings must not reach the runtime
+      # the action builds: a toolchain switch, build flags, a Go env file, a
+      # repository redirected at this checkout, and a CDPATH offering another
+      # directory. First, so the source is fetched and built under them.
+      - id: pass
+        name: A PASS, under a hostile job environment
+        uses: ./.github/actions/trustvian-run
+        env:
+          GOTOOLCHAIN: go1.27.0+path
+          GOFLAGS: -mod=vendor -toolexec=/bin/false
+          GOENV: /nonexistent/go.env
+          GOPROXY: "off"
+          GIT_DIR: ${{ github.workspace }}/.git
+          GIT_WORK_TREE: ${{ github.workspace }}
+          CDPATH: ${{ runner.temp }}/cdpath
+        with:
+          scenario: scripts/testdata/trustvian-run/pass.yaml
+          artifact-name: trustvian-run-pass
+
+      - name: The workspace is exactly as it was
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD | diff - "$RUNNER_TEMP/workspace-head"
+          git status --porcelain=v1 --untracked-files=all | diff - "$RUNNER_TEMP/workspace-status"
+          echo "ok: the checkout's HEAD, tracked and untracked files are unchanged"
+
+      # continue-on-error here, in this test's own workflow, so the steps
+      # below can inspect outcomes the action correctly reports as failures.
+      # The action never sets it; see docs/ci-github-action.md.
+      - id: suite
+        name: A suite with a FAIL member
+        continue-on-error: true
+        uses: ./.github/actions/trustvian-run
+        with:
+          suite: scripts/testdata/trustvian-run/suite
+          scenario-timeout: 5m
+          artifact-name: trustvian-run-suite
+
+      - id: operational
+        name: An operational failure
+        continue-on-error: true
+        uses: ./.github/actions/trustvian-run
+        with:
+          scenario: scripts/testdata/trustvian-run/operational.yaml
+          artifact-name: trustvian-run-operational
+
+      - id: usage
+        name: A usage error
+        continue-on-error: true
+        uses: ./.github/actions/trustvian-run
+        with:
+          suite: scripts/testdata/trustvian-run/suite
+          artifact-name: trustvian-run-usage
+
+      - name: Every code passed through, every result preserved
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          PASS_CODE: ${{ steps.pass.outputs.exit-code }}
+          PASS_RESULT: ${{ steps.pass.outputs.result }}
+          PASS_HEAD: ${{ steps.pass.outputs.head-sha }}
+          PASS_OUTCOME: ${{ steps.pass.outcome }}
+          SUITE_CODE: ${{ steps.suite.outputs.exit-code }}
+          SUITE_RESULT: ${{ steps.suite.outputs.result }}
+          SUITE_OUTCOME: ${{ steps.suite.outcome }}
+          OPERATIONAL_CODE: ${{ steps.operational.outputs.exit-code }}
+          OPERATIONAL_RESULT: ${{ steps.operational.outputs.result }}
+          OPERATIONAL_OUTCOME: ${{ steps.operational.outcome }}
+          USAGE_CODE: ${{ steps.usage.outputs.exit-code }}
+          USAGE_RESULT: ${{ steps.usage.outputs.result }}
+          USAGE_OUTCOME: ${{ steps.usage.outcome }}
+          RUNTIME_COMMIT: ${{ steps.pass.outputs.runtime-commit }}
+        run: |
+          set -euo pipefail
+          failed=0
+          check() {
+            if [ "$2" != "$3" ]; then
+              echo "::error::$1 is '$2', want '$3'"
+              failed=1
+            else
+              echo "ok: $1 = $2"
+            fi
+          }
+          check "pass exit code" "$PASS_CODE" 0
+          check "pass result" "$PASS_RESULT" present
+          check "pass step outcome" "$PASS_OUTCOME" success
+          check "pass head" "$PASS_HEAD" "$EXPECTED_HEAD"
+          check "suite exit code" "$SUITE_CODE" 1
+          check "suite result" "$SUITE_RESULT" present
+          check "suite step outcome" "$SUITE_OUTCOME" failure
+          check "operational exit code" "$OPERATIONAL_CODE" 3
+          check "operational result" "$OPERATIONAL_RESULT" absent
+          check "operational step outcome" "$OPERATIONAL_OUTCOME" failure
+          check "usage exit code" "$USAGE_CODE" 2
+          check "usage result" "$USAGE_RESULT" absent
+          check "usage step outcome" "$USAGE_OUTCOME" failure
+          check "runtime commit" "$RUNTIME_COMMIT" "$(sed -n 's/^TRUSTVIAN_SOURCE_COMMIT=//p' .github/actions/trustvian-run/runtime.env)"
+          # Only the processes the action started were stopped, and all of them were.
+          if pgrep -f trustvian-local >/dev/null; then
+            echo "::error::a control plane is still running"
+            pgrep -fl trustvian-local
+            failed=1
+          fi
+          exit "$failed"
+
+  artifacts:
+    name: The uploaded results are complete
+    needs: run
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # No checkout: this job only reads what the run job uploaded. A same-run
+    # artifact download needs no GITHUB_TOKEN scope, which this job proves by
+    # holding none beyond contents: read.
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: trustvian-run-*
+          path: artifacts
+
+      - name: Check every artifact
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          failed=0
+          expect() { # name exit_code result_status
+            local dir="artifacts/trustvian-run-$1" meta
+            meta="$dir/trustvian-run.json"
+            if ! [ -f "$meta" ]; then
+              echo "::error::$1: no execution metadata"; failed=1; return
+            fi
+            jq -e --arg head "$EXPECTED_HEAD" --argjson code "$2" --arg result "$3" '
+              .version == "1" and .head.sha == $head and .cli.exit_code == $code
+              and .result.status == $result' "$meta" >/dev/null ||
+              { echo "::error::$1: metadata does not match"; cat "$meta"; failed=1; return; }
+            if [ "$3" = present ]; then
+              [ "$(sha256sum "$dir/result.json" | cut -d' ' -f1)" = "$(jq -r .result.sha256 "$meta")" ] ||
+                { echo "::error::$1: result.json does not match its recorded digest"; failed=1; return; }
+              jq -e 'type == "object"' "$dir/result.json" >/dev/null ||
+                { echo "::error::$1: result.json is not a JSON object"; failed=1; return; }
+            elif [ -e "$dir/result.json" ]; then
+              echo "::error::$1: result.json exists without a result"; failed=1; return
+            fi
+            echo "ok: $1"
+          }
+          expect pass 0 present
+          expect suite 1 present
+          expect operational 3 absent
+          expect usage 2 absent
+          exit "$failed"

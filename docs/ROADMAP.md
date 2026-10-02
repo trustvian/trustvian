@@ -283,7 +283,7 @@ until then.
 | 075 | **Implemented** | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) |
 | 077 | **Implemented** | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) |
 | 078 | Partially implemented: `eval run`, repeated evaluation, persisted executions with `--reference <execution>\|last` (schema 9) and suites (`--suite`, per-scenario deadlines) ship; acceptance criteria 9 and 11 remain open | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
-| 079 | Specified | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
+| 079 | Partially implemented: the run side ships — `.github/actions/trustvian-run` runs a scenario or suite, passes the exit code through and preserves the result as an artifact ([ADR 0056](adr/0056-the-run-action-builds-a-pinned-source-commit.md)); the pull request comment and its job are the next slice | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
 
 **The build order inside this preview is 075 → 078 → 079**, not the four in
 parallel: 078's thresholds can only be measured at 075's tool-name fidelity — see
@@ -532,8 +532,8 @@ gate result the decision consumed is snapshotted field for field rather than
 re-derived on read, and the write commits only against the environment state it
 was decided against. Schema version is now **4** on both backends.
 
-**Three gap-closing milestones remain specified and not implemented: 078,
-079 and 080. 074, 075, 076 and 077 are implemented.**
+**Three gap-closing milestones remain open: 078 and 079 are partially
+implemented, and 080 is specified. 074, 075, 076 and 077 are implemented.**
 075–078 were each found by running the product end to end — an instrumented
 agent, a browser, and a developer who has not read the source — rather than by
 planning, which is why they sit outside the reserved 049–072 block alongside
@@ -982,7 +982,7 @@ The **Gate** column says which rows the release actually depends on.
 | 076 | [Behavioral trace and session evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md) — see *why* behavior was familiar, new or anomalous, from metadata alone | **Implemented** — an Evidence surface over 085's resolution and 067's history; three narrowings on the existing observation route, no schema change; fidelity and sequence deviation narrowed because neither is retained | `v1.0` |
 | 077 | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — one command wraps an existing agent, composes the runtime, and needs no change to the application | **Implemented** | `v1.0` |
 | 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) — run the same scenario N times per side, diff the behavior, gate the difference over k-of-N evidence | Partially implemented — repeated evaluation, recorded references and suites ship; criteria 9 and 11 remain open | `v1.0` |
-| 079 | [CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md) — the 078 verdict rendered on the pull request, exit codes passed through, no `pull_request_target` with an untrusted checkout | Specified | preview only |
+| 079 | [CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md) — the 078 verdict rendered on the pull request, exit codes passed through, no `pull_request_target` with an untrusted checkout | Partially implemented — the run action ships; the comment job does not yet | preview only |
 | 080 | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md) — precision, recall and false-positive rate for the existing signals against a public agent prompt-injection benchmark | Specified | neither |
 | 081 | Persist behavior fidelity, so a comparison delta reports whether a behavior was named by telemetry or inferred from transport — a forward-only schema step in both backends, deferred from 075 | Not specified | neither |
 | 082 | [Agent inspection and evaluation depth](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md) — the planning task for the six-step developer workflow: what is implemented, what is missing, and what a decision would cost. Documentation only | Specified | neither |

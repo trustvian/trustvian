@@ -63,7 +63,7 @@ style.
   | Dependency | Only importable from | Why the confinement |
   |---|---|---|
   | `go.opentelemetry.io/otel{,/sdk,/trace}` | `internal/otel` | Keeps the core engine OTel-independent (a CLAUDE.md requirement, not a preference) |
-  | `go.yaml.in/yaml/v3` | `config` | Config parsing is an adapter; no domain package knows YAML exists |
+  | `go.yaml.in/yaml/v3` | `config` (and the test-only `scripts` package, which parses workflow YAML) | Config parsing is an adapter; no domain package knows YAML exists |
   | `github.com/jackc/pgx/v5` | `internal/store/postgres` | Keeps the driver out of the build of `internal/store` and every core package (`v0.8` task 035) |
 
   The confinement is the rule, not the count. Adding a fourth means
