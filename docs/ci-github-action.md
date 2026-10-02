@@ -204,6 +204,13 @@ builds rather than downloads.
 - **Everything under `$RUNNER_TEMP`.** Nothing is written to your checkout,
   nothing is added to the job's `PATH`, and a Go installation your job already
   has is neither used nor changed.
+- **Your job's Go and Git settings do not reach it.** Every Go command runs
+  with a cleared environment and `GOTOOLCHAIN=local`, so a `GOTOOLCHAIN`,
+  `GOFLAGS`, `GOENV` or `GOPROXY` your job sets for its own code changes
+  nothing. Every Git command runs with inherited `GIT_*` variables and Git
+  configuration removed, against the runtime's own checkout by name, so a
+  `GIT_DIR` or `GIT_WORK_TREE` pointing at your repository cannot redirect it
+  there.
 - **Genuine build information.** No version is injected. Each binary carries
   Go's own record of the commit it was built from; the action refuses a binary
   whose record is not exactly the pinned commit, unmodified. The result
@@ -225,6 +232,17 @@ a state directory under `$RUNNER_TEMP`, waits for it to publish its endpoint,
 and stops it — that process, by the PID it recorded — when the CLI is done:
 SIGTERM, then SIGKILL after 10s. The Collector each repetition starts belongs to
 `trustvian dev`, which stops it. The action stops no other process.
+
+**Cancellation.** Each step execs its script, so a cancellation signal reaches
+the script itself. While the CLI runs, SIGINT and SIGTERM are forwarded to the
+CLI — which stops its workload, as a suite does on Ctrl-C — and the step waits
+for it, stops the control plane it started, and exits `130` or `143`. A
+cancelled run reports no exit code. An attached control plane is never
+signalled.
+
+`working-directory` is a literal path: a relative one is resolved against the
+job's directory, never through `CDPATH`, and a name such as `-P` is a
+directory, not an option.
 
 That control plane is new for every invocation, so `--reference last` finds
 nothing in it and exits `3`. To reuse recorded references across runs, give

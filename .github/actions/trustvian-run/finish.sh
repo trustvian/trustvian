@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+here="$(CDPATH='' cd -P -- "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd -P)"
 # shellcheck source=SCRIPTDIR/lib.sh
 . "$here/lib.sh"
 
@@ -60,32 +60,46 @@ else
     artifact_line="**not uploaded**"
 fi
 
+# The summary is rendered first and written once, and a failure to write it
+# is reported rather than allowed to end this step: under set -e a failed
+# redirection would exit 1 here, and the CLI's code — the gate — would be lost.
+summary="### Trustvian run
+
+Run-side foundation: no behavioral verdict is rendered here. The
+result document, when there is one, is in the artifact.
+
+| | |
+|---|---|
+"
+if [ -n "$head_sha" ]; then
+    summary="$summary| Head commit | \`$head_sha\` |
+"
+else
+    summary="$summary| Head commit | unknown |
+"
+fi
+if [ -n "$run_url" ]; then
+    summary="$summary| Run | [$GITHUB_RUN_ID]($run_url) |
+"
+else
+    summary="$summary| Run | unknown |
+"
+fi
+if [ -n "$cli_exit" ]; then
+    summary="$summary| \`trustvian\` exit code | \`$cli_exit\` |
+"
+else
+    summary="$summary| \`trustvian\` exit code | none — it did not run |
+"
+fi
+summary="$summary| Result artifact | $artifact_line |
+"
+
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    {
-        echo "### Trustvian run"
-        echo
-        echo "Run-side foundation: no behavioral verdict is rendered here. The"
-        echo "result document, when there is one, is in the artifact."
-        echo
-        echo "| | |"
-        echo "|---|---|"
-        if [ -n "$head_sha" ]; then
-            echo "| Head commit | \`$head_sha\` |"
-        else
-            echo "| Head commit | unknown |"
-        fi
-        if [ -n "$run_url" ]; then
-            echo "| Run | [$GITHUB_RUN_ID]($run_url) |"
-        else
-            echo "| Run | unknown |"
-        fi
-        if [ -n "$cli_exit" ]; then
-            echo "| \`trustvian\` exit code | \`$cli_exit\` |"
-        else
-            echo "| \`trustvian\` exit code | none — it did not run |"
-        fi
-        echo "| Result artifact | $artifact_line |"
-    } >>"$GITHUB_STEP_SUMMARY"
+    if ! { printf '%s' "$summary" >>"$GITHUB_STEP_SUMMARY"; } 2>/dev/null; then
+        printf '::warning title=trustvian-run::%s\n' \
+            "the job summary could not be written; the exit code below is unaffected"
+    fi
 fi
 
 if [ -z "$cli_exit" ]; then

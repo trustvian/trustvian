@@ -208,3 +208,86 @@ md_inert() {
     fi
     printf '%s' "$value" | LC_ALL=C sed -e 's/[][!"#$%&'\''()*+,./:;<=>?@\\^_`{|}~-]/\\&/g'
 }
+
+# git_isolated runs git with every inherited GIT_* variable removed and no
+# user or system configuration.
+#
+# The job's environment belongs to the consumer: a GIT_DIR or GIT_WORK_TREE
+# there would point init, fetch and checkout at the consumer's own repository,
+# and GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT or a url.insteadOf rewrite would
+# change what is fetched. Callers name the repository explicitly
+# (--git-dir/--work-tree), so nothing is found by discovery either.
+git_isolated() {
+    (
+        for name in $(env | sed -n 's/^\(GIT_[A-Za-z0-9_]*\)=.*/\1/p'); do
+            unset "$name" 2>/dev/null || true
+        done
+        export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0
+        exec git "$@"
+    )
+}
+
+# source_git DIR ARGS... runs git_isolated against the checkout in DIR alone.
+source_git() {
+    local dir="$1"
+    shift
+    git_isolated --git-dir="$dir/.git" --work-tree="$dir" "$@"
+}
+
+# fetch_source URL COMMIT DIR replaces DIR with a checkout of exactly COMMIT,
+# fetched at depth one from URL. Returns non-zero on any failure; the caller
+# reports it.
+fetch_source() {
+    local url="$1" commit="$2" dir="$3"
+    rm -rf -- "$dir"
+    git_isolated init -q --template= -- "$dir" || return 1
+    source_git "$dir" fetch -q --depth 1 --no-tags "$url" "$commit" || return 1
+    source_git "$dir" -c advice.detachedHead=false checkout -q --detach FETCH_HEAD || return 1
+}
+
+# source_is_pinned DIR COMMIT succeeds when DIR is a checkout of exactly
+# COMMIT, whose repository is DIR/.git itself, with nothing modified or added.
+source_is_pinned() {
+    local dir="$1" commit="$2"
+    [ -d "$dir/.git" ] &&
+        [ "$(source_git "$dir" rev-parse --absolute-git-dir 2>/dev/null)" = \
+            "$(CDPATH='' cd -P -- "$dir/.git" >/dev/null 2>&1 && pwd -P)" ] &&
+        [ "$(source_git "$dir" rev-parse HEAD 2>/dev/null)" = "$commit" ] &&
+        [ -z "$(source_git "$dir" status --porcelain --untracked-files=all 2>/dev/null)" ]
+}
+
+# go_isolated DIR ARGS... runs the pinned toolchain, $GO_ISOLATED_BIN, in DIR
+# with an environment built from nothing, caches under $GO_ISOLATED_TOOLING.
+#
+# Every Go invocation goes through here — the version checks, the builds and
+# the build-information inspection — because each reads the environment: a
+# GOTOOLCHAIN the job set (go1.27.0+path, say) makes even `go env` look for a
+# different toolchain, and GOFLAGS, GOENV, GOWORK, GOPROXY or GONOSUMDB would
+# change a build. GOTOOLCHAIN=local means the pinned toolchain runs itself and
+# never switches, whatever a go.mod or go.env says. Nothing here touches the
+# job's own environment or PATH.
+go_isolated() {
+    local dir="$1" goroot git_bin
+    shift
+    goroot="$(dirname "$(dirname "$GO_ISOLATED_BIN")")"
+    git_bin="$(command -v git)" || git_bin=/usr/bin/git
+    (
+        CDPATH='' cd -P -- "$dir" >/dev/null || exit 1
+        exec env -i \
+            HOME="$GO_ISOLATED_TOOLING/home" \
+            PATH="$(dirname "$git_bin"):/usr/bin:/bin" \
+            GOROOT="$goroot" \
+            GOPATH="$GO_ISOLATED_TOOLING/gopath" \
+            GOMODCACHE="$GO_ISOLATED_TOOLING/gomodcache" \
+            GOCACHE="$GO_ISOLATED_TOOLING/gocache" \
+            GOENV=off \
+            GOTOOLCHAIN=local \
+            GOWORK=off \
+            GOFLAGS="-trimpath -mod=readonly" \
+            GOPROXY="https://proxy.golang.org,direct" \
+            GOSUMDB="sum.golang.org" \
+            CGO_ENABLED=0 \
+            GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
+            "$GO_ISOLATED_BIN" "$@"
+    )
+}

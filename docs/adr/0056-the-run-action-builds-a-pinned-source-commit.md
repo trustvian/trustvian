@@ -81,6 +81,14 @@ binaries the way the release does: `CGO_ENABLED=0`, `-trimpath`, and no
 `GONOSUMDB` or `GOTOOLCHAIN` the job set for its own code cannot change it.
 Module checksums are verified against the public checksum database.
 
+Every Go command — the toolchain checks, the builds, and reading build
+information — runs in a cleared environment with `GOTOOLCHAIN=local` and a
+working directory of its own. Every Git command runs with inherited `GIT_*`
+variables and configuration removed, against the checkout by name. The job's
+environment belongs to the consumer: a `GOTOOLCHAIN=go1.27.0+path` there made
+even `go env` look for another toolchain, and a `GIT_DIR` pointing at the
+consumer's repository redirected `init`, `fetch` and `checkout` into it.
+
 It then **verifies rather than trusts:**
 
 - Every binary's Go build information must record `vcs.revision` equal to the
@@ -119,6 +127,16 @@ stops it on every exit path. The Collector each repetition starts belongs to
 
 With `api-url`, the action starts nothing and passes the URL through; the CLI
 owns what a bad one means.
+
+**Cancellation is forwarded, not deferred.** Each composite step execs its
+script, so the step's process is the script. The CLI runs in a process group
+of its own, in the background, tracked by PID. A trap that ran only after a
+foreground CLI exited would leave it running. Instead:
+- SIGINT or SIGTERM is forwarded to the CLI alone, and the script waits for it
+  to exit;
+- the script then stops its own control plane and exits `130` or `143`.
+
+Nothing is matched by process name.
 
 ### 5. The artifact is the CLI's stdout, untouched, and minimal metadata
 

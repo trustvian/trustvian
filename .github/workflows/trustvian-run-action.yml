@@ -5,7 +5,9 @@
 # (scripts/testdata/trustvian-run), and checks that every outcome is passed
 # through and preserved:
 #
-#   pass         a single scenario PASS        → exit 0, result present
+#   pass         a single scenario PASS        → exit 0, result present,
+#                under a hostile Go, Git and CDPATH environment, first, so
+#                the runtime is fetched and built under it
 #   suite        a suite with a FAIL member    → exit 1, result present
 #   operational  a crashing candidate          → exit 3, no result document
 #   usage        a suite with no deadline      → exit 2, no result document
@@ -70,12 +72,37 @@ jobs:
           GOWORK: "off"
         run: go build -o "$RUNNER_TEMP/agent-producer" ./cmd/agent-producer
 
+      - name: Record the workspace before the action runs
+        run: |
+          git rev-parse HEAD > "$RUNNER_TEMP/workspace-head"
+          git status --porcelain=v1 --untracked-files=all > "$RUNNER_TEMP/workspace-status"
+          mkdir -p "$RUNNER_TEMP/cdpath/scripts"
+
+      # The job's own Go, Git and shell settings must not reach the runtime
+      # the action builds: a toolchain switch, build flags, a Go env file, a
+      # repository redirected at this checkout, and a CDPATH offering another
+      # directory. First, so the source is fetched and built under them.
       - id: pass
-        name: A PASS
+        name: A PASS, under a hostile job environment
         uses: ./.github/actions/trustvian-run
+        env:
+          GOTOOLCHAIN: go1.27.0+path
+          GOFLAGS: -mod=vendor -toolexec=/bin/false
+          GOENV: /nonexistent/go.env
+          GOPROXY: "off"
+          GIT_DIR: ${{ github.workspace }}/.git
+          GIT_WORK_TREE: ${{ github.workspace }}
+          CDPATH: ${{ runner.temp }}/cdpath
         with:
           scenario: scripts/testdata/trustvian-run/pass.yaml
           artifact-name: trustvian-run-pass
+
+      - name: The workspace is exactly as it was
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD | diff - "$RUNNER_TEMP/workspace-head"
+          git status --porcelain=v1 --untracked-files=all | diff - "$RUNNER_TEMP/workspace-status"
+          echo "ok: the checkout's HEAD, tracked and untracked files are unchanged"
 
       # continue-on-error here, in this test's own workflow, so the steps
       # below can inspect outcomes the action correctly reports as failures.

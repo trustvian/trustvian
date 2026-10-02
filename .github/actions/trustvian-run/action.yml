@@ -9,6 +9,10 @@
 #
 # The steps below receive every input through the environment and never
 # through ${{ }} inside a script, so no input is ever spliced into shell text.
+#
+# Each script step execs its script, so the step's process is the script: a
+# cancellation signal reaches it directly rather than ending a wrapper shell
+# and leaving the script — and what it started — running.
 
 name: Trustvian run
 description: Run a Trustvian behavioral scenario or suite and preserve its result document. Run side only.
@@ -71,7 +75,7 @@ runs:
     - id: setup
       name: Provide the Trustvian runtime
       shell: bash
-      run: '"$GITHUB_ACTION_PATH/setup.sh"'
+      run: 'exec "$GITHUB_ACTION_PATH/setup.sh"'
 
     - id: run
       name: Run trustvian eval run
@@ -88,7 +92,7 @@ runs:
         INPUT_API_URL: ${{ inputs.api-url }}
         INPUT_WORKING_DIRECTORY: ${{ inputs.working-directory }}
         INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
-      run: '"$GITHUB_ACTION_PATH/run.sh"'
+      run: 'exec "$GITHUB_ACTION_PATH/run.sh"'
 
     # Whatever the CLI returned: a FAIL or an operational error is exactly
     # when the result matters. Skipped only when there is nothing to upload
@@ -113,4 +117,4 @@ runs:
         TRUSTVIAN_RUN_UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
         TRUSTVIAN_RUN_ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
         TRUSTVIAN_RUN_ARTIFACT_NAME: ${{ inputs.artifact-name }}
-      run: '"$GITHUB_ACTION_PATH/finish.sh"'
+      run: 'exec "$GITHUB_ACTION_PATH/finish.sh"'

@@ -24,7 +24,7 @@
 
 set -euo pipefail
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+here="$(CDPATH='' cd -P -- "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd -P)"
 # shellcheck source=SCRIPTDIR/lib.sh
 . "$here/lib.sh"
 
@@ -58,7 +58,17 @@ case "$fail_fast" in
 esac
 [[ "$artifact_name" =~ ^[A-Za-z0-9._-]{1,100}$ ]] ||
     fail "input artifact-name must be 1-100 characters of letters, digits, '.', '_' and '-'"
-[ -d "$working_directory" ] || fail "input working-directory is not a directory"
+
+# The working directory is resolved once, literally, to an absolute physical
+# path: a relative one is taken from this step's own directory and never from
+# CDPATH, and a name beginning with '-' is a directory, not an option to cd.
+case "$working_directory" in
+    /*) workload_dir="$working_directory" ;;
+    *) workload_dir="./$working_directory" ;;
+esac
+[ -d "$workload_dir" ] || fail "input working-directory is not a directory"
+workload_dir="$(CDPATH='' cd -P -- "$workload_dir" >/dev/null && pwd -P)" ||
+    fail "input working-directory cannot be entered"
 
 if [ -n "$scenario" ] && [ -n "$suite" ]; then
     mode=both
@@ -87,7 +97,8 @@ args=(eval run --json "--collector-bin=$bin_dir/trustvian-collector")
 [ -z "$scenario_timeout" ] || args+=("--scenario-timeout=$scenario_timeout")
 [ "$fail_fast" != true ] || args+=(--fail-fast)
 
-invocation="$(mktemp -d "$RUNNER_TEMP/trustvian-run.XXXXXX")"
+runner_temp="$(CDPATH='' cd -P -- "$RUNNER_TEMP" >/dev/null && pwd -P)" || fail "RUNNER_TEMP is not a directory"
+invocation="$(mktemp -d "$runner_temp/trustvian-run.XXXXXX")"
 artifact_dir="$invocation/artifact"
 mkdir -p "$artifact_dir"
 
@@ -117,9 +128,42 @@ stop_control_plane() {
     fi
     wait "$pid" 2>/dev/null || true
 }
+# Cancellation. GitHub cancels a step by signalling its process, which —
+# because the action's step execs this script — is this script. Before the
+# CLI runs, a signal stops what this step started and exits with the
+# signal's status. While the CLI runs, a trap that only ran after the CLI
+# exited would leave it running, so the CLI runs in the background and the
+# signal is forwarded to it, and to nothing else: it owns its workload's
+# cleanup (ADR 0055 § 4). This step waits for it, stops its own control
+# plane, and still exits with the signal's status.
+cli_pid=""
+launching=""
+cancel_signal=""
+signals_seen=0
+
+exit_cancelled() {
+    case "$cancel_signal" in
+        INT) exit 130 ;;
+        *) exit 143 ;;
+    esac
+}
+
+on_signal() {
+    cancel_signal="$1"
+    signals_seen=$((signals_seen + 1))
+    if [ -n "$cli_pid" ]; then
+        kill -s "$1" "$cli_pid" 2>/dev/null || true
+    elif [ -z "$launching" ]; then
+        stop_control_plane
+        exit_cancelled
+    fi
+    # While launching, the signal is recorded and forwarded as soon as the
+    # CLI's PID is known.
+}
+
 trap stop_control_plane EXIT
-trap 'stop_control_plane; exit 130' INT
-trap 'stop_control_plane; exit 143' TERM
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
 
 if [ -n "$api_url" ]; then
     # Attach. The CLI validates the URL and owns the meaning of a bad one.
@@ -156,11 +200,44 @@ fi
 # --- The run --------------------------------------------------------------
 
 stdout_file="$invocation/stdout"
-echo "Running trustvian eval run ($mode) in $working_directory"
+echo "Running trustvian eval run ($mode) in $workload_dir"
+
+# Job control for the launch alone: the CLI gets a process group of its own,
+# and SIGINT is not ignored in it as it would be for a plain background
+# command, so a forwarded SIGINT reaches it. It also means a signal sent to
+# this step's process group reaches the CLI once — from this script — rather
+# than twice.
+#
+# The step itself moves to the workload's directory, so a directory that
+# cannot be entered is this action's error and never looks like a CLI code.
+# Every path used after this point is absolute.
+CDPATH='' cd -P -- "$workload_dir" >/dev/null || fail "cannot enter the working directory $workload_dir"
+launching=1
+set -m
+"$bin_dir/trustvian" "${args[@]}" >"$stdout_file" &
+cli_pid=$!
+set +m
+launching=""
+[ -z "$cancel_signal" ] || kill -s "$cancel_signal" "$cli_pid" 2>/dev/null || true
+
+# Wait for the CLI to exit. A trapped signal interrupts wait, so it is
+# repeated for as long as the CLI is still running.
 set +e
-(cd "$working_directory" && exec "$bin_dir/trustvian" "${args[@]}") >"$stdout_file"
-cli_exit=$?
+while :; do
+    seen=$signals_seen
+    wait "$cli_pid"
+    cli_exit=$?
+    [ "$signals_seen" -ne "$seen" ] || break
+    kill -0 "$cli_pid" 2>/dev/null || break
+done
 set -e
+cli_pid=""
+
+if [ -n "$cancel_signal" ]; then
+    echo "trustvian exited after SIG$cancel_signal was forwarded to it; the run was cancelled"
+    stop_control_plane
+    exit_cancelled
+fi
 set_output exit-code "$cli_exit"
 echo "trustvian exited $cli_exit"
 

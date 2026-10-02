@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+here="$(CDPATH='' cd -P -- "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd -P)"
 # shellcheck source=SCRIPTDIR/lib.sh
 . "$here/lib.sh"
 
@@ -33,90 +33,73 @@ go_digest="${!digest_key}"
 
 # Shared by every invocation of this action in the job, so a second invocation
 # reuses the toolchain, the source and the build cache. Keyed by what was
-# pinned, so two pins never share a directory.
-tooling="$RUNNER_TEMP/trustvian-run-tooling"
+# pinned, so two pins never share a directory. Resolved physically once, so
+# every path below is absolute and under $RUNNER_TEMP.
+runner_temp="$(CDPATH='' cd -P -- "$RUNNER_TEMP" >/dev/null && pwd -P)" || fail "RUNNER_TEMP is not a directory"
+tooling="$runner_temp/trustvian-run-tooling"
 goroot_parent="$tooling/go-$GO_VERSION-$GO_OS-$GO_ARCH"
 source_dir="$tooling/source-$TRUSTVIAN_SOURCE_COMMIT"
-mkdir -p "$tooling"
+mkdir -p "$tooling/home"
+
+# Every Go invocation runs through go_isolated (lib.sh): the pinned binary, a
+# cleared environment, GOTOOLCHAIN=local, and a working directory of its own.
+GO_ISOLATED_BIN="$goroot_parent/go/bin/go"
+GO_ISOLATED_TOOLING="$tooling"
 
 # --- The toolchain --------------------------------------------------------
 
-go_bin="$goroot_parent/go/bin/go"
-if ! [ -x "$go_bin" ] || [ "$("$go_bin" env GOVERSION 2>/dev/null)" != "go$GO_VERSION" ]; then
+pinned_go_present() {
+    [ -x "$GO_ISOLATED_BIN" ] && [ "$(go_isolated "$tooling" env GOVERSION 2>/dev/null)" = "go$GO_VERSION" ]
+}
+
+if ! pinned_go_present; then
     archive="go$GO_VERSION.$GO_OS-$GO_ARCH.tar.gz"
     echo "Downloading $archive from go.dev"
     rm -rf "$goroot_parent"
     mkdir -p "$goroot_parent"
-    curl -fsSL --retry 3 --proto '=https' --tlsv1.2 \
+    # -q: no .curlrc from the job's HOME; TAR_OPTIONS unset: the archive is
+    # extracted with exactly these options.
+    curl -q -fsSL --retry 3 --proto '=https' --tlsv1.2 \
         -o "$tooling/$archive" "https://go.dev/dl/$archive" ||
         fail "could not download $archive from go.dev"
     verify_sha256 "$tooling/$archive" "$go_digest"
-    tar -xzf "$tooling/$archive" -C "$goroot_parent"
+    env -u TAR_OPTIONS tar -xzf "$tooling/$archive" -C "$goroot_parent"
     rm -f "$tooling/$archive"
 fi
-[ "$("$go_bin" env GOVERSION)" = "go$GO_VERSION" ] || fail "the downloaded toolchain is not go$GO_VERSION"
+pinned_go_present || fail "the downloaded toolchain does not report go$GO_VERSION"
 
 # --- The source -----------------------------------------------------------
 
-# Git with no user or system configuration: a url.insteadOf rewrite or a hook
-# configured on the runner must not change what is fetched.
-git_clean() {
-    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 git "$@"
-}
-
-source_is_pinned() {
-    [ -d "$source_dir/.git" ] &&
-        [ "$(git_clean -C "$source_dir" rev-parse HEAD 2>/dev/null)" = "$TRUSTVIAN_SOURCE_COMMIT" ] &&
-        [ -z "$(git_clean -C "$source_dir" status --porcelain 2>/dev/null)" ]
-}
-
-if ! source_is_pinned; then
+# Every git command runs through git_isolated (lib.sh), against
+# $source_dir/.git by name: an inherited GIT_DIR, GIT_WORK_TREE or Git
+# configuration override can neither redirect it into the consumer's
+# repository nor change what is fetched.
+if ! source_is_pinned "$source_dir" "$TRUSTVIAN_SOURCE_COMMIT"; then
     echo "Fetching $TRUSTVIAN_SOURCE_COMMIT from $TRUSTVIAN_SOURCE_REPOSITORY"
-    rm -rf "$source_dir"
-    git_clean init -q "$source_dir"
-    git_clean -C "$source_dir" fetch -q --depth 1 --no-tags \
-        "$TRUSTVIAN_SOURCE_REPOSITORY" "$TRUSTVIAN_SOURCE_COMMIT" ||
+    fetch_source "$TRUSTVIAN_SOURCE_REPOSITORY" "$TRUSTVIAN_SOURCE_COMMIT" "$source_dir" ||
         fail "could not fetch $TRUSTVIAN_SOURCE_COMMIT from $TRUSTVIAN_SOURCE_REPOSITORY"
-    git_clean -C "$source_dir" -c advice.detachedHead=false checkout -q --detach FETCH_HEAD
 fi
-source_is_pinned || fail "the fetched source is not exactly $TRUSTVIAN_SOURCE_COMMIT"
+source_is_pinned "$source_dir" "$TRUSTVIAN_SOURCE_COMMIT" ||
+    fail "the fetched source is not exactly $TRUSTVIAN_SOURCE_COMMIT"
 
 # --- The build ------------------------------------------------------------
 
-bin_dir="$(mktemp -d "$RUNNER_TEMP/trustvian-run-bin.XXXXXX")"
+bin_dir="$(mktemp -d "$runner_temp/trustvian-run-bin.XXXXXX")"
 
-# A clean environment: only what the build needs, so a GOFLAGS, GOPROXY,
-# GONOSUMDB or GOTOOLCHAIN the job set for its own Go code cannot change this
-# build. Checksums are verified against the public checksum database, and the
-# toolchain is the pinned one, never a downloaded substitute.
+# go_isolated's cleared environment is what makes this build the pinned one: a
+# GOFLAGS, GOPROXY, GONOSUMDB or GOTOOLCHAIN the job set for its own Go code
+# cannot change it. Checksums are verified against the public checksum
+# database.
 #
 # CGO_ENABLED=0 and -trimpath match the release build (docs/release-guide.md).
 # There is no -ldflags version injection: the binaries carry Go's own build
 # information, which records the commit they were built from.
 build() {
     local module_dir="$1" package="$2" output="$3"
-    (
-        cd "$source_dir/$module_dir"
-        env -i \
-            HOME="$tooling/home" \
-            PATH="$(dirname "$(command -v git)"):/usr/bin:/bin" \
-            GOROOT="$goroot_parent/go" \
-            GOPATH="$tooling/gopath" \
-            GOMODCACHE="$tooling/gomodcache" \
-            GOCACHE="$tooling/gocache" \
-            GOENV=off \
-            GOTOOLCHAIN=local \
-            GOWORK=off \
-            GOFLAGS="-trimpath -mod=readonly" \
-            GOPROXY="https://proxy.golang.org,direct" \
-            GOSUMDB="sum.golang.org" \
-            CGO_ENABLED=0 \
-            GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-            "$go_bin" build -o "$output" "$package"
-    ) || fail "building $package from $TRUSTVIAN_SOURCE_COMMIT failed"
+    go_isolated "$source_dir/$module_dir" build -o "$output" "$package" ||
+        fail "building $package from $TRUSTVIAN_SOURCE_COMMIT failed"
 }
 
-mkdir -p "$tooling/home"
 echo "Building the Trustvian runtime from $TRUSTVIAN_SOURCE_COMMIT with go$GO_VERSION"
 build . ./cmd/trustvian "$bin_dir/trustvian"
 build platform ./cmd/trustvian-local "$bin_dir/trustvian-local"
@@ -128,7 +111,7 @@ build processor ./cmd/trustvian-collector "$bin_dir/trustvian-collector"
 # from the pinned commit with no local modification. This reads what Go
 # recorded; it writes nothing into the binaries.
 for binary in trustvian trustvian-local trustvian-collector; do
-    info="$("$go_bin" version -m "$bin_dir/$binary")" || fail "cannot read the build information of $binary"
+    info="$(go_isolated "$tooling" version -m "$bin_dir/$binary")" || fail "cannot read the build information of $binary"
     printf '%s\n' "$info" | grep -qx "[[:space:]]*build[[:space:]]*vcs.revision=$TRUSTVIAN_SOURCE_COMMIT" ||
         fail "$binary does not record vcs.revision=$TRUSTVIAN_SOURCE_COMMIT"
     printf '%s\n' "$info" | grep -qx "[[:space:]]*build[[:space:]]*vcs.modified=false" ||

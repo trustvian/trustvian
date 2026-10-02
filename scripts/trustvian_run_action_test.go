@@ -514,7 +514,11 @@ func TestRunActionPreservesTheResultAfterFailures(t *testing.T) {
 				t.Fatalf("run step exited %d\n%s", run.code, run.stdout)
 			}
 			dir := run.outputs["artifact-dir"]
-			if !strings.HasPrefix(dir, e.temp+string(filepath.Separator)) {
+			temp, err := filepath.EvalSymlinks(e.temp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(dir, temp+string(filepath.Separator)) {
 				t.Errorf("artifact %s is not under RUNNER_TEMP", dir)
 			}
 			m := readMetadata(t, dir)
