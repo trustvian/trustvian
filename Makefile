@@ -8,7 +8,7 @@ GO       := go
 
 .PHONY: help build run demo baseline-demo test test-race bench vet fmt fmt-check tidy coverage install clean check examples \
 	compose-up compose-down compose-smoke recovery-drill integration-postgres \
-	local check-modules check-platform-boundary release-dry-run vulncheck container-build container-scan sbom \
+	local check-modules check-platform-boundary release-dry-run release vulncheck container-build container-scan sbom \
 	pr-title
 
 help: ## Show this help
@@ -132,6 +132,9 @@ pr-title: ## Check a pull request title against docs/COMMIT_CONVENTION.md — ma
 
 release-dry-run: ## Build the full release artifact matrix locally — no tag, no credentials, no upload
 	./scripts/release-build.sh
+
+release: ## Release through release.yml — make release VERSION=vX.Y.Z [DRY_RUN=1] (a human Organization Admin; see docs/release-guide.md)
+	@VERSION='$(VERSION)' DRY_RUN='$(DRY_RUN)' ./scripts/release.sh
 
 compose-up: ## Start the reference Docker Compose deployment (see deployments/docker-compose/README.md)
 	$(COMPOSE) up -d --build

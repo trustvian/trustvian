@@ -121,24 +121,31 @@ Debug through:
 
 ## Pipeline
 
-One release identity, shared with the binary release. The container job
-`needs` the release job, so it builds from source whose tag was already
-validated and whose gates already passed — it does not re-establish trust.
+One release run builds both artifact kinds, from one commit, after one set of
+gates. `make release` dispatches it from `main`; nothing becomes public until
+`verify` has passed and a human Organization Admin has created the tag
+([ADR 0059](adr/0059-releases-are-dispatched-verified-then-published.md)).
 
 ```text
-tag push (v*)
-  ├─ release job    validate SemVer → verify tagged commit → gates
-  │                 → binaries (CLI + dev helpers) + checksums
-  │                 → draft GitHub Release
-  └─ container job  build → scan → gate → push vX.Y.Z (+ SBOM, provenance)
-                    → sign digest → move X.Y and latest to that digest
+workflow_dispatch on main (version, commit == main head)
+  preflight → gates
+  ├─ build   archives (CLI + dev helpers) + checksums → build provenance attested
+  └─ image   build → scan → gate → push BY DIGEST (+ SBOM, provenance) → sign digest
+  verify     ubuntu + macOS: checksums, contents, version, gh attestation verify,
+             scenario from the archive; cosign verify the digest
+  ── human Organization Admin creates the annotated v* tag at the commit ──
+  publish    GitHub Release → image vX.Y.Z from the verified digest
+             → X.Y and latest (stable only)
 ```
 
-Scanning happens **before** publishing, so a known-bad image is never
-pushed. Signing follows publishing because a signature is made over a
-digest, which exists only once the image is in the registry. The floating
-tags move last, by digest and without a rebuild, so they only ever point at
-a signed image.
+Scanning happens **before** pushing, so a known-bad image is never pushed.
+Signing follows the push because a signature is made over a digest, which
+exists only once the image is in the registry. The push carries **no tag**,
+so no version and no `latest` resolve to it until `publish` tags exactly the
+digest `verify` checked. The digest itself is not secret: it, its signature
+tag and its transparency-log entry are visible, for dry runs and failed runs
+too. Floating
+tags move last, by digest and without a rebuild.
 
 ### What the scan covers
 
@@ -152,17 +159,18 @@ here rather than left implicit.
 
 ### Partial-failure behavior
 
-The GitHub Release is created as a **draft**. If the container job fails
-after the binary job succeeded, the release stays a draft, so an incomplete
-release is never presented as finished — publication is a human action
-taken after seeing every job's result.
+Everything before `publish` is invisible to users. A failure there leaves at
+most an untagged, signed digest and attestations for archives nobody
+received, and the same version is simply released again.
 
-The registry is different: an image is public the moment it is pushed. The
-one window that matters is between pushing `vX.Y.Z` and signing it. If
-signing fails there, the immutable tag exists unsigned, but `X.Y` and
-`latest` have **not** moved, so no one following a floating tag receives an
-unsigned image. Recovery for this and every other partial state is in the
-[release guide](release-guide.md#the-release-is-not-atomic).
+`publish` is the only job that can leave a partial state, and every step in it
+checks what already happened, so re-running it finishes the release:
+- a draft from an interrupted release creation is completed;
+- an image version tag already at the verified digest is left alone, and one
+  at another digest is refused, because a version tag never moves.
+
+Recovery is in the
+[release guide](release-guide.md#when-something-fails).
 
 ## Vulnerability policy
 
@@ -253,24 +261,19 @@ reader who assumes otherwise is assuming too much.
 
 | Artifact | Contains | Covered by |
 |---|---|---|
-| release archives | `trustvian`, and on macOS/Linux `trustvian-local` and `trustvian-collector` | SHA-256 `checksums.txt`, published with the release |
+| release archives | `trustvian`, and on macOS/Linux `trustvian-local` and `trustvian-collector` | SHA-256 `checksums.txt`, published with the release; from `v0.10.0`, SLSA build provenance for every archive and for `checksums.txt` (`actions/attest-build-provenance`) |
 | container image | `trustvian-collector` only | SBOM (SPDX 2.3), SLSA v1 provenance, keyless Cosign signature over the digest |
 
-**The archives carry no SBOM and no provenance attestation**, and they did not
-before the helpers were added either. Adding two binaries to an archive
-therefore changes nothing about its supply-chain posture: all three are covered
-by the same checksum manifest, computed over the archive, verified in the
-release job before publication and verifiable by anyone afterwards.
+**The archives carry build provenance from `v0.10.0`, and no SBOM.** The
+build job attests every archive and `checksums.txt` with
+`actions/attest-build-provenance`, signed keylessly by the same release run.
+`verify` checks those attestations with `gh attestation verify` before
+anything is published, and anyone can check them afterwards (below). The
+archives of `v0.9.0` and earlier have checksums only.
 
 The image contains only `trustvian-collector` because it *is* the Collector
 deployment image — its entrypoint is that binary. It does not ship the CLI, and
 adding the helpers to the archives did not change what it contains.
-
-**Attesting the archives is a real gap and a deliberate non-goal of the change
-that added the helpers.** It would mean `actions/attest-build-provenance` over
-`dist/*`, which is a new supply-chain mechanism in the release path and wants
-its own review rather than arriving as a side effect of packaging two more
-binaries. Recorded here so it is a known gap rather than an assumed guarantee.
 
 ## Verifying a published image
 
@@ -279,7 +282,7 @@ above).
 
 ```bash
 IMAGE=ghcr.io/trustvian/trustvian-collector
-TAG=v0.9.0   # substitute a real released tag
+TAG=v0.10.0   # substitute a real released tag
 
 # Resolve the immutable digest, and use it for everything below.
 DIGEST=$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{.Manifest.Digest}}')
@@ -290,10 +293,10 @@ SHA=$(git ls-remote https://github.com/trustvian/trustvian "refs/tags/$TAG^{}" |
 
 # Signature: keyless, so verification asserts *which workflow run* signed it.
 cosign verify "$IMAGE@$DIGEST" \
-  --certificate-identity "https://github.com/trustvian/trustvian/.github/workflows/release.yml@refs/tags/$TAG" \
+  --certificate-identity "https://github.com/trustvian/trustvian/.github/workflows/release.yml@refs/heads/main" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-github-workflow-repository trustvian/trustvian \
-  --certificate-github-workflow-trigger push \
+  --certificate-github-workflow-trigger workflow_dispatch \
   --certificate-github-workflow-sha "$SHA"
 
 # SBOM and provenance attestations.
@@ -310,27 +313,74 @@ certificate Fulcio issued to the signing run:
 
 | Flag | Pins | A signature it rejects |
 |---|---|---|
-| `--certificate-identity` | the workflow file, `release.yml`, and the ref it ran on, `refs/tags/$TAG` | one made by another workflow file in this repository, from a branch, or for a different tag |
+| `--certificate-identity` | the workflow file, `release.yml`, and the ref it ran on, `refs/heads/main` | one made by another workflow file in this repository, or by `release.yml` run from any other branch |
 | `--certificate-oidc-issuer` | GitHub Actions as the token issuer | one from any other OIDC provider |
 | `--certificate-github-workflow-repository` | `trustvian/trustvian` | one from a fork or a renamed copy |
-| `--certificate-github-workflow-trigger` | the `push` event, the only one `release.yml` runs on | one from a manual or scheduled run |
-| `--certificate-github-workflow-sha` | the commit the tag points at | one from a tag that was moved to another commit |
+| `--certificate-github-workflow-trigger` | `workflow_dispatch`, the only event `release.yml` runs on | one from a push, schedule or any other event |
+| `--certificate-github-workflow-sha` | the commit the version tag points at | one from a run at any other commit, including an earlier or later release |
 
-**Why the regular expression is weaker.** Earlier versions of this guide
-matched `--certificate-identity-regexp '^https://github.com/trustvian/trustvian/'`.
-That accepts a certificate from *any* workflow file in the repository, on *any*
-ref, from *any* trigger. Someone who can push a branch that adds a workflow
-with `id-token: write` could therefore sign an image that passes, without
-running the release pipeline or its gates. It would also accept a release
-image signed for a different tag. The exact identity accepts only `release.yml`,
-run by a tag push, for this tag, at this tag's commit.
+**The SHA is what binds the signature to the version.** A release runs from
+`main`, so the identity names the branch, not the version. The release's
+preflight requires the released commit to be exactly the run's commit, so the
+certificate's workflow SHA is the commit the tag points at. A dry run at the
+same commit produces a signature that passes too, over an image built from the
+same source and checks; it is never tagged, because only `publish` creates
+tags, and only from the digest its own run verified.
+
+**Releases up to `v0.9.0` were signed by a tag push.** For those, use the
+identity of that pipeline:
+
+```bash
+cosign verify "$IMAGE@$DIGEST" \
+  --certificate-identity "https://github.com/trustvian/trustvian/.github/workflows/release.yml@refs/tags/$TAG" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-repository trustvian/trustvian \
+  --certificate-github-workflow-trigger push \
+  --certificate-github-workflow-sha "$SHA"
+```
+
+**Why not a regular expression.** Earlier versions of this guide matched
+`--certificate-identity-regexp '^https://github.com/trustvian/trustvian/'`.
+That accepts a certificate from *any* workflow file in the repository, on
+*any* ref, from *any* trigger. Someone who can push a branch that adds a
+workflow with `id-token: write` could therefore sign an image that passes,
+without running the release pipeline or its gates. The exact identity accepts
+only `release.yml`, dispatched on `main`, at this release's commit.
 
 **Attestations are BuildKit's, not Cosign's.** `release.yml` builds with
 `--sbom=true --provenance=mode=max`. That attaches the SBOM and the provenance
 to the image index as BuildKit attestation manifests, which
 `docker buildx imagetools inspect` reads. Cosign signs the digest but attaches
-no attestation of its own, so `cosign download attestation` finds none for this
-image.
+no attestation of its own, so `cosign download attestation` finds none for
+this image.
+
+## Verifying a release archive
+
+From `v0.10.0`. `gh attestation verify` checks the archive's SLSA build
+provenance against the same run: `release.yml`, dispatched on `main`, at the
+tagged commit.
+
+```bash
+V=v0.10.0
+A=trustvian_${V}_linux_amd64.tar.gz
+SHA=$(git ls-remote https://github.com/trustvian/trustvian "refs/tags/$V^{}" | cut -f1)
+
+sha256sum -c checksums.txt --ignore-missing
+gh attestation verify "$A" \
+  --repo trustvian/trustvian \
+  --signer-workflow trustvian/trustvian/.github/workflows/release.yml \
+  --source-ref refs/heads/main \
+  --source-digest "$SHA" \
+  --deny-self-hosted-runners
+```
+
+| Flag | Pins |
+|---|---|
+| `--repo` | attestations stored by `trustvian/trustvian` |
+| `--signer-workflow` | signed by `release.yml`, not any other workflow in the repository |
+| `--source-ref` | built from `refs/heads/main` |
+| `--source-digest` | built at the commit the version tag points at |
+| `--deny-self-hosted-runners` | built on a GitHub-hosted runner |
 
 ## Local verification
 

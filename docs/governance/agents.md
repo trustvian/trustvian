@@ -317,7 +317,7 @@ Workflow privilege is scoped per job, not per repository:
 |---|---|---|
 | `ci.yml` | push / PR on `main` | `contents: read` only — no secrets, nothing to leak to a fork pull request |
 | `nightly.yml` | schedule, manual | `contents: read` only |
-| `release.yml` | version tag | `contents: read` by default; the publish job adds `contents: write`, the container job adds `packages: write` and `id-token: write` for keyless signing |
+| `release.yml` | `workflow_dispatch` from `main` (`make release`) | `contents: read` by default; `build` adds `id-token: write` and `attestations: write`, `image` adds `packages: write` and `id-token: write` for a digest-only push and keyless signing, and only `publish` adds `contents: write` (with `packages: write` to tag the verified digest) |
 
 Rules for changing this:
 
@@ -330,7 +330,7 @@ Rules for changing this:
   repository's token in the context of untrusted code, and this repository has
   no use case that justifies it.
 - Release privileges (`packages: write`, `id-token: write`) belong to the
-  tag-triggered workflow only, and must not migrate into pull request CI.
+  dispatched release workflow only, and must not migrate into pull request CI.
 
 ## Emergency Administration
 

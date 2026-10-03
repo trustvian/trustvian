@@ -6,7 +6,7 @@
 # Publishing is deliberately NOT here. This workflow creates no release,
 # image, or artifact, which is why it can run with read-only permissions
 # and needs no secrets at all. Publishing, scanning the image, and signing
-# live in release.yml, which runs only on a version tag.
+# live in release.yml, which runs only when `make release` dispatches it.
 #
 # See docs/tasks/039-ci-quality-gate-automation.md.
 
@@ -500,10 +500,10 @@ jobs:
   # ---------------------------------------------------------------------
   # Release tooling: prove the artifact matrix still cross-compiles on
   # every change, so a broken target is found on the pull request that
-  # breaks it rather than when a tag is pushed.
+  # breaks it rather than when a release is dispatched.
   #
   # This builds and discards. Nothing is uploaded and no release is
-  # created — publishing happens only in release.yml, on a tag.
+  # created — publishing happens only in release.yml, on dispatch.
   # ---------------------------------------------------------------------
   release-dry-run:
     name: Release build (dry run)
@@ -529,7 +529,7 @@ jobs:
   #
   # Builds and discards — nothing is pushed and no registry credential is
   # used, which is why this job runs on fork pull requests like any other.
-  # Publishing happens only in release.yml, on a tag.
+  # Publishing happens only in release.yml, on dispatch.
   # ---------------------------------------------------------------------
   container-build:
     name: Container image (build only)
@@ -567,8 +567,8 @@ jobs:
   # Added after v0.9.0-rc.1 died at job setup on
   # `sigstore/cosign-installer@v4`, a version that has never existed. The
   # YAML was valid and actionlint was clean — only a network lookup can
-  # catch it, and the release workflow itself runs only on a tag, so this
-  # is the last place to catch it before one is created.
+  # catch it, and the release workflow itself runs only when dispatched, so
+  # this is the last place to catch it before a release is attempted.
   #
   # Resolution is `git ls-remote` against the public repositories and needs
   # no token: the first version of this check used the GitHub API, which
@@ -597,6 +597,32 @@ jobs:
 
       - name: Verify every action reference resolves
         run: ./scripts/check-action-refs.sh
+
+  # ---------------------------------------------------------------------
+  # Release tooling: the scripts `make release` runs, tested and linted on
+  # every change, because the release itself is the wrong place to find a
+  # bug in them. See docs/adr/0059-releases-are-dispatched-verified-then-published.md.
+  # ---------------------------------------------------------------------
+  release-tooling:
+    name: Release tooling
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
+
+      - name: Test the release preflight
+        run: ./scripts/test-release-preflight.sh
+
+      - name: Lint the release scripts
+        # shellcheck ships on GitHub's Ubuntu runners.
+        run: |
+          shellcheck --version | head -n 2
+          shellcheck -x scripts/release.sh scripts/release-preflight.sh \
+            scripts/release-setup.sh scripts/test-release-preflight.sh
 
   # ---------------------------------------------------------------------
   # Pull request title: the squash commit subject, and therefore the only

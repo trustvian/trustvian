@@ -112,11 +112,36 @@ modules. Only `github.com/trustvian/trustvian` is published.
 
 ## Verifying
 
+This is the first release built by the dispatched, verify-before-publish
+pipeline: every archive below was already checked on Linux and macOS before
+this page existed. To check it yourself:
+
 ```bash
+V=v0.10.0
+A=trustvian_${V}_linux_amd64.tar.gz
+SHA=$(git ls-remote https://github.com/trustvian/trustvian "refs/tags/$V^{}" | cut -f1)
+
+# Archives: checksums, then SLSA build provenance (new in this release)
 sha256sum -c checksums.txt --ignore-missing
-./trustvian_v0.10.0_linux_amd64/trustvian version    # trustvian v0.10.0
+gh attestation verify "$A" \
+  --repo trustvian/trustvian \
+  --signer-workflow trustvian/trustvian/.github/workflows/release.yml \
+  --source-ref refs/heads/main --source-digest "$SHA"
+tar -xzf "$A" && ./trustvian_${V}_linux_amd64/trustvian version    # trustvian v0.10.0
+
+# Image: keyless Cosign signature by the release run, at the tagged commit
+IMAGE=ghcr.io/trustvian/trustvian-collector
+DIGEST=$(docker buildx imagetools inspect "$IMAGE:$V" --format '{{.Manifest.Digest}}')
+cosign verify "$IMAGE@$DIGEST" \
+  --certificate-identity https://github.com/trustvian/trustvian/.github/workflows/release.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-repository trustvian/trustvian \
+  --certificate-github-workflow-trigger workflow_dispatch \
+  --certificate-github-workflow-sha "$SHA"
 ```
 
-The container image `ghcr.io/trustvian/trustvian-collector:v0.10.0` is signed
-with keyless Cosign and carries SBOM and provenance attestations; see
+**The image's signing identity changed.** It is `release.yml@refs/heads/main`,
+triggered by `workflow_dispatch`, rather than `@refs/tags/<version>`, triggered
+by `push`. Verifying `v0.9.0` still uses the old identity. The image also
+carries SBOM and provenance attestations. What each flag pins is in
 [supply-chain.md](https://github.com/trustvian/trustvian/blob/v0.10.0/docs/supply-chain.md#verifying-a-published-image).

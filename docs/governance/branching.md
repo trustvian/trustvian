@@ -17,10 +17,12 @@ run the gates locally, see [CONTRIBUTING.md](../../CONTRIBUTING.md).
 3. **Tags are immutable.** A published tag — release candidate or final — is
    never moved, deleted, re-pointed, or reused. A failed candidate stays as
    the record of what failed.
-4. **A release candidate is a tag, not a branch.** Stabilization happens by
-   verifying a candidate and, if needed, fixing forward on `main`.
-5. **A final release is promoted from the exact commit a candidate verified**
-   whenever no correction was required.
+4. **A release is verified before it is tagged.** `make release` builds,
+   signs and verifies `main`'s head, and the tag is created only after that
+   passes. A failure leaves no tag, and the fix goes forward on `main`.
+5. **A release candidate is optional, and a tag, not a branch.** When one is
+   published, the final release is cut from the exact commit it was published
+   from, whenever no correction was required.
 6. **Maintenance branches are created on demand, never in advance.**
 
 ## Branch Model
@@ -32,21 +34,19 @@ gitGraph
     commit id: "work"
     checkout main
     merge feat/example
-    commit id: "release point" tag: "v0.10.0-rc.1"
-    commit id: "promote" tag: "v0.10.0"
+    commit id: "release point" tag: "v0.10.0"
 ```
 
-A candidate that fails is corrected on `main`, and the next candidate takes
-the next number — the failed tag stays where it is:
+A release whose verification fails is corrected on `main` and released again
+under the **same** version, because no tag was created:
 
 ```mermaid
 gitGraph
-    commit id: "abc123" tag: "v0.10.0-rc.1"
+    commit id: "abc123"
     branch fix/release-workflow
     commit id: "correction"
     checkout main
-    merge fix/release-workflow id: "def456" tag: "v0.10.0-rc.2"
-    commit id: "promote" tag: "v0.10.0"
+    merge fix/release-workflow id: "def456" tag: "v0.10.0"
 ```
 
 ## Long-Lived Branches
@@ -169,49 +169,39 @@ A pull request is squash-merged, so its title becomes the commit subject on
 `main`, and CI validates that title. The format, types, and scopes are in
 [Commit Convention](../COMMIT_CONVENTION.md).
 
-## Release Candidates
+## Releases
 
-A release candidate is a tag on `main`. There is no release branch, and
-nothing is frozen.
+A release is `main`'s head at the moment `make release` runs. There is no
+release branch, and nothing is frozen.
 
 ```text
-main@<sha>  →  tag vX.Y.Z-rc.N  →  release workflow  →  verification
+main@<sha>  →  make release  →  preflight, gates, build, sign, verify
+            →  a human Organization Admin tags vX.Y.Z at <sha>  →  publish
+```
+
+Nothing is tagged until verification has passed, so a failure burns no
+number. The [Release Guide](../release-guide.md) covers the procedure, and
+[Release Governance](releases.md) who may act at each step.
+
+## Release Candidates
+
+A candidate is optional. Use one to put a build in front of users before
+calling it stable, not to test the pipeline: a dry run does that.
+
+```text
+main@<sha>  →  make release VERSION=vX.Y.Z-rc.N  →  published as a prerelease
 ```
 
 A candidate is marked as a prerelease: it never becomes GitHub's "Latest
 release", and it never moves the floating container tags. Only a stable
 release does either.
 
-## Stable Releases
-
-```text
-verified vX.Y.Z-rc.N at <sha>
-   ↓  same commit, no source change
-tag vX.Y.Z  →  release workflow  →  floating container tags move here
-```
-
-**The invariant:** when a candidate verifies and requires no correction, the
-final tag is created from *that same commit*. If anything at all changed —
-source, workflow, dependency, documentation — the result is a new candidate,
-not a promotion. [Release Governance](releases.md) states the rule and who
-may act on it; the [Release Guide](../release-guide.md) covers what each
-artifact contains and how to verify it.
-
-## Failed Release Candidates
-
-```text
-vX.Y.Z-rc.1  →  verification fails
-   ↓
-branch from main: fix/<what-failed>
-   ↓
-pull request → CI → review → main
-   ↓
-tag vX.Y.Z-rc.2 at the new commit
-```
-
-The failed tag stays exactly where it is, and candidate numbers only ever
-increase. Why that matters, and the ruleset that enforces it, are in
-[Release Governance](releases.md).
+**The invariant:** a stable release after a candidate is cut from *that same
+commit*. `make release` releases `main`'s head, so `main` must not have moved.
+If anything changed (source, workflow, dependency, documentation), the result
+is a new candidate, not a promotion. A published candidate's tag stays where
+it is, and candidate numbers only ever increase. Why that matters, and the
+ruleset that enforces it, are in [Release Governance](releases.md).
 
 ## Hotfixes
 
@@ -223,11 +213,11 @@ main (still the v0.9 line)
    ↓
 fix/<the-defect>  →  PR  →  CI  →  main
    ↓
-v0.9.1-rc.1  →  verification  →  v0.9.1
+make release VERSION=v0.9.1   (verified before it is tagged)
 ```
 
-The candidate step is not skipped for urgency. It is the only thing that
-proves the fix ships correctly, and it costs one workflow run.
+Verification is not skipped for urgency. It runs inside `make release`, before
+the tag exists, and costs nothing extra.
 
 If `main` has already moved on to work that must not ship in a patch, the
 fix goes to a maintenance branch instead.
@@ -245,8 +235,13 @@ release/0.9            created from the v0.9.0 tag, when needed
    ↓
 fix/<defect>  →  PR targeting release/0.9  →  CI
    ↓
-v0.9.2-rc.1  →  verification  →  v0.9.2
+v0.9.2
 ```
+
+`make release` does not cover this case yet. It releases `main`'s head, and
+only a version newer than every existing tag. The first maintenance release
+needs a preflight rule for its line
+([ADR 0059](../adr/0059-releases-are-dispatched-verified-then-published.md#consequences)).
 
 Rules:
 
@@ -355,10 +350,10 @@ Use `chore/` for dependency branches when creating them by hand.
 - **Direct pushes to `main`**, including by maintainers.
 - **Force pushes to a protected branch**, or any rewrite of published
   history.
-- **Moving, deleting, or reusing a release tag** — especially a failed
+- **Moving, deleting, or reusing a release tag** — especially a published
   candidate's.
-- **Skipping the candidate for an urgent fix.** Urgency is when the
-  verification matters most.
+- **Tagging by hand, outside `make release`.** A hand-pushed tag starts
+  nothing, skips verification, and makes `make release` refuse that version.
 - **A release branch with no maintenance need**, or a maintenance branch per
   version created in advance.
 - **Mixing unrelated changes in one pull request**, which makes the merge
@@ -369,16 +364,16 @@ Use `chore/` for dependency branches when creating them by hand.
 ## Why This Model
 
 **Why main-based with short-lived branches?** Releases are already defined by
-tags and reproduced by a workflow that re-runs every gate against the tagged
-commit, so nothing about producing a release needs a branch to stage it. What
+tags and produced by a workflow that re-runs every gate against the released
+commit and verifies the result before the tag exists, so nothing about producing a release needs a branch to stage it. What
 the project does need — a trunk that is always releasable, small reviewable
 changes, and one obvious target for outside contributors — is what this model
 provides.
 
 **Why not GitFlow?** Its `develop`, `release/*`, and `hotfix/*` branches exist
 to stabilize a release while new work continues and to support many parallel
-released versions. Trustvian stabilizes with candidate tags on the trunk and
-supports one release line, so GitFlow would add three branch classes and a
+released versions. Trustvian stabilizes by verifying the trunk's head before
+tagging it, and supports one release line, so GitFlow would add three branch classes and a
 merge matrix for problems the project does not have.
 
 **Why no permanent `develop`?** <a id="why-no-permanent-develop"></a>
@@ -388,7 +383,7 @@ unit was "everything since the last release" — the opposite of a small
 reviewable change — while individual changes reached `develop` with no pull
 request at all. It also required periodic `main` → `develop` sync merges
 purely to undo drift the split created, and left contributors two plausible
-targets. Pull-request validation plus immutable candidate tags give the
+targets. Pull-request validation plus verify-before-tag releases give the
 isolation `develop` was meant to provide, at one branch instead of two.
 
 **When do maintenance branches become justified?** When Trustvian commits to
