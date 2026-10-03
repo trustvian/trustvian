@@ -37,13 +37,15 @@ carries it because it contradicts
 `v1.0` is the release gate beyond it. Track B is **partly implemented**: the
 evaluation foundation, local persistence, the local control-plane API and
 realtime, the developer CLI, the TUI, the WebUI, the PostgreSQL backend, the
-environment model and promotion (tasks 051–066, 073 and 074) exist, while
-078 is partially implemented, 080 is specified, 067, 075, 076, 077 and 079 are
-implemented, and 068–072
-are still PLANNED. [Task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md)
+environment model and promotion (tasks 051–066, 073 and 074) exist; 067 and
+075–079 are implemented, 080 is specified, and
+068–072 are still PLANNED. [Task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md)
 is a planning task, in 049's shape: it reserves and scopes 083–090 — inspection
 and evaluation depth — and implements nothing.
-What exists is not usable end to end on its own. Everything under
+On `main`, a developer can run an instrumented agent under `trustvian dev`, watch
+it in the WebUI, gate a candidate over repeated scenarios with `trustvian eval
+run`, and post the verdict on a pull request with the CI action — see
+[Current State](#current-state). None of it is in a release yet. Everything under
 [Beyond v1.0](#beyond-v10) is FUTURE.
 
 ## Product Direction
@@ -178,58 +180,64 @@ The pre-`v1.0` core provides:
 - signed container images with SBOM and provenance attestations, published by
   an automated release pipeline
 
-**The platform foundation has begun, and is not usable end to end.** Task 052
-added the `platform/` module — a separate Go module at `trustvian-platform`.
-It now holds the evaluation foundation, and nothing built on top of it:
+**The platform is implemented on `main` and not yet released.** It lives in
+`platform/`, a separate Go module at `trustvian-platform`. What ships on `main`
+today, by task:
 
-- implemented: the evaluation domain — `Project`, `Agent`, `Candidate`,
-  `EvaluationRun`, `EnvironmentRef`, `BehavioralProfileRef`, with
-  construction-time validation and an explicit run lifecycle (task 052);
-  evaluation result aggregation over the core's public `DecisionRecord`
-  (task 053); behavioral diff over bounded behavioral snapshots (task 054);
-  fixed-shape comparative scorecards (task 055); deterministic
-  evidence-backed hard gates over those scorecards (task 056); local
-  SQLite persistence for control and evaluation state (task 057); an
-  authoritative control-plane service with a local `/v1` HTTP adapter and
-  sequenced `DecisionRecord` ingest (task 058); and bounded, ephemeral
-  realtime notification over committed state, streamed over SSE (task 059);
-- also implemented: the developer CLI evaluation workflow (task 060), the
-  terminal dashboard (task 061), the integrated local runtime that binds a
-  loopback listener and advertises it (task 062), and the minimal web control
-  plane served from that same listener (task 063);
-- also implemented: the PostgreSQL platform backend (task 064), selected
-  explicitly at the composition root with SQLite remaining the default;
-- not implemented: the full environment model, promotion, and the
-  event-history capability.
+- **Evaluation foundation.** The public `DecisionRecord` (050),
+  learning-scope isolation (051), the evaluation domain (052), result
+  aggregation (053), behavioral diff (054), scorecards (055) and deterministic
+  hard gates (056).
+- **Control plane and storage.** SQLite persistence (057), the authoritative
+  control plane with its local `/v1` API and sequenced ingest (058), realtime
+  notification over SSE (059), and the PostgreSQL backend (064).
+- **Developer surfaces.**
+  - The CLI evaluation workflow (060) and the terminal dashboard (061).
+  - The integrated local runtime (062) and the WebUI served from it: the
+    minimal web control plane (063), zero-input live behavior (074), and the
+    record-first admin console (096).
+- **Environments and history.** The environment model (065), promotion as a
+  recorded decision on gate evidence (066), and bounded per-observation event
+  history (067).
+- **Agent telemetry and evidence.** Collector evaluation ingest (073), AI
+  semantic telemetry normalization (075), and the behavioral evidence explorer
+  (076). Under them sit layer classification, correlation evidence and
+  evidence resolution (083–085).
+- **`trustvian dev`** (077) runs an existing instrumented agent with one
+  command. It composes the local control plane and a Collector around it. On
+  macOS and Linux, the release archive carries both helpers from the next
+  release on (#114).
+- **`trustvian eval run`** (078) runs a scenario N times per side under isolated
+  profiles and gates the difference over k-of-N evidence. It persists each
+  execution, reuses a recorded reference with `--reference`, and runs a
+  directory of scenarios as a bounded suite with `--suite`. No default `k`
+  ships; the scenario guide documents
+  [how to calibrate one](platform-cli.md#calibrating-n-k-and-j).
+- **The CI action** (079) runs in pull requests. `.github/actions/trustvian-run`
+  runs a scenario or suite, and the exit code decides the job. A separate job,
+  `.github/actions/trustvian-comment`, renders the result offline and posts it as
+  one pull request comment, and it runs no pull request code
+  ([guide](ci-github-action.md)).
 
-So the platform can now describe an evaluation, aggregate bounded result
-evidence, compare bounded behavioral snapshots, build a comparative scorecard
-from the two, apply deterministic evidence-backed hard gates to it, keep all
-of that across a restart, and accept evidence over a versioned local HTTP API
-that a restarted process resumes rather than restarts. Subscribers can watch an evaluation live without polling the database.
-A developer drives all of it from one command, a CLI, a live terminal
-dashboard and a browser, and a deployment can share one PostgreSQL database
-instead. Nothing yet promotes —
-a gate returns a verdict and has no side effect, and realtime is notification
-over state the database already holds, never a source of truth. Raw event history is
-deliberately still absent. The API itself still binds no listener; task 062's
-runtime composes one, and it defaults to loopback. Everything else about the
-platform in this document remains approved direction rather than shipped
-behavior.
+A gate verdict has no side effect of its own. Promotion is a separate, recorded
+decision that consumes one. Realtime is notification over state the database
+already holds. A repeated scenario's verdict is the control plane's;
+`trustvian eval run` counts nothing. The API binds no listener of its own:
+task 062's runtime composes one, on loopback by default.
 
-Also not implemented: multi-tenancy, access control, an MCP server surface, a
-machine-learning detection path, and prompt- or content-level analysis.
+**No platform capability is in a release yet.** The next release, planned as
+`v0.10.0`, is the first that will carry one.
 
-**And not implemented, newly scoped:** the depth a developer needs to *inspect*
-what an agent did and to *investigate* why a gate failed. Trustvian reads
-agent-oriented telemetry well; what crosses `DecisionRecord` into the platform is
-narrower than what it read (no parent span, no duration, no error status, no token
-counts), and nothing links a gate check or a behavioral delta to the observations
-behind it.
-[Task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md) is the
-planning task that verified this against source and reserved 083–090 for it;
-[the roadmap section](#agent-inspection-and-evaluation-depth) is the summary. None
-of it is implemented, and one item (089) is PROPOSED rather than approved.
+**Not implemented:**
+- Multi-node and load validation, platform security hardening, platform backup
+  and restore, and the rest of 068–072. They are planned, with no
+  specification.
+- Metadata-only detection evaluation (080), which is specified.
+- Inspection depth 086–090, which is scoped by
+  [task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md). 089 is
+  PROPOSED, not approved.
+- Multi-tenancy, access control, an MCP server surface, a machine-learning
+  detection path, and prompt- or content-level analysis.
 
 ## Released Milestones
 
@@ -283,7 +291,7 @@ until then.
 |---|---|---|
 | 075 | **Implemented** | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) |
 | 077 | **Implemented** | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) |
-| 078 | Partially implemented: `eval run`, repeated evaluation, persisted executions with `--reference <execution>\|last` (schema 9) and suites (`--suite`, per-scenario deadlines) ship; acceptance criteria 9 and 11 remain open | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
+| 078 | **Implemented**: `eval run`, repeated evaluation, persisted executions with `--reference <execution>\|last` (schema 9) and suites (`--suite`, per-scenario deadlines). Criteria 9 and 11 were amended to what the evidence supports, and both are met ([amendment](tasks/v1.0/078-behavioral-scenario-suites.md#amendment--criteria-9-and-11-2026-10-03)) | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
 | 079 | **Implemented**: `.github/actions/trustvian-run` runs a scenario or suite, passes the exit code through and preserves the result as an artifact ([ADR 0056](adr/0056-the-run-action-builds-a-pinned-source-commit.md)); `cmd/trustvian-ci-render` renders that artifact as inert Markdown or an explicit no-verdict state, offline ([ADR 0057](adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md)); and `.github/actions/trustvian-comment` posts it as one pull request comment from a separate job that holds `pull-requests: write` and runs no pull request code ([ADR 0058](adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)) | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
 
 **The build order inside this preview is 075 → 078 → 079**, not the four in
@@ -293,27 +301,28 @@ parallel: 078's thresholds can only be measured at 075's tool-name fidelity — 
 **075 has since landed**, so that edge is satisfied and the preview's critical path
 is back to its original length. 078's measurement re-run at that fidelity has
 since been recorded (2026-10-01): an unchanged agent's behavior set varies between
-isolated runs, and the evidence justifies no default `k` or `j`. What 078 waits on
-now is its implementation, starting with the decision its aggregation slice
-inherited about the unit of its repeated limit.
-
-Two pieces of 078 are exempt and can land whenever there is capacity, because
-neither depends on fidelity: a run-scoped behavior route
-(`GET /v1/evaluation-runs/{run_id}/behaviors`), which 079 and 080 both need before
-078's aggregation exists, and an additive `--behavioral-profile` flag on
-`trustvian dev`.
+isolated runs, and the evidence justifies no default `k` or `j`. **078 is now
+implemented.** No default `k` ships. The scenario guide documents how to
+calibrate `N`, `k` and `j` against a workload's own self-comparisons
+([`docs/platform-cli.md`](platform-cli.md#calibrating-n-k-and-j)). 079 has
+landed too, so every task in the contents table is implemented. What remains is
+cutting the release.
 
 074 is already implemented and is a prerequisite rather than contents: without
 it, opening the browser asks for an identifier the developer does not have.
 
 With 077 implemented, the first line of the exit criterion below — *run an
 existing instrumented agent locally, with one Trustvian command* — is satisfied
-by `trustvian dev -- <command>` from a repository checkout. One limitation is
-worth naming here rather than at release time: `dev` supervises two helper
-executables that the release archive does not contain, so it is a
-checkout-and-`make` capability until shipping them is decided as its own task
-([ADR 0043](adr/0043-dev-provisions-the-local-hierarchy-from-the-repository.md),
-open consequence).
+by `trustvian dev -- <command>`. `dev` supervises two helper executables,
+`trustvian-local` and `trustvian-collector`. Since #114, the macOS and Linux
+release archives carry both beside `trustvian`, so `dev` works from a downloaded
+release with no checkout. That closes the consequence
+[ADR 0043](adr/0043-dev-provisions-the-local-hierarchy-from-the-repository.md)
+left open. Three limits remain:
+- The first release with the helpers is the next one. The `v0.9.0` archive
+  predates #114.
+- The Windows archive is unchanged, because `dev` refuses to start on Windows.
+- `go install` still yields only `trustvian`.
 
 ### Exit criterion
 
@@ -341,7 +350,7 @@ run the same behavioral scenario again
 **Usable in CI** is part of the criterion, not a nice-to-have on top of it: a
 scenario runs in a pull request, the gate's exit code decides the job, and the
 result is legible on the pull request itself rather than in a log a reviewer has
-to open. That last part is what task 079 adds.
+to open. Task 079 added that last part, in a separate comment job.
 
 ### What it does not require
 
@@ -533,8 +542,8 @@ gate result the decision consumed is snapshotted field for field rather than
 re-derived on read, and the write commits only against the environment state it
 was decided against. Schema version is now **4** on both backends.
 
-**Two gap-closing milestones remain open: 078 is partially implemented, and
-080 is specified. 074, 075, 076, 077 and 079 are implemented.**
+**One gap-closing milestone remains open: 080 is specified. 074, 075, 076,
+077, 078 and 079 are implemented.**
 075–078 were each found by running the product end to end — an instrumented
 agent, a browser, and a developer who has not read the source — rather than by
 planning, which is why they sit outside the reserved 049–072 block alongside
@@ -591,8 +600,9 @@ exit criterion.
   Run the same scenario again, diff the behavior, gate the difference — reusing
   the diff, scorecard and gate the platform already owns, and evaluating no
   answer quality. The runner scripts no action ordering of its own, and does
-  not suppress the engine's learned sequence signals: a reorder that produces
-  gated evidence fails, and the verdict stays the control plane's. Each
+  not suppress the engine's learned sequence signals: where they are opted in
+  against a learned profile, a reorder the engine blocks fails, and the verdict
+  stays the control plane's. Each
   scenario runs N times per side, because an LLM-driven agent may call a tool
   in one execution and not the next, and a gate that FAILs on unchanged code
   teaches a team to re-run CI. `N = 1` reproduces today's semantics exactly.
@@ -982,8 +992,8 @@ The **Gate** column says which rows the release actually depends on.
 | 075 | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) — read agent-oriented OpenTelemetry where a producer emits it, so a tool call is a tool call rather than an HTTP POST | **Implemented** | `v1.0` |
 | 076 | [Behavioral trace and session evidence explorer](tasks/v1.0/076-behavioral-evidence-explorer.md) — see *why* behavior was familiar, new or anomalous, from metadata alone | **Implemented** — an Evidence surface over 085's resolution and 067's history; three narrowings on the existing observation route, no schema change; fidelity and sequence deviation narrowed because neither is retained | `v1.0` |
 | 077 | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — one command wraps an existing agent, composes the runtime, and needs no change to the application | **Implemented** | `v1.0` |
-| 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) — run the same scenario N times per side, diff the behavior, gate the difference over k-of-N evidence | Partially implemented — repeated evaluation, recorded references and suites ship; criteria 9 and 11 remain open | `v1.0` |
-| 079 | [CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md) — the 078 verdict rendered on the pull request, exit codes passed through, no `pull_request_target` with an untrusted checkout | Partially implemented — the run action ships; the comment job does not yet | preview only |
+| 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) — run the same scenario N times per side, diff the behavior, gate the difference over k-of-N evidence | **Implemented** — repeated evaluation, recorded references and suites; criteria 9 and 11 amended to what the evidence supports, and met | `v1.0` |
+| 079 | [CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md) — the 078 verdict rendered on the pull request, exit codes passed through, no `pull_request_target` with an untrusted checkout | **Implemented** — the run action, the offline renderer and the comment action in a separate job | preview only |
 | 080 | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md) — precision, recall and false-positive rate for the existing signals against a public agent prompt-injection benchmark | Specified | neither |
 | 081 | Persist behavior fidelity, so a comparison delta reports whether a behavior was named by telemetry or inferred from transport — a forward-only schema step in both backends, deferred from 075 | Not specified | neither |
 | 082 | [Agent inspection and evaluation depth](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md) — the planning task for the six-step developer workflow: what is implemented, what is missing, and what a decision would cost. Documentation only | Specified | neither |
@@ -1233,9 +1243,9 @@ run beside this thread, on the reasoning that repetition transports whatever
 telemetry exists while 075 decides how richly it is read. That is still true for
 *running* a scenario and false for **deciding 078's thresholds** — see
 [078 § Sequencing](tasks/v1.0/078-behavioral-scenario-suites.md#sequencing-078-follows-075).
-Two pieces of 078 are not blocked by it and can proceed: a run-scoped behavior
+Two pieces of 078 were not blocked by it and landed first: a run-scoped behavior
 route that 079 and 080 both need, and an additive `--behavioral-profile` flag on
-`trustvian dev`.
+`trustvian dev`. 078 is now implemented.
 
 Twelve things this diagram says, and one it does not:
 
@@ -1256,11 +1266,12 @@ Twelve things this diagram says, and one it does not:
   behavioral surface was saturated. At 075's tool-name fidelity the surface is the
   size of the toolset instead, which is where the phenomenon can appear at all.
 
-  **That edge is now satisfied: 075 is implemented.** What remains before 078 can
-  be built is not 075 but 078's own re-run — a workload whose toolset is wider
-  than one run visits, measured at the tool-name fidelity 075 now delivers. The
-  two [re-run conditions](tasks/v1.0/078-behavioral-scenario-suites.md#the-section-stays-with-two-re-run-conditions)
-  are stated in the task, and one of them has just been removed as a blocker.
+  **That edge is now satisfied: 075 is implemented.** What remained before 078
+  could be built was not 075 but 078's own re-run — a workload whose toolset is
+  wider than one run visits, measured at the tool-name fidelity 075 delivers.
+  That re-run was recorded on 2026-10-01
+  ([re-run conditions](tasks/v1.0/078-behavioral-scenario-suites.md#the-section-stays-with-two-re-run-conditions)),
+  and 078 is implemented.
 - **077, 078 and 079 are a second thread**, needing 074's discovery but not the
   explorer. 078 needs 077's repeatable invocation *and* 075's fidelity, and 079
   needs 078's machine-readable result and exit codes — it renders them and

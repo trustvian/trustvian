@@ -29,7 +29,7 @@ Tasks for the `v1.0` milestone.
 | [075 — AI Semantic Telemetry Normalization](075-ai-semantic-telemetry-normalization.md) | Specified and implemented |
 | [076 — Behavioral Trace & Session Evidence Explorer](076-behavioral-evidence-explorer.md) | Specified and implemented — two presentations narrowed, both because 067 retains neither fidelity nor sequence-deviation evidence |
 | [077 — Unified OTLP Local Dev Runtime](077-unified-otlp-local-dev-runtime.md) | Specified and implemented |
-| [078 — Behavioral Scenario Suites](078-behavioral-scenario-suites.md) | Partially implemented — `trustvian eval run` and `POST /v1/evaluations/compare-repeated` ship self-contained repeated evaluation ([ADR 0053](../../adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)); `--reference` against a recorded execution and suites remain. Measurement re-run recorded 2026-10-01 |
+| [078 — Behavioral Scenario Suites](078-behavioral-scenario-suites.md) | Implemented — `trustvian eval run` and `POST /v1/evaluations/compare-repeated` ([ADR 0053](../../adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)), recorded references at schema 9 ([ADR 0054](../../adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)) and suites ([ADR 0055](../../adr/0055-a-scenario-suite-is-a-bounded-schedule-and-a-report-not-an-evaluation.md)). Criteria 9 and 11 amended 2026-10-03 to what the evidence supports, and met; no default `k` ships |
 | [079 — CI Integration: A GitHub Action](079-ci-integration-github-action.md) | Implemented — the run action, the offline renderer, the poster, and the comment action in a separate job |
 | [080 — Metadata-Only Detection Evaluation](080-metadata-only-detection-evaluation.md) | Specified; not implemented |
 | 081 | Approved in [ROADMAP.md](../../ROADMAP.md#milestone-sequence); **no specification written yet** — deferred from 075 |
@@ -226,9 +226,11 @@ one whose results reach a reviewer and whose central claim carries a number:
   it now ships no default `k`, recommends set semantics (`k = 1, j = 0`) until a
   workload's variance is measured, is sequenced after **075** because tool-name
   fidelity is where the phenomenon can appear, and carries two re-run conditions.
-  Two pieces of it are exempt and can land first — a run-scoped behavior route
+  Two pieces of it were exempt and landed first — a run-scoped behavior route
   that 079 and 080 both need, and an additive `--behavioral-profile` flag on
-  `trustvian dev`.
+  `trustvian dev`. The 2026-10-01 re-run found the phenomenon, and 078 is now
+  implemented, with criteria 9 and 11 amended on 2026-10-03 to what that
+  evidence supports.
 - **079 — CI Integration: A GitHub Action.** A gate nobody reads is a gate
   nobody acts on. 078 makes the verdict scriptable; 079 makes it legible where
   the change is reviewed — a pull request comment rendered from 078's result

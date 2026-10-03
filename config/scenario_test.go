@@ -120,6 +120,27 @@ func TestScenarioRefusesUnknownMalformedAndNegativeFields(t *testing.T) {
 	}
 }
 
+// Task 078 criterion 9: a scenario asserts no ordering of its own. There is
+// no ordering field, so an ordering-shaped key is refused as unknown rather
+// than silently ignored.
+func TestScenarioRefusesOrderingKeys(t *testing.T) {
+	for _, key := range []string{
+		"order: [plan, fetch, apply]",
+		"sequence: [plan, fetch, apply]",
+		"steps:\n  - plan\n  - fetch",
+	} {
+		t.Run(strings.SplitN(key, ":", 2)[0], func(t *testing.T) {
+			_, err := LoadScenario([]byte(validScenario + key + "\n"))
+			if err == nil {
+				t.Fatal("accepted an ordering key")
+			}
+			if !strings.Contains(err.Error(), "not found") {
+				t.Errorf("error = %v, want an unknown-field refusal", err)
+			}
+		})
+	}
+}
+
 func TestScenarioFileIsBounded(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.yaml")
 	if err := os.WriteFile(path, []byte(validScenario+strings.Repeat("#", maxConfigFileSize)), 0o600); err != nil {

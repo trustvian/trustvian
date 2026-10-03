@@ -696,6 +696,78 @@ func TestAnalyzeTransitionDeviationEndToEnd(t *testing.T) {
 	}
 }
 
+// TestAnalyzeReorderedSequenceIsGatedOnlyWithTransitionWeight is task
+// 078 criterion 9's engine-level proof: a learned order, replayed in
+// reverse, produces gated evidence (BLOCK or critical risk) once
+// transition_deviation is opted in, and none at its default weight of 0 —
+// which is what `trustvian dev`'s processor runs with. Learned and
+// replayed through the real gated Analyze+Observe loop; the reorder
+// changes no operation, only its predecessor.
+func TestAnalyzeReorderedSequenceIsGatedOnlyWithTransitionWeight(t *testing.T) {
+	learned := []string{"plan", "fetch", "apply"}
+	reordered := []string{"apply", "fetch", "plan"}
+	tests := []struct {
+		name      string
+		weight    float64
+		wantGated bool
+	}{
+		{"transition_deviation opted in", 0.7, true},
+		{"default weight 0", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			anomalyCfg := anomaly.DefaultConfig()
+			anomalyCfg.TransitionWeight = tt.weight
+			engine := trustvian.NewEngine(
+				trustvian.WithPolicy(riskGatedPolicy()),
+				trustvian.WithAnomalyConfig(anomalyCfg),
+			)
+			now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+			run := func(id, op string) trustvian.Result {
+				t.Helper()
+				now = now.Add(time.Second)
+				result, err := engine.Analyze(ctx, event.Event{
+					ID:        id,
+					Timestamp: now,
+					Actor:     event.Actor{ID: "agent-deploy", Type: event.ActorTypeAIAgent, IdentityConfidence: 0.9},
+					Operation: event.Operation{Category: event.OperationCategoryTool, Name: op},
+					Target:    event.Target{Name: "build-host", Category: event.TargetCategoryExternal},
+					Context:   event.Context{Environment: "production"},
+				})
+				if err != nil {
+					t.Fatalf("Analyze(%s) error = %v", op, err)
+				}
+				if _, err := engine.Observe(ctx, result); err != nil {
+					t.Fatalf("Observe(%s) error = %v", op, err)
+				}
+				return result
+			}
+			gated := func(r trustvian.Result) bool {
+				return r.Decision == policy.DecisionBlock || r.Trust.Risk == trust.RiskCritical
+			}
+
+			for i := range 25 {
+				for _, op := range learned {
+					run(fmt.Sprintf("warm-%d-%s", i, op), op)
+				}
+			}
+			for _, op := range learned {
+				if r := run("learned-"+op, op); gated(r) {
+					t.Fatalf("learned order %s: decision %s, risk %s; want neither block nor critical", op, r.Decision, r.Trust.Risk)
+				}
+			}
+			var gotGated bool
+			for _, op := range reordered {
+				gotGated = gated(run("reordered-"+op, op)) || gotGated
+			}
+			if gotGated != tt.wantGated {
+				t.Fatalf("reordered sequence gated = %v, want %v", gotGated, tt.wantGated)
+			}
+		})
+	}
+}
+
 // TestAnalyzeTransitionRarityEndToEnd is task 026's own central
 // integration proof: a real actor whose normal path (read -> update)
 // is common, and whose read -> delete path is rare-but-not-unseen

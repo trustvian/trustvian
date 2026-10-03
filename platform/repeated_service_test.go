@@ -303,6 +303,27 @@ func TestKOneJZeroIsSetSemanticsAtEveryN(t *testing.T) {
 	}
 }
 
+// Criterion 11 as amended: an unchanged deterministic workload compared with
+// itself passes under the documented limits, k = 1, j = 0, with every maximum
+// at 0. Nondeterministic workloads are calibrated per workload instead; see
+// docs/platform-cli.md § Calibrating N, k and j.
+func TestAnUnchangedDeterministicWorkloadPassesAtTheDocumentedLimits(t *testing.T) {
+	f := newFixture(t)
+	same := repetition{behaviors: []string{"crm_lookup", "knowledge_search", "send_email"}}
+	unchanged := []repetition{same, same, same, same, same}
+	refs, cands := f.sides(t, "unchanged", unchanged, unchanged)
+	result := compareRepeated(t, f, refs, cands, repeatedLimits(1, 0, 0, 0, 0))
+	if result.Gate.Verdict() != platform.GateVerdictPass {
+		t.Fatalf("verdict = %s, want pass for an unchanged deterministic workload", result.Gate.Verdict())
+	}
+	for _, b := range result.Behaviors {
+		if b.ReferenceRunsPresent != 5 || b.CandidateRunsPresent != 5 || b.Classification != platform.RepeatedNeither {
+			t.Errorf("%s: %d/5 → %d/5 %s, want 5/5 → 5/5 neither",
+				b.FingerprintID, b.ReferenceRunsPresent, b.CandidateRunsPresent, b.Classification)
+		}
+	}
+}
+
 // The control plane refuses repetitions that shared a learning scope.
 func TestRepetitionsSharingAProfileAreRefused(t *testing.T) {
 	f := newFixture(t)

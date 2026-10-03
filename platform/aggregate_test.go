@@ -788,10 +788,11 @@ func TestPolicySelectionConsistencyIsEnforced(t *testing.T) {
 // engine with a matching rule, one falling through to the default, both
 // analyzed for real and both accepted by the aggregator.
 //
-// This is the only test importing `config`, and it does so because
-// `config.CompilePolicy` is the single public way to build a rule-bearing
-// Policy: `trustvian.WithPolicy` takes an internal type, deliberately (task
-// 048). The cost is that the platform's *test* binary pulls in config's own
+// This and repeated_reorder_test.go are the only tests importing `config`,
+// because `config.CompilePolicy` is the single public way to build a
+// rule-bearing Policy: `trustvian.WithPolicy` takes an internal type,
+// deliberately (task 048), and `trustvian.WithAnomalyConfig` likewise. The
+// cost is that the platform's *test* binary pulls in config's own
 // dependencies, pgx among them. The non-test build links none of them —
 // `go list -deps .` reports zero — so nothing reaches a platform binary, and
 // the module's third-party confinement is unaffected.

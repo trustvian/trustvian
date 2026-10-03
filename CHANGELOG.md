@@ -171,8 +171,10 @@ actually depend on.
     - commit-pinned actions and `persist-credentials: false`;
     - no secrets.
   - **Not yet:** caching the runtime across jobs. The comment and the
-    renderer followed, above. Task 078's criteria 9 and 11 remain open. Running a scenario in
-    CI does not make a nondeterministic workload's verdict any more reliable.
+    renderer followed, above. Running a scenario in CI does not make a
+    nondeterministic workload's verdict any more reliable; calibrate `N`, `k`
+    and `j` for it first
+    ([guide](docs/platform-cli.md#calibrating-n-k-and-j)).
 
 - **Scenario suites: `trustvian eval run --suite DIR --scenario-timeout D`**
   (task 078,
@@ -378,6 +380,52 @@ actually depend on.
   sets `persist-credentials: false`. Nothing after a checkout needs the token.
 - **`trustvian-ci-comment`'s superseded notice** names the newer head by 12
   characters rather than the full SHA.
+
+- **Task 078 is closed. Acceptance criteria 9 and 11 are amended to what the
+  evidence supports, and visibly so**
+  ([amendment](docs/tasks/v1.0/078-behavioral-scenario-suites.md#amendment--criteria-9-and-11-2026-10-03)).
+  Documentation and tests only, with no runtime change.
+
+  - **Criterion 11** claimed that an unchanged *nondeterministic* workload
+    passes under the documented limits. The 2026-10-01 measurement refutes it.
+    At N = 5, an unchanged model-driven agent failed `k = 1, j = 0` in 6 of 252
+    self-comparison splits at T = 0.7, and 1 of 252 at T = 1.3. At T = 1.3, no
+    `k` removed every crossing. As amended:
+    - An unchanged *deterministic* workload passes. CI asserts it, now also at
+      the control plane at exactly `k = 1, j = 0`.
+    - For a nondeterministic workload, no default `k` ships. A new section of
+      the scenario guide,
+      [Calibrating `N`, `k` and `j`](docs/platform-cli.md#calibrating-n-k-and-j),
+      shows how to choose them from the workload's own self-comparison
+      false-FAIL rate with existing commands. Each calibration costs `M × 2N`
+      workload runs. The demo repository's `make stability` is the reference
+      implementation.
+  - **Criterion 9** asked that a reorder producing gated evidence fail a
+    scenario. That cannot happen end to end under `trustvian eval run`:
+    - `dev`'s generated Collector configuration sets no anomaly block, so
+      `transition_weight` is 0.
+    - Each repetition's scope is fresh, with anomaly confidence at its floor
+      (0.1786 measured).
+
+    As amended: scenarios assert no ordering, and nothing in the scenario path
+    suppresses sequence evidence. Under fresh-scope repetitions with the default
+    `transition_weight = 0`, a reorder cannot produce gated evidence end to end,
+    and checks 5 and 6 are advisory there. New tests:
+    - `TestScenarioRefusesOrderingKeys`: `order:`, `sequence:` and `steps:` are
+      refused as unknown fields.
+    - `TestAnalyzeReorderedSequenceIsGatedOnlyWithTransitionWeight`: with a
+      learned baseline and `TransitionWeight > 0`, a reordered sequence is
+      blocked or reaches critical risk. At weight 0 it is neither.
+    - `TestAReorderFailsTheRepeatedGateOnlyThroughEngineEvidence`: those records
+      fail check 5 through the real control plane, and pass at weight 0.
+  - **ROADMAP.**
+    - 078 and 079 are marked implemented in both tables and in the task index.
+    - The `v0.10.0` section no longer says the release archive lacks `dev`'s
+      helpers, which #114 ships on macOS and Linux from the next release on.
+      ADR 0043 gains a dated note.
+    - "Current State" now states what ships on `main`: `dev`, the WebUI,
+      `eval run` with suites, the CI action, and every implemented task. It also
+      names what is not implemented.
 
 - **The browser surface is now an admin console, and no journey through it
   requires typing an identifier** (task 096). Task 074 removed the identifier
