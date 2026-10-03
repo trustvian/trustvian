@@ -321,10 +321,12 @@ procedure for each case. In short:
 `publish`'s steps are idempotent:
 - An existing tag is accepted only if it is publish's own annotated tag at the
   commit; anything else stops the step before anything is published.
-- A draft for the tag (an interrupted `gh release create`, or any other) is
-  made exactly this release before it is published: stray assets removed, every
-  asset uploaded, and the title and notes reset. A published release is checked
-  to have every asset.
+- A draft for the tag that `trustvian-release[bot]` created (an interrupted
+  `gh release create`) is made exactly this release before it is published:
+  stray assets removed, every asset uploaded, and the title and notes reset. A
+  draft anyone else created is deleted and the release created afresh, because
+  a release keeps its author and the release audit requires the App's. A
+  published release is checked to have every asset.
 - An image tag lookup that fails for any reason other than "not found" stops
   the step rather than being read as "absent".
 - An image version tag already at the digest is left alone. At another digest,

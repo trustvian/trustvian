@@ -86,6 +86,19 @@ func TestOnlyPublishHoldsTheReleaseApp(t *testing.T) {
 			t.Errorf("the %s step uses GH_TOKEN %v, want the App's token", name, env["GH_TOKEN"])
 		}
 	}
+	// A release keeps its author when a draft is published, so publish finishes
+	// only the App's own draft and replaces anyone else's.
+	for _, want := range []string{
+		`.author.login // ""' <<<"$state")" != "trustvian-release[bot]" ]`,
+		`gh release delete "$VERSION" --yes`,
+	} {
+		if !strings.Contains(stepRun(release), want) {
+			t.Errorf("the release step lacks %s; it would publish a draft another actor authored", want)
+		}
+	}
+	if strings.Contains(stepRun(release), "--cleanup-tag") {
+		t.Error("the release step deletes a tag; tags are immutable")
+	}
 	mintAt := slices.IndexFunc(stepsOf(jobs["publish"]), func(s map[string]any) bool { return s["id"] == "app" })
 	if mintAt < 0 || mintAt > tagAt {
 		t.Error("publish creates the tag before minting the App's token")

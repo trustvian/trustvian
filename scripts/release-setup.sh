@@ -43,7 +43,7 @@ readonly IMMUTABLE_RULESET="Release tags: immutable"
 readonly OBSOLETE_RULESET="Protect release tags"
 readonly APP_SECRET_NAME="RELEASE_APP_PRIVATE_KEY"
 
-# --- The ruleset payloads (tested by scripts/release_setup_test.go) -------------
+# --- The ruleset payloads (tested by scripts/release_app_test.go) ---------------
 
 # creation_ruleset_json APP_ID: only the App may create a tag, any tag.
 creation_ruleset_json() {

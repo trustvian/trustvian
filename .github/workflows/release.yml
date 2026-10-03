@@ -791,12 +791,24 @@ jobs:
           assets=(dist/*.tar.gz dist/*.zip dist/checksums.txt)
           want="$(for a in "${assets[@]}"; do basename "$a"; done | sort)"
 
-          if state="$(gh release view "$VERSION" --json isDraft,assets 2>/dev/null)"; then
+          state="$(gh release view "$VERSION" --json isDraft,assets,author 2>/dev/null || true)"
+          if [ -n "$state" ] && [ "$(jq -r .isDraft <<<"$state")" = true ] &&
+            [ "$(jq -r '.author.login // ""' <<<"$state")" != "trustvian-release[bot]" ]; then
+            # A draft somebody else left, such as one from before the App.
+            # A release keeps its author when published, and the audit
+            # requires trustvian-release[bot], so it is replaced, not
+            # finished. A draft is not public; the tag is left alone.
+            gh release delete "$VERSION" --yes
+            echo "removed a draft of $VERSION authored by $(jq -r '.author.login // "unknown"' <<<"$state")"
+            state=""
+          fi
+
+          if [ -n "$state" ]; then
             if [ "$(jq -r .isDraft <<<"$state")" = true ]; then
-              # A draft for this tag: an interrupted create (gh creates a
-              # draft, uploads, then publishes), or one somebody else left.
-              # Make it exactly this release before publishing it: these
-              # assets and no others, this title and these notes.
+              # The App's own draft for this tag: an interrupted create (gh
+              # creates a draft, uploads, then publishes). Make it exactly
+              # this release before publishing it: these assets and no
+              # others, this title and these notes.
               for name in $(jq -r '.assets[].name' <<<"$state"); do
                 if ! grep -Fxq -- "$name" <<<"$want"; then
                   gh release delete-asset "$VERSION" "$name" --yes
