@@ -2,10 +2,11 @@
 # the tagged source, build the artifact matrix, and publish a GitHub
 # Release with the binaries and their checksums attached.
 #
-# This workflow has never run. It was written and structurally validated by
+# Written and structurally validated by
 # docs/tasks/040-release-artifacts-and-module-consistency.md, which
-# deliberately publishes nothing; the first real execution is whenever a
-# maintainer pushes the next version tag.
+# deliberately publishes nothing. It has run since: v0.9.0-rc.1 and rc.2
+# failed, each failure becoming a gate (see docs/release-guide.md), and
+# v0.9.0-rc.3 and v0.9.0 passed on 2026-09-17.
 #
 # Everything it builds can be built locally first — `make release-dry-run`
 # runs the same script — so a broken target is found before a tag exists

@@ -8,794 +8,35 @@ actually depend on.
 
 ## Unreleased
 
-### Added
-
-- **The behavioral gate comment, end to end:
-  `.github/actions/trustvian-comment`** (task 079, now implemented;
-  [ADR 0058](docs/adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md),
-  [guide](docs/ci-github-action.md)).
-
-  A composite action for the second job of the behavioral gate workflow. It
-  downloads the run job's artifact, renders it with `trustvian-ci-render`,
-  writes the rendering to the job summary, and posts it with
-  `trustvian-ci-comment` as the pull request's one gate comment, edited in
-  place.
-
-  - **Built from pinned source only.** Both commands are built from the commit
-    `runtime.env` pins, with the run action's digest-checked toolchain,
-    isolated fetch and `vcs.revision` check, now shared through its `lib.sh`.
-    Nothing is read from the job's workspace, and a source scan asserts it.
-  - **Inputs:** `exit-code` (required; empty means the CLI did not run),
-    `artifact-name`, `marker-id` and `github-token`. **Outputs:**
-    `renderer-exit`, `posted` and `outcome`.
-  - **Every rendering is posted.** Evidence, no verdict and a rejected artifact
-    all replace the previous comment. A missing artifact is the renderer's
-    "artifact is missing" no verdict, not a failed step. Only the renderer's
-    usage exit fails the job without posting.
-  - **The token is in one step's environment.** Only the post step has
-    `GITHUB_TOKEN`, and the poster is the only process that reads it. Only the
-    job's own `GITHUB_TOKEN` is supported: comments are found by
-    `github-actions[bot]` authorship.
-  - **Forks degrade loudly and successfully.** A refused write is a warning
-    and a job-summary note, and the check stays the run job's.
-  - **The example is now the two-job workflow**,
-    `examples/github-actions/behavioral-gate.yml` (renamed from
-    `behavioral-gate-run.yml`):
-    - the run job holds `contents: read`;
-    - the comment job holds `pull-requests: write` alone, checks nothing out
-      and runs under `!cancelled()`;
-    - concurrency is per pull request, with cancel-in-progress.
-  - **Structural tests over every workflow, example and Markdown YAML
-    block:**
-    - no `pull_request_target` or `workflow_run` trigger;
-    - the comment job holds exactly `pull-requests: write`, with no checkout,
-      local action or step of its own;
-    - the run job holds no write scope;
-    - no workflow-level permissions in shipped workflows;
-    - every checkout sets `persist-credentials: false`.
-  - **A real end-to-end comment** on this repository's own pull requests. It
-    posts a PASS, reads it back, then replaces it with a no-verdict rendering
-    for the same head commit. On a fork, it asserts the not-permitted path.
-
-- **A poster for the behavioral gate comment: `cmd/trustvian-ci-comment`**
-  (task 079, still partially implemented;
-  [ADR 0058](docs/adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)).
-
-  Posts a `trustvian-ci-render` rendering as the pull request's one gate
-  comment and edits it in place. It is standard library only, reads the token
-  from `GITHUB_TOKEN` alone, and is the only Trustvian code that writes to
-  GitHub. `.github/actions/trustvian-comment`, above, runs it.
-
-  - **Ownership.** A comment is the poster's only if `github-actions[bot]`
-    wrote it and its first line is `<!-- trustvian-behavioral-gate:<id> -->`.
-    Human comments are never edited. The newest owned comment is updated, and
-    duplicates are reported.
-  - **Superseded runs write nothing.** If the pull request's head has moved
-    on, a newer run owns the comment.
-  - **Forks degrade loudly.** A refused write gives a warning and a
-    job-summary note, and exits `0`. 429 and 5xx get one bounded retry, then
-    the job fails visibly. A failed create is checked for having landed
-    before it is retried, so it is never duplicated.
-  - **No redirect is followed**, so the token reaches the validated API host
-    only.
-  - **Tested against a fake GitHub API**, including the renderer's real
-    no-verdict bodies replacing a stored PASS.
-
-- **An offline renderer for behavioral CI artifacts:
-  `cmd/trustvian-ci-render`** (task 079, still partially implemented;
-  [ADR 0057](docs/adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md),
-  [guide](docs/ci-github-action.md#rendering-the-artifact)).
-
-  Turns a downloaded `trustvian-run` artifact into Markdown for a pull
-  request comment or job summary. It works offline, needs no credential,
-  executes nothing from the artifact, and is built from the Go standard library
-  alone. It posts nothing itself; `.github/actions/trustvian-comment` runs it.
-
-  - **The caller supplies the identity.** The head commit, repository, run id
-    and attempt, and the run job's exit code are flags. `trustvian-run.json`
-    must equal each one, and its size and SHA-256 must match `result.json` —
-    consistency, not authenticity.
-  - **The artifact is untrusted.**
-    - Only the two fixed file names are opened, never a symbolic link, under
-      bounded reads.
-    - JSON is parsed strictly: duplicate keys, trailing data, invalid UTF-8
-      and deep nesting are refused, and absent, `null`, `0` and `false` stay
-      distinct.
-    - Closed vocabularies are closed, and outcome shapes must be coherent.
-    - Unknown fields are tolerated, as the compatibility contract requires, and
-      never rendered.
-  - **Transcription only.**
-    - **A scenario verdict** shows every behavior, with both `k/N` counts and
-      its stored classification, plus the `k` and `j` thresholds, all six
-      checks with their advisory markers, reference reuse and both producer
-      versions.
-    - **A suite report** shows the recorded summary, its members (errors and
-      skips included) and each member's own verdict. No suite verdict is
-      composed.
-    - Nothing is computed.
-  - **An explicit no-verdict state.** It covers exit `2` and `3`, a missing
-    artifact, a validation failure, and evidence that cannot fit. It carries
-    the head commit, the run link and a fixed reason, and no number. A rejected
-    artifact exits `3`, distinct from a run with no verdict (`1`).
-  - **Inert, bounded Markdown.**
-    - Every artifact string is one code span on one line, with control
-      characters replaced, backticks fenced and pipes substituted.
-    - Each value is capped at 256 bytes before the pipe substitution, and the
-      body at 60,000 bytes, which bounds the output. Truncation is marked
-      visibly.
-  - **Tested against real producer output.** `testdata/generate.sh` drives the
-    run action through the real CLI, control plane and Collector. Golden
-    renderings pin the result.
-
-- **A GitHub Action for the run side of the behavioral gate:
-  `.github/actions/trustvian-run`** (task 079, partially implemented;
-  [ADR 0056](docs/adr/0056-the-run-action-builds-a-pinned-source-commit.md),
-  [guide](docs/ci-github-action.md)).
-
-  Runs `trustvian eval run --json` for a scenario or a suite and uploads the
-  result document as an artifact. Its final step exits with the CLI's own code.
-
-  - **Exit codes pass through exactly.** `0`, `1`, `2` and `3` reach the job
-    unchanged, and the `exit-code` output carries the code. `3` is never
-    reported as `1`, and the action sets no `continue-on-error`.
-  - **The result is preserved whatever the code.**
-    - `result.json` is the CLI's stdout, byte for byte.
-    - `trustvian-run.json` records:
-      - the pull request's head commit, from the event, never the merge
-        commit;
-      - the exact exit code;
-      - the result's status, size and SHA-256;
-      - the runtime commit.
-    - Output that is missing after a verdict, invalid, or larger than
-      32 MiB + 64 KiB fails the action. It is never truncated or stored.
-  - **Inputs** mirror the CLI: `scenario`, `suite`, `reference`,
-    `scenario-timeout`, `fail-fast` and `api-url`, plus `working-directory`
-    and `artifact-name`. Each value reaches the CLI as one argument, never
-    through a shell string. There is no gate configuration in workflow YAML.
-  - **A reproducible runtime.** No release ships `eval run` yet, so the action
-    builds `trustvian`, `trustvian-local` and `trustvian-collector` from one
-    reviewed commit pinned in `runtime.env`.
-    - It uses a pinned, digest-verified Go 1.27.1, entirely under
-      `$RUNNER_TEMP`.
-    - Every binary must record that exact commit, unmodified, in its own Go
-      build information. No version is injected.
-  - **Its own control plane**, started on loopback and stopped by PID, or an
-    existing one through `api-url`.
-  - **Refuses `pull_request_target` and `workflow_run`.**
-  - **A minimal job summary:** head commit, run link, exit code and artifact
-    availability. No verdict is rendered.
-  - **A run-only example workflow**, since extended to the two-job
-    `examples/github-actions/behavioral-gate.yml`:
-    - `pull_request` only;
-    - `contents: read` per job;
-    - commit-pinned actions and `persist-credentials: false`;
-    - no secrets.
-  - **Not yet:** caching the runtime across jobs. The comment and the
-    renderer followed, above. Running a scenario in CI does not make a
-    nondeterministic workload's verdict any more reliable; calibrate `N`, `k`
-    and `j` for it first
-    ([guide](docs/platform-cli.md#calibrating-n-k-and-j)).
-
-- **Scenario suites: `trustvian eval run --suite DIR --scenario-timeout D`**
-  (task 078,
-  [ADR 0055](docs/adr/0055-a-scenario-suite-is-a-bounded-schedule-and-a-report-not-an-evaluation.md)).
-
-  Runs every `.yaml`/`.yml` scenario directly inside a directory, in name
-  order, one at a time, and reports them as one versioned document.
-
-  - **Each scenario runs exactly as `--scenario` would.** Its own N, limits,
-    recorded execution and control-plane verdict. Nothing is pooled or
-    recomputed.
-  - **Everything is validated first.** At most 64 scenarios, with distinct
-    names, no symlinks and at most 4096 entries examined. A problem with the
-    invocation or its files is exit `2`, and an unreadable environment is exit
-    `3`; neither starts a workload or makes a request.
-  - **Scheduling:**
-    - A failure does not stop the rest; `--fail-fast` does.
-    - Members not run are reported `skipped`, never as passes.
-    - Ctrl-C or SIGTERM stops the running scenario and skips the rest as
-      `cancelled`, also with `--fail-fast`. The suite is the only receiver of
-      these signals, so the workload's process group gets one SIGTERM.
-      Members run without the terminal.
-  - **`--scenario-timeout` is a real deadline (1s–24h).**
-    - The workload's process group gets SIGTERM, then SIGKILL after 5s, and
-      leftover group members are killed.
-    - The run and execution are failed.
-    - The scenario is an operational error even if its workload exited `0`.
-    - **A completion racing the deadline, or answered by a gateway's
-      502/503/504, is settled by the control plane.**
-      The runner fails the execution; if the server had already completed it,
-      the member reports `completed_without_response`, a completed execution
-      for which no verdict is reported. A member reported `scenario_timeout`
-      or `cancelled` is never a completed execution.
-  - **`--reference last` resolves per scenario.** An explicit execution id is
-    `--scenario`-only.
-  - **Output and exit code:**
-    - The suite exits with its most severe scenario: `3`, then `2`, then `1`,
-      then `0`.
-    - Member result documents are embedded unchanged.
-    - The document is capped at 32 MiB; overflow exits `3` with an explicitly
-      incomplete document that claims no outcomes.
-
-  No `/v1` or schema change. `trustvian dev` and single-scenario behavior are
-  unchanged. `--suite` is refused on Windows, where `dev` is unsupported;
-  `--scenario` is not. Member error messages are at most 1024 bytes of valid
-  UTF-8.
-
-- **Recorded scenario references: `trustvian eval run --reference
-  <execution-id>|last`, and persisted scenario executions** (task 078,
-  [ADR 0054](docs/adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)).
-
-  - **Every `eval run` is now a recorded scenario execution** (schema 9, both
-    backends, metadata only). It begins before anything runs and completes with
-    its verdict. A gate FAIL is a completed execution. An aborted one is
-    recorded failed, and a running or failed execution is never a reference.
-  - **`--reference` reuses a recorded execution's reference side.** All N of
-    its reference runs are reused, from that one execution alone, and only N
-    new candidate repetitions run.
-  - **`last`** is the most recently completed execution of the same scenario,
-    project, agent and environment, ordered by a completion sequence rather
-    than any clock. If that execution is unusable, the command says so and
-    never falls back to an older one.
-  - **The current scenario's gate limits apply.**
-  - **A reference that cannot be used stops the command with exit `3`, before
-    any workload runs.** That covers a reference that is missing, unfinished,
-    of another N, in another project or environment, or with incomplete
-    evidence.
-  - **New `/v1` routes:** `POST /v1/scenario-executions`,
-    `GET /v1/scenario-executions/{id}` and `POST …/{id}/complete` and
-    `…/{id}/fail`.
-    - Completion evaluates through the same `CompareRepeatedEvaluations`
-      implementation, and its comparison has compare-repeated's response shape.
-    - The result document gains an optional `reference` block.
-
-  **Schema 9** is a forward-only step on SQLite and PostgreSQL. It leaves
-  existing data untouched and reconstructs no execution from it. A schema-8
-  binary refuses a schema-9 database. Suites of scenarios are not built yet.
-
-- **Behavioral scenarios: `trustvian eval run`, and repeated evaluation in the
-  control plane** (task 078,
-  [ADR 0053](docs/adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)).
-
-  One run of a model-driven agent is not evidence: the 2026-10-01 measurement
-  found an unchanged agent failing a single-run gate at zero on half its pairs,
-  because which optional tools it reaches varies between runs. A scenario file
-  now runs each side `runs: N` times and gates over integer presence counts.
-
-  - **The scenario file.** Every threshold and `runs` is required, with no
-    defaults; `1 <= runs <= 64` and `0 <= j < k <= runs`. Counts and limits
-    must be YAML integers; a fraction or a value past 64 bits is refused,
-    including one that arrives through a merge or an alias. Unknown fields are
-    refused and every error names its field.
-  - **`trustvian eval run --scenario <file>`.**
-    - Executes `2N` repetitions, one at a time, through `trustvian dev`, each
-      under a fresh run id and its own `--behavioral-profile`.
-    - The first repetition whose workload fails ends the scenario with exit `3`
-      and no verdict. So does a repetition whose run could not be completed.
-    - The workload's stdout goes to stderr, and a bare command name resolves
-      on its side's own `PATH`.
-    - It counts nothing itself: it submits the run ids and passes the server's
-      verdict through as `0` or `1`.
-  - **`POST /v1/evaluations/compare-repeated`.** The control plane reads each
-    repetition's evidence, reports every behavior's reference and candidate
-    presence counts, and classifies it added, removed or neither. It evaluates
-    six checks; the two engine checks take the worst candidate repetition and
-    carry `advisory: fresh_scope` when `runs > 1`.
-  - **Refusals.** It refuses repetitions that shared a learning scope, ran in
-    more than one environment, or disagree about fingerprint identity in either
-    direction. It also refuses saturated evidence.
-  - **The repeated limit's unit.** `max_repeated_added_behaviors` counts
-    behavioral identities, the unit of `max_added_behaviors`. So at `runs: 1,
-    k: 1, j: 0` the verdict is exactly `eval compare`'s, check for check.
-
-  `eval compare`, its limits and its result are unchanged. No schema change.
-  Comparing against a *recorded* reference execution (`--reference`) and suites
-  of scenarios are not built yet.
-
-- **An optional gate limit over counted behavioral changes:
-  `max_added_behavior_changes`** ([issue 131](https://github.com/trustvian/trustvian/issues/131),
-  [ADR 0052](docs/adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)).
-
-  The comparison already reported `added_change_count`; nothing gated on it.
-  `POST /v1/evaluations/compare` and `POST /v1/promotions` now accept
-  `gate_limits.max_added_behavior_changes`, `trustvian eval compare` and
-  `trustvian promotion create` accept `--max-added-behavior-changes`, and the
-  browser's comparison and promotion forms carry an optional field for it.
-
-  **Absent is not zero.** Omitted (or `null`), the check is not evaluated and
-  the verdict is the other five checks alone — exactly what it was before.
-  `"0"` is the strictest limit. The gate reports a sixth check,
-  `added_behavior_changes`, with a `state` of `evaluated`, `not_evaluated` or
-  `not_recorded`; only an evaluated check carries `actual`, `maximum`,
-  `passed`, and the `correlation_state` and `counting_policy_version` its count
-  rested on. When both behavior limits are supplied **both** are enforced.
-  Under a `partial` or `unavailable` correlation the counted-change count is the
-  identity count, so the check errs strict.
-
-  **Schema 8** adds six nullable columns to `platform_promotions` on SQLite and
-  PostgreSQL. Existing promotions migrate with the check `not_recorded`, no
-  threshold and no outcome, and their stored verdicts and outcomes are
-  untouched — no historical decision is re-evaluated or backfilled as a passed
-  zero-valued check. The migration is forward-only; a schema-8 database is
-  refused by an older binary.
-
-  `max_added_behaviors` is unchanged and still counts identities. The evidence
-  routes refuse `check=added_behavior_changes` with directions to the
-  comparison's `added_changes` instead of resolving it, and the browser offers
-  no evidence control on that row.
-
-- **A comparison now reports how many behavioral *changes* its added
-  behaviors amount to** (task 083, [ADR 0052](docs/adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)).
-
-  A developer adds one tool. The tool span and the transport child it calls
-  are two behavioral identities, so a comparison reported `added 2` for one
-  act. [ADR 0047](docs/adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md)
-  settled that the identities stay two — the transport target is the
-  security-relevant part, and folding identity would hide a tool that started
-  posting somewhere else — which left the correction to counting.
-
-  **A counted behavioral change is an added identity that is not the recorded
-  child of another added identity** — and an identity is such a child only when
-  every retained occurrence of it is. So the tool and its transport child are
-  two identities and one change, and a known tool changing destination is
-  still one change of its own: its parent is present in both runs, so it is
-  not an *added* parent and nothing folds. That holds even when a new tool also
-  reaches the same new destination: the occurrence beneath the known tool keeps
-  the destination counted, and it also contributes to the new tool's change.
-
-  `added_change_count`, `correlation_state`, `counting_policy_version` and
-  `added_changes` join the comparison payload, the CLI output and the browser
-  surface. Each counted change names its contributing identities, so every one
-  stays resolvable to its observations through the existing evidence routes.
-
-  **`max_added_behaviors` is unchanged and still counts identities.** No
-  stored promotion, existing pipeline or historical run changed meaning, and
-  no verdict moved. The optional limit over the new unit, specified in ADR
-  0052, was deferred from this change because it needed promotion-table
-  columns, a migration and both backends — separable work with its own risk.
-  It is the entry above.
-
-  The rule is structural — it asks only who is whose recorded parent, never
-  what instrumentation layer an observation came from — so it is evaluable
-  from durable evidence even though the layer is not persisted. Correlation is
-  derived from the per-observation history schema 7 already stores, so there
-  is **no schema change and no migration**, and a completed comparison is
-  reproducible after a restart because the same rows produce the same edges.
-
-  **Every unresolved case counts more, never less.** A missing parent, a
-  parent in another trace, an ambiguous span reference, a cycle, a saturated
-  or pre-schema-7 history: each falls back to the identity count and says so
-  through `correlation_state`. A cycle or ambiguity anywhere in the added
-  graph refuses the whole fold, so `partial` always means the identity count,
-  contributors included. Folding only ever lowers a count, so an
-  unresolved correlation can make a comparison stricter than it needed to be
-  and cannot make one pass that should have failed.
-
-### Changed
-
-- **The run action's runtime pin** moves to `5521759` (#140), the first commit
-  with both the renderer and the poster. #138–#140 changed no CLI,
-  control-plane or Collector code.
-- **Every `actions/checkout` in `ci.yml`, `nightly.yml` and `release.yml`** now
-  sets `persist-credentials: false`. Nothing after a checkout needs the token.
-- **`trustvian-ci-comment`'s superseded notice** names the newer head by 12
-  characters rather than the full SHA.
-
-- **Task 078 is closed. Acceptance criteria 9 and 11 are amended to what the
-  evidence supports, and visibly so**
-  ([amendment](docs/tasks/v1.0/078-behavioral-scenario-suites.md#amendment--criteria-9-and-11-2026-10-03)).
-  Documentation and tests only, with no runtime change.
-
-  - **Criterion 11** claimed that an unchanged *nondeterministic* workload
-    passes under the documented limits. The 2026-10-01 measurement refutes it.
-    At N = 5, an unchanged model-driven agent failed `k = 1, j = 0` in 6 of 252
-    self-comparison splits at T = 0.7, and 1 of 252 at T = 1.3. At T = 1.3, no
-    `k` removed every crossing. As amended:
-    - An unchanged *deterministic* workload passes. CI asserts it, now also at
-      the control plane at exactly `k = 1, j = 0`.
-    - For a nondeterministic workload, no default `k` ships. A new section of
-      the scenario guide,
-      [Calibrating `N`, `k` and `j`](docs/platform-cli.md#calibrating-n-k-and-j),
-      shows how to choose them from the workload's own self-comparison
-      false-FAIL rate with existing commands. Each calibration costs `M × 2N`
-      workload runs. The demo repository's `make stability` is the reference
-      implementation.
-  - **Criterion 9** asked that a reorder producing gated evidence fail a
-    scenario. That cannot happen end to end under `trustvian eval run`:
-    - `dev`'s generated Collector configuration sets no anomaly block, so
-      `transition_weight` is 0.
-    - Each repetition's scope is fresh, with anomaly confidence at its floor
-      (0.1786 measured).
-
-    As amended: scenarios assert no ordering, and nothing in the scenario path
-    suppresses sequence evidence. Under fresh-scope repetitions with the default
-    `transition_weight = 0`, a reorder cannot produce gated evidence end to end,
-    and checks 5 and 6 are advisory there. New tests:
-    - `TestScenarioRefusesOrderingKeys`: `order:`, `sequence:` and `steps:` are
-      refused as unknown fields.
-    - `TestAnalyzeReorderedSequenceIsGatedOnlyWithTransitionWeight`: with a
-      learned baseline and `TransitionWeight > 0`, a reordered sequence is
-      blocked or reaches critical risk. At weight 0 it is neither.
-    - `TestAReorderFailsTheRepeatedGateOnlyThroughEngineEvidence`: those records
-      fail check 5 through the real control plane, and pass at weight 0.
-  - **ROADMAP.**
-    - 078 and 079 are marked implemented in both tables and in the task index.
-    - The `v0.10.0` section no longer says the release archive lacks `dev`'s
-      helpers, which #114 ships on macOS and Linux from the next release on.
-      ADR 0043 gains a dated note.
-    - "Current State" now states what ships on `main`: `dev`, the WebUI,
-      `eval run` with suites, the CI action, and every implemented task. It also
-      names what is not implemented.
-
-- **The browser surface is now an admin console, and no journey through it
-  requires typing an identifier** (task 096). Task 074 removed the identifier
-  form from the front door and ADR 0041 made the durable hierarchy
-  discoverable, but every surface *behind* Live was still built out of inputs:
-  Compare asked for two run identifiers through two menus, Evidence asked for a
-  run and a narrowing, Promotions asked for a project before it listed
-  anything. The identifiers had become discoverable without the surfaces ever
-  becoming browsable.
-
-  **A persistent sidebar, tables as the primary surface, and a contextual panel
-  beside them.** Destinations are Live, Projects, Runs, Compare, Evidence,
-  Promotions and Manage — one per capability `/v1` actually serves, and none
-  for anything that does not exist yet. The sidebar always says which project
-  the console is scoped to, and changes it by going to a searchable project
-  table rather than by opening a menu.
-
-  **Rows are the navigation.** Projects, runs, observations and behaviors are
-  each a table of what the server returned, and clicking a row opens that
-  record. A run's workspace carries its authoritative counts on a compact strip
-  and three tabs — overview, observations, behaviors. Selecting an observation
-  opens its recorded decision, scores, timing and correlation references
-  alongside the table, without redrawing it; closing the panel returns focus to
-  the row it came from.
-
-  **Every identifier is a control that goes somewhere.** Session, trace and
-  behavior references narrow the observation table to that view — a new bounded
-  request with the narrowing applied in storage before the page bound, at most
-  one at a time because the server accepts at most one.
-
-  **A comparison's two sides are assigned from rows.** Every run in the table
-  carries a `Reference` and a `Candidate` control; both chosen runs are then
-  shown in full in labelled panels, and the submit stays disabled until two
-  different runs are chosen. There is no identifier field for either side and
-  no menu standing in for one. Shared-behavior evidence keeps its visible
-  reference and candidate controls.
-
-  **Nothing about the bounds changed.** One page per action, the continuation
-  is still an explicit control, the startup budget is still one page of
-  `GET /v1/projects`, and narrowing still happens in storage. The filter boxes
-  narrow the rows already on screen and say so; a table always states whether
-  it is showing the whole collection or one page of it. No figure on a summary
-  strip is counted from the rows on screen — a strip reports what the run
-  observed, not how much the page drew — and there is no decorative metric,
-  invented chart or placeholder destination anywhere in the shell.
-
-  Menus survive only where the choice is a setting rather than navigation: the
-  promotion form's target environment and its run pickers, filled from a
-  comparison already made. Every form, lifecycle control and result target that
-  existed still exists, under Manage.
-
-  Content-Security-Policy is unchanged and still carries no `unsafe-inline`,
-  so there is still no web font, no CDN and no build step. See
-  [ADR 0050](docs/adr/0050-the-browser-surface-is-a-record-first-admin-console.md).
-
-- **The browser bundle is a layered design system** (task 096, second pass).
-  The console reorganised the *information* architecture and left the bundle
-  as it was: fifteen modules in one flat directory and a 1,400-line
-  stylesheet. Three costs followed, each visible on screen — values were
-  named wherever they were used and light and dark drifted apart; loading and
-  empty rendered identically, so a reader could not tell "wait" from "there
-  is nothing here"; and a `block`/`critical` observation was the same weight
-  as an `allow`/`low` one, so finding the row that matters meant reading
-  every line.
-
-  **Five layers, dependencies only downward.** `core/` (DOM and formatting,
-  no Trustvian at all) → `v1/` (the control-plane contract) and `ui/` (the
-  design system), `live/` (the realtime observatory), `views/` (one module
-  per destination), and `app.js` as the only composition root. `ui/` may not
-  import `v1/`: the moment a component can read a route, presentation stops
-  being a layer.
-
-  **Only `styles/tokens.css` names a raw value.** Colour, size, space, radius
-  and duration are each declared once with the dark-mode counterpart beside
-  it; a hex literal in any other sheet now fails a test. The accent is blue
-  by elimination — green, amber and red carry verdict and risk, violet
-  carries "new", and an accent sharing any of those would make *selected*
-  read as *severe*.
-
-  **Four states, kept apart.** A fetching table draws a static skeleton in
-  the shape of the rows that are coming; an empty one states the absence and
-  names the next action; a refusal is shown as the refusal it is. The
-  skeleton does not shimmer, because nothing on this page loops.
-
-  **Severity as three carriers.** A gutter down the row's leading edge, a
-  tint behind the row, and a mark beside the word — and the word, which is
-  the server's, still carries the meaning alone.
-
-  Also: a grouped sidebar with inline-SVG icons (built through
-  `createElementNS`, never parsed, never a font) and counts where the console
-  holds one; the scope chooser collapses once it has chosen, since the strip
-  below already states the agent and candidate; and lifecycle transitions and
-  refusals report through a short-lived status region instead of changing one
-  word in a panel nobody is looking at.
-
-  Four new guards hold it together, each verified to fail when its property
-  is broken. Test helpers now name a module rather than a file path, and two
-  harnesses that copied assets to a temporary directory reproduce the tree
-  instead of flattening it. Nothing about the bounds, the privacy allowlists
-  or the Content-Security-Policy changed. See
-  [ADR 0051](docs/adr/0051-the-browser-bundle-is-a-layered-design-system.md).
-
-### Fixed
-
-- **Three state defects in the browser console, found in review.** All three
-  were invisible to a source scan, because what was wrong was which of two
-  responses arrived last and what a boolean meant after the reader had moved.
-
-  **Run-scoped state survived a change of run.** Opening run B after viewing
-  run A's Behaviors tab left the tab marked loaded, so it rendered A's rows
-  and fetched nothing — and its paging cursor would have asked for the next
-  page of A's collection under B. The same shape applied to the observation
-  page, the narrowing, the selected row and the strip's counts. All of it is
-  now cleared in one step when the run changes.
-
-  **A stale response could overwrite the current view.** `openRunDetail`,
-  the observation loader and the behavior loader committed whatever came
-  back. A response for a run or a filter the reader had left would repopulate
-  the surface, clear a newer error, close the current detail panel, or stop a
-  newer loading indicator. Each read now takes a ticket before awaiting and
-  presents it back before touching anything; the level browser checks its
-  own generation before assigning, because the commit happens inside the
-  awaited call and a guard in the caller would run after the clobber.
-
-  **Project-scoped state survived a change of project.** Compare and
-  Promotions decided whether to fetch by asking "have I loaded before?",
-  which is still true after switching from project A to B — so B showed A's
-  agents, A's assigned comparison sides and A's promotion history, under B's
-  name in the sidebar. Cache validity is now project identity, and a change
-  of project abandons what is in flight and clears what is held.
-
-  This is **not** built on cancellation: an abort can lose the race with a
-  response already queued, and a surface whose correctness depended on the
-  abort winning would be right almost always. Surfaces are independent — the
-  three reads of a run workspace, Compare's three lists and Promotions each
-  hold their own ticket, so fetching one never abandons another's work. One
-  further defect fell out of that: Compare's loading flags were the ones the
-  Runs destination reads, so fetching on either drew a skeleton over the
-  other.
-
-  Ten behavioural regression tests drive the real modules under node with
-  deliberately out-of-order promises, rather than asserting on source
-  strings. Every one was verified to fail against the defect it covers.
-
-### Added
-
-- **The browser now follows a finding to the evidence behind it** (task 076). A
-  gate FAIL named a count, task 085 made that count resolvable over `/v1` and the
-  CLI, and a developer still had to leave the page to read the answer. An
-  **Evidence** tab closes it.
-
-  From a comparison, every gate check and every behavioral delta carries an
-  evidence control. One step reaches the behavioral identities that contributed;
-  one more reaches the retained observations that carried one of them; and from
-  an observation, `Session`, `Trace` and `Behavior` controls open that run's
-  retained history in the correlated view. **No identifier is typed anywhere in
-  that path** — the finding reference is built from the two run identifiers the
-  comparison itself returned, and each navigation control appears only when the
-  observation actually recorded the identifier it needs.
-
-  **Five views over one run's retained history**: session actions, trace context
-  with its recorded parent/child structure, behavior sequence, decision timeline,
-  and one behavioral identity's detail. Plus a provenance panel showing both
-  sides' supplied `CandidateMetadata`, where **every field the producer did not
-  supply reads `not stated`** — an unknown model is not the same fact as a model
-  both sides shared.
-
-  **Trace structure is drawn from the recorded parent span reference and nothing
-  else** — never from timestamps, adjacency, name similarity or ingestion order.
-  A parent this page does not have is not a root: `root`, `child`, `unresolved`,
-  `ambiguous`, `self`, `cycle` and `unstated` are seven distinct states, the tree
-  emits every row exactly once, and a cycle is stated rather than followed.
-  Ordering is arrival order, which is not wall-clock order and is not reasoning:
-  no label says an agent decided, chose, intended or planned anything, and
-  per-observation durations are never summed into a latency.
-
-  **Absence is shown as absence.** A measured zero renders as `0 ms (measured)`
-  and an unmeasured duration as `not available`; `unset` is never success and an
-  absent status is never "no errors"; `resolved`, `none_found`, `indeterminate`
-  and `aggregate_only` each carry the sentence that keeps it apart from the other
-  three. The status describes the **finding**, so a continuation page that comes
-  back empty still reports `resolved`. `aggregate_only` is an applicability
-  answer rather than a history one: the two minimum-count checks are resolved
-  without reading any retained history, so the page shows their explanation and
-  recorded count and makes no claim about availability, retention or sampling.
-
-  **The three sub-surfaces cancel only themselves.** Finding, run history and
-  provenance each hold their own request token and page position, so reading one
-  neither discards a response the others are waiting for nor moves their page
-  numbers.
-
-  **The browser decides nothing.** Every status, side, recorded count and
-  exhaustiveness flag is a value `/v1` returned; a test asserts each status
-  literal appears in shipped source exactly once, as the key of the sentence
-  explaining it. A cross-layer test runs the shipped row projection over a real
-  route response and compares each rendered cell against the field it came from.
-
-  **Two things the views cannot state, and say so.** Fidelity and behavioral
-  layer are not retained per observation — they ride on the ingest envelope and
-  the realtime frame — so a historical view renders the recorded descriptor
-  verbatim and states that fidelity was not retained. Sequence-deviation evidence
-  lives in the anomaly contributors, which retention excludes, so no view makes a
-  statement about sequence deviation. Neither is inferred.
-
-  **One new query capability, no schema change.**
-  `GET /v1/evaluation-runs/{run_id}/observations` gains `session_id`, `trace_id`
-  and `fingerprint_id`: optional, mutually exclusive equality narrowings applied
-  in storage **before** the page bound, through task 067's existing digest
-  indexes and against the original value beside each key. More than one is
-  refused rather than answered. No table, no index, no migration, and no existing
-  route, field or response shape changed. See
-  [ADR 0049](docs/adr/0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md).
-
-  **Nothing is stored in the browser**, one page is held at a time, and a
-  response arriving after the run, view, side, finding or filter changed is
-  discarded rather than drawn.
-
-- **A failed gate check now leads to the evidence behind it** (task 085). The gate
-  printed `added_behaviors actual 3 maximum 0 FAIL` and nothing in the platform
-  could answer *which three*, or which observations carried them — `BehaviorDelta`
-  holds no reference to an observation, and a gate result is deliberately closed.
-  The investigation restarted from the run identifier every time.
-
-  Two bounded `GET` routes and a `trustvian evidence` command family now resolve a
-  finding to the behavioral identities that contributed to it, and each identity
-  to the retained observations that carried it.
-
-  **This does not reopen the gate's fixed shape.** Resolution is a query against
-  authoritative state, not a payload inside a verdict: no gate result, scorecard,
-  count or fingerprint changes, and nothing is recomputed — behavioral identities
-  come from the same comparison function over the same persisted snapshots, and
-  recorded counts come from the persisted aggregate.
-
-  **A finding reference is built only from durable values** — two run identifiers
-  and either a gate check name or a fingerprint — so it is stable by construction,
-  needs no finding table, and travels in the query string, which makes the
-  resolution URL itself the citable link.
-
-  **An empty answer is not always the same answer.** A resolution reports
-  `resolved`, `none_found`, `indeterminate` or `aggregate_only`, and the status
-  describes the **finding** rather than the page: a page requested past the last
-  match returns zero rows with `resolved`, because the evidence exists and the
-  caller has read all of it. `none_found` is returned only when nothing matches at
-  all and the history is complete; an empty result over partial or unavailable
-  history is `indeterminate`, because absence there establishes nothing. Page
-  exhaustion is signalled by the continuation cursor being absent.
-
-  **A behavior present in both runs requires an explicit side.** Both runs hold
-  their own observations of it and those two sets are what a developer is
-  comparing, so the control plane refuses to pick one — an added behavior defaults
-  to the candidate and a removed one to the reference, because each exists in one
-  run only. `exhaustive` is true only when the history is complete, so a full set of
-  matches drawn from a bounded history is never labelled as all of them. The
-  recorded count travels beside the rows and is never reconciled with them — a
-  check counts every record a run ingested, while retention is bounded.
-
-  Three of the five gate checks resolve to evidence; `reference_evidence` and
-  `candidate_evidence` report `aggregate_only`, because they fail when a run
-  observed *too little* and an absence has no supporting records to invent.
-
-  Filters are SQL predicates applied before the page limit, the behavioral filter
-  uses task 067's bounded digest index and compares the original value as well as
-  the key, and each page and its history metadata are read from one snapshot.
-  **No schema change.**
-
-- **A decision can now be read back after the run that produced it ended**
-  (task 067). The platform retained two reductions per evaluation run — a
-  fixed-shape aggregate and a behavior snapshot capped at 512 distinct behaviors
-  — and neither can say *which* observation scored 0.91, when it happened
-  relative to the one before it, or what trace it belonged to. Realtime carried
-  that detail and dropped it when the connection closed.
-
-  Each accepted record now retains one bounded observation row, readable through
-  `GET /v1/evaluation-runs/{run_id}/observations`.
-
-  **An observation is identified and ordered by `(run, ingest sequence)`, never
-  by a span id or a timestamp.** A span id is unique only inside its trace, an
-  event id is caller-supplied, and equal timestamps are ordinary — any of the
-  three would make paging non-deterministic. The sequence is allocated by the
-  transaction that admits the record, so it cannot collide. A parent span ends
-  *after* the children it started, so out-of-order arrival is the normal case and
-  is retained as it arrived; a child whose parent never arrives is still a child.
-
-  **The row is written inside the transaction that already writes the aggregate,
-  the snapshot and the ingest cursor.** A rejected record or a failed transaction
-  retains nothing and moves nothing, and a retry — including a concurrent
-  identical submission — produces no second observation.
-
-  **A run says how much of itself its history describes**, in three states rather
-  than two. *Complete* means every accepted record is retained. *Partial* means
-  some are not: the run passed the 4096-observation bound, or it began ingesting
-  before this schema existed and resumed after it. *Unavailable* means the run has
-  records and none of their history was ever retained. **A database migrated from
-  schema 6 gains an empty history and invents nothing** — reporting "complete,
-  zero rows" for a run whose records predate retention would be a fabricated
-  historical fact.
-
-  Saturation is degraded evidence rather than a failed ingest: past the bound the
-  aggregate, the snapshot and the cursor keep advancing, exactly as they do when
-  the behavior collector saturates.
-
-  **No content, and no new privacy surface.** The retained field set is an
-  allowlist expressed as columns — there is no attribute map, no span-event list
-  and no payload column, so no prompt, completion, tool argument, result,
-  document, body or arbitrary attribute can be written through one. What changed
-  is *duration*, which is why the existing tripwire sweep was extended to the new
-  route and the new rows rather than trusted to the contract.
-
-  **A page is read from one database snapshot**, so an ingest committing during a
-  read yields the state before it or the state after it and never a mixture. The
-  read is three statements, and against a pool a concurrent commit between any two
-  of them returns a retained count of 1 beside two rows — a state the database
-  never held, and one nothing in the response marks as composite. SQLite reads in
-  a transaction; PostgreSQL reads in a read-only `REPEATABLE READ` transaction,
-  and every write in that store keeps `READ COMMITTED`.
-
-  **Correlation identifiers are retained whole, at any length the request body
-  allows.** `trace_id` and `session_id` are validated nowhere on the ingest path
-  and `fingerprint_id`'s 256-byte bound is skipped once a run saturates, so the
-  platform already accepts values larger than a PostgreSQL B-tree key can hold.
-  The three correlation indexes therefore key on a fixed-width digest stored
-  beside each value, rather than on the value — indexing the value would have made
-  retaining an already-accepted record fail and roll back its whole ingest, on
-  PostgreSQL and not on SQLite. Storage does not get to narrow what the platform
-  accepts.
-
-  Schema **6 → 7** on both backends, forward-only: two tables and three
-  run-scoped indexes, and no row.
-  [ADR 0048](docs/adr/0048-retained-history-is-sequence-identified-bounded-and-honest-about-absence.md)
-  records the reasoning.
-
-- **Trustvian records what called what, how long it took, and whether it failed**
-  (task 084). The engine already computed two of the three and threw them away at
-  the boundary: `features.Extract` reads `duration_ms` and `error` off
-  `Event.Attributes` because both adapters bridge them there, and neither reached
-  `DecisionRecord`. Parent span identity was never read at all.
-
-  A record now carries four named scalar fields — `parent_span_id`,
-  `span_lineage`, `duration_nanos` and `span_status` — and the platform aggregates
-  duration and status per evaluation run and persists them.
-
-  **Availability is explicit everywhere, because the alternatives are wrong in
-  the reassuring direction.** A span with no end timestamp did not take zero
-  milliseconds, so `duration_nanos` distinguishes `""` (unavailable) from `"0"`
-  (a measured zero). Neither an unset status nor an absent one is success —
-  OpenTelemetry's status defaults to `UNSET` and most instrumentation never sets
-  `OK`, so counting either as success would let an entirely unstatused run report
-  a zero error rate. The aggregate publishes four status counts and no rate, so a
-  caller has to choose and name its own denominator.
-
-  **Parentage is read and never inferred** — not from timing, adjacency, span
-  names or arrival order. A child whose parent was sampled away or has not arrived
-  is still a child, and nothing checks that a named parent exists: a parent span
-  ends *after* the children it started, so a child arriving first is the normal
-  case. Neither OTLP nor the SDK can express "the producer does not know", which
-  is documented rather than worked around.
-
-  **Nothing added is behavioral identity.** Two observations differing only in how
-  long they took share a fingerprint, and a test asserts the whole
-  `StableFeatures` tuple, the fingerprint and the learning path are unchanged
-  across every value. The volatile feature bridge is untouched, with one
-  documented divergence: it still ignores a zero duration because a zero adds
-  nothing to a feature, while the evidence path records it.
-
-  Schema version moves to **6** on both backends, adding nine columns to one
-  table. Existing rows are migrated to say *unknown* rather than *zero*: a run
-  ingested before these fields existed observed no duration and no status for any
-  of its records, and the backfill states exactly that.
-
-  Per-observation history remains task 067's, and this adds none.
+## v0.10.0 — Developer Preview
+
+The first release a developer outside this project can pick up and use for
+what the product is for: run an existing instrumented agent under Trustvian
+with one command, watch its behavior live in a browser, gate a candidate
+against a reference over repeated scenarios, and see the verdict on the pull
+request. See [the developer preview path](docs/getting-started.md#developer-preview)
+and the [ROADMAP milestone](docs/ROADMAP.md#v0100--developer-preview).
+
+The milestone's four tasks are 075, 077, 078 and 079. Everything else in this
+section landed alongside them, and none of it is gated on them.
+
+- **The platform ships for the first time.** The macOS and Linux archives carry
+  `trustvian-local` and `trustvian-collector` beside `trustvian`. The
+  `trustvian-platform` and `trustvian-processor` modules stay repository-internal
+  and are not published as Go modules ([release guide](docs/release-guide.md#module-publication-model)).
+- **No default `k`.** An unchanged *nondeterministic* workload can fail
+  `k = 1, j = 0`; calibrate `N`, `k` and `j` for it first
+  ([guide](docs/platform-cli.md#calibrating-n-k-and-j)).
+- **`trustvian dev` and `eval run --suite` do not run on Windows.** The Windows
+  archive carries only the CLI.
+- **Persisted platform and baseline state is versioned**; see
+  [Platform foundation](#platform-foundation-control-plane-storage-environments)
+  and [Core engine and public API](#core-engine-and-public-api).
+
+Entries are grouped by capability. Within a group, `Added` comes first, then
+`Changed`, `Fixed` and `Security`.
+
+### `trustvian dev`, the local runtime and the terminal
 
 - **`trustvian dev` works from a downloaded release** — no checkout, no `make`.
   The macOS and Linux archives now ship the two helpers dev supervises beside
@@ -824,97 +65,6 @@ actually depend on.
   SHA-256 manifest, exactly as the CLI alone was. The archives carry no SBOM or
   provenance attestation — they did not before either — and attesting them is
   recorded as a known gap rather than left as an assumed guarantee.
-
-- **Trustvian understands agent-oriented telemetry** (task 075). Zero-code
-  instrumentation flattens an agent into its transport: a model, a CRM, a
-  knowledge service, an exporter and a mailer all become `POST` and `GET` against
-  hostnames, and the baseline learns transport shapes rather than behavior. Where
-  a producer emits OpenTelemetry GenAI or OpenInference, Trustvian now reads it:
-
-  ```text
-  before   http · POST /v1/export → export.localhost
-  after    tool · export_customer → export.localhost
-  ```
-
-  Same engine, same pipeline, same six behavioral dimensions. No AI-specific
-  branch anywhere, and **no core change**: `event.OperationCategoryTool`,
-  `event.ActorTypeAIAgent` and `event.Context.SessionID` already existed.
-
-  **One table, read by both adapters.** `internal/semconv` takes a span reduced to
-  plain Go values and returns what a convention established. `internal/otel` and
-  the Collector processor both call it — their *traversal* stays duplicated
-  because `sdktrace.ReadOnlySpan` and `ptrace.Span` are unrelated types, but the
-  table does not, because two copies of a convention table would be two
-  conventions and the one a developer got would depend on which adapter their
-  telemetry took. `event.NormalizeSpan` re-exports it so the processor's separate
-  module can reach it.
-
-  **It imports no OpenTelemetry package**, and that cost nothing to arrange: the
-  GenAI attribute keys appeared in Go's `semconv` around v1.39.0, grew to 50 keys
-  by v1.41.0, and were **gone by v1.42.0** — the version both adapters pin. The
-  names had to be string literals wherever the table lived, so the confinement
-  rule holds with no exception. `scripts/check-platform-boundary.sh` now proves the
-  core's graph contains zero OpenTelemetry packages via `go list -deps`, paired
-  with a check that `internal/otel` still imports one so the first cannot pass
-  vacuously.
-
-  **Conventions are read; frameworks are never named.** No framework appears in
-  any type, field or branch, and the boundary script fails the build if one
-  appears in non-test source. Both conventions were verified live rather than from
-  memory, with the commits recorded in the source:
-  `semantic-conventions-genai` at `e57c543b4889` and `Arize-ai/openinference` at
-  `300bba9191bf`. `gen_ai.system` turned out to appear nowhere in the current
-  convention, so it is read only as a legacy alias because producers lag the spec —
-  and deliberately not confused with `gen_ai.system_instructions`, which is the
-  system prompt.
-
-  **Identity is read; content is refused.** A tool *name* is what the agent did; a
-  tool *argument* is what it said. Twenty-two content attributes are enumerated in
-  `internal/semconv/content.go` and read by nothing — the list exists so the
-  refusal is checkable rather than asserted. The privacy guarantee is a **durable
-  and public evidence boundary**, not a claim that the transient
-  `Event.Attributes` map is empty: the adapters' documented
-  preserve-every-attribute behavior is unchanged, and the tests deliberately
-  assert content *is* there while proving it reaches no `StableFeatures`, no
-  fingerprint, no `DecisionRecord`, no realtime field, no persisted row and no
-  `/v1` payload. Each content attribute carries its own distinctive value so a
-  failure names which one leaked, and the sweep is verified to catch a planted leak.
-
-  **No fabrication.** A category that matched with its identity attribute missing
-  does not fire — `tool · POST` would be a semantic category wearing a transport
-  name. An unknown operation name, an unknown span kind, a renamed attribute or an
-  attribute of the wrong type all mean "the convention is absent". OpenInference's
-  `tool.name` is read only on a `TOOL` span, because the same key appears under
-  `llm.tools.<index>` as an advertised tool *definition* — reading it bare would
-  record a model span that merely lists its tools as having used one.
-
-  **`Actor.Type` upgrades only on an explicit agent identity**, never on the mere
-  presence of a GenAI operation: a backend service calling an LLM through an
-  instrumented client emits `gen_ai.operation.name=chat` and is not an agent — and
-  `ActorType` is a `StableFeatures` dimension, so a wrong upgrade would discard
-  that actor's learned baseline.
-
-  **Fidelity is reported, never implied.** A closed two-value vocabulary —
-  `transport` or `semantic` — describing the mapping result rather than the span.
-  Carried on the outbound span attribute `trustvian.fidelity`, on the ingest
-  envelope beside the record, on the realtime observation (always present, so
-  absence never needs interpreting), and in the WebUI inspector as a sentence
-  rather than a badge. Never in `StableFeatures`: folding it in would reset every
-  baseline the day a producer upgraded its instrumentation. There is no inbound
-  override — a producer able to claim semantic fidelity would defeat the
-  guarantee.
-
-  **Graceful degradation is asserted, not hoped for.** A producer emitting no
-  convention sees byte-identical behavior, checked against real SDK spans as whole
-  values and end to end through a real Collector: the same fixture producer emits
-  GenAI spans in one mode and plain HTTP spans in the other, and the second yields
-  exactly one transport-named behavior with the actor left as `service`.
-
-  Reasoning in
-  [ADR 0045](docs/adr/0045-conventions-are-read-frameworks-are-not.md).
-  One piece is deferred as task 081: fidelity is not persisted per behavior, so a
-  comparison delta does not carry it — that needs a forward-only schema step in
-  both backends, and `TestFidelityIsNotPersistedYet` fails the moment it lands.
 
 - **`trustvian dev` — one command runs an agent under Trustvian** (task 077).
   Watching an agent behave used to mean a control plane, a Collector, a
@@ -1002,6 +152,71 @@ actually depend on.
   `docs/platform-cli.md` documents the command surface; `docs/compatibility.md`
   records the exit-status exception, the run-state mapping and the terminal
   Ctrl-C rows.
+
+- **Integrated local runtime.** `make local` starts the whole local platform in
+  one command: file-backed SQLite, the control plane, the realtime bus and the
+  `/v1` HTTP API on a loopback listener with an OS-assigned port. See
+  [docs/local-development.md](docs/local-development.md) and
+  [ADR 0035](docs/adr/0035-local-runtime-composes-platform-without-reversing-modules.md).
+
+- **Automatic local endpoint discovery.** The runtime publishes
+  `.trustvian/runtime.json`, and platform commands plus the TUI read it, so
+  `--api-url` is no longer required for the local workflow. Explicit
+  `--api-url` always wins, a discovered endpoint must be `http` on numeric
+  loopback in exactly one JSON document under 4 KiB, and omitting both with no
+  runtime running exits `3` rather than being reported as a usage error.
+  Presence decides, not emptiness: `--api-url ""` is a usage error (`2`) and
+  reads no discovery file, so an unset variable in CI can never redirect a
+  command — a gate comparison least of all.
+
+  The runtime is unauthenticated and binds loopback only — there is no flag to
+  expose it. Authentication and remote access remain task 070, and no WebUI,
+  PostgreSQL backend, environment model, promotion or event history is included
+  here.
+
+- **Interactive `trustvian tui`.** A run-scoped realtime terminal dashboard:
+  `trustvian tui --run-id <id> [--api-url <url>]` watches one evaluation run
+  live, combining authoritative HTTP reads with SSE notifications. It is
+  read-only — three GET endpoints — and imports nothing from the platform
+  module. See [docs/tui.md](docs/tui.md) and
+  [ADR 0034](docs/adr/0034-tui-is-a-bounded-realtime-http-client.md).
+
+  Automatic reconnect with bounded backoff, resubscribing before
+  resynchronizing so nothing committed during the gap is lost. A bounded live
+  observation window of 100 rows, cleared on every reconnect and labelled as
+  the current stream rather than history. Terminal-control sanitization of
+  every server-supplied string, so remote text cannot move the cursor, clear
+  the screen or retitle the terminal.
+
+  Exit codes: `0` normal exit, `2` usage, `3` operational. `1` is not used —
+  it means a failed gate, and only for `eval compare`.
+
+  Not included: integrated local startup (`--api-url` is required and has no
+  default), event history or replay, promotion, a WebUI, and authentication.
+
+- **Developer CLI control-plane commands.** `trustvian project`,
+  `trustvian agent`, `trustvian candidate` and `trustvian eval` drive a
+  local control plane over its `/v1` HTTP API, so an evaluation can be
+  run from a shell script or a CI job. The CLI is an adapter: it imports
+  nothing from the platform module, touches no database, and computes no
+  behavioral diff, scorecard or gate verdict. See
+  [docs/platform-cli.md](docs/platform-cli.md) and
+  [ADR 0033](docs/adr/0033-developer-cli-is-a-thin-http-adapter.md).
+
+  Not included, and deliberately: no integrated local server — `--api-url`
+  is required and points at a control plane you are already running. No
+  `watch`/realtime command, no authentication, no list or search
+  commands.
+
+- **Machine-readable CLI output.** Every control-plane command accepts
+  `--json`, which writes the API's own successful response body to stdout
+  and its error envelope to stderr. The CLI adds no wrapper and removes no
+  field, so those fields inherit the `/v1` contract rather than defining a
+  second namespace — additive server fields reach the caller unchanged.
+
+### The WebUI
+
+#### Added
 
 - **The web interface is now a live observability cockpit** (task 074). The
   primary surface stopped being a CRUD console organized around
@@ -1133,6 +348,1493 @@ actually depend on.
   [docs/tasks/v1.0/074-zero-input-live-behavior-webui.md](docs/tasks/v1.0/074-zero-input-live-behavior-webui.md)
   and [ADR 0041](docs/adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md).
 
+- **Minimal web control plane.** `make local` now prints a `Web:` URL alongside
+  the API, serving a browser UI from the same loopback listener: open projects,
+  agents, candidates and runs by ID, drive a run's lifecycle, watch one run live
+  over SSE, and compare two runs. It is a static same-origin client of `/v1` —
+  no server-side business logic, no framework, no build toolchain and no new
+  dependency in any module. Server values render as text only under a strict
+  deny-by-default CSP, gate verdicts come from the server, and nothing is stored
+  in the browser. There is deliberately no list or search view: the control
+  plane has no collection route, and adding one would freeze undesigned
+  pagination semantics. See [docs/webui.md](docs/webui.md) and
+  [ADR 0036](docs/adr/0036-webui-is-a-same-origin-adapter-over-v1.md).
+  *In this release, task 074's Live surface and task 096's admin console
+  replace this entry's open-by-ID forms; see the entries above.*
+
+#### Changed
+
+- **The browser surface is now an admin console, and no journey through it
+  requires typing an identifier** (task 096). Task 074 removed the identifier
+  form from the front door and ADR 0041 made the durable hierarchy
+  discoverable, but every surface *behind* Live was still built out of inputs:
+  Compare asked for two run identifiers through two menus, Evidence asked for a
+  run and a narrowing, Promotions asked for a project before it listed
+  anything. The identifiers had become discoverable without the surfaces ever
+  becoming browsable.
+
+  **A persistent sidebar, tables as the primary surface, and a contextual panel
+  beside them.** Destinations are Live, Projects, Runs, Compare, Evidence,
+  Promotions and Manage — one per capability `/v1` actually serves, and none
+  for anything that does not exist yet. The sidebar always says which project
+  the console is scoped to, and changes it by going to a searchable project
+  table rather than by opening a menu.
+
+  **Rows are the navigation.** Projects, runs, observations and behaviors are
+  each a table of what the server returned, and clicking a row opens that
+  record. A run's workspace carries its authoritative counts on a compact strip
+  and three tabs — overview, observations, behaviors. Selecting an observation
+  opens its recorded decision, scores, timing and correlation references
+  alongside the table, without redrawing it; closing the panel returns focus to
+  the row it came from.
+
+  **Every identifier is a control that goes somewhere.** Session, trace and
+  behavior references narrow the observation table to that view — a new bounded
+  request with the narrowing applied in storage before the page bound, at most
+  one at a time because the server accepts at most one.
+
+  **A comparison's two sides are assigned from rows.** Every run in the table
+  carries a `Reference` and a `Candidate` control; both chosen runs are then
+  shown in full in labelled panels, and the submit stays disabled until two
+  different runs are chosen. There is no identifier field for either side and
+  no menu standing in for one. Shared-behavior evidence keeps its visible
+  reference and candidate controls.
+
+  **Nothing about the bounds changed.** One page per action, the continuation
+  is still an explicit control, the startup budget is still one page of
+  `GET /v1/projects`, and narrowing still happens in storage. The filter boxes
+  narrow the rows already on screen and say so; a table always states whether
+  it is showing the whole collection or one page of it. No figure on a summary
+  strip is counted from the rows on screen — a strip reports what the run
+  observed, not how much the page drew — and there is no decorative metric,
+  invented chart or placeholder destination anywhere in the shell.
+
+  Menus survive only where the choice is a setting rather than navigation: the
+  promotion form's target environment and its run pickers, filled from a
+  comparison already made. Every form, lifecycle control and result target that
+  existed still exists, under Manage.
+
+  Content-Security-Policy is unchanged and still carries no `unsafe-inline`,
+  so there is still no web font, no CDN and no build step. See
+  [ADR 0050](docs/adr/0050-the-browser-surface-is-a-record-first-admin-console.md).
+
+- **The browser bundle is a layered design system** (task 096, second pass).
+  The console reorganised the *information* architecture and left the bundle
+  as it was: fifteen modules in one flat directory and a 1,400-line
+  stylesheet. Three costs followed, each visible on screen — values were
+  named wherever they were used and light and dark drifted apart; loading and
+  empty rendered identically, so a reader could not tell "wait" from "there
+  is nothing here"; and a `block`/`critical` observation was the same weight
+  as an `allow`/`low` one, so finding the row that matters meant reading
+  every line.
+
+  **Five layers, dependencies only downward.** `core/` (DOM and formatting,
+  no Trustvian at all) → `v1/` (the control-plane contract) and `ui/` (the
+  design system), `live/` (the realtime observatory), `views/` (one module
+  per destination), and `app.js` as the only composition root. `ui/` may not
+  import `v1/`: the moment a component can read a route, presentation stops
+  being a layer.
+
+  **Only `styles/tokens.css` names a raw value.** Colour, size, space, radius
+  and duration are each declared once with the dark-mode counterpart beside
+  it; a hex literal in any other sheet now fails a test. The accent is blue
+  by elimination — green, amber and red carry verdict and risk, violet
+  carries "new", and an accent sharing any of those would make *selected*
+  read as *severe*.
+
+  **Four states, kept apart.** A fetching table draws a static skeleton in
+  the shape of the rows that are coming; an empty one states the absence and
+  names the next action; a refusal is shown as the refusal it is. The
+  skeleton does not shimmer, because nothing on this page loops.
+
+  **Severity as three carriers.** A gutter down the row's leading edge, a
+  tint behind the row, and a mark beside the word — and the word, which is
+  the server's, still carries the meaning alone.
+
+  Also: a grouped sidebar with inline-SVG icons (built through
+  `createElementNS`, never parsed, never a font) and counts where the console
+  holds one; the scope chooser collapses once it has chosen, since the strip
+  below already states the agent and candidate; and lifecycle transitions and
+  refusals report through a short-lived status region instead of changing one
+  word in a panel nobody is looking at.
+
+  Four new guards hold it together, each verified to fail when its property
+  is broken. Test helpers now name a module rather than a file path, and two
+  harnesses that copied assets to a temporary directory reproduce the tree
+  instead of flattening it. Nothing about the bounds, the privacy allowlists
+  or the Content-Security-Policy changed. See
+  [ADR 0051](docs/adr/0051-the-browser-bundle-is-a-layered-design-system.md).
+
+#### Fixed
+
+- **Three state defects in the browser console, found in review.** All three
+  were invisible to a source scan, because what was wrong was which of two
+  responses arrived last and what a boolean meant after the reader had moved.
+
+  **Run-scoped state survived a change of run.** Opening run B after viewing
+  run A's Behaviors tab left the tab marked loaded, so it rendered A's rows
+  and fetched nothing — and its paging cursor would have asked for the next
+  page of A's collection under B. The same shape applied to the observation
+  page, the narrowing, the selected row and the strip's counts. All of it is
+  now cleared in one step when the run changes.
+
+  **A stale response could overwrite the current view.** `openRunDetail`,
+  the observation loader and the behavior loader committed whatever came
+  back. A response for a run or a filter the reader had left would repopulate
+  the surface, clear a newer error, close the current detail panel, or stop a
+  newer loading indicator. Each read now takes a ticket before awaiting and
+  presents it back before touching anything; the level browser checks its
+  own generation before assigning, because the commit happens inside the
+  awaited call and a guard in the caller would run after the clobber.
+
+  **Project-scoped state survived a change of project.** Compare and
+  Promotions decided whether to fetch by asking "have I loaded before?",
+  which is still true after switching from project A to B — so B showed A's
+  agents, A's assigned comparison sides and A's promotion history, under B's
+  name in the sidebar. Cache validity is now project identity, and a change
+  of project abandons what is in flight and clears what is held.
+
+  This is **not** built on cancellation: an abort can lose the race with a
+  response already queued, and a surface whose correctness depended on the
+  abort winning would be right almost always. Surfaces are independent — the
+  three reads of a run workspace, Compare's three lists and Promotions each
+  hold their own ticket, so fetching one never abandons another's work. One
+  further defect fell out of that: Compare's loading flags were the ones the
+  Runs destination reads, so fetching on either drew a skeleton over the
+  other.
+
+  Ten behavioural regression tests drive the real modules under node with
+  deliberately out-of-order promises, rather than asserting on source
+  strings. Every one was verified to fail against the defect it covers.
+
+### Evaluation: `eval compare`, `eval run` and suites
+
+#### Added
+
+- **Behavioral scenarios: `trustvian eval run`, and repeated evaluation in the
+  control plane** (task 078,
+  [ADR 0053](docs/adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)).
+
+  One run of a model-driven agent is not evidence: the 2026-10-01 measurement
+  found an unchanged agent failing a single-run gate at zero on half its pairs,
+  because which optional tools it reaches varies between runs. A scenario file
+  now runs each side `runs: N` times and gates over integer presence counts.
+
+  - **The scenario file.** Every threshold and `runs` is required, with no
+    defaults; `1 <= runs <= 64` and `0 <= j < k <= runs`. Counts and limits
+    must be YAML integers; a fraction or a value past 64 bits is refused,
+    including one that arrives through a merge or an alias. Unknown fields are
+    refused and every error names its field.
+  - **`trustvian eval run --scenario <file>`.**
+    - Executes `2N` repetitions, one at a time, through `trustvian dev`, each
+      under a fresh run id and its own `--behavioral-profile`.
+    - The first repetition whose workload fails ends the scenario with exit `3`
+      and no verdict. So does a repetition whose run could not be completed.
+    - The workload's stdout goes to stderr, and a bare command name resolves
+      on its side's own `PATH`.
+    - It counts nothing itself: it submits the run ids and passes the server's
+      verdict through as `0` or `1`.
+  - **`POST /v1/evaluations/compare-repeated`.** The control plane reads each
+    repetition's evidence, reports every behavior's reference and candidate
+    presence counts, and classifies it added, removed or neither. It evaluates
+    six checks; the two engine checks take the worst candidate repetition and
+    carry `advisory: fresh_scope` when `runs > 1`.
+  - **Refusals.** It refuses repetitions that shared a learning scope, ran in
+    more than one environment, or disagree about fingerprint identity in either
+    direction. It also refuses saturated evidence.
+  - **The repeated limit's unit.** `max_repeated_added_behaviors` counts
+    behavioral identities, the unit of `max_added_behaviors`. So at `runs: 1,
+    k: 1, j: 0` the verdict is exactly `eval compare`'s, check for check.
+
+  `eval compare`, its limits and its result are unchanged. No schema change.
+  Comparing against a *recorded* reference execution (`--reference`) and suites
+  of scenarios are not built yet.
+
+- **Recorded scenario references: `trustvian eval run --reference
+  <execution-id>|last`, and persisted scenario executions** (task 078,
+  [ADR 0054](docs/adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)).
+
+  - **Every `eval run` is now a recorded scenario execution** (schema 9, both
+    backends, metadata only). It begins before anything runs and completes with
+    its verdict. A gate FAIL is a completed execution. An aborted one is
+    recorded failed, and a running or failed execution is never a reference.
+  - **`--reference` reuses a recorded execution's reference side.** All N of
+    its reference runs are reused, from that one execution alone, and only N
+    new candidate repetitions run.
+  - **`last`** is the most recently completed execution of the same scenario,
+    project, agent and environment, ordered by a completion sequence rather
+    than any clock. If that execution is unusable, the command says so and
+    never falls back to an older one.
+  - **The current scenario's gate limits apply.**
+  - **A reference that cannot be used stops the command with exit `3`, before
+    any workload runs.** That covers a reference that is missing, unfinished,
+    of another N, in another project or environment, or with incomplete
+    evidence.
+  - **New `/v1` routes:** `POST /v1/scenario-executions`,
+    `GET /v1/scenario-executions/{id}` and `POST …/{id}/complete` and
+    `…/{id}/fail`.
+    - Completion evaluates through the same `CompareRepeatedEvaluations`
+      implementation, and its comparison has compare-repeated's response shape.
+    - The result document gains an optional `reference` block.
+
+  **Schema 9** is a forward-only step on SQLite and PostgreSQL. It leaves
+  existing data untouched and reconstructs no execution from it. A schema-8
+  binary refuses a schema-9 database. Suites of scenarios are not built yet.
+
+- **Scenario suites: `trustvian eval run --suite DIR --scenario-timeout D`**
+  (task 078,
+  [ADR 0055](docs/adr/0055-a-scenario-suite-is-a-bounded-schedule-and-a-report-not-an-evaluation.md)).
+
+  Runs every `.yaml`/`.yml` scenario directly inside a directory, in name
+  order, one at a time, and reports them as one versioned document.
+
+  - **Each scenario runs exactly as `--scenario` would.** Its own N, limits,
+    recorded execution and control-plane verdict. Nothing is pooled or
+    recomputed.
+  - **Everything is validated first.** At most 64 scenarios, with distinct
+    names, no symlinks and at most 4096 entries examined. A problem with the
+    invocation or its files is exit `2`, and an unreadable environment is exit
+    `3`; neither starts a workload or makes a request.
+  - **Scheduling:**
+    - A failure does not stop the rest; `--fail-fast` does.
+    - Members not run are reported `skipped`, never as passes.
+    - Ctrl-C or SIGTERM stops the running scenario and skips the rest as
+      `cancelled`, also with `--fail-fast`. The suite is the only receiver of
+      these signals, so the workload's process group gets one SIGTERM.
+      Members run without the terminal.
+  - **`--scenario-timeout` is a real deadline (1s–24h).**
+    - The workload's process group gets SIGTERM, then SIGKILL after 5s, and
+      leftover group members are killed.
+    - The run and execution are failed.
+    - The scenario is an operational error even if its workload exited `0`.
+    - **A completion racing the deadline, or answered by a gateway's
+      502/503/504, is settled by the control plane.**
+      The runner fails the execution; if the server had already completed it,
+      the member reports `completed_without_response`, a completed execution
+      for which no verdict is reported. A member reported `scenario_timeout`
+      or `cancelled` is never a completed execution.
+  - **`--reference last` resolves per scenario.** An explicit execution id is
+    `--scenario`-only.
+  - **Output and exit code:**
+    - The suite exits with its most severe scenario: `3`, then `2`, then `1`,
+      then `0`.
+    - Member result documents are embedded unchanged.
+    - The document is capped at 32 MiB; overflow exits `3` with an explicitly
+      incomplete document that claims no outcomes.
+
+  No `/v1` or schema change. `trustvian dev` and single-scenario behavior are
+  unchanged. `--suite` is refused on Windows, where `dev` is unsupported;
+  `--scenario` is not. Member error messages are at most 1024 bytes of valid
+  UTF-8.
+
+- **An optional gate limit over counted behavioral changes:
+  `max_added_behavior_changes`** ([issue 131](https://github.com/trustvian/trustvian/issues/131),
+  [ADR 0052](docs/adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)).
+
+  The comparison already reported `added_change_count`; nothing gated on it.
+  `POST /v1/evaluations/compare` and `POST /v1/promotions` now accept
+  `gate_limits.max_added_behavior_changes`, `trustvian eval compare` and
+  `trustvian promotion create` accept `--max-added-behavior-changes`, and the
+  browser's comparison and promotion forms carry an optional field for it.
+
+  **Absent is not zero.** Omitted (or `null`), the check is not evaluated and
+  the verdict is the other five checks alone — exactly what it was before.
+  `"0"` is the strictest limit. The gate reports a sixth check,
+  `added_behavior_changes`, with a `state` of `evaluated`, `not_evaluated` or
+  `not_recorded`; only an evaluated check carries `actual`, `maximum`,
+  `passed`, and the `correlation_state` and `counting_policy_version` its count
+  rested on. When both behavior limits are supplied **both** are enforced.
+  Under a `partial` or `unavailable` correlation the counted-change count is the
+  identity count, so the check errs strict.
+
+  **Schema 8** adds six nullable columns to `platform_promotions` on SQLite and
+  PostgreSQL. Existing promotions migrate with the check `not_recorded`, no
+  threshold and no outcome, and their stored verdicts and outcomes are
+  untouched — no historical decision is re-evaluated or backfilled as a passed
+  zero-valued check. The migration is forward-only; a schema-8 database is
+  refused by an older binary.
+
+  `max_added_behaviors` is unchanged and still counts identities. The evidence
+  routes refuse `check=added_behavior_changes` with directions to the
+  comparison's `added_changes` instead of resolving it, and the browser offers
+  no evidence control on that row.
+
+- **A comparison now reports how many behavioral *changes* its added
+  behaviors amount to** (task 083, [ADR 0052](docs/adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)).
+
+  A developer adds one tool. The tool span and the transport child it calls
+  are two behavioral identities, so a comparison reported `added 2` for one
+  act. [ADR 0047](docs/adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md)
+  settled that the identities stay two — the transport target is the
+  security-relevant part, and folding identity would hide a tool that started
+  posting somewhere else — which left the correction to counting.
+
+  **A counted behavioral change is an added identity that is not the recorded
+  child of another added identity** — and an identity is such a child only when
+  every retained occurrence of it is. So the tool and its transport child are
+  two identities and one change, and a known tool changing destination is
+  still one change of its own: its parent is present in both runs, so it is
+  not an *added* parent and nothing folds. That holds even when a new tool also
+  reaches the same new destination: the occurrence beneath the known tool keeps
+  the destination counted, and it also contributes to the new tool's change.
+
+  `added_change_count`, `correlation_state`, `counting_policy_version` and
+  `added_changes` join the comparison payload, the CLI output and the browser
+  surface. Each counted change names its contributing identities, so every one
+  stays resolvable to its observations through the existing evidence routes.
+
+  **`max_added_behaviors` is unchanged and still counts identities.** No
+  stored promotion, existing pipeline or historical run changed meaning, and
+  no verdict moved. The optional limit over the new unit, specified in ADR
+  0052, was deferred from this change because it needed promotion-table
+  columns, a migration and both backends — separable work with its own risk.
+  It is the entry above.
+
+  The rule is structural — it asks only who is whose recorded parent, never
+  what instrumentation layer an observation came from — so it is evaluable
+  from durable evidence even though the layer is not persisted. Correlation is
+  derived from the per-observation history schema 7 already stores, so there
+  is **no schema change and no migration**, and a completed comparison is
+  reproducible after a restart because the same rows produce the same edges.
+
+  **Every unresolved case counts more, never less.** A missing parent, a
+  parent in another trace, an ambiguous span reference, a cycle, a saturated
+  or pre-schema-7 history: each falls back to the identity count and says so
+  through `correlation_state`. A cycle or ambiguity anywhere in the added
+  graph refuses the whole fold, so `partial` always means the identity count,
+  contributors included. Folding only ever lowers a count, so an
+  unresolved correlation can make a comparison stricter than it needed to be
+  and cannot make one pass that should have failed.
+
+- **CI-safe `eval compare` exit codes.** `0` gate PASS, `1` gate FAIL, `2`
+  usage, `3` API or network failure. The comparison evidence is written to
+  stdout on both `0` and `1`, because a gate FAIL is a result to publish
+  rather than an error.
+
+  Exit codes are **scoped by command family**, which resolves a conflict
+  the roadmap had carried since the milestone was planned. `analyze`,
+  `baseline` and `version` keep `0` success / `1` failure / `2` top-level
+  usage exactly as released; the new families leave `1` unused, which is
+  what frees it to mean gate failure on `eval compare` alone. An API
+  error is never reported as a gate failure. See
+  [docs/compatibility.md § CLI](docs/compatibility.md#cli).
+
+#### Changed
+
+- **What `max-added-behaviors` counts is now stated** (task 083). It counts
+  behavioral *identities*, and a producer emitting agent-oriented telemetry
+  observes one act at two layers — the tool call and the request the tool made —
+  so one act can consume two of the budget:
+
+  ```text
+  tool  · export_customer                 one identity
+  http  · POST → export.localhost      another identity
+  ```
+
+  That was already true and was written down nowhere. It is now in the flag's own
+  help, `docs/platform-cli.md` and `docs/OPENTELEMETRY.md`. At a limit of `0` it is
+  invisible; it matters the first time a budget is nonzero.
+
+  **The correction is deferred, and the task stays open.** Folding the two into one
+  counted change requires knowing the request is the tool call's child, and no
+  parent identity reaches the evidence boundary — verified by a test that fails
+  when it changes, not assumed. Identity was deliberately *not* folded to work
+  around it: folding drops the destination from behavioral identity, so a tool that
+  started posting to another host would stop changing the behavioral surface, which
+  trades a counting annoyance for a detection hole. Missing correlation falls back
+  to today's count rather than to a guess; nothing is inferred from timestamps,
+  adjacency or similar names, and no observation is dropped to make a count
+  smaller.
+  [ADR 0047](docs/adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md)
+  records where the fix belongs and what it must not do.
+
+- **Task 078 is closed. Acceptance criteria 9 and 11 are amended to what the
+  evidence supports, and visibly so**
+  ([amendment](docs/tasks/v1.0/078-behavioral-scenario-suites.md#amendment--criteria-9-and-11-2026-10-03)).
+  Documentation and tests only, with no runtime change.
+
+  - **Criterion 11** claimed that an unchanged *nondeterministic* workload
+    passes under the documented limits. The 2026-10-01 measurement refutes it.
+    At N = 5, an unchanged model-driven agent failed `k = 1, j = 0` in 6 of 252
+    self-comparison splits at T = 0.7, and 1 of 252 at T = 1.3. At T = 1.3, no
+    `k` removed every crossing. As amended:
+    - An unchanged *deterministic* workload passes. CI asserts it, now also at
+      the control plane at exactly `k = 1, j = 0`.
+    - For a nondeterministic workload, no default `k` ships. A new section of
+      the scenario guide,
+      [Calibrating `N`, `k` and `j`](docs/platform-cli.md#calibrating-n-k-and-j),
+      shows how to choose them from the workload's own self-comparison
+      false-FAIL rate with existing commands. Each calibration costs `M × 2N`
+      workload runs. The demo repository's `make stability` is the reference
+      implementation.
+  - **Criterion 9** asked that a reorder producing gated evidence fail a
+    scenario. That cannot happen end to end under `trustvian eval run`:
+    - `dev`'s generated Collector configuration sets no anomaly block, so
+      `transition_weight` is 0.
+    - Each repetition's scope is fresh, with anomaly confidence at its floor
+      (0.1786 measured).
+
+    As amended: scenarios assert no ordering, and nothing in the scenario path
+    suppresses sequence evidence. Under fresh-scope repetitions with the default
+    `transition_weight = 0`, a reorder cannot produce gated evidence end to end,
+    and checks 5 and 6 are advisory there. New tests:
+    - `TestScenarioRefusesOrderingKeys`: `order:`, `sequence:` and `steps:` are
+      refused as unknown fields.
+    - `TestAnalyzeReorderedSequenceIsGatedOnlyWithTransitionWeight`: with a
+      learned baseline and `TransitionWeight > 0`, a reordered sequence is
+      blocked or reaches critical risk. At weight 0 it is neither.
+    - `TestAReorderFailsTheRepeatedGateOnlyThroughEngineEvidence`: those records
+      fail check 5 through the real control plane, and pass at weight 0.
+  - **ROADMAP.**
+    - 078 and 079 are marked implemented in both tables and in the task index.
+    - The `v0.10.0` section no longer says the release archive lacks `dev`'s
+      helpers, which #114 ships on macOS and Linux from the next release on.
+      ADR 0043 gains a dated note.
+    - "Current State" now states what ships on `main`: `dev`, the WebUI,
+      `eval run` with suites, the CI action, and every implemented task. It also
+      names what is not implemented.
+
+### The CI action
+
+#### Added
+
+- **A GitHub Action for the run side of the behavioral gate:
+  `.github/actions/trustvian-run`** (task 079, partially implemented;
+  [ADR 0056](docs/adr/0056-the-run-action-builds-a-pinned-source-commit.md),
+  [guide](docs/ci-github-action.md)).
+
+  Runs `trustvian eval run --json` for a scenario or a suite and uploads the
+  result document as an artifact. Its final step exits with the CLI's own code.
+
+  - **Exit codes pass through exactly.** `0`, `1`, `2` and `3` reach the job
+    unchanged, and the `exit-code` output carries the code. `3` is never
+    reported as `1`, and the action sets no `continue-on-error`.
+  - **The result is preserved whatever the code.**
+    - `result.json` is the CLI's stdout, byte for byte.
+    - `trustvian-run.json` records:
+      - the pull request's head commit, from the event, never the merge
+        commit;
+      - the exact exit code;
+      - the result's status, size and SHA-256;
+      - the runtime commit.
+    - Output that is missing after a verdict, invalid, or larger than
+      32 MiB + 64 KiB fails the action. It is never truncated or stored.
+  - **Inputs** mirror the CLI: `scenario`, `suite`, `reference`,
+    `scenario-timeout`, `fail-fast` and `api-url`, plus `working-directory`
+    and `artifact-name`. Each value reaches the CLI as one argument, never
+    through a shell string. There is no gate configuration in workflow YAML.
+  - **A reproducible runtime.** No release ships `eval run` yet, so the action
+    builds `trustvian`, `trustvian-local` and `trustvian-collector` from one
+    reviewed commit pinned in `runtime.env`.
+    - It uses a pinned, digest-verified Go 1.27.1, entirely under
+      `$RUNNER_TEMP`.
+    - Every binary must record that exact commit, unmodified, in its own Go
+      build information. No version is injected.
+  - **Its own control plane**, started on loopback and stopped by PID, or an
+    existing one through `api-url`.
+  - **Refuses `pull_request_target` and `workflow_run`.**
+  - **A minimal job summary:** head commit, run link, exit code and artifact
+    availability. No verdict is rendered.
+  - **A run-only example workflow**, since extended to the two-job
+    `examples/github-actions/behavioral-gate.yml`:
+    - `pull_request` only;
+    - `contents: read` per job;
+    - commit-pinned actions and `persist-credentials: false`;
+    - no secrets.
+  - **Not yet:** caching the runtime across jobs. The comment and the
+    renderer followed, above. Running a scenario in CI does not make a
+    nondeterministic workload's verdict any more reliable; calibrate `N`, `k`
+    and `j` for it first
+    ([guide](docs/platform-cli.md#calibrating-n-k-and-j)).
+
+- **An offline renderer for behavioral CI artifacts:
+  `cmd/trustvian-ci-render`** (task 079, still partially implemented;
+  [ADR 0057](docs/adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md),
+  [guide](docs/ci-github-action.md#rendering-the-artifact)).
+
+  Turns a downloaded `trustvian-run` artifact into Markdown for a pull
+  request comment or job summary. It works offline, needs no credential,
+  executes nothing from the artifact, and is built from the Go standard library
+  alone. It posts nothing itself; `.github/actions/trustvian-comment` runs it.
+
+  - **The caller supplies the identity.** The head commit, repository, run id
+    and attempt, and the run job's exit code are flags. `trustvian-run.json`
+    must equal each one, and its size and SHA-256 must match `result.json` —
+    consistency, not authenticity.
+  - **The artifact is untrusted.**
+    - Only the two fixed file names are opened, never a symbolic link, under
+      bounded reads.
+    - JSON is parsed strictly: duplicate keys, trailing data, invalid UTF-8
+      and deep nesting are refused, and absent, `null`, `0` and `false` stay
+      distinct.
+    - Closed vocabularies are closed, and outcome shapes must be coherent.
+    - Unknown fields are tolerated, as the compatibility contract requires, and
+      never rendered.
+  - **Transcription only.**
+    - **A scenario verdict** shows every behavior, with both `k/N` counts and
+      its stored classification, plus the `k` and `j` thresholds, all six
+      checks with their advisory markers, reference reuse and both producer
+      versions.
+    - **A suite report** shows the recorded summary, its members (errors and
+      skips included) and each member's own verdict. No suite verdict is
+      composed.
+    - Nothing is computed.
+  - **An explicit no-verdict state.** It covers exit `2` and `3`, a missing
+    artifact, a validation failure, and evidence that cannot fit. It carries
+    the head commit, the run link and a fixed reason, and no number. A rejected
+    artifact exits `3`, distinct from a run with no verdict (`1`).
+  - **Inert, bounded Markdown.**
+    - Every artifact string is one code span on one line, with control
+      characters replaced, backticks fenced and pipes substituted.
+    - Each value is capped at 256 bytes before the pipe substitution, and the
+      body at 60,000 bytes, which bounds the output. Truncation is marked
+      visibly.
+  - **Tested against real producer output.** `testdata/generate.sh` drives the
+    run action through the real CLI, control plane and Collector. Golden
+    renderings pin the result.
+
+- **A poster for the behavioral gate comment: `cmd/trustvian-ci-comment`**
+  (task 079, still partially implemented;
+  [ADR 0058](docs/adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)).
+
+  Posts a `trustvian-ci-render` rendering as the pull request's one gate
+  comment and edits it in place. It is standard library only, reads the token
+  from `GITHUB_TOKEN` alone, and is the only Trustvian code that writes to
+  GitHub. `.github/actions/trustvian-comment`, above, runs it.
+
+  - **Ownership.** A comment is the poster's only if `github-actions[bot]`
+    wrote it and its first line is `<!-- trustvian-behavioral-gate:<id> -->`.
+    Human comments are never edited. The newest owned comment is updated, and
+    duplicates are reported.
+  - **Superseded runs write nothing.** If the pull request's head has moved
+    on, a newer run owns the comment.
+  - **Forks degrade loudly.** A refused write gives a warning and a
+    job-summary note, and exits `0`. 429 and 5xx get one bounded retry, then
+    the job fails visibly. A failed create is checked for having landed
+    before it is retried, so it is never duplicated.
+  - **No redirect is followed**, so the token reaches the validated API host
+    only.
+  - **Tested against a fake GitHub API**, including the renderer's real
+    no-verdict bodies replacing a stored PASS.
+
+- **The behavioral gate comment, end to end:
+  `.github/actions/trustvian-comment`** (task 079, now implemented;
+  [ADR 0058](docs/adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md),
+  [guide](docs/ci-github-action.md)).
+
+  A composite action for the second job of the behavioral gate workflow. It
+  downloads the run job's artifact, renders it with `trustvian-ci-render`,
+  writes the rendering to the job summary, and posts it with
+  `trustvian-ci-comment` as the pull request's one gate comment, edited in
+  place.
+
+  - **Built from pinned source only.** Both commands are built from the commit
+    `runtime.env` pins, with the run action's digest-checked toolchain,
+    isolated fetch and `vcs.revision` check, now shared through its `lib.sh`.
+    Nothing is read from the job's workspace, and a source scan asserts it.
+  - **Inputs:** `exit-code` (required; empty means the CLI did not run),
+    `artifact-name`, `marker-id` and `github-token`. **Outputs:**
+    `renderer-exit`, `posted` and `outcome`.
+  - **Every rendering is posted.** Evidence, no verdict and a rejected artifact
+    all replace the previous comment. A missing artifact is the renderer's
+    "artifact is missing" no verdict, not a failed step. Only the renderer's
+    usage exit fails the job without posting.
+  - **The token is in one step's environment.** Only the post step has
+    `GITHUB_TOKEN`, and the poster is the only process that reads it. Only the
+    job's own `GITHUB_TOKEN` is supported: comments are found by
+    `github-actions[bot]` authorship.
+  - **Forks degrade loudly and successfully.** A refused write is a warning
+    and a job-summary note, and the check stays the run job's.
+  - **The example is now the two-job workflow**,
+    `examples/github-actions/behavioral-gate.yml` (renamed from
+    `behavioral-gate-run.yml`):
+    - the run job holds `contents: read`;
+    - the comment job holds `pull-requests: write` alone, checks nothing out
+      and runs under `!cancelled()`;
+    - concurrency is per pull request, with cancel-in-progress.
+  - **Structural tests over every workflow, example and Markdown YAML
+    block:**
+    - no `pull_request_target` or `workflow_run` trigger;
+    - the comment job holds exactly `pull-requests: write`, with no checkout,
+      local action or step of its own;
+    - the run job holds no write scope;
+    - no workflow-level permissions in shipped workflows;
+    - every checkout sets `persist-credentials: false`.
+  - **A real end-to-end comment** on this repository's own pull requests. It
+    posts a PASS, reads it back, then replaces it with a no-verdict rendering
+    for the same head commit. On a fork, it asserts the not-permitted path.
+
+#### Changed
+
+- **The run action's runtime pin** moves to `5521759` (#140), the first commit
+  with both the renderer and the poster. #138–#140 changed no CLI,
+  control-plane or Collector code.
+
+- **`trustvian-ci-comment`'s superseded notice** names the newer head by 12
+  characters rather than the full SHA.
+
+### Evidence and inspection
+
+#### Added
+
+- **Trustvian understands agent-oriented telemetry** (task 075). Zero-code
+  instrumentation flattens an agent into its transport: a model, a CRM, a
+  knowledge service, an exporter and a mailer all become `POST` and `GET` against
+  hostnames, and the baseline learns transport shapes rather than behavior. Where
+  a producer emits OpenTelemetry GenAI or OpenInference, Trustvian now reads it:
+
+  ```text
+  before   http · POST /v1/export → export.localhost
+  after    tool · export_customer → export.localhost
+  ```
+
+  Same engine, same pipeline, same six behavioral dimensions. No AI-specific
+  branch anywhere, and **no core change**: `event.OperationCategoryTool`,
+  `event.ActorTypeAIAgent` and `event.Context.SessionID` already existed.
+
+  **One table, read by both adapters.** `internal/semconv` takes a span reduced to
+  plain Go values and returns what a convention established. `internal/otel` and
+  the Collector processor both call it — their *traversal* stays duplicated
+  because `sdktrace.ReadOnlySpan` and `ptrace.Span` are unrelated types, but the
+  table does not, because two copies of a convention table would be two
+  conventions and the one a developer got would depend on which adapter their
+  telemetry took. `event.NormalizeSpan` re-exports it so the processor's separate
+  module can reach it.
+
+  **It imports no OpenTelemetry package**, and that cost nothing to arrange: the
+  GenAI attribute keys appeared in Go's `semconv` around v1.39.0, grew to 50 keys
+  by v1.41.0, and were **gone by v1.42.0** — the version both adapters pin. The
+  names had to be string literals wherever the table lived, so the confinement
+  rule holds with no exception. `scripts/check-platform-boundary.sh` now proves the
+  core's graph contains zero OpenTelemetry packages via `go list -deps`, paired
+  with a check that `internal/otel` still imports one so the first cannot pass
+  vacuously.
+
+  **Conventions are read; frameworks are never named.** No framework appears in
+  any type, field or branch, and the boundary script fails the build if one
+  appears in non-test source. Both conventions were verified live rather than from
+  memory, with the commits recorded in the source:
+  `semantic-conventions-genai` at `e57c543b4889` and `Arize-ai/openinference` at
+  `300bba9191bf`. `gen_ai.system` turned out to appear nowhere in the current
+  convention, so it is read only as a legacy alias because producers lag the spec —
+  and deliberately not confused with `gen_ai.system_instructions`, which is the
+  system prompt.
+
+  **Identity is read; content is refused.** A tool *name* is what the agent did; a
+  tool *argument* is what it said. Twenty-two content attributes are enumerated in
+  `internal/semconv/content.go` and read by nothing — the list exists so the
+  refusal is checkable rather than asserted. The privacy guarantee is a **durable
+  and public evidence boundary**, not a claim that the transient
+  `Event.Attributes` map is empty: the adapters' documented
+  preserve-every-attribute behavior is unchanged, and the tests deliberately
+  assert content *is* there while proving it reaches no `StableFeatures`, no
+  fingerprint, no `DecisionRecord`, no realtime field, no persisted row and no
+  `/v1` payload. Each content attribute carries its own distinctive value so a
+  failure names which one leaked, and the sweep is verified to catch a planted leak.
+
+  **No fabrication.** A category that matched with its identity attribute missing
+  does not fire — `tool · POST` would be a semantic category wearing a transport
+  name. An unknown operation name, an unknown span kind, a renamed attribute or an
+  attribute of the wrong type all mean "the convention is absent". OpenInference's
+  `tool.name` is read only on a `TOOL` span, because the same key appears under
+  `llm.tools.<index>` as an advertised tool *definition* — reading it bare would
+  record a model span that merely lists its tools as having used one.
+
+  **`Actor.Type` upgrades only on an explicit agent identity**, never on the mere
+  presence of a GenAI operation: a backend service calling an LLM through an
+  instrumented client emits `gen_ai.operation.name=chat` and is not an agent — and
+  `ActorType` is a `StableFeatures` dimension, so a wrong upgrade would discard
+  that actor's learned baseline.
+
+  **Fidelity is reported, never implied.** A closed two-value vocabulary —
+  `transport` or `semantic` — describing the mapping result rather than the span.
+  Carried on the outbound span attribute `trustvian.fidelity`, on the ingest
+  envelope beside the record, on the realtime observation (always present, so
+  absence never needs interpreting), and in the WebUI inspector as a sentence
+  rather than a badge. Never in `StableFeatures`: folding it in would reset every
+  baseline the day a producer upgraded its instrumentation. There is no inbound
+  override — a producer able to claim semantic fidelity would defeat the
+  guarantee.
+
+  **Graceful degradation is asserted, not hoped for.** A producer emitting no
+  convention sees byte-identical behavior, checked against real SDK spans as whole
+  values and end to end through a real Collector: the same fixture producer emits
+  GenAI spans in one mode and plain HTTP spans in the other, and the second yields
+  exactly one transport-named behavior with the actor left as `service`.
+
+  Reasoning in
+  [ADR 0045](docs/adr/0045-conventions-are-read-frameworks-are-not.md).
+  One piece is deferred as task 081: fidelity is not persisted per behavior, so a
+  comparison delta does not carry it — that needs a forward-only schema step in
+  both backends, and `TestFidelityIsNotPersistedYet` fails the moment it lands.
+
+- **Trustvian says which instrumentation layer a behavior came from** (task 083,
+  partial). A model call, a named tool call, a retrieval and a plain transport
+  operation were all equally anonymous in a rendered view, and two of them shared
+  a category:
+  `external` meant both "a model was consulted" and "a document store was queried".
+
+  A new closed classification — `model`, `tool`, `retrieval`, `transport`, or not
+  classified — now rides exactly where `trustvian.fidelity` rides: the outbound
+  span attribute `trustvian.behavior.layer`, the ingest envelope's optional
+  `behavior_layer`, and the realtime observation. The WebUI inspector states it in
+  a sentence, with distinct wording for "not classified" and for a value the page
+  does not recognize.
+
+  **It is not behavioral identity, and that is the point.** There is deliberately
+  no sixth `OperationCategory`: that field is a `StableFeatures` dimension, so a
+  `model` value would have re-fingerprinted every model call a producer was already
+  emitting and discarded those baselines — to improve a label. The classification
+  costs no migration, and a test asserts the fingerprint, the whole
+  `StableFeatures` tuple and the learning path are unchanged across every layer
+  value.
+
+  **A layer is claimed exactly when fidelity is `semantic`.** One gate, so two
+  indicators derived from one table cannot disagree about one span. Absent means
+  *not classified* rather than `transport`, which is the one place this differs from
+  fidelity: silence classified nothing, while "nothing proved a semantic name"
+  really is transport.
+
+  Degradation is unchanged: a producer emitting no convention gets byte-identical
+  behavioral results and is classified `transport`. Schema version stays 5.
+
+- **Trustvian records what called what, how long it took, and whether it failed**
+  (task 084). The engine already computed two of the three and threw them away at
+  the boundary: `features.Extract` reads `duration_ms` and `error` off
+  `Event.Attributes` because both adapters bridge them there, and neither reached
+  `DecisionRecord`. Parent span identity was never read at all.
+
+  A record now carries four named scalar fields — `parent_span_id`,
+  `span_lineage`, `duration_nanos` and `span_status` — and the platform aggregates
+  duration and status per evaluation run and persists them.
+
+  **Availability is explicit everywhere, because the alternatives are wrong in
+  the reassuring direction.** A span with no end timestamp did not take zero
+  milliseconds, so `duration_nanos` distinguishes `""` (unavailable) from `"0"`
+  (a measured zero). Neither an unset status nor an absent one is success —
+  OpenTelemetry's status defaults to `UNSET` and most instrumentation never sets
+  `OK`, so counting either as success would let an entirely unstatused run report
+  a zero error rate. The aggregate publishes four status counts and no rate, so a
+  caller has to choose and name its own denominator.
+
+  **Parentage is read and never inferred** — not from timing, adjacency, span
+  names or arrival order. A child whose parent was sampled away or has not arrived
+  is still a child, and nothing checks that a named parent exists: a parent span
+  ends *after* the children it started, so a child arriving first is the normal
+  case. Neither OTLP nor the SDK can express "the producer does not know", which
+  is documented rather than worked around.
+
+  **Nothing added is behavioral identity.** Two observations differing only in how
+  long they took share a fingerprint, and a test asserts the whole
+  `StableFeatures` tuple, the fingerprint and the learning path are unchanged
+  across every value. The volatile feature bridge is untouched, with one
+  documented divergence: it still ignores a zero duration because a zero adds
+  nothing to a feature, while the evidence path records it.
+
+  Schema version moves to **6** on both backends, adding nine columns to one
+  table. Existing rows are migrated to say *unknown* rather than *zero*: a run
+  ingested before these fields existed observed no duration and no status for any
+  of its records, and the backfill states exactly that.
+
+  Per-observation history remains task 067's, and this adds none.
+
+- **A decision can now be read back after the run that produced it ended**
+  (task 067). The platform retained two reductions per evaluation run — a
+  fixed-shape aggregate and a behavior snapshot capped at 512 distinct behaviors
+  — and neither can say *which* observation scored 0.91, when it happened
+  relative to the one before it, or what trace it belonged to. Realtime carried
+  that detail and dropped it when the connection closed.
+
+  Each accepted record now retains one bounded observation row, readable through
+  `GET /v1/evaluation-runs/{run_id}/observations`.
+
+  **An observation is identified and ordered by `(run, ingest sequence)`, never
+  by a span id or a timestamp.** A span id is unique only inside its trace, an
+  event id is caller-supplied, and equal timestamps are ordinary — any of the
+  three would make paging non-deterministic. The sequence is allocated by the
+  transaction that admits the record, so it cannot collide. A parent span ends
+  *after* the children it started, so out-of-order arrival is the normal case and
+  is retained as it arrived; a child whose parent never arrives is still a child.
+
+  **The row is written inside the transaction that already writes the aggregate,
+  the snapshot and the ingest cursor.** A rejected record or a failed transaction
+  retains nothing and moves nothing, and a retry — including a concurrent
+  identical submission — produces no second observation.
+
+  **A run says how much of itself its history describes**, in three states rather
+  than two. *Complete* means every accepted record is retained. *Partial* means
+  some are not: the run passed the 4096-observation bound, or it began ingesting
+  before this schema existed and resumed after it. *Unavailable* means the run has
+  records and none of their history was ever retained. **A database migrated from
+  schema 6 gains an empty history and invents nothing** — reporting "complete,
+  zero rows" for a run whose records predate retention would be a fabricated
+  historical fact.
+
+  Saturation is degraded evidence rather than a failed ingest: past the bound the
+  aggregate, the snapshot and the cursor keep advancing, exactly as they do when
+  the behavior collector saturates.
+
+  **No content, and no new privacy surface.** The retained field set is an
+  allowlist expressed as columns — there is no attribute map, no span-event list
+  and no payload column, so no prompt, completion, tool argument, result,
+  document, body or arbitrary attribute can be written through one. What changed
+  is *duration*, which is why the existing tripwire sweep was extended to the new
+  route and the new rows rather than trusted to the contract.
+
+  **A page is read from one database snapshot**, so an ingest committing during a
+  read yields the state before it or the state after it and never a mixture. The
+  read is three statements, and against a pool a concurrent commit between any two
+  of them returns a retained count of 1 beside two rows — a state the database
+  never held, and one nothing in the response marks as composite. SQLite reads in
+  a transaction; PostgreSQL reads in a read-only `REPEATABLE READ` transaction,
+  and every write in that store keeps `READ COMMITTED`.
+
+  **Correlation identifiers are retained whole, at any length the request body
+  allows.** `trace_id` and `session_id` are validated nowhere on the ingest path
+  and `fingerprint_id`'s 256-byte bound is skipped once a run saturates, so the
+  platform already accepts values larger than a PostgreSQL B-tree key can hold.
+  The three correlation indexes therefore key on a fixed-width digest stored
+  beside each value, rather than on the value — indexing the value would have made
+  retaining an already-accepted record fail and roll back its whole ingest, on
+  PostgreSQL and not on SQLite. Storage does not get to narrow what the platform
+  accepts.
+
+  Schema **6 → 7** on both backends, forward-only: two tables and three
+  run-scoped indexes, and no row.
+  [ADR 0048](docs/adr/0048-retained-history-is-sequence-identified-bounded-and-honest-about-absence.md)
+  records the reasoning.
+
+- **The browser now follows a finding to the evidence behind it** (task 076). A
+  gate FAIL named a count, task 085 made that count resolvable over `/v1` and the
+  CLI, and a developer still had to leave the page to read the answer. An
+  **Evidence** tab closes it.
+
+  From a comparison, every gate check and every behavioral delta carries an
+  evidence control. One step reaches the behavioral identities that contributed;
+  one more reaches the retained observations that carried one of them; and from
+  an observation, `Session`, `Trace` and `Behavior` controls open that run's
+  retained history in the correlated view. **No identifier is typed anywhere in
+  that path** — the finding reference is built from the two run identifiers the
+  comparison itself returned, and each navigation control appears only when the
+  observation actually recorded the identifier it needs.
+
+  **Five views over one run's retained history**: session actions, trace context
+  with its recorded parent/child structure, behavior sequence, decision timeline,
+  and one behavioral identity's detail. Plus a provenance panel showing both
+  sides' supplied `CandidateMetadata`, where **every field the producer did not
+  supply reads `not stated`** — an unknown model is not the same fact as a model
+  both sides shared.
+
+  **Trace structure is drawn from the recorded parent span reference and nothing
+  else** — never from timestamps, adjacency, name similarity or ingestion order.
+  A parent this page does not have is not a root: `root`, `child`, `unresolved`,
+  `ambiguous`, `self`, `cycle` and `unstated` are seven distinct states, the tree
+  emits every row exactly once, and a cycle is stated rather than followed.
+  Ordering is arrival order, which is not wall-clock order and is not reasoning:
+  no label says an agent decided, chose, intended or planned anything, and
+  per-observation durations are never summed into a latency.
+
+  **Absence is shown as absence.** A measured zero renders as `0 ms (measured)`
+  and an unmeasured duration as `not available`; `unset` is never success and an
+  absent status is never "no errors"; `resolved`, `none_found`, `indeterminate`
+  and `aggregate_only` each carry the sentence that keeps it apart from the other
+  three. The status describes the **finding**, so a continuation page that comes
+  back empty still reports `resolved`. `aggregate_only` is an applicability
+  answer rather than a history one: the two minimum-count checks are resolved
+  without reading any retained history, so the page shows their explanation and
+  recorded count and makes no claim about availability, retention or sampling.
+
+  **The three sub-surfaces cancel only themselves.** Finding, run history and
+  provenance each hold their own request token and page position, so reading one
+  neither discards a response the others are waiting for nor moves their page
+  numbers.
+
+  **The browser decides nothing.** Every status, side, recorded count and
+  exhaustiveness flag is a value `/v1` returned; a test asserts each status
+  literal appears in shipped source exactly once, as the key of the sentence
+  explaining it. A cross-layer test runs the shipped row projection over a real
+  route response and compares each rendered cell against the field it came from.
+
+  **Two things the views cannot state, and say so.** Fidelity and behavioral
+  layer are not retained per observation — they ride on the ingest envelope and
+  the realtime frame — so a historical view renders the recorded descriptor
+  verbatim and states that fidelity was not retained. Sequence-deviation evidence
+  lives in the anomaly contributors, which retention excludes, so no view makes a
+  statement about sequence deviation. Neither is inferred.
+
+  **One new query capability, no schema change.**
+  `GET /v1/evaluation-runs/{run_id}/observations` gains `session_id`, `trace_id`
+  and `fingerprint_id`: optional, mutually exclusive equality narrowings applied
+  in storage **before** the page bound, through task 067's existing digest
+  indexes and against the original value beside each key. More than one is
+  refused rather than answered. No table, no index, no migration, and no existing
+  route, field or response shape changed. See
+  [ADR 0049](docs/adr/0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md).
+
+  **Nothing is stored in the browser**, one page is held at a time, and a
+  response arriving after the run, view, side, finding or filter changed is
+  discarded rather than drawn.
+
+- **A failed gate check now leads to the evidence behind it** (task 085). The gate
+  printed `added_behaviors actual 3 maximum 0 FAIL` and nothing in the platform
+  could answer *which three*, or which observations carried them — `BehaviorDelta`
+  holds no reference to an observation, and a gate result is deliberately closed.
+  The investigation restarted from the run identifier every time.
+
+  Two bounded `GET` routes and a `trustvian evidence` command family now resolve a
+  finding to the behavioral identities that contributed to it, and each identity
+  to the retained observations that carried it.
+
+  **This does not reopen the gate's fixed shape.** Resolution is a query against
+  authoritative state, not a payload inside a verdict: no gate result, scorecard,
+  count or fingerprint changes, and nothing is recomputed — behavioral identities
+  come from the same comparison function over the same persisted snapshots, and
+  recorded counts come from the persisted aggregate.
+
+  **A finding reference is built only from durable values** — two run identifiers
+  and either a gate check name or a fingerprint — so it is stable by construction,
+  needs no finding table, and travels in the query string, which makes the
+  resolution URL itself the citable link.
+
+  **An empty answer is not always the same answer.** A resolution reports
+  `resolved`, `none_found`, `indeterminate` or `aggregate_only`, and the status
+  describes the **finding** rather than the page: a page requested past the last
+  match returns zero rows with `resolved`, because the evidence exists and the
+  caller has read all of it. `none_found` is returned only when nothing matches at
+  all and the history is complete; an empty result over partial or unavailable
+  history is `indeterminate`, because absence there establishes nothing. Page
+  exhaustion is signalled by the continuation cursor being absent.
+
+  **A behavior present in both runs requires an explicit side.** Both runs hold
+  their own observations of it and those two sets are what a developer is
+  comparing, so the control plane refuses to pick one — an added behavior defaults
+  to the candidate and a removed one to the reference, because each exists in one
+  run only. `exhaustive` is true only when the history is complete, so a full set of
+  matches drawn from a bounded history is never labelled as all of them. The
+  recorded count travels beside the rows and is never reconciled with them — a
+  check counts every record a run ingested, while retention is bounded.
+
+  Three of the five gate checks resolve to evidence; `reference_evidence` and
+  `candidate_evidence` report `aggregate_only`, because they fail when a run
+  observed *too little* and an absence has no supporting records to invent.
+
+  Filters are SQL predicates applied before the page limit, the behavioral filter
+  uses task 067's bounded digest index and compares the original value as well as
+  the key, and each page and its history metadata are read from one snapshot.
+  **No schema change.**
+
+- **OTel Collector evaluation ingest** (task 073). An optional `evaluation:`
+  block makes the Collector processor post `Result.DecisionRecord()` to an
+  existing evaluation run over `/v1`, so a workload instrumented with
+  OpenTelemetry and nothing else can be evaluated rather than only enriched.
+  The record is projected from the same `Result` that produces the
+  `trustvian.*` attributes — `Analyze` still runs once per span — and the
+  configured behavioral profile also selects the Engine's learning scope, so
+  two candidates never train one baseline. Omitting the block changes nothing.
+  See [ADR 0038](docs/adr/0038-collector-evaluation-ingest-is-an-http-adapter.md).
+
+  **A lost response is reconciled, not assumed away.** A POST that is written
+  in full, committed, and loses only its reply is indistinguishable from one
+  that never arrived — so the sink does not guess. Failures that prove the
+  record was not applied (a failed dial, a refused redirect, a 4xx) free the
+  sequence; everything else holds it, bound to that exact record, and
+  re-presents the same record at the same sequence, which the control plane's
+  digest rule answers `replayed`. One synchronous attempt, no queue, no
+  background worker, and no record ever sent under a sequence another record
+  already claimed.
+
+  **Learning follows confirmation, and survives a restart.**
+  `Engine.Observe` runs once the control plane has accepted a record —
+  never for one it declined, and never for one whose outcome is unknown.
+  "Unknown" is not "committed", and with a durable `storage:` backend the
+  difference outlives the process: learning applied on the chance a record
+  landed is written to disk, and survives the restart that proves it never
+  did. So the record in flight is itself durable (`pending_state_path`, one
+  entry, written before the request leaves), and startup settles it against
+  the run's own cursor: a record the run never received is discarded
+  unlearned, and one it already holds is replayed at its own sequence and
+  learned exactly once. A confirmed record resumes only when the run expects
+  exactly the sequence after it; anything else means a second writer advanced
+  the run, and startup refuses rather than stepping over evidence nothing
+  local learned from. The only state a restart cannot settle — the process
+  dying between confirming a record and releasing it — is reported at ERROR
+  and not learned from twice, because a fingerprint that looks more familiar
+  than the evidence supports is a silent weakening.
+
+  **A store failure is part of that contract.** `Engine.Observe`'s error
+  reaches the sink rather than a log line: with `evaluation:` configured, a
+  store that could not persist means the run holds a record whose learning
+  did not demonstrably happen — and a file-backed store updates its in-memory
+  baseline before the flush that failed, so "failed" and "may have happened"
+  are the same observation. The pending entry stays, the batch fails, and the
+  Collector accepts no further record for that run until it is restarted.
+  Without `evaluation:`, an `Observe` failure is still reported and still
+  never fatal. The pending entry itself is durable in both halves — contents
+  fsynced and the parent directory synced after the rename and after the
+  removal — because a rename that reached only the page cache is one a host
+  crash can undo.
+
+#### Fixed
+
+- **The fidelity indicator never left the Collector** (task 075). The mapping
+  computed it, the outbound span carried it, and the control plane's ingest
+  envelope accepted it — but the *processor's* envelope carried `version`,
+  `sequence`, `behavioral_profile` and `record` and nothing else, so the value
+  was dropped on the way out. `DecisionRecord` has no attributes, so nothing
+  downstream could recover it either: the live view was told `transport` for
+  every record that arrived this way, including the ones whose operation name
+  came from a GenAI or OpenInference convention. Fidelity reached a live view
+  only for a producer that POSTed to `/v1` and filled the field itself.
+
+  `fidelity` now rides beside the record in the processor's ingest envelope,
+  exactly as `behavioral_profile` already does and for the identical stated
+  reason — it is metadata about how the record was *produced*, which the engine
+  has no opinion about. The processor reads it at the ingest call site from the
+  same `Result` that produced the span attribute, so the two reports of one
+  mapping cannot disagree.
+
+  No core change, no `DecisionRecord` change and no schema change: per-behavior
+  persistence is still deferred (task 081), and a comparison delta still carries
+  no fidelity. The value is kept in memory rather than in the sink's pending
+  entry, because a recovered record is only ever re-presented to prove which
+  record occupies a taken sequence — the control plane recognizes that by the
+  record's own digest and replays without reading fidelity.
+
+  Asserted end to end with nothing mocked between a real span and the SSE frame
+  a browser reads: a GenAI tool span arrives as `semantic` and a plain HTTP span
+  as `transport`, in the same run, on the same stream.
+
+### Platform foundation: control plane, storage, environments
+
+#### Added
+
+- **`platform/`: the control-plane domain, as a fourth Go module.** The first
+  platform-layer runtime code — `Project`, `Agent`, `Candidate`,
+  `EvaluationRun`, and opaque `EnvironmentRef` / `BehavioralProfileRef`
+  references — establishing what an evaluation is, what it belongs to, and
+  what may change once one has begun.
+
+  ```text
+  Project
+    └─ Agent
+        └─ Candidate
+            └─ EvaluationRun ──▶ EnvironmentRef
+                            └──▶ BehavioralProfileRef
+  ```
+
+  A separate module at `trustvian-platform`, deliberately **not** under
+  `github.com/trustvian/trustvian`: Go's `internal/` rule turns on
+  import-path ancestry rather than module membership, so a repository-prefixed
+  path would be allowed to import the engine's internal packages, and this one
+  is a compile error instead. The domain itself needed nothing from the core,
+  and adding a dependency to demonstrate the relationship would have been the
+  speculative coupling the boundary exists to prevent — so the module began
+  with none. Aggregation introduced one, on its own merits, in the entry
+  above.
+
+  Identifiers are typed, opaque, and caller-owned: the domain generates none,
+  reads no clock, and requires no UUID format. Candidate metadata is a fixed
+  set of optional descriptive fields rather than a map — bounded by
+  construction, with nothing to alias — and never becomes behavioral identity.
+  A run's `Status` records that an execution finished, never that a candidate
+  passed; gates and promotion are separate later concerns. See [ADR
+  0025](docs/adr/0025-platform-domain-values-with-caller-owned-identity.md).
+
+  **No engine change.** `scripts/check-platform-boundary.sh` enforces both
+  directions of [ADR 0022](docs/adr/0022-core-platform-boundary.md)'s
+  boundary in CI: no core `internal/*` import in the platform, no platform
+  package in the core's build graph, and no platform identifier declared in
+  core runtime code.
+
+  Nothing here is usable yet: no persistence, transport, aggregation,
+  behavioral diff, scorecard, gate, or promotion. Those are later tasks, and
+  each would have been easier to add now than to remove later.
+
+- **Evaluation result aggregation: the platform now consumes engine
+  evidence.** `platform.EvaluationAggregate` folds
+  `trustvian.DecisionRecord` values into a bounded, fixed-shape summary of
+  what one evaluation observed:
+
+  ```text
+  Engine ──▶ DecisionRecord ──▶ EvaluationAggregate
+  ```
+
+  It counts observations, decisions by category, risk levels, approval
+  evidence, and policy-selection shape; summarizes the five numeric signals as
+  `{Count, Sum, Min, Max}` with an explicitly-absent mean when empty; and
+  bounds the evidence in event time. `AddRecord` returns a new aggregate, so
+  the receiver is never mutated and a rejected record leaves it identical.
+
+  **This is the first real platform → core dependency, and it needed no core
+  change** — which is the claim [task
+  050](docs/tasks/v1.0/050-public-serializable-decision-record.md) built
+  `DecisionRecord` to make good on. The platform imports the public API only;
+  `policy.Decision` and `trust.RiskLevel` stay internal, so their small closed
+  sets of string values are re-declared rather than the core's surface being
+  widened.
+
+  **Bounded by construction.** O(1) memory in the number of records: no slice,
+  no map, no retained record, and no deduplication set. Retaining records
+  would make it an accidental event archive, which is a separate capability
+  with its own boundary. One consequence is stated rather than left implicit:
+  duplicates count twice, because idempotency needs a retention window only an
+  ingest boundary can define.
+
+  **Evidence, not judgement.** No score, grade, pass, promotability,
+  critical-violation count, or new-behavior count — each needs context the
+  aggregate does not hold, and would become the field people read instead of
+  the gate. See [ADR
+  0026](docs/adr/0026-evaluation-aggregation-is-bounded-evidence.md).
+
+  Malformed input fails closed: every consumed field is validated before any
+  state changes, and nothing is clamped or coerced. Cross-environment records
+  are refused. `MatchedDefault` and `PolicyRule` are validated as one pairing,
+  so a hand-built record cannot claim a rule matched while naming none.
+  `NewEvaluationAggregate` returns an error rather than binding evidence to an
+  invalid or zero-value run, and a zero-value aggregate accepts no record at
+  all — both zero values are writable from any package, since unexported
+  fields prevent mutation rather than construction. Rejection paths echo only
+  a bounded preview of untrusted strings, so a malformed record cannot turn an
+  error into an amplification primitive. `AddRecord` costs 86 ns and zero
+  allocations.
+
+- **Behavioral diff: which behavioral shapes changed between two
+  evaluations.** `BehaviorCollector` reduces a `DecisionRecord` stream into a
+  bounded set of behaviors; `BehaviorSnapshot` is the detached, deterministic
+  result; `CompareBehaviorSnapshots` reports each behavior as `Added`,
+  `Removed` or `Shared` with counts and normalized frequencies.
+
+  ```text
+  DecisionRecord ──▶ BehaviorCollector ──▶ BehaviorSnapshot ──▶ BehaviorDiff
+  ```
+
+  The comparison key is `FingerprintID` and nothing else — not actor, session,
+  candidate, run, profile, commit, or digest. A diff keyed by any of those
+  would report change every time a candidate was rebuilt.
+
+  **`EvaluationAggregate` is unchanged.** [ADR
+  0026](docs/adr/0026-evaluation-aggregation-is-bounded-evidence.md) made it
+  O(1) and left this task to bring its own bounded contract; this is that
+  contract, as a separate reducer. An evaluation that will never be compared
+  pays nothing for behavioral bookkeeping.
+
+  **Bounded, and loud when it cannot answer.** At most 512 distinct behaviors
+  per collector and 1,024 deltas per diff; every retained string capped at 256
+  bytes and rejected rather than truncated, because two behaviors must not
+  merge because a name was shortened. A 513th distinct behavior marks the
+  collector **permanently incomplete**, and an incomplete snapshot **cannot be
+  compared** — silently comparing the first 512 would produce a confident,
+  specific, wrong "new behavior" count.
+
+  Fingerprint identity and behavior descriptor must agree **one-to-one, both
+  ways**. One fingerprint with two shapes would merge two behaviors; one shape
+  under two fingerprints would be reported as removed-and-added, claiming
+  behavior changed when only its encoding did. Both fail closed, in the
+  collector and again during comparison. The platform never recomputes the
+  core's hash to check this, so the fingerprint algorithm stays free to
+  change.
+
+  Rates are derived from integer counts at comparison time, so equal counts
+  give identical rates whatever order records arrived in. Environments must
+  match; candidate, run and profile references may differ, since [task
+  051](docs/tasks/v1.0/051-behavioral-profile-learning-scope-isolation.md)
+  kept learning scope out of behavioral identity.
+
+  **Evidence, not judgement.** No drift score, severity, threshold, pass, or
+  promotability. `AddedCount` is the factual basis a later gate may build on.
+  See [ADR
+  0027](docs/adr/0027-behavioral-diff-compares-bounded-snapshots.md).
+
+- **Evaluation scorecards: one fixed-shape comparison of two evaluations.**
+  `platform.NewEvaluationScorecard` composes the evidence tasks 053 and 054
+  already produce:
+
+  ```text
+  reference EvaluationAggregate ───────┐
+  BehaviorDiff(reference → candidate) ─┼──▶ EvaluationScorecard
+  candidate EvaluationAggregate ───────┘
+  ```
+
+  It reports how the decision, risk, approval and policy-selection
+  distributions moved, how the five numeric signals moved, and how much
+  behavioral presence overlapped — counts, rates and signed deltas.
+
+  **No third reducer.** Records were consumed once, by two reducers designed
+  against the same stream; re-reading them would be a third ingestion path
+  with a third chance to disagree. Both aggregates are required, because
+  comparison is the point, and the diff cannot be derived from them nor they
+  from it.
+
+  **Evidence must describe one comparison.** Each aggregate is matched
+  against its own side of the diff, all three must agree on the environment,
+  and both observation counts must match — catching the case where one
+  reducer saw records the other did not. There is no partial card.
+
+  **Fixed-shape and O(1).** Construction costs 214 ns and zero allocations
+  for a 1,024-delta comparison over 2,048 records — identical to an empty
+  one, because only summary accessors are read. The diff's deltas are not
+  copied; a caller wanting per-behavior rows reads the `BehaviorDiff` it
+  already holds.
+
+  **Still evidence, not judgement.** No overall score, weight, threshold, or
+  verdict: a composite would let one dimension offset another, which the
+  roadmap forbids, and would become the number read instead of the gate.
+  Empty denominators are undefined rather than zero — two evaluations that
+  observed nothing are unmeasured, not identical.
+
+  **Unsupported semantics are absent, not zero.** Critical policy violations,
+  blocked or unapproved sensitive actions, per-rule compliance and delegation
+  stability have no field, because no current evidence can express them.
+  Reporting `0` would be a false security claim. Task 056 deliberately did not
+  infer or define those semantics: gates depending on policy severity,
+  resource sensitivity, authorization semantics, or per-event correlation the
+  aggregate does not retain remain deferred until explicit evidence contracts
+  exist. See [ADR
+  0028](docs/adr/0028-scorecards-are-fixed-shape-comparative-evidence.md).
+
+- **Deterministic hard gates: a scorecard plus explicit limits becomes a
+  verdict.** `platform.EvaluateEvaluationGate` pairs an `EvaluationScorecard`
+  with a caller-owned `EvaluationGatePolicy` and returns a fixed-shape
+  `EvaluationGateResult` carrying five checks and a PASS/FAIL `GateVerdict`.
+
+  The five checks, all evaluated on every call: reference evidence present,
+  candidate evidence present, added behaviors within limit, candidate block
+  decisions within limit, candidate critical-risk observations within limit.
+  PASS requires all five, and there is no short-circuit — a FAIL reports
+  everything measured.
+
+  Every comparison is an integer. No mean, rate, delta, or presence ratio
+  takes part in a verdict: floating-point sums are not guaranteed
+  bit-identical under record reordering, and an average is precisely how
+  strength in one dimension offsets a condition in another.
+
+  Fail-closed throughout. An unbound policy or unbound scorecard is an error.
+  A *valid* evaluation that observed nothing is not — it fails the two
+  non-configurable sufficiency gates, which exist because a candidate that
+  ran zero records satisfies every maximum. `0` is a strict limit rather than
+  "unset", so a private marker separates the strictest policy from an absent
+  one.
+
+  Names stay factual: a block decision is the policy engine doing what it was
+  configured to do, not a violation; a critical-risk observation is a risk
+  classification, not an incident. Gates the evidence cannot support —
+  critical policy violations, sensitive-resource access, approval compliance,
+  per-rule or delegation compliance — remain absent rather than reported as
+  zero, and `docs/ROADMAP.md` now separates implemented evidence-backed gates
+  from those deferred until an explicit evidence contract exists.
+
+  A verdict performs nothing. PASS means only that the configured gates
+  passed; promotion (task 066, below) is a separate, recorded decision. No
+  change to `EvaluationScorecard`, no core runtime change, no persistence, and
+  no transport. See [ADR
+  0029](docs/adr/0029-hard-gates-use-explicit-integer-evidence.md).
+
+- **Local platform persistence: evaluation state survives a restart.**
+  `platform.OpenSQLiteStore` provides a local SQLite adapter behind two narrow
+  capabilities — `ControlStore` for projects, agents and candidates, and
+  `EvaluationStore` for evaluation runs and their evidence. There is no
+  generic `Database` interface; persistence is expressed in domain terms.
+
+  It persists what cannot be rebuilt — the entities, the
+  `EvaluationAggregate`, and the `BehaviorSnapshot` with its bounded entries.
+  `BehaviorDiff`, `EvaluationScorecard` and `EvaluationGateResult` are
+  deterministic functions of those and are recomputed on demand, so there is
+  one source of truth rather than a stored copy that can disagree.
+
+  Fail-closed throughout. Creates never upsert, so the same `CandidateID` with
+  a different artifact digest cannot rewrite what a finished run was evaluated
+  against. Identity stays caller-owned — the store generates no ID. Runs
+  update by compare-and-swap and are rebuilt by replaying their domain
+  transitions, so a corrupt chronology fails the same invariant a live value
+  would. Aggregate and snapshot commit in one transaction; evidence never
+  moves backwards; saturation is sticky, so an incomplete snapshot stays
+  incomplete and is still refused by `CompareBehaviorSnapshots`.
+
+  Restored evidence is validated before its private bound marker is set, and
+  corrupt rows return an error rather than a repaired value. Counters are
+  stored as canonical base-10 text, round-tripping the whole `0 … MaxUint64`
+  domain — SQLite `INTEGER` is signed 64-bit, and narrowing would corrupt
+  large values silently. Timestamps keep nanosecond precision and their
+  numeric zone offset rather than being normalized to UTC.
+
+  Unknown schema versions fail closed, and so do recognized tables with no
+  version metadata: adopting those as fresh would silently take ownership of
+  data this code has never seen. Schema creation and version stamping commit
+  together.
+
+  Raw event history is deliberately absent — no table grows per event — and
+  core baseline state is not duplicated; the engine's own stores keep owning
+  it. No API, transport, realtime, promotion workflow, or PostgreSQL platform
+  backend, and no core runtime change. Adds a pure-Go SQLite driver
+  (`modernc.org/sqlite`) to the platform module, so no CGO requirement is
+  introduced. See [ADR
+  0030](docs/adr/0030-local-persistence-stores-authoritative-bounded-state.md).
+
+- **Local control-plane API and sequenced ingest.** `platform.ControlPlane`
+  is the authoritative service layer — it creates and reads the
+  project/agent/candidate/run hierarchy, drives a run's lifecycle, ingests
+  evidence, reports progress, and derives a comparison. `platform/httpapi`
+  serves a local `/v1` HTTP surface over it and computes nothing: a
+  source-scanning test fails if the adapter ever references the comparison,
+  scorecard or gate constructors, or a store type.
+
+  Ingest consumes the public `trustvian.DecisionRecord` and nothing else. No
+  route analyzes a raw `Event` — the producer's engine already made the
+  decision, and a second engine host would train a second baseline. The
+  behavioral profile travels beside the record rather than inside it, because
+  `DecisionRecord` carries no learning scope, and it must match the run's.
+
+  **Retries are safe without retaining history.** Task 053 made a duplicate
+  record count twice on purpose, so an ordinary HTTP retry would corrupt the
+  evidence. Each accepted record carries an explicit monotonic per-run
+  sequence; durable state is that sequence plus the digest of the last
+  accepted record — two values, whatever the run ingested. The expected
+  sequence applies, an identical retry of the previous one replays without
+  re-aggregating, and a divergent retry, a stale number or a gap all fail
+  closed. Sequences travel as canonical decimal strings so a browser client
+  cannot round them.
+
+  Evidence and cursor commit in one transaction, so neither can advance
+  without the other. A restarted process resumes a running evaluation from
+  stored evidence through a package-private snapshot-to-collector
+  restoration — no public constructor was added, because one would let any
+  caller forge collector state.
+
+  Behavioral saturation degrades rather than fails: the 513th distinct
+  behavior is still applied to the aggregate, the snapshot reports
+  `behavior_complete = false`, and a later comparison refuses the incomplete
+  evidence instead of manufacturing a scorecard from it.
+
+  **SQLite schema version 2**, with a real forward migration from version 1
+  that preserves every row. A migrated run with `N` records starts at
+  sequence `N+1`; no digest is invented for a record this code never saw, so a
+  retry of `N` conflicts rather than guessing.
+
+  Request bodies are bounded at 256 KiB before decoding; internal errors are
+  sanitized, with storage corruption reported as `500` rather than a
+  client-fixable `400`. Gate limits are required inputs with zero distinct
+  from omitted, because zero is a strict limit. Domain types still carry no
+  JSON tags — the DTOs own the wire.
+
+  No realtime, no listener (task 062's local runtime composes one, on
+  loopback by default), no CORS, no authentication or access-control model,
+  no promotion, no raw event history, no new binary, and no core runtime change. See [ADR
+  0031](docs/adr/0031-control-plane-owns-ingest-and-http-is-an-adapter.md).
+
+- **Bounded realtime infrastructure.** `platform.InMemoryRealtimeBus`
+  publishes notifications about committed control-plane state, and
+  `GET /v1/realtime` streams them over Server-Sent Events with project, agent
+  and run filtering. A future CLI, TUI or WebUI can watch an evaluation live
+  without polling the database.
+
+  **Durable state stays authoritative; realtime is notification.** Publication
+  happens only after a mutation commits, so a subscriber cannot observe state
+  that never existed — and a delivery failure never changes a committed
+  operation's outcome, because reporting one as failed would make a client
+  retry a write that already landed. Failed, conflicted and *replayed*
+  operations publish nothing: a network retry that produced no second durable
+  record produces no second live observation.
+
+  **Bounded at every dimension.** Each subscriber owns a fixed-capacity queue,
+  the subscriber count is capped, and one that falls behind is disconnected
+  rather than blocking the publisher or silently losing events. Filtering
+  happens before enqueue, so a busy run cannot overflow a subscriber watching
+  a quiet one. Worst-case memory is subscribers × queue, with no history term.
+
+  **No replay.** The bus retains nothing after delivery, `Last-Event-ID` is
+  ignored, and no SSE `id:` is emitted. Every connection receives
+  `stream_ready` with `resync_required` — sent *after* the subscription is
+  registered, so nothing occurring during the resync is lost.
+
+  Six event kinds, each matching a mutation that committed: evaluation
+  created, started, completed, failed, cancelled, and one observation per
+  applied record. No `policy_violation`, `baseline_update` or `gate_update` —
+  those name semantics the platform cannot currently prove. An observation is
+  a bounded projection carrying no attributes, tool arguments, prompts,
+  completions, contributors or policy reason, so task 050's privacy boundary
+  holds; a test drives a real engine with a distinctive attribute and asserts
+  it never reaches the wire.
+
+  Realtime is optional: a control plane built without a publisher behaves
+  exactly as before, and a handler without a subscriber reports
+  `realtime_unavailable` while every other route keeps working. No schema
+  change (still version 2), no broker, no polling, no WebSocket, no CORS, no
+  authentication, no listener, no event-history table, and no core runtime
+  change. See [ADR
+  0032](docs/adr/0032-realtime-is-bounded-ephemeral-not-authoritative.md).
+
+- **PostgreSQL platform backend.** The control plane can now persist to a shared
+  PostgreSQL database instead of a local SQLite file, so several processes can
+  work against one set of authoritative state. **SQLite remains the default and
+  `make local` is unchanged** — it needs no database, no container and no
+  configuration. PostgreSQL is opt-in:
+
+  ```bash
+  TRUSTVIAN_PLATFORM_POSTGRES_DSN=postgres://… trustvian-local --backend postgres
+  ```
+
+  The DSN comes from the environment rather than a flag because a command line is
+  visible through `ps`, and it never appears in a log, an error, the startup
+  output, `runtime.json` or any `/v1` response. An unknown backend, or PostgreSQL
+  without a DSN, fails before the listener binds; nothing ever falls back from a
+  backend that was asked for explicitly.
+
+  Backend selection exists only at the composition root. `/v1`, SSE, the CLI, the
+  TUI and the WebUI cannot tell which database answered, and one logical schema
+  version governs both physical schemas. Timestamps and uint64 counters are
+  stored as text on both backends so a zone offset, nanosecond precision and the
+  full unsigned range survive exactly — a native timestamp type would normalize
+  and truncate values that `/v1` publishes.
+
+  Multiple processes sharing one PostgreSQL database share authoritative state
+  but **not** realtime notifications; each keeps its own in-process bus.
+  Cross-node realtime remains a later milestone. No authentication, environment
+  model, promotion workflow or event history is included. No new dependency: the
+  PostgreSQL driver was already in the repository for the engine's store. See
+  [docs/tasks/v1.0/064-postgresql-platform-backend.md](docs/tasks/v1.0/064-postgresql-platform-backend.md)
+  and [ADR 0037](docs/adr/0037-postgresql-is-the-shared-platform-persistence-backend.md).
+
+- **Environment model** (task 065). A project now owns the environments its runs
+  name. `POST /v1/environments` registers one, and `POST /v1/evaluation-runs`
+  refuses an `environment` the project has not registered (`404`) or has
+  archived (`409`) — so `"stagin"` is an error rather than a perfectly valid run
+  whose comparisons describe a population of one. Existing databases keep
+  working: the v2 → v3 migration backfills every distinct
+  `(project, environment)` pair the stored runs reference, unranked and active,
+  dropping, merging and renaming nothing.
+
+  Identity is `(ProjectID, EnvironmentRef)` — the reference a run already
+  records, with no second identifier to disagree with it — and uniqueness is per
+  project, so two projects may each own a `staging`. There is no delete at any
+  layer: archiving closes an environment to new work while keeping every
+  historical reference resolvable, and is reversible.
+
+  Ordering is an optional per-project integer rank and one primitive,
+  `CanPromote(from, to)`, true iff both environments belong to one project, are
+  active, are ranked, and the target's rank is strictly greater. Unranked is a
+  real state rather than rank 0. **Ordering is not authorization** — the
+  promotion workflow that decides whether a candidate *may* move is a later
+  milestone, and nothing here moves one.
+
+  A project may create at most 64 environments, enforced inside a transaction
+  that serializes on the owning project row (`SELECT … FOR UPDATE` on
+  PostgreSQL, a write-intent touch on SQLite) so concurrent creation cannot
+  exceed it; different projects never block each other. The cap governs
+  **creation, not existence**, which is what lets a migrated database hold more
+  and still be read, configured and archived.
+  `GET /v1/projects/{project_id}/environments` is the platform API's first
+  collection route, bounded at 64 rows per page and paginating on the immutable
+  `ref` rather than the mutable rank, so enumeration is exact under concurrent
+  renaming and re-ranking. `trustvian env create|get|list|set|archive|activate`
+  drives all of it over `/v1`, and `env list` follows every page.
+
+  `CompareEvaluations` now requires both runs to belong to one project, checked
+  before any evidence is loaded: project-scoped refs made the existing
+  ref-equality check a hazard when two projects each own a `staging`.
+  `SchemaVersion` is 3 on both backends. See
+  [docs/tasks/v1.0/065-environment-model.md](docs/tasks/v1.0/065-environment-model.md)
+  and [ADR 0039](docs/adr/0039-environments-are-project-owned-ranked-references.md).
+
 - **Promotion workflow** (task 066). The platform can now record that a
   candidate's evidence was gated and that the verdict accepted — or refused —
   advancement from one environment toward another. One sentence bounds the
@@ -1197,691 +1899,50 @@ actually depend on.
   [docs/tasks/v1.0/066-promotion-workflow.md](docs/tasks/v1.0/066-promotion-workflow.md)
   and [ADR 0040](docs/adr/0040-promotions-are-immutable-evidence-backed-platform-decisions.md).
 
-- **Environment model** (task 065). A project now owns the environments its runs
-  name. `POST /v1/environments` registers one, and `POST /v1/evaluation-runs`
-  refuses an `environment` the project has not registered (`404`) or has
-  archived (`409`) — so `"stagin"` is an error rather than a perfectly valid run
-  whose comparisons describe a population of one. Existing databases keep
-  working: the v2 → v3 migration backfills every distinct
-  `(project, environment)` pair the stored runs reference, unranked and active,
-  dropping, merging and renaming nothing.
-
-  Identity is `(ProjectID, EnvironmentRef)` — the reference a run already
-  records, with no second identifier to disagree with it — and uniqueness is per
-  project, so two projects may each own a `staging`. There is no delete at any
-  layer: archiving closes an environment to new work while keeping every
-  historical reference resolvable, and is reversible.
-
-  Ordering is an optional per-project integer rank and one primitive,
-  `CanPromote(from, to)`, true iff both environments belong to one project, are
-  active, are ranked, and the target's rank is strictly greater. Unranked is a
-  real state rather than rank 0. **Ordering is not authorization** — the
-  promotion workflow that decides whether a candidate *may* move is a later
-  milestone, and nothing here moves one.
-
-  A project may create at most 64 environments, enforced inside a transaction
-  that serializes on the owning project row (`SELECT … FOR UPDATE` on
-  PostgreSQL, a write-intent touch on SQLite) so concurrent creation cannot
-  exceed it; different projects never block each other. The cap governs
-  **creation, not existence**, which is what lets a migrated database hold more
-  and still be read, configured and archived.
-  `GET /v1/projects/{project_id}/environments` is the platform API's first
-  collection route, bounded at 64 rows per page and paginating on the immutable
-  `ref` rather than the mutable rank, so enumeration is exact under concurrent
-  renaming and re-ranking. `trustvian env create|get|list|set|archive|activate`
-  drives all of it over `/v1`, and `env list` follows every page.
-
-  `CompareEvaluations` now requires both runs to belong to one project, checked
-  before any evidence is loaded: project-scoped refs made the existing
-  ref-equality check a hazard when two projects each own a `staging`.
-  `SchemaVersion` is 3 on both backends. See
-  [docs/tasks/v1.0/065-environment-model.md](docs/tasks/v1.0/065-environment-model.md)
-  and [ADR 0039](docs/adr/0039-environments-are-project-owned-ranked-references.md).
-
-- **PostgreSQL platform backend.** The control plane can now persist to a shared
-  PostgreSQL database instead of a local SQLite file, so several processes can
-  work against one set of authoritative state. **SQLite remains the default and
-  `make local` is unchanged** — it needs no database, no container and no
-  configuration. PostgreSQL is opt-in:
-
-  ```bash
-  TRUSTVIAN_PLATFORM_POSTGRES_DSN=postgres://… trustvian-local --backend postgres
-  ```
-
-  The DSN comes from the environment rather than a flag because a command line is
-  visible through `ps`, and it never appears in a log, an error, the startup
-  output, `runtime.json` or any `/v1` response. An unknown backend, or PostgreSQL
-  without a DSN, fails before the listener binds; nothing ever falls back from a
-  backend that was asked for explicitly.
-
-  Backend selection exists only at the composition root. `/v1`, SSE, the CLI, the
-  TUI and the WebUI cannot tell which database answered, and one logical schema
-  version governs both physical schemas. Timestamps and uint64 counters are
-  stored as text on both backends so a zone offset, nanosecond precision and the
-  full unsigned range survive exactly — a native timestamp type would normalize
-  and truncate values that `/v1` publishes.
-
-  Multiple processes sharing one PostgreSQL database share authoritative state
-  but **not** realtime notifications; each keeps its own in-process bus.
-  Cross-node realtime remains a later milestone. No authentication, environment
-  model, promotion workflow or event history is included. No new dependency: the
-  PostgreSQL driver was already in the repository for the engine's store. See
-  [docs/tasks/v1.0/064-postgresql-platform-backend.md](docs/tasks/v1.0/064-postgresql-platform-backend.md)
-  and [ADR 0037](docs/adr/0037-postgresql-is-the-shared-platform-persistence-backend.md).
-
-- **Minimal web control plane.** `make local` now prints a `Web:` URL alongside
-  the API, serving a browser UI from the same loopback listener: open projects,
-  agents, candidates and runs by ID, drive a run's lifecycle, watch one run live
-  over SSE, and compare two runs. It is a static same-origin client of `/v1` —
-  no server-side business logic, no framework, no build toolchain and no new
-  dependency in any module. Server values render as text only under a strict
-  deny-by-default CSP, gate verdicts come from the server, and nothing is stored
-  in the browser. There is deliberately no list or search view: the control
-  plane has no collection route, and adding one would freeze undesigned
-  pagination semantics. See [docs/webui.md](docs/webui.md) and
-  [ADR 0036](docs/adr/0036-webui-is-a-same-origin-adapter-over-v1.md).
-
-- **Integrated local runtime.** `make local` starts the whole local platform in
-  one command: file-backed SQLite, the control plane, the realtime bus and the
-  `/v1` HTTP API on a loopback listener with an OS-assigned port. See
-  [docs/local-development.md](docs/local-development.md) and
-  [ADR 0035](docs/adr/0035-local-runtime-composes-platform-without-reversing-modules.md).
-
-- **Automatic local endpoint discovery.** The runtime publishes
-  `.trustvian/runtime.json`, and platform commands plus the TUI read it, so
-  `--api-url` is no longer required for the local workflow. Explicit
-  `--api-url` always wins, a discovered endpoint must be `http` on numeric
-  loopback in exactly one JSON document under 4 KiB, and omitting both with no
-  runtime running exits `3` rather than being reported as a usage error.
-  Presence decides, not emptiness: `--api-url ""` is a usage error (`2`) and
-  reads no discovery file, so an unset variable in CI can never redirect a
-  command — a gate comparison least of all.
-
-  The runtime is unauthenticated and binds loopback only — there is no flag to
-  expose it. Authentication and remote access remain task 070, and no WebUI,
-  PostgreSQL backend, environment model, promotion or event history is included
-  here.
-
-- **Interactive `trustvian tui`.** A run-scoped realtime terminal dashboard:
-  `trustvian tui --run-id <id> [--api-url <url>]` watches one evaluation run
-  live, combining authoritative HTTP reads with SSE notifications. It is
-  read-only — three GET endpoints — and imports nothing from the platform
-  module. See [docs/tui.md](docs/tui.md) and
-  [ADR 0034](docs/adr/0034-tui-is-a-bounded-realtime-http-client.md).
-
-  Automatic reconnect with bounded backoff, resubscribing before
-  resynchronizing so nothing committed during the gap is lost. A bounded live
-  observation window of 100 rows, cleared on every reconnect and labelled as
-  the current stream rather than history. Terminal-control sanitization of
-  every server-supplied string, so remote text cannot move the cursor, clear
-  the screen or retitle the terminal.
-
-  Exit codes: `0` normal exit, `2` usage, `3` operational. `1` is not used —
-  it means a failed gate, and only for `eval compare`.
-
-  Not included: integrated local startup (`--api-url` is required and has no
-  default), event history or replay, promotion, a WebUI, and authentication.
-
-- **Developer CLI control-plane commands.** `trustvian project`,
-  `trustvian agent`, `trustvian candidate` and `trustvian eval` drive a
-  local control plane over its `/v1` HTTP API, so an evaluation can be
-  run from a shell script or a CI job. The CLI is an adapter: it imports
-  nothing from the platform module, touches no database, and computes no
-  behavioral diff, scorecard or gate verdict. See
-  [docs/platform-cli.md](docs/platform-cli.md) and
-  [ADR 0033](docs/adr/0033-developer-cli-is-a-thin-http-adapter.md).
-
-  Not included, and deliberately: no integrated local server — `--api-url`
-  is required and points at a control plane you are already running. No
-  `watch`/realtime command, no authentication, no list or search
-  commands.
-
-- **Machine-readable CLI output.** Every control-plane command accepts
-  `--json`, which writes the API's own successful response body to stdout
-  and its error envelope to stderr. The CLI adds no wrapper and removes no
-  field, so those fields inherit the `/v1` contract rather than defining a
-  second namespace — additive server fields reach the caller unchanged.
-
-- **CI-safe `eval compare` exit codes.** `0` gate PASS, `1` gate FAIL, `2`
-  usage, `3` API or network failure. The comparison evidence is written to
-  stdout on both `0` and `1`, because a gate FAIL is a result to publish
-  rather than an error.
-
-  Exit codes are **scoped by command family**, which resolves a conflict
-  the roadmap had carried since the milestone was planned. `analyze`,
-  `baseline` and `version` keep `0` success / `1` failure / `2` top-level
-  usage exactly as released; the new families leave `1` unused, which is
-  what frees it to mean gate failure on `eval compare` alone. An API
-  error is never reported as a gate failure. See
-  [docs/compatibility.md § CLI](docs/compatibility.md#cli).
-
-- **OTel Collector evaluation ingest** (task 073). An optional `evaluation:`
-  block makes the Collector processor post `Result.DecisionRecord()` to an
-  existing evaluation run over `/v1`, so a workload instrumented with
-  OpenTelemetry and nothing else can be evaluated rather than only enriched.
-  The record is projected from the same `Result` that produces the
-  `trustvian.*` attributes — `Analyze` still runs once per span — and the
-  configured behavioral profile also selects the Engine's learning scope, so
-  two candidates never train one baseline. Omitting the block changes nothing.
-  See [ADR 0038](docs/adr/0038-collector-evaluation-ingest-is-an-http-adapter.md).
-
-  **A lost response is reconciled, not assumed away.** A POST that is written
-  in full, committed, and loses only its reply is indistinguishable from one
-  that never arrived — so the sink does not guess. Failures that prove the
-  record was not applied (a failed dial, a refused redirect, a 4xx) free the
-  sequence; everything else holds it, bound to that exact record, and
-  re-presents the same record at the same sequence, which the control plane's
-  digest rule answers `replayed`. One synchronous attempt, no queue, no
-  background worker, and no record ever sent under a sequence another record
-  already claimed.
-
-  **Learning follows confirmation, and survives a restart.**
-  `Engine.Observe` runs once the control plane has accepted a record —
-  never for one it declined, and never for one whose outcome is unknown.
-  "Unknown" is not "committed", and with a durable `storage:` backend the
-  difference outlives the process: learning applied on the chance a record
-  landed is written to disk, and survives the restart that proves it never
-  did. So the record in flight is itself durable (`pending_state_path`, one
-  entry, written before the request leaves), and startup settles it against
-  the run's own cursor: a record the run never received is discarded
-  unlearned, and one it already holds is replayed at its own sequence and
-  learned exactly once. A confirmed record resumes only when the run expects
-  exactly the sequence after it; anything else means a second writer advanced
-  the run, and startup refuses rather than stepping over evidence nothing
-  local learned from. The only state a restart cannot settle — the process
-  dying between confirming a record and releasing it — is reported at ERROR
-  and not learned from twice, because a fingerprint that looks more familiar
-  than the evidence supports is a silent weakening.
-
-  **A store failure is part of that contract.** `Engine.Observe`'s error
-  reaches the sink rather than a log line: with `evaluation:` configured, a
-  store that could not persist means the run holds a record whose learning
-  did not demonstrably happen — and a file-backed store updates its in-memory
-  baseline before the flush that failed, so "failed" and "may have happened"
-  are the same observation. The pending entry stays, the batch fails, and the
-  Collector accepts no further record for that run until it is restarted.
-  Without `evaluation:`, an `Observe` failure is still reported and still
-  never fatal. The pending entry itself is durable in both halves — contents
-  fsynced and the parent directory synced after the rename and after the
-  removal — because a rename that reached only the page cache is one a host
-  crash can undo.
-
-### Added
-
-- **Trustvian says which instrumentation layer a behavior came from** (task 083,
-  partial). A model call, a named tool call, a retrieval and a plain transport
-  operation were all equally anonymous in a rendered view, and two of them shared
-  a category:
-  `external` meant both "a model was consulted" and "a document store was queried".
-
-  A new closed classification — `model`, `tool`, `retrieval`, `transport`, or not
-  classified — now rides exactly where `trustvian.fidelity` rides: the outbound
-  span attribute `trustvian.behavior.layer`, the ingest envelope's optional
-  `behavior_layer`, and the realtime observation. The WebUI inspector states it in
-  a sentence, with distinct wording for "not classified" and for a value the page
-  does not recognize.
-
-  **It is not behavioral identity, and that is the point.** There is deliberately
-  no sixth `OperationCategory`: that field is a `StableFeatures` dimension, so a
-  `model` value would have re-fingerprinted every model call a producer was already
-  emitting and discarded those baselines — to improve a label. The classification
-  costs no migration, and a test asserts the fingerprint, the whole
-  `StableFeatures` tuple and the learning path are unchanged across every layer
-  value.
-
-  **A layer is claimed exactly when fidelity is `semantic`.** One gate, so two
-  indicators derived from one table cannot disagree about one span. Absent means
-  *not classified* rather than `transport`, which is the one place this differs from
-  fidelity: silence classified nothing, while "nothing proved a semantic name"
-  really is transport.
-
-  Degradation is unchanged: a producer emitting no convention gets byte-identical
-  behavioral results and is classified `transport`. Schema version stays 5.
-
-### Changed
-
-- **What `max-added-behaviors` counts is now stated** (task 083). It counts
-  behavioral *identities*, and a producer emitting agent-oriented telemetry
-  observes one act at two layers — the tool call and the request the tool made —
-  so one act can consume two of the budget:
-
-  ```text
-  tool  · export_customer                 one identity
-  http  · POST → export.localhost      another identity
-  ```
-
-  That was already true and was written down nowhere. It is now in the flag's own
-  help, `docs/platform-cli.md` and `docs/OPENTELEMETRY.md`. At a limit of `0` it is
-  invisible; it matters the first time a budget is nonzero.
-
-  **The correction is deferred, and the task stays open.** Folding the two into one
-  counted change requires knowing the request is the tool call's child, and no
-  parent identity reaches the evidence boundary — verified by a test that fails
-  when it changes, not assumed. Identity was deliberately *not* folded to work
-  around it: folding drops the destination from behavioral identity, so a tool that
-  started posting to another host would stop changing the behavioral surface, which
-  trades a counting annoyance for a detection hole. Missing correlation falls back
-  to today's count rather than to a guess; nothing is inferred from timestamps,
-  adjacency or similar names, and no observation is dropped to make a count
-  smaller.
-  [ADR 0047](docs/adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md)
-  records where the fix belongs and what it must not do.
-
-### Fixed
-
-- **The fidelity indicator never left the Collector** (task 075). The mapping
-  computed it, the outbound span carried it, and the control plane's ingest
-  envelope accepted it — but the *processor's* envelope carried `version`,
-  `sequence`, `behavioral_profile` and `record` and nothing else, so the value
-  was dropped on the way out. `DecisionRecord` has no attributes, so nothing
-  downstream could recover it either: the live view was told `transport` for
-  every record that arrived this way, including the ones whose operation name
-  came from a GenAI or OpenInference convention. Fidelity reached a live view
-  only for a producer that POSTed to `/v1` and filled the field itself.
-
-  `fidelity` now rides beside the record in the processor's ingest envelope,
-  exactly as `behavioral_profile` already does and for the identical stated
-  reason — it is metadata about how the record was *produced*, which the engine
-  has no opinion about. The processor reads it at the ingest call site from the
-  same `Result` that produced the span attribute, so the two reports of one
-  mapping cannot disagree.
-
-  No core change, no `DecisionRecord` change and no schema change: per-behavior
-  persistence is still deferred (task 081), and a comparison delta still carries
-  no fidelity. The value is kept in memory rather than in the sink's pending
-  entry, because a recovered record is only ever re-presented to prove which
-  record occupies a taken sequence — the control plane recognizes that by the
-  record's own digest and replays without reading fidelity.
-
-  Asserted end to end with nothing mocked between a real span and the SSE frame
-  a browser reads: a GenAI tool span arrives as `semantic` and a plain HTTP span
-  as `transport`, in the same run, on the same stream.
-
-### Security
-
-- **Per-actor fingerprint state is now bounded.** `Baseline.Fingerprints`
-  had no upper limit, and `Fingerprint.ID` is derived from `Event` fields
-  the caller supplies — so one actor emitting a distinct operation name
-  per call could grow its baseline, and its PostgreSQL row, without
-  limit. `internal/baseline` now caps a baseline at 512 fingerprint
-  identities and refuses admission of new ones beyond it.
-
-  The bound refuses rather than evicts. Nothing already learned is
-  removed to make room, because an absent fingerprint scores as
-  maximally novel with zero confidence and therefore contributes nothing
-  to trust — evicting learned entries under pressure would let a flood of
-  manufactured fingerprints suppress detection for an actor rather than
-  merely cost memory. See
-  [ADR 0019](docs/adr/0019-bounded-fingerprint-admission.md).
-
-  A baseline already holding more than 512 identities, learned before
-  this bound existed, keeps every one of them and keeps updating them; it
-  admits nothing new and is never truncated. Upgrading from `v0.9`
-  requires no migration and loses no learned state.
-
-  Behavioral change, confined to actors past the cap: a new fingerprint
-  observed by an actor already holding 512 is analyzed and decided
-  normally but is not learned, so it continues to score as unknown.
-  Known fingerprints keep learning regardless of how full the baseline
-  is.
-
-  No public API, configuration, CLI, Collector, or storage schema change.
-
-### Added
-
-- **Bounded realtime infrastructure.** `platform.InMemoryRealtimeBus`
-  publishes notifications about committed control-plane state, and
-  `GET /v1/realtime` streams them over Server-Sent Events with project, agent
-  and run filtering. A future CLI, TUI or WebUI can watch an evaluation live
-  without polling the database.
-
-  **Durable state stays authoritative; realtime is notification.** Publication
-  happens only after a mutation commits, so a subscriber cannot observe state
-  that never existed — and a delivery failure never changes a committed
-  operation's outcome, because reporting one as failed would make a client
-  retry a write that already landed. Failed, conflicted and *replayed*
-  operations publish nothing: a network retry that produced no second durable
-  record produces no second live observation.
-
-  **Bounded at every dimension.** Each subscriber owns a fixed-capacity queue,
-  the subscriber count is capped, and one that falls behind is disconnected
-  rather than blocking the publisher or silently losing events. Filtering
-  happens before enqueue, so a busy run cannot overflow a subscriber watching
-  a quiet one. Worst-case memory is subscribers × queue, with no history term.
-
-  **No replay.** The bus retains nothing after delivery, `Last-Event-ID` is
-  ignored, and no SSE `id:` is emitted. Every connection receives
-  `stream_ready` with `resync_required` — sent *after* the subscription is
-  registered, so nothing occurring during the resync is lost.
-
-  Six event kinds, each matching a mutation that committed: evaluation
-  created, started, completed, failed, cancelled, and one observation per
-  applied record. No `policy_violation`, `baseline_update` or `gate_update` —
-  those name semantics the platform cannot currently prove. An observation is
-  a bounded projection carrying no attributes, tool arguments, prompts,
-  completions, contributors or policy reason, so task 050's privacy boundary
-  holds; a test drives a real engine with a distinctive attribute and asserts
-  it never reaches the wire.
-
-  Realtime is optional: a control plane built without a publisher behaves
-  exactly as before, and a handler without a subscriber reports
-  `realtime_unavailable` while every other route keeps working. No schema
-  change (still version 2), no broker, no polling, no WebSocket, no CORS, no
-  authentication, no listener, no event-history table, and no core runtime
-  change. See [ADR
-  0032](docs/adr/0032-realtime-is-bounded-ephemeral-not-authoritative.md).
-
-- **Local control-plane API and sequenced ingest.** `platform.ControlPlane`
-  is the authoritative service layer — it creates and reads the
-  project/agent/candidate/run hierarchy, drives a run's lifecycle, ingests
-  evidence, reports progress, and derives a comparison. `platform/httpapi`
-  serves a local `/v1` HTTP surface over it and computes nothing: a
-  source-scanning test fails if the adapter ever references the comparison,
-  scorecard or gate constructors, or a store type.
-
-  Ingest consumes the public `trustvian.DecisionRecord` and nothing else. No
-  route analyzes a raw `Event` — the producer's engine already made the
-  decision, and a second engine host would train a second baseline. The
-  behavioral profile travels beside the record rather than inside it, because
-  `DecisionRecord` carries no learning scope, and it must match the run's.
-
-  **Retries are safe without retaining history.** Task 053 made a duplicate
-  record count twice on purpose, so an ordinary HTTP retry would corrupt the
-  evidence. Each accepted record carries an explicit monotonic per-run
-  sequence; durable state is that sequence plus the digest of the last
-  accepted record — two values, whatever the run ingested. The expected
-  sequence applies, an identical retry of the previous one replays without
-  re-aggregating, and a divergent retry, a stale number or a gap all fail
-  closed. Sequences travel as canonical decimal strings so a browser client
-  cannot round them.
-
-  Evidence and cursor commit in one transaction, so neither can advance
-  without the other. A restarted process resumes a running evaluation from
-  stored evidence through a package-private snapshot-to-collector
-  restoration — no public constructor was added, because one would let any
-  caller forge collector state.
-
-  Behavioral saturation degrades rather than fails: the 513th distinct
-  behavior is still applied to the aggregate, the snapshot reports
-  `behavior_complete = false`, and a later comparison refuses the incomplete
-  evidence instead of manufacturing a scorecard from it.
-
-  **SQLite schema version 2**, with a real forward migration from version 1
-  that preserves every row. A migrated run with `N` records starts at
-  sequence `N+1`; no digest is invented for a record this code never saw, so a
-  retry of `N` conflicts rather than guessing.
-
-  Request bodies are bounded at 256 KiB before decoding; internal errors are
-  sanitized, with storage corruption reported as `500` rather than a
-  client-fixable `400`. Gate limits are required inputs with zero distinct
-  from omitted, because zero is a strict limit. Domain types still carry no
-  JSON tags — the DTOs own the wire.
-
-  No realtime, no listener (composing one is a later task and must default to
-  loopback), no CORS, no authentication or access-control model, no promotion,
-  no raw event history, no new binary, and no core runtime change. See [ADR
-  0031](docs/adr/0031-control-plane-owns-ingest-and-http-is-an-adapter.md).
-
-- **Local platform persistence: evaluation state survives a restart.**
-  `platform.OpenSQLiteStore` provides a local SQLite adapter behind two narrow
-  capabilities — `ControlStore` for projects, agents and candidates, and
-  `EvaluationStore` for evaluation runs and their evidence. There is no
-  generic `Database` interface; persistence is expressed in domain terms.
-
-  It persists what cannot be rebuilt — the entities, the
-  `EvaluationAggregate`, and the `BehaviorSnapshot` with its bounded entries.
-  `BehaviorDiff`, `EvaluationScorecard` and `EvaluationGateResult` are
-  deterministic functions of those and are recomputed on demand, so there is
-  one source of truth rather than a stored copy that can disagree.
-
-  Fail-closed throughout. Creates never upsert, so the same `CandidateID` with
-  a different artifact digest cannot rewrite what a finished run was evaluated
-  against. Identity stays caller-owned — the store generates no ID. Runs
-  update by compare-and-swap and are rebuilt by replaying their domain
-  transitions, so a corrupt chronology fails the same invariant a live value
-  would. Aggregate and snapshot commit in one transaction; evidence never
-  moves backwards; saturation is sticky, so an incomplete snapshot stays
-  incomplete and is still refused by `CompareBehaviorSnapshots`.
-
-  Restored evidence is validated before its private bound marker is set, and
-  corrupt rows return an error rather than a repaired value. Counters are
-  stored as canonical base-10 text, round-tripping the whole `0 … MaxUint64`
-  domain — SQLite `INTEGER` is signed 64-bit, and narrowing would corrupt
-  large values silently. Timestamps keep nanosecond precision and their
-  numeric zone offset rather than being normalized to UTC.
-
-  Unknown schema versions fail closed, and so do recognized tables with no
-  version metadata: adopting those as fresh would silently take ownership of
-  data this code has never seen. Schema creation and version stamping commit
-  together.
-
-  Raw event history is deliberately absent — no table grows per event — and
-  core baseline state is not duplicated; the engine's own stores keep owning
-  it. No API, transport, realtime, promotion workflow, or PostgreSQL platform
-  backend, and no core runtime change. Adds a pure-Go SQLite driver
-  (`modernc.org/sqlite`) to the platform module, so no CGO requirement is
-  introduced. See [ADR
-  0030](docs/adr/0030-local-persistence-stores-authoritative-bounded-state.md).
-
-- **Deterministic hard gates: a scorecard plus explicit limits becomes a
-  verdict.** `platform.EvaluateEvaluationGate` pairs an `EvaluationScorecard`
-  with a caller-owned `EvaluationGatePolicy` and returns a fixed-shape
-  `EvaluationGateResult` carrying five checks and a PASS/FAIL `GateVerdict`.
-
-  The five checks, all evaluated on every call: reference evidence present,
-  candidate evidence present, added behaviors within limit, candidate block
-  decisions within limit, candidate critical-risk observations within limit.
-  PASS requires all five, and there is no short-circuit — a FAIL reports
-  everything measured.
-
-  Every comparison is an integer. No mean, rate, delta, or presence ratio
-  takes part in a verdict: floating-point sums are not guaranteed
-  bit-identical under record reordering, and an average is precisely how
-  strength in one dimension offsets a condition in another.
-
-  Fail-closed throughout. An unbound policy or unbound scorecard is an error.
-  A *valid* evaluation that observed nothing is not — it fails the two
-  non-configurable sufficiency gates, which exist because a candidate that
-  ran zero records satisfies every maximum. `0` is a strict limit rather than
-  "unset", so a private marker separates the strictest policy from an absent
-  one.
-
-  Names stay factual: a block decision is the policy engine doing what it was
-  configured to do, not a violation; a critical-risk observation is a risk
-  classification, not an incident. Gates the evidence cannot support —
-  critical policy violations, sensitive-resource access, approval compliance,
-  per-rule or delegation compliance — remain absent rather than reported as
-  zero, and `docs/ROADMAP.md` now separates implemented evidence-backed gates
-  from those deferred until an explicit evidence contract exists.
-
-  A verdict performs nothing. PASS means only that the configured gates
-  passed; promotion is a later task. No change to `EvaluationScorecard`, no
-  core runtime change, no persistence, and no transport. See [ADR
-  0029](docs/adr/0029-hard-gates-use-explicit-integer-evidence.md).
-
-- **Evaluation scorecards: one fixed-shape comparison of two evaluations.**
-  `platform.NewEvaluationScorecard` composes the evidence tasks 053 and 054
-  already produce:
-
-  ```text
-  reference EvaluationAggregate ───────┐
-  BehaviorDiff(reference → candidate) ─┼──▶ EvaluationScorecard
-  candidate EvaluationAggregate ───────┘
-  ```
-
-  It reports how the decision, risk, approval and policy-selection
-  distributions moved, how the five numeric signals moved, and how much
-  behavioral presence overlapped — counts, rates and signed deltas.
-
-  **No third reducer.** Records were consumed once, by two reducers designed
-  against the same stream; re-reading them would be a third ingestion path
-  with a third chance to disagree. Both aggregates are required, because
-  comparison is the point, and the diff cannot be derived from them nor they
-  from it.
-
-  **Evidence must describe one comparison.** Each aggregate is matched
-  against its own side of the diff, all three must agree on the environment,
-  and both observation counts must match — catching the case where one
-  reducer saw records the other did not. There is no partial card.
-
-  **Fixed-shape and O(1).** Construction costs 214 ns and zero allocations
-  for a 1,024-delta comparison over 2,048 records — identical to an empty
-  one, because only summary accessors are read. The diff's deltas are not
-  copied; a caller wanting per-behavior rows reads the `BehaviorDiff` it
-  already holds.
-
-  **Still evidence, not judgement.** No overall score, weight, threshold, or
-  verdict: a composite would let one dimension offset another, which the
-  roadmap forbids, and would become the number read instead of the gate.
-  Empty denominators are undefined rather than zero — two evaluations that
-  observed nothing are unmeasured, not identical.
-
-  **Unsupported semantics are absent, not zero.** Critical policy violations,
-  blocked or unapproved sensitive actions, per-rule compliance and delegation
-  stability have no field, because no current evidence can express them.
-  Reporting `0` would be a false security claim. Task 056 deliberately did not
-  infer or define those semantics: gates depending on policy severity,
-  resource sensitivity, authorization semantics, or per-event correlation the
-  aggregate does not retain remain deferred until explicit evidence contracts
-  exist. See [ADR
-  0028](docs/adr/0028-scorecards-are-fixed-shape-comparative-evidence.md).
-
-- **Behavioral diff: which behavioral shapes changed between two
-  evaluations.** `BehaviorCollector` reduces a `DecisionRecord` stream into a
-  bounded set of behaviors; `BehaviorSnapshot` is the detached, deterministic
-  result; `CompareBehaviorSnapshots` reports each behavior as `Added`,
-  `Removed` or `Shared` with counts and normalized frequencies.
-
-  ```text
-  DecisionRecord ──▶ BehaviorCollector ──▶ BehaviorSnapshot ──▶ BehaviorDiff
-  ```
-
-  The comparison key is `FingerprintID` and nothing else — not actor, session,
-  candidate, run, profile, commit, or digest. A diff keyed by any of those
-  would report change every time a candidate was rebuilt.
-
-  **`EvaluationAggregate` is unchanged.** [ADR
-  0026](docs/adr/0026-evaluation-aggregation-is-bounded-evidence.md) made it
-  O(1) and left this task to bring its own bounded contract; this is that
-  contract, as a separate reducer. An evaluation that will never be compared
-  pays nothing for behavioral bookkeeping.
-
-  **Bounded, and loud when it cannot answer.** At most 512 distinct behaviors
-  per collector and 1,024 deltas per diff; every retained string capped at 256
-  bytes and rejected rather than truncated, because two behaviors must not
-  merge because a name was shortened. A 513th distinct behavior marks the
-  collector **permanently incomplete**, and an incomplete snapshot **cannot be
-  compared** — silently comparing the first 512 would produce a confident,
-  specific, wrong "new behavior" count.
-
-  Fingerprint identity and behavior descriptor must agree **one-to-one, both
-  ways**. One fingerprint with two shapes would merge two behaviors; one shape
-  under two fingerprints would be reported as removed-and-added, claiming
-  behavior changed when only its encoding did. Both fail closed, in the
-  collector and again during comparison. The platform never recomputes the
-  core's hash to check this, so the fingerprint algorithm stays free to
-  change.
-
-  Rates are derived from integer counts at comparison time, so equal counts
-  give identical rates whatever order records arrived in. Environments must
-  match; candidate, run and profile references may differ, since [task
-  051](docs/tasks/v1.0/051-behavioral-profile-learning-scope-isolation.md)
-  kept learning scope out of behavioral identity.
-
-  **Evidence, not judgement.** No drift score, severity, threshold, pass, or
-  promotability. `AddedCount` is the factual basis a later gate may build on.
-  See [ADR
-  0027](docs/adr/0027-behavioral-diff-compares-bounded-snapshots.md).
-
-- **Evaluation result aggregation: the platform now consumes engine
-  evidence.** `platform.EvaluationAggregate` folds
-  `trustvian.DecisionRecord` values into a bounded, fixed-shape summary of
-  what one evaluation observed:
-
-  ```text
-  Engine ──▶ DecisionRecord ──▶ EvaluationAggregate
-  ```
-
-  It counts observations, decisions by category, risk levels, approval
-  evidence, and policy-selection shape; summarizes the five numeric signals as
-  `{Count, Sum, Min, Max}` with an explicitly-absent mean when empty; and
-  bounds the evidence in event time. `AddRecord` returns a new aggregate, so
-  the receiver is never mutated and a rejected record leaves it identical.
-
-  **This is the first real platform → core dependency, and it needed no core
-  change** — which is the claim [task
-  050](docs/tasks/v1.0/050-public-serializable-decision-record.md) built
-  `DecisionRecord` to make good on. The platform imports the public API only;
-  `policy.Decision` and `trust.RiskLevel` stay internal, so their small closed
-  sets of string values are re-declared rather than the core's surface being
-  widened.
-
-  **Bounded by construction.** O(1) memory in the number of records: no slice,
-  no map, no retained record, and no deduplication set. Retaining records
-  would make it an accidental event archive, which is a separate capability
-  with its own boundary. One consequence is stated rather than left implicit:
-  duplicates count twice, because idempotency needs a retention window only an
-  ingest boundary can define.
-
-  **Evidence, not judgement.** No score, grade, pass, promotability,
-  critical-violation count, or new-behavior count — each needs context the
-  aggregate does not hold, and would become the field people read instead of
-  the gate. See [ADR
-  0026](docs/adr/0026-evaluation-aggregation-is-bounded-evidence.md).
-
-  Malformed input fails closed: every consumed field is validated before any
-  state changes, and nothing is clamped or coerced. Cross-environment records
-  are refused. `MatchedDefault` and `PolicyRule` are validated as one pairing,
-  so a hand-built record cannot claim a rule matched while naming none.
-  `NewEvaluationAggregate` returns an error rather than binding evidence to an
-  invalid or zero-value run, and a zero-value aggregate accepts no record at
-  all — both zero values are writable from any package, since unexported
-  fields prevent mutation rather than construction. Rejection paths echo only
-  a bounded preview of untrusted strings, so a malformed record cannot turn an
-  error into an amplification primitive. `AddRecord` costs 86 ns and zero
-  allocations.
-
-- **`platform/`: the control-plane domain, as a fourth Go module.** The first
-  platform-layer runtime code — `Project`, `Agent`, `Candidate`,
-  `EvaluationRun`, and opaque `EnvironmentRef` / `BehavioralProfileRef`
-  references — establishing what an evaluation is, what it belongs to, and
-  what may change once one has begun.
-
-  ```text
-  Project
-    └─ Agent
-        └─ Candidate
-            └─ EvaluationRun ──▶ EnvironmentRef
-                            └──▶ BehavioralProfileRef
-  ```
-
-  A separate module at `trustvian-platform`, deliberately **not** under
-  `github.com/trustvian/trustvian`: Go's `internal/` rule turns on
-  import-path ancestry rather than module membership, so a repository-prefixed
-  path would be allowed to import the engine's internal packages, and this one
-  is a compile error instead. The domain itself needed nothing from the core,
-  and adding a dependency to demonstrate the relationship would have been the
-  speculative coupling the boundary exists to prevent — so the module began
-  with none. Aggregation introduced one, on its own merits, in the entry
-  above.
-
-  Identifiers are typed, opaque, and caller-owned: the domain generates none,
-  reads no clock, and requires no UUID format. Candidate metadata is a fixed
-  set of optional descriptive fields rather than a map — bounded by
-  construction, with nothing to alias — and never becomes behavioral identity.
-  A run's `Status` records that an execution finished, never that a candidate
-  passed; gates and promotion are separate later concerns. See [ADR
-  0025](docs/adr/0025-platform-domain-values-with-caller-owned-identity.md).
-
-  **No engine change.** `scripts/check-platform-boundary.sh` enforces both
-  directions of [ADR 0022](docs/adr/0022-core-platform-boundary.md)'s
-  boundary in CI: no core `internal/*` import in the platform, no platform
-  package in the core's build graph, and no platform identifier declared in
-  core runtime code.
-
-  Nothing here is usable yet: no persistence, transport, aggregation,
-  behavioral diff, scorecard, gate, or promotion. Those are later tasks, and
-  each would have been easier to add now than to remove later.
+#### Changed
+
+- **Persisted state carries learning scopes, and both backends versioned.**
+  The FileStore snapshot moves to `version: 2` and PostgreSQL to
+  `SchemaVersion = 2`. Each reads its predecessor and upgrades in place:
+  every pre-scope baseline lands in the default scope with its learned state
+  unchanged, because a `Key` with no `Scope` field deserializes to exactly
+  that. Nothing is invented, and no learned state moves between scopes.
+
+  PostgreSQL's upgrade adds `scope text NOT NULL`, makes the primary key
+  `(scope, actor_id, environment)`, and restamps each row's derived
+  `schema_version` — all inside the existing migration transaction and
+  advisory lock, so it is atomic and safe against a racing process. Scope is
+  part of the primary key deliberately: storing it only in the jsonb would
+  let a second scope's insert collide with the first's row.
+
+  **Downgrade is not supported, deliberately.** Adding a JSON field is
+  normally additive, but `Scope` changes what a record *identifies* — one
+  version-2 snapshot can hold two baselines a version-1 reader sees as the
+  same key, and it would keep whichever it loaded last. A file an old binary
+  refuses is a recoverable operational problem; two learned profiles
+  silently merged is corrupted state nothing detects. Recovery from a
+  downgrade is restoring a pre-upgrade backup.
+
+### Core engine and public API
+
+#### Added
+
+- **`DecisionRecord`: a serializable public projection of one analysis.**
+  `Result` is readable from outside the module, but four of its fields have
+  types from `internal/`, so a consumer could inspect a result without being
+  able to declare, store, or serialize one. `result.DecisionRecord()` returns
+  a public type with explicit JSON field names carrying the evidence behind a
+  decision: behavioral shape, fingerprint, anomaly score and contributors,
+  trust and risk, the policy rule and reason, and correlation identifiers.
+
+  It carries no raw event payload — `Event.Attributes`, tool arguments,
+  prompts, and completions have no field and cannot reach its JSON — and no
+  consumer-side identifiers. Both are asserted by test. The projection is
+  pure: no I/O, no clock, no scoring, and its slices are copied rather than
+  aliased, so a record shares no memory with the `Result` it came from.
+
+  `StableFeatures` gained JSON tags so the record serializes consistently.
+  The type is unreleased, so no published representation changed.
 
 - **Learning scopes: independent behavioral history under one actor
   identity.** `trustvian.WithLearningScope("...")` partitions an Engine's
@@ -1922,23 +1983,6 @@ actually depend on.
   See [ADR
   0024](docs/adr/0024-learning-scope-is-a-baseline-key-dimension.md).
 
-- **`DecisionRecord`: a serializable public projection of one analysis.**
-  `Result` is readable from outside the module, but four of its fields have
-  types from `internal/`, so a consumer could inspect a result without being
-  able to declare, store, or serialize one. `result.DecisionRecord()` returns
-  a public type with explicit JSON field names carrying the evidence behind a
-  decision: behavioral shape, fingerprint, anomaly score and contributors,
-  trust and risk, the policy rule and reason, and correlation identifiers.
-
-  It carries no raw event payload — `Event.Attributes`, tool arguments,
-  prompts, and completions have no field and cannot reach its JSON — and no
-  consumer-side identifiers. Both are asserted by test. The projection is
-  pure: no I/O, no clock, no scoring, and its slices are copied rather than
-  aliased, so a record shares no memory with the `Result` it came from.
-
-  `StableFeatures` gained JSON tags so the record serializes consistently.
-  The type is unreleased, so no published representation changed.
-
 - **Every `Engine` option is now usable from outside the module.** Two
   were exported but uncallable by third-party code, because their
   parameter types live under `internal/` and no public path produced
@@ -1963,7 +2007,46 @@ actually depend on.
   costs nothing, rather than after it, when it would cost a major
   version. No in-repository caller used the option.
 
-### Fixed
+#### Changed
+
+- **A compatibility contract covering every observable surface**, not
+  just the Go API: [docs/compatibility.md](docs/compatibility.md). The
+  `v0.1.0` promise in this file covers `event.Event`, `Result`, and
+  `Engine`; configuration schemas, CLI flags and exit codes, environment
+  variables, Collector configuration, storage formats, metric names and
+  labels, health endpoints, the webhook envelope, container interface,
+  and release artifacts were all outside it. Each is now classified,
+  with the version bump a breaking change costs.
+
+  It also states how behavioral change is treated, which type signatures
+  cannot express: enabling a signal by default or altering which
+  decisions train the baseline is breaking, whereas correcting a signal
+  against its documented formula is a fix. Deprecation is
+  version-based — one subsequent minor, minimum — and the security
+  exception is deliberately narrow. See
+  [ADR 0020](docs/adr/0020-v1-compatibility-contract.md).
+
+  Documentation only: no API, configuration, storage, or behavior
+  change.
+
+- **Source-breaking for in-module callers of the `store.Store` port.**
+  `Observe` returns `(baseline.Baseline, bool, error)`. `Store` is not a
+  public extension point — see below — so no external consumer is affected.
+
+- Documented explicitly that **custom `Store` implementations are not a
+  v1 extension point**. `store.Store` references internal types and
+  stays internal; persistence is selected through
+  `config.StorageConfig` from the shipped backends. Also documented that
+  a compiled store is owned by the caller — an `Engine` never closes one
+  it was handed, and there is no `Engine.Close`.
+
+- `Engine`'s documentation claimed full configuration required code
+  inside the module. That stopped being true when `CompilePolicy`,
+  `CompileAnomaly`, and `CompileStorage` shipped; it is now accurate.
+  A `config.StorageConfig` field also still described PostgreSQL as
+  recognized but unimplemented, two years after it shipped.
+
+#### Fixed
 
 - **A pathological `WithContextRisk` callback could make a successful
   analysis unserializable.** `trust.Compute` clamps its inputs with
@@ -2022,69 +2105,6 @@ actually depend on.
   capacity refusal is still not an error, and analysis is unaffected. Only
   the reporting changed.
 
-### Changed
-
-- **Persisted state carries learning scopes, and both backends versioned.**
-  The FileStore snapshot moves to `version: 2` and PostgreSQL to
-  `SchemaVersion = 2`. Each reads its predecessor and upgrades in place:
-  every pre-scope baseline lands in the default scope with its learned state
-  unchanged, because a `Key` with no `Scope` field deserializes to exactly
-  that. Nothing is invented, and no learned state moves between scopes.
-
-  PostgreSQL's upgrade adds `scope text NOT NULL`, makes the primary key
-  `(scope, actor_id, environment)`, and restamps each row's derived
-  `schema_version` — all inside the existing migration transaction and
-  advisory lock, so it is atomic and safe against a racing process. Scope is
-  part of the primary key deliberately: storing it only in the jsonb would
-  let a second scope's insert collide with the first's row.
-
-  **Downgrade is not supported, deliberately.** Adding a JSON field is
-  normally additive, but `Scope` changes what a record *identifies* — one
-  version-2 snapshot can hold two baselines a version-1 reader sees as the
-  same key, and it would keep whichever it loaded last. A file an old binary
-  refuses is a recoverable operational problem; two learned profiles
-  silently merged is corrupted state nothing detects. Recovery from a
-  downgrade is restoring a pre-upgrade backup.
-
-- **Source-breaking for in-module callers of the `store.Store` port.**
-  `Observe` returns `(baseline.Baseline, bool, error)`. `Store` is not a
-  public extension point — see below — so no external consumer is affected.
-
-- Documented explicitly that **custom `Store` implementations are not a
-  v1 extension point**. `store.Store` references internal types and
-  stays internal; persistence is selected through
-  `config.StorageConfig` from the shipped backends. Also documented that
-  a compiled store is owned by the caller — an `Engine` never closes one
-  it was handed, and there is no `Engine.Close`.
-
-- `Engine`'s documentation claimed full configuration required code
-  inside the module. That stopped being true when `CompilePolicy`,
-  `CompileAnomaly`, and `CompileStorage` shipped; it is now accurate.
-  A `config.StorageConfig` field also still described PostgreSQL as
-  recognized but unimplemented, two years after it shipped.
-
-- **A compatibility contract covering every observable surface**, not
-  just the Go API: [docs/compatibility.md](docs/compatibility.md). The
-  `v0.1.0` promise in this file covers `event.Event`, `Result`, and
-  `Engine`; configuration schemas, CLI flags and exit codes, environment
-  variables, Collector configuration, storage formats, metric names and
-  labels, health endpoints, the webhook envelope, container interface,
-  and release artifacts were all outside it. Each is now classified,
-  with the version bump a breaking change costs.
-
-  It also states how behavioral change is treated, which type signatures
-  cannot express: enabling a signal by default or altering which
-  decisions train the baseline is breaking, whereas correcting a signal
-  against its documented formula is a fix. Deprecation is
-  version-based — one subsequent minor, minimum — and the security
-  exception is deliberately narrow. See
-  [ADR 0020](docs/adr/0020-v1-compatibility-contract.md).
-
-  Documentation only: no API, configuration, storage, or behavior
-  change.
-
-### Fixed
-
 - Documentation stated a per-actor memory bound the implementation did
   not enforce: `docs/observability.md`'s growth table extrapolated from a
   120-fingerprint measurement as though fingerprint count were capped.
@@ -2092,6 +2112,43 @@ actually depend on.
   `PERFORMANCE.md` now distinguish the structural cap from the one size
   figure actually measured, and separate per-actor growth (bounded) from
   actor-count growth (deliberately not).
+
+#### Security
+
+- **Per-actor fingerprint state is now bounded.** `Baseline.Fingerprints`
+  had no upper limit, and `Fingerprint.ID` is derived from `Event` fields
+  the caller supplies — so one actor emitting a distinct operation name
+  per call could grow its baseline, and its PostgreSQL row, without
+  limit. `internal/baseline` now caps a baseline at 512 fingerprint
+  identities and refuses admission of new ones beyond it.
+
+  The bound refuses rather than evicts. Nothing already learned is
+  removed to make room, because an absent fingerprint scores as
+  maximally novel with zero confidence and therefore contributes nothing
+  to trust — evicting learned entries under pressure would let a flood of
+  manufactured fingerprints suppress detection for an actor rather than
+  merely cost memory. See
+  [ADR 0019](docs/adr/0019-bounded-fingerprint-admission.md).
+
+  A baseline already holding more than 512 identities, learned before
+  this bound existed, keeps every one of them and keeps updating them; it
+  admits nothing new and is never truncated. Upgrading from `v0.9`
+  requires no migration and loses no learned state.
+
+  Behavioral change, confined to actors past the cap: a new fingerprint
+  observed by an actor already holding 512 is analyzed and decided
+  normally but is not learned, so it continues to score as unknown.
+  Known fingerprints keep learning regardless of how full the baseline
+  is.
+
+  No public API, configuration, CLI, Collector, or storage schema change.
+
+### Repository
+
+#### Changed
+
+- **Every `actions/checkout` in `ci.yml`, `nightly.yml` and `release.yml`** now
+  sets `persist-credentials: false`. Nothing after a checkout needs the token.
 
 ## v0.9.0 — Operational Readiness
 
