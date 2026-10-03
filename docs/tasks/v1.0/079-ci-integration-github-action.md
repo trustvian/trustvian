@@ -1,19 +1,21 @@
 # 079 — CI Integration: A GitHub Action
 
-Status: partially implemented. Two slices have shipped:
+Status: implemented. Four slices have shipped:
 - **The run side.** `.github/actions/trustvian-run` runs a scenario or suite,
   passes the exit code through and preserves the result document as an
   artifact ([ADR 0056](../../adr/0056-the-run-action-builds-a-pinned-source-commit.md)).
 - **The strict renderer.** `cmd/trustvian-ci-render` validates that artifact
   and renders it as inert Markdown, or as an explicit no-verdict state,
   offline ([ADR 0057](../../adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md)).
-
 - **The poster.** `cmd/trustvian-ci-comment` posts a rendering as the pull
   request's one gate comment, edited in place, and degrades loudly on a fork
   ([ADR 0058](../../adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)).
+- **The comment action and job.** `.github/actions/trustvian-comment` builds
+  the renderer and the poster from the pinned source and runs them in the
+  example's second job. Structural scans cover every workflow, and a real
+  end-to-end comment runs on this repository's pull requests (ADR 0058 § 6, § 7).
 
-The comment action and job that run it remain, and follow once the poster is on
-`main`; see [Implementation status](#implementation-status)
+Every acceptance criterion is met; see [Implementation status](#implementation-status).
 Milestone: `v0.10.0` — the
 [developer preview](../../ROADMAP.md#v0100--developer-preview)
 Depends on: [078](078-behavioral-scenario-suites.md)
@@ -882,8 +884,8 @@ documented in [Running behavioral scenarios in GitHub Actions](../../ci-github-a
   resolved).
   - No release ships `eval run`: `v0.9.0`'s binary answers
     `unknown command "eval"` and its archive has no helpers.
-  - `runtime.env` pins commit `576da8f…` (after #137) and Go 1.27.1, with
-    go.dev's archive digests.
+  - `runtime.env` pinned commit `576da8f…` (after #137) and Go 1.27.1, with
+    go.dev's archive digests. The fourth slice moved the pin to `5521759…`.
   - The build is isolated under `$RUNNER_TEMP`, in a cleared environment.
   - Each binary's Go build information must record that exact commit,
     unmodified. Nothing is injected.
@@ -904,8 +906,9 @@ documented in [Running behavioral scenarios in GitHub Actions](../../ci-github-a
   and prose values are escaped and capped.
 - **`pull_request_target` and `workflow_run` are refused** by the action
   itself.
-- **A run-only example workflow**,
-  `examples/github-actions/behavioral-gate-run.yml`:
+- **A run-only example workflow**, then
+  `examples/github-actions/behavioral-gate-run.yml` — since renamed
+  `behavioral-gate.yml` and extended with the comment job by the fourth slice:
   - `pull_request` only;
   - `contents: read` per job, and nothing at workflow level;
   - commit-pinned actions and `persist-credentials: false`;
@@ -1064,39 +1067,132 @@ It is standard library only, and imports no process, plugin, reflection or
   posted over a stored PASS, replaces it. The test asserts the head commit and
   that no number is present.
 
-The comment action that builds and runs the poster from the pinned source,
-the example's comment job, the structural scans and the real end-to-end
-comment are the next pull request (ADR 0058 § 6).
+**The fourth slice is the comment action and its job**, completing
+[ADR 0058](../../adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)
+§ 6 and § 7. It is documented in [the guide](../../ci-github-action.md#the-comment-job).
+
+- **The pin moves to `5521759…`**, the merge of #140 and the first commit
+  carrying both the renderer and the poster. The run action builds the same
+  commit. #138–#140 changed no CLI, control-plane or Collector code — only
+  `cmd/trustvian-ci-*`, the action, its tests and docs, and one test file in
+  `cmd/trustvian` — and the run action's end-to-end workflow re-proves the
+  runtime against the new pin.
+- **`.github/actions/trustvian-comment`, a composite action** with four steps:
+  setup, download, render and post (open questions 2 and 3, resolved: a
+  separate composite action).
+  - **Inputs:** `exit-code` (required; empty means the CLI did not run),
+    `artifact-name`, `marker-id` (defaulting to `artifact-name`) and
+    `github-token`. **Outputs:** `renderer-exit`, `posted`, and `outcome`,
+    which reports what the poster did.
+  - **Built from the pinned source through the run action's `lib.sh`.** The
+    toolchain, fetch, source and verification steps moved there as
+    `provide_pinned_source`, `build_pinned` and `verify_pinned_build`, so both
+    actions run the same code. Setup builds only `./cmd/trustvian-ci-render`
+    and `./cmd/trustvian-ci-comment`, and checks `vcs.revision` on both.
+  - **Nothing reads `$GITHUB_WORKSPACE`.** Every script starts in
+    `$RUNNER_TEMP`, and a source scan asserts that neither the variable nor
+    the expression appears in any file the action runs.
+  - **Identity from the event.** The head commit comes through `resolve_head`.
+    `pull_request.number` must be a positive integer. Any event but
+    `pull_request` is refused.
+  - **The download tolerates a missing artifact.** It is the only step with
+    `continue-on-error`. It writes into a fresh directory from setup, so a
+    second invocation in a job can never render the first one's artifact. An
+    empty directory becomes the renderer's "artifact is missing" no verdict.
+  - **Render, then summary, then post.** Renderer exits `0`, `1` and `3` are
+    written to the job summary and posted. Exit `2` posts nothing and fails
+    the job. Poster exit `1` or `2` fails the job, and `0` succeeds.
+  - **The token is in the post step's environment alone**, asserted on the
+    action's definition.
+- **The example is the two-job workflow**, renamed to
+  `examples/github-actions/behavioral-gate.yml`:
+  - the run job exposes `exit-code`;
+  - the comment job has `needs: run` and `if: ${{ !cancelled() }}`, holds
+    `pull-requests: write` alone, has no checkout, and uses the same commit
+    placeholder;
+  - nothing is granted at workflow level;
+  - concurrency is per pull request number, with `cancel-in-progress`.
+- **Every `actions/checkout` in `ci.yml`, `nightly.yml` and `release.yml`**
+  now sets `persist-credentials: false`, so the scan can hold across every
+  workflow. Nothing after a checkout needs the token.
+- **Tests:**
+  - `scripts/trustvian_ci_workflows_test.go`, over every workflow in
+    `.github/workflows`, every shipped example and every YAML block in the
+    repository's Markdown:
+    - no `pull_request_target` or `workflow_run` trigger, while the prose
+      explaining the refusal is required;
+    - a job using the comment action holds exactly `pull-requests: write`,
+      has no checkout, no `./` action and no step of its own, needs the run
+      job, runs under `!cancelled()`, and never also uses the run action. The
+      self-test's comment job is the one asserted exception, in exactly the
+      § 7 shape;
+    - a job using the run action states its permissions and holds no write
+      scope;
+    - no workflow-level permissions in shipped workflows or the self-test;
+    - every checkout sets `persist-credentials: false`;
+    - the example's two-job shape.
+  - `scripts/trustvian_comment_action_test.go`:
+    - the render step drives the real renderer against the renderer's real
+      artifacts: evidence, a missing artifact, the CLI not having run, an
+      operational exit and a rejected artifact are each written to the
+      summary and handed on, and exit `2` hands on nothing and fails;
+    - the post step reports each poster outcome, fails on `1` and `2`, and
+      passes every value as one attached argument, with the token reaching
+      the poster;
+    - the outcome lines post.sh reads are checked against the poster's
+      source;
+    - setup refuses privileged events, other events, unusable pull request
+      numbers, a missing head and malformed names before fetching anything;
+    - the action's definition and its workspace scan.
+  - **The real end-to-end comment**, the `comment` job of
+    `.github/workflows/trustvian-run-action.yml`, on this repository's pull
+    requests:
+    1. It posts the `pass` artifact's rendering through
+       `./.github/actions/trustvian-comment`.
+    2. It reads the comments back with the read-only API and asserts exactly
+       one marker comment: first line the marker, naming the head commit,
+       holding `— PASS`.
+    3. It then posts a missing artifact's rendering for the same marker and
+       asserts that the same comment now holds the no-verdict state for the
+       head commit, with no PASS. That is the worst-failure regression, on the
+       real API.
+
+    On a fork it asserts the not-permitted outcome instead (`posted: false`,
+    step success). The poster's job-summary note on that path cannot be read
+    back from a later step. `TestPostDegradesWhenNotPermitted` in
+    `cmd/trustvian-ci-comment` asserts it, and the render step's tests assert
+    that the rendering reaches the summary first.
+    The same job confirms the issue-comment endpoint's scope,
+    `pull-requests: write`, against a real pull request (open question 5).
 
 Against the criteria below:
 
 | # | Status |
 |---|---|
-| 1 | **Met for the run side**: one action step runs a scenario or suite |
+| 1 | Met: one action step runs a scenario or suite |
 | 2, 3 | Met |
-| 4 | **Met for the renderer**: rendered from the result document alone, no number computed, and a missing required field renders no verdict naming it. Nothing posts it yet |
-| 5 | **Met for the renderer**: added, removed and unclassified behaviors with both counts and the stored classification, both thresholds, every check |
-| 6 | **Met for the renderer**: an uninterpretable result renders no verdict and the reason |
-| 9 | **The no-verdict rendering is met**: head commit, no numbers, created from the context alone. Replacing a stale comment with it, and writing nothing on cancellation, are the comment job's |
-| 10 | **Met for the artifact, the summary and the renderer**, which takes the head commit from the caller and requires the artifact to agree |
-| 11 | **Met for the run job**, asserted structurally on the shipped example and the test workflow. The comment job does not exist yet |
-| 12 | Met for the action, the example and the guide's YAML blocks; the action also refuses the event at run time |
-| 14 | Met for the run side, asserted by a source scan. The renderer converts no decimal-string count or limit to a number: JSON integers (`runs`, exit codes, the suite summary, `scenario_count`) are range-checked through `json.Number` and re-printed in canonical form. This is asserted by a source scan and a contradiction test |
-| 15 | **Met for the renderer**: both producer versions come from the document |
-| 16 | **Met for the job summary and the renderer**, whose output is the same for a comment and a summary |
-| 8 | **Met for the poster**: one comment per marker, edited in place, never another's. The action that runs it is the next pull request |
-| 7, 13 | **Not met.** They are about the comment job — the next pull request |
+| 4 | Met: the comment is the renderer's output, posted unchanged. No number is computed, and a missing required field posts no verdict naming it |
+| 5 | Met: added, removed and unclassified behaviors with both counts and the stored classification, both thresholds, every check |
+| 6 | Met: an uninterpretable result is posted as no verdict, with the reason |
+| 7 | Met: the verdict is the run job's, in another job, and the structural scan fails if the two actions share a job. A failed post fails the comment job with an annotation, and a refused one warns and writes a summary note |
+| 8 | Met: one comment per marker, edited in place, and the marker defaults to the artifact name. The end-to-end job asserts exactly one marker comment across two posts |
+| 9 | Met: renderer exits `1` and `3` are posted, replacing a stale verdict for the new head commit with no numbers, and created when none exists. The end-to-end job replaces a real PASS. `!cancelled()` keeps a cancelled workflow from writing, which the structural scan asserts |
+| 10 | Met: the head commit comes from the event, and the renderer requires the artifact to agree |
+| 11 | Met: asserted over every workflow, example and Markdown block |
+| 12 | Met: the trigger scan covers every workflow, example and Markdown block, and both actions refuse the events at run time |
+| 13 | Met: the run job needs no write scope or secret, so a fork runs the gate unchanged. The comment job degrades with a warning and a summary note and succeeds, and the check is never the comment job's |
+| 14 | Met: asserted by source scans. The renderer converts no decimal-string count or limit to a number: JSON integers (`runs`, exit codes, the suite summary, `scenario_count`) are range-checked through `json.Number` and re-printed in canonical form. This is asserted by a source scan and a contradiction test |
+| 15 | Met: both producer versions come from the document |
+| 16 | Met: the comment and the summary carry the same inert rendering |
 
-**Not built:**
-- The comment action and job (open question 2 is settled by ADR 0058: a
-  separate action), and confirming the comment API's scope against a real
-  pull request (open question 5).
-- Wiring the poster's stale-comment replacement and fork degradation into
-  that job.
-- The real end-to-end comment against GitHub's API.
-- Caching the runtime across jobs.
-- A release-archive runtime.
+**Not built**, and outside the criteria:
+- Caching the runtime across jobs. Each job downloads Go once.
+- A release-archive runtime: the pin names a commit, because no published
+  release carries `eval run`.
 - Windows runners.
+- GitHub Enterprise Server: the poster requires a bare `https://` API host.
+- Tokens other than `GITHUB_TOKEN`. Ownership is `github-actions[bot]`
+  authorship, so another identity would duplicate comments.
 
 **What this does not change.** The action passes task 078's verdicts on; it does
 not make them more reliable. [Task 078](078-behavioral-scenario-suites.md)'s

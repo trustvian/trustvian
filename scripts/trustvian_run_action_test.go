@@ -42,7 +42,7 @@ const (
 	actionDir   = "../.github/actions/trustvian-run"
 	headSHA     = "1111111111111111111111111111111111111111"
 	mergeSHA    = "2222222222222222222222222222222222222222"
-	runtimePin  = "576da8fe1f672351271585ca4a5bc9e6eba8ffb6"
+	runtimePin  = "5521759bb115744498946bfd03d7dd45f688caac"
 	maxResult   = 32*1024*1024 + 64*1024
 	fakeAPIPort = "54321"
 )
@@ -175,10 +175,18 @@ type actionResult struct {
 // returns its exit code, its streams, and the outputs it appended.
 func runActionScript(t *testing.T, e actionEnv, script, dir string) actionResult {
 	t.Helper()
+	return runScriptAt(t, e, filepath.Join(actionDir, script), dir)
+}
+
+// runScriptAt runs the script at path — of either action — with the
+// environment, in dir.
+func runScriptAt(t *testing.T, e actionEnv, path, dir string) actionResult {
+	t.Helper()
+	script := filepath.Base(path)
 	if err := os.WriteFile(e.output, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	abs, err := filepath.Abs(filepath.Join(actionDir, script))
+	abs, err := filepath.Abs(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -911,7 +919,7 @@ func TestRunActionRuntimePin(t *testing.T) {
 	}
 	good := readFile(t, pin)
 	tests := map[string]string{
-		"short commit":     strings.Replace(good, runtimePin, "576da8f", 1),
+		"short commit":     strings.Replace(good, runtimePin, "5521759", 1),
 		"branch name":      strings.Replace(good, runtimePin, "main", 1),
 		"floating go":      strings.Replace(good, "GO_VERSION=1.27.1", "GO_VERSION=1.27", 1),
 		"unknown key":      good + "GOFLAGS=-insecure\n",
@@ -1001,13 +1009,7 @@ func TestRunActionComputesNothing(t *testing.T) {
 	}
 }
 
-// workflowFiles are the workflows that run this action: the shipped example
-// and the repository's own end-to-end workflow.
-var workflowFiles = []string{
-	"../examples/github-actions/behavioral-gate-run.yml",
-	"../.github/workflows/trustvian-run-action.yml",
-}
-
+// triggers returns the event names a workflow's `on:` names.
 func triggers(doc map[string]any) []string {
 	// yaml.v3 decodes a bare `on` key as the string "on", not the boolean.
 	switch on := doc["on"].(type) {
@@ -1029,99 +1031,5 @@ func triggers(doc map[string]any) []string {
 	return nil
 }
 
-func TestRunWorkflowsAreReadOnly(t *testing.T) {
-	for _, path := range workflowFiles {
-		t.Run(filepath.Base(path), func(t *testing.T) {
-			doc := loadYAML(t, path)
-			for _, trigger := range triggers(doc) {
-				if trigger == "pull_request_target" || trigger == "workflow_run" {
-					t.Errorf("triggered by %s", trigger)
-				}
-			}
-			if !slices.Contains(triggers(doc), "pull_request") {
-				t.Errorf("triggers %v do not include pull_request", triggers(doc))
-			}
-			if _, ok := doc["permissions"]; ok {
-				t.Error("grants permissions at workflow level, which would reach the job running the workload")
-			}
-			raw := readFile(t, path)
-			if regexp.MustCompile(`\$\{\{[^}]*secrets\.`).MatchString(raw) {
-				t.Error("references a repository secret")
-			}
-			jobs, _ := doc["jobs"].(map[string]any)
-			if len(jobs) == 0 {
-				t.Fatal("no jobs")
-			}
-			for name, rawJob := range jobs {
-				job, _ := rawJob.(map[string]any)
-				perms, ok := job["permissions"].(map[string]any)
-				if !ok || len(perms) != 1 || perms["contents"] != "read" {
-					t.Errorf("job %s permissions %v, want exactly contents: read", name, job["permissions"])
-				}
-				steps, _ := job["steps"].([]any)
-				for _, rawStep := range steps {
-					step, _ := rawStep.(map[string]any)
-					use, _ := step["uses"].(string)
-					switch {
-					case use == "":
-					case strings.HasPrefix(use, "./"):
-					case strings.HasPrefix(use, "trustvian/trustvian/.github/actions/trustvian-run@"):
-						// The example's own reference is a placeholder the reader
-						// must replace with a reviewed commit; it can never
-						// resolve as written.
-						if !strings.HasSuffix(use, "@REPLACE_WITH_A_REVIEWED_TRUSTVIAN_COMMIT_SHA") &&
-							!pinnedUse.MatchString(use) {
-							t.Errorf("job %s uses %q", name, use)
-						}
-					case !pinnedUse.MatchString(use):
-						t.Errorf("job %s uses %q, not pinned to a full commit", name, use)
-					}
-					if strings.HasPrefix(use, "actions/checkout@") {
-						with, _ := step["with"].(map[string]any)
-						if v, ok := with["persist-credentials"]; !ok || fmt.Sprint(v) != "false" {
-							t.Errorf("job %s checks out with persist-credentials %v, want false", name, v)
-						}
-					}
-				}
-			}
-		})
-	}
-}
-
-// The example is what gets copied, so it carries no continue-on-error: a
-// caller who wants the job to survive a FAIL writes that themselves.
-func TestRunExampleSuppressesNothing(t *testing.T) {
-	raw := readFile(t, workflowFiles[0])
-	for _, forbidden := range []string{"continue-on-error", "|| true", "pull-requests:", "issues:", ": write", "write-all", "${{ secrets."} {
-		if strings.Contains(raw, forbidden) {
-			t.Errorf("the example contains %q", forbidden)
-		}
-	}
-}
-
-// No YAML block in the action's documentation is triggered by an event that
-// runs with base-repository privileges. Prose explaining the refusal is
-// expected; the check is on triggers.
-func TestRunActionDocumentationTriggers(t *testing.T) {
-	for _, path := range []string{"../docs/ci-github-action.md", "../.github/actions/trustvian-run/README.md"} {
-		body := readFile(t, path)
-		blocks := regexp.MustCompile("(?s)```ya?ml\n(.*?)```").FindAllStringSubmatch(body, -1)
-		if len(blocks) == 0 {
-			t.Errorf("%s has no YAML blocks to check", path)
-		}
-		for _, block := range blocks {
-			var doc map[string]any
-			if err := yaml.Unmarshal([]byte(block[1]), &doc); err != nil {
-				continue // a fragment, not a workflow
-			}
-			for _, trigger := range triggers(doc) {
-				if trigger == "pull_request_target" || trigger == "workflow_run" {
-					t.Errorf("%s: a YAML block is triggered by %s", path, trigger)
-				}
-			}
-		}
-		if !strings.Contains(body, "pull_request_target") {
-			t.Errorf("%s does not explain the pull_request_target refusal", path)
-		}
-	}
-}
+// The workflow, example and documentation scans live in
+// trustvian_ci_workflows_test.go, which covers both actions.

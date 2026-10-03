@@ -3,10 +3,12 @@
 Runs a Trustvian behavioral scenario or suite (`trustvian eval run --json`),
 uploads its result document as an artifact, and exits with the CLI's own code.
 
-**Run-side foundation only.** It renders no verdict and does not comment on the
-pull request; that is the next slice of
-[task 079](../../../docs/tasks/v1.0/079-ci-integration-github-action.md), and it
-belongs in a separate job that never checks out or runs pull request code.
+**Run side only.** It renders no verdict and does not comment on the pull
+request. That is [`trustvian-comment`](../trustvian-comment/README.md)'s job, in a
+separate job that never checks out or runs pull request code
+([task 079](../../../docs/tasks/v1.0/079-ci-integration-github-action.md)). The
+complete two-job workflow is
+[`examples/github-actions/behavioral-gate.yml`](../../../examples/github-actions/behavioral-gate.yml).
 
 ```yaml
 on:
@@ -34,11 +36,11 @@ repository's secrets.
 | File | Role |
 |---|---|
 | `action.yml` | The composite action: setup → run → upload → finish |
-| `runtime.env` | The reviewed Trustvian commit and Go toolchain it builds |
+| `runtime.env` | The reviewed Trustvian commit and Go toolchain it builds — and that `trustvian-comment` builds |
 | `setup.sh` | Builds and verifies the runtime under `$RUNNER_TEMP` |
 | `run.sh` | Starts a control plane, runs the CLI, preserves the result |
 | `finish.sh` | Writes the job summary and exits with the CLI's code |
-| `lib.sh` | Shared, separately tested functions |
+| `lib.sh` | Shared, separately tested functions, sourced by `trustvian-comment` too |
 
 Guide: [docs/ci-github-action.md](../../../docs/ci-github-action.md).
 Decision record:

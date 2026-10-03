@@ -1,4 +1,4 @@
-# End-to-end test of the trustvian-run action (task 079, run side).
+# End-to-end test of the trustvian-run and trustvian-comment actions (task 079).
 #
 # Runs the action itself — the real pinned runtime build, the real CLI, the
 # real control plane and the real Collector — against model-free scenarios
@@ -18,10 +18,13 @@
 # renderer is held to what the pinned runtime actually produces rather than
 # only to its checked-in fixtures.
 #
-# Read-only, like ci.yml: no job holds a write scope or a secret, and no
-# checkout keeps a credential. This workflow is itself shaped as the run-side
-# foundation is documented to be — see docs/ci-github-action.md. It is not the
-# copyable example; that is examples/github-actions/behavioral-gate-run.yml.
+# A third job posts a real gate comment on this repository's own pull request
+# through the comment action, reads it back, and then replaces it with a
+# no-verdict rendering — the failure task 079 names the worst, on the real
+# API. It is the only job here holding a write scope, and why it may run a
+# local action is stated where it is defined. No job uses a secret, and no
+# checkout keeps a credential. This is not the copyable example; that is
+# examples/github-actions/behavioral-gate.yml.
 
 name: trustvian-run action
 
@@ -30,18 +33,22 @@ on:
     branches: [main]
     paths:
       - ".github/actions/trustvian-run/**"
+      - ".github/actions/trustvian-comment/**"
       - ".github/workflows/trustvian-run-action.yml"
       - "scripts/testdata/trustvian-run/**"
       - "processor/cmd/agent-producer/**"
       - "cmd/trustvian-ci-render/**"
+      - "cmd/trustvian-ci-comment/**"
   push:
     branches: [main]
     paths:
       - ".github/actions/trustvian-run/**"
+      - ".github/actions/trustvian-comment/**"
       - ".github/workflows/trustvian-run-action.yml"
       - "scripts/testdata/trustvian-run/**"
       - "processor/cmd/agent-producer/**"
       - "cmd/trustvian-ci-render/**"
+      - "cmd/trustvian-ci-comment/**"
 
 # No workflow-level permissions: each job states its own.
 
@@ -311,3 +318,135 @@ jobs:
           render operational "$OPERATIONAL_CODE" 1 ""
           render usage "$USAGE_CODE" 1 ""
           exit "$failed"
+
+  # The real gate comment, on this repository's own pull requests
+  # (ADR 0058 § 7).
+  #
+  # This is the one job anywhere that runs the comment action as a local
+  # `./` action, which needs the pull request checked out — so it also needs
+  # contents: read. In a write-scoped job that is acceptable here, and only
+  # here:
+  #   - on a fork pull request, GitHub issues a read-only token, so the job
+  #     cannot write, whatever it runs;
+  #   - on a same-repository pull request, the author already has write access
+  #     to this repository and could change any workflow directly.
+  # Neither case grants anyone a capability they lacked. In a consumer's
+  # repository the pull request's author is exactly who must not reach the
+  # write token, so the shipped example names the action by a reviewed commit
+  # and checks nothing out — scripts/trustvian_comment_action_test.go asserts
+  # both, and asserts this job is the only exception.
+  #
+  # The comment it leaves on the pull request is the self-test's own, under
+  # the marker trustvian-run-action-e2e, and ends in the no-verdict state.
+  comment:
+    name: Post and replace a real gate comment
+    needs: run
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      # Only to load ./.github/actions/trustvian-comment. Nothing from this
+      # checkout is built or run by the action: it builds the renderer and
+      # the poster from the commit runtime.env pins.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: pass
+        name: Post the PASS rendering
+        uses: ./.github/actions/trustvian-comment
+        with:
+          exit-code: ${{ needs.run.outputs.pass-exit-code }}
+          artifact-name: trustvian-run-pass
+          marker-id: trustvian-run-action-e2e
+
+      - name: The pull request holds exactly one gate comment, the PASS for its head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RENDERER_EXIT: ${{ steps.pass.outputs.renderer-exit }}
+          POSTED: ${{ steps.pass.outputs.posted }}
+          OUTCOME: ${{ steps.pass.outputs.outcome }}
+        run: |
+          set -euo pipefail
+          check() { [ "$2" = "$3" ] || { echo "::error::$1 is '$2', want '$3'"; exit 1; }; echo "ok: $1 = $2"; }
+          check "renderer exit" "$RENDERER_EXIT" 0
+          if [ "$IS_FORK" = true ]; then
+            # A fork's token is read-only: the poster's write is refused, it
+            # warns and notes it in the job summary, and the step succeeds.
+            check "outcome" "$OUTCOME" not-permitted
+            check "posted" "$POSTED" false
+            exit 0
+          fi
+          case "$OUTCOME" in created | updated) echo "ok: outcome = $OUTCOME" ;;
+            *) echo "::error::outcome is '$OUTCOME', want created or updated"; exit 1 ;; esac
+          check "posted" "$POSTED" true
+          marker='<!-- trustvian-behavioral-gate:trustvian-run-action-e2e -->'
+          # Read-only: list the comments, as the poster does, and apply its
+          # ownership rule independently.
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" >"$RUNNER_TEMP/comments.json"
+          jq -s --arg m "$marker" '[add[] | select(.user.login == "github-actions[bot]"
+            and ((.body | split("\n")[0] | rtrimstr("\r")) == $m))]' "$RUNNER_TEMP/comments.json" >"$RUNNER_TEMP/ours.json"
+          check "gate comments for the marker" "$(jq length "$RUNNER_TEMP/ours.json")" 1
+          jq -r '.[0].body' "$RUNNER_TEMP/ours.json" >"$RUNNER_TEMP/body.md"
+          check "first line" "$(head -n 1 "$RUNNER_TEMP/body.md" | tr -d '\r')" "$marker"
+          grep -qF "$HEAD_SHA" "$RUNNER_TEMP/body.md" || { echo "::error::the comment does not name $HEAD_SHA"; exit 1; }
+          grep -qF -- "— PASS" "$RUNNER_TEMP/body.md" || { echo "::error::the comment does not hold the PASS"; exit 1; }
+          jq -r '.[0].id' "$RUNNER_TEMP/ours.json" >"$RUNNER_TEMP/comment-id"
+          echo "ok: comment $(cat "$RUNNER_TEMP/comment-id") holds the PASS for $HEAD_SHA"
+
+      # The same marker, and an artifact that was never uploaded — as when a
+      # run job's upload failed after the CLI exited 0: the renderer's
+      # "artifact is missing" no verdict, which must replace the PASS rather
+      # than leave it standing.
+      - id: no-verdict
+        name: Post a no-verdict rendering over it
+        uses: ./.github/actions/trustvian-comment
+        with:
+          exit-code: "0"
+          artifact-name: trustvian-run-never-uploaded
+          marker-id: trustvian-run-action-e2e
+
+      - name: The same comment now holds no verdict for the head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RENDERER_EXIT: ${{ steps.no-verdict.outputs.renderer-exit }}
+          POSTED: ${{ steps.no-verdict.outputs.posted }}
+          OUTCOME: ${{ steps.no-verdict.outputs.outcome }}
+        run: |
+          set -euo pipefail
+          check() { [ "$2" = "$3" ] || { echo "::error::$1 is '$2', want '$3'"; exit 1; }; echo "ok: $1 = $2"; }
+          check "renderer exit" "$RENDERER_EXIT" 1
+          if [ "$IS_FORK" = true ]; then
+            check "outcome" "$OUTCOME" not-permitted
+            check "posted" "$POSTED" false
+            exit 0
+          fi
+          check "outcome" "$OUTCOME" updated
+          check "posted" "$POSTED" true
+          marker='<!-- trustvian-behavioral-gate:trustvian-run-action-e2e -->'
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments?per_page=100" >"$RUNNER_TEMP/comments.json"
+          jq -s --arg m "$marker" '[add[] | select(.user.login == "github-actions[bot]"
+            and ((.body | split("\n")[0] | rtrimstr("\r")) == $m))]' "$RUNNER_TEMP/comments.json" >"$RUNNER_TEMP/ours.json"
+          check "gate comments for the marker" "$(jq length "$RUNNER_TEMP/ours.json")" 1
+          check "comment id" "$(jq -r '.[0].id' "$RUNNER_TEMP/ours.json")" "$(cat "$RUNNER_TEMP/comment-id")"
+          jq -r '.[0].body' "$RUNNER_TEMP/ours.json" >"$RUNNER_TEMP/body.md"
+          check "first line" "$(head -n 1 "$RUNNER_TEMP/body.md" | tr -d '\r')" "$marker"
+          grep -qF "$HEAD_SHA" "$RUNNER_TEMP/body.md" || { echo "::error::the no verdict does not name $HEAD_SHA"; exit 1; }
+          grep -qF "### Trustvian behavioral gate — no verdict" "$RUNNER_TEMP/body.md" ||
+            { echo "::error::the comment is not the no-verdict state"; cat "$RUNNER_TEMP/body.md"; exit 1; }
+          grep -qF "artifact is missing" "$RUNNER_TEMP/body.md" ||
+            { echo "::error::the no verdict does not say the artifact is missing"; cat "$RUNNER_TEMP/body.md"; exit 1; }
+          if grep -qF -- "— PASS" "$RUNNER_TEMP/body.md"; then
+            echo "::error::the stale PASS is still standing"; exit 1
+          fi
+          echo "ok: the PASS was replaced by no verdict for $HEAD_SHA"

@@ -300,18 +300,35 @@ go_isolated "$dir" "$@"`, "bash", libPath(t), goBin, tooling, dir}, args...)...)
 	}
 }
 
-// Every Go and Git command setup.sh runs goes through the isolated helpers.
+// Every Go and Git command either action's setup runs goes through the
+// isolated helpers: both setup scripts, and lib.sh, where the toolchain,
+// source and build steps they share now live.
 func TestSetupRunsNoUnisolatedGoOrGit(t *testing.T) {
-	body := readFile(t, filepath.Join(actionDir, "setup.sh"))
 	// A command in command position: at the start of a line, or after ;, &,
 	// |, (, ! or $( — not a word such as `for tool in git jq`.
 	direct := regexp.MustCompile(`(?m)(^[ \t]*|[;&|(][ \t]*|![ \t]+|\$\([ \t]*)(git|"\$GO_ISOLATED_BIN"|"\$go_bin"|go)[ \t]+[a-z-]`)
-	for _, m := range direct.FindAllString(body, -1) {
-		t.Errorf("setup.sh runs a command outside go_isolated/git_isolated: %q", strings.TrimSpace(m))
+	for _, path := range []string{
+		filepath.Join(actionDir, "setup.sh"),
+		filepath.Join(actionDir, "lib.sh"),
+		filepath.Join(commentActionDir, "setup.sh"),
+	} {
+		for _, m := range direct.FindAllString(readFile(t, path), -1) {
+			t.Errorf("%s runs a command outside go_isolated/git_isolated: %q", path, strings.TrimSpace(m))
+		}
 	}
-	for _, helper := range []string{"go_isolated", "fetch_source", "source_is_pinned"} {
-		if !strings.Contains(body, helper) {
-			t.Errorf("setup.sh does not use %s", helper)
+	lib := readFile(t, filepath.Join(actionDir, "lib.sh"))
+	provide := lib[strings.Index(lib, "provide_pinned_source() {"):]
+	for _, helper := range []string{"go_isolated", "fetch_source", "source_is_pinned", "verify_sha256"} {
+		if !strings.Contains(provide, helper) {
+			t.Errorf("provide_pinned_source does not use %s", helper)
+		}
+	}
+	for _, path := range []string{filepath.Join(actionDir, "setup.sh"), filepath.Join(commentActionDir, "setup.sh")} {
+		body := readFile(t, path)
+		for _, helper := range []string{"provide_pinned_source", "build_pinned", "verify_pinned_build"} {
+			if !strings.Contains(body, helper) {
+				t.Errorf("%s does not use %s", path, helper)
+			}
 		}
 	}
 }

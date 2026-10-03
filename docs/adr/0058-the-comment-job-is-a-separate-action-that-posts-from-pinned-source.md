@@ -1,7 +1,7 @@
 # 0058 — The comment job is a separate action that posts from pinned source
 
-**Status:** Accepted. The poster ships first; the action that runs it follows
-once the poster is on `main` (§ 6).
+**Status:** Accepted. The poster shipped first (#140), and the action that runs
+it followed, pinned to the poster's merge commit (§ 6).
 
 ## Context
 
@@ -195,5 +195,9 @@ never by `./`.
 - `trustvian-ci-comment`'s flags, exit codes and marker format are
   OPERATIONALLY STABLE. Changing the marker would orphan every existing gate
   comment. The comment body is OBSERVATIONAL.
-- Until the action follows, the poster is reachable only by building it by
-  hand. Task 079 stays partially implemented.
+- The action reports what the poster did as an `outcome` output, read from the
+  lines the pinned poster writes. A test holds those lines to the poster's
+  source, so renaming a message cannot silently empty the output.
+- The run action's toolchain, source and verification steps moved into its
+  `lib.sh`, which the comment action sources. One implementation now serves
+  both, and so does every isolation test of it.

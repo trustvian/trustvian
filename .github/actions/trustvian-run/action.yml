@@ -3,8 +3,8 @@
 # Runs one Trustvian behavioral scenario or suite with `trustvian eval run
 # --json`, preserves the result document as an artifact, and exits with the
 # CLI's own code. It renders no verdict and writes nothing to the pull request:
-# commenting is the next slice, in a separate job that never checks out or runs
-# pull request code. See docs/ci-github-action.md and
+# commenting is ../trustvian-comment's, in a separate job that never checks out
+# or runs pull request code. See docs/ci-github-action.md and
 # docs/adr/0056-the-run-action-builds-a-pinned-source-commit.md.
 #
 # The steps below receive every input through the environment and never

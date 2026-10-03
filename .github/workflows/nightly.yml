@@ -51,6 +51,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -90,6 +93,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
 
       - name: Run the deployment smoke test
         working-directory: deployments/docker-compose
@@ -116,6 +122,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
 
       - name: Run the recovery drill
         # The script tears its own stack and backup directory down on exit,

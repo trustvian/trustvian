@@ -10,6 +10,53 @@ actually depend on.
 
 ### Added
 
+- **The behavioral gate comment, end to end:
+  `.github/actions/trustvian-comment`** (task 079, now implemented;
+  [ADR 0058](docs/adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md),
+  [guide](docs/ci-github-action.md)).
+
+  A composite action for the second job of the behavioral gate workflow. It
+  downloads the run job's artifact, renders it with `trustvian-ci-render`,
+  writes the rendering to the job summary, and posts it with
+  `trustvian-ci-comment` as the pull request's one gate comment, edited in
+  place.
+
+  - **Built from pinned source only.** Both commands are built from the commit
+    `runtime.env` pins, with the run action's digest-checked toolchain,
+    isolated fetch and `vcs.revision` check, now shared through its `lib.sh`.
+    Nothing is read from the job's workspace, and a source scan asserts it.
+  - **Inputs:** `exit-code` (required; empty means the CLI did not run),
+    `artifact-name`, `marker-id` and `github-token`. **Outputs:**
+    `renderer-exit`, `posted` and `outcome`.
+  - **Every rendering is posted.** Evidence, no verdict and a rejected artifact
+    all replace the previous comment. A missing artifact is the renderer's
+    "artifact is missing" no verdict, not a failed step. Only the renderer's
+    usage exit fails the job without posting.
+  - **The token is in one step's environment.** Only the post step has
+    `GITHUB_TOKEN`, and the poster is the only process that reads it. Only the
+    job's own `GITHUB_TOKEN` is supported: comments are found by
+    `github-actions[bot]` authorship.
+  - **Forks degrade loudly and successfully.** A refused write is a warning
+    and a job-summary note, and the check stays the run job's.
+  - **The example is now the two-job workflow**,
+    `examples/github-actions/behavioral-gate.yml` (renamed from
+    `behavioral-gate-run.yml`):
+    - the run job holds `contents: read`;
+    - the comment job holds `pull-requests: write` alone, checks nothing out
+      and runs under `!cancelled()`;
+    - concurrency is per pull request, with cancel-in-progress.
+  - **Structural tests over every workflow, example and Markdown YAML
+    block:**
+    - no `pull_request_target` or `workflow_run` trigger;
+    - the comment job holds exactly `pull-requests: write`, with no checkout,
+      local action or step of its own;
+    - the run job holds no write scope;
+    - no workflow-level permissions in shipped workflows;
+    - every checkout sets `persist-credentials: false`.
+  - **A real end-to-end comment** on this repository's own pull requests. It
+    posts a PASS, reads it back, then replaces it with a no-verdict rendering
+    for the same head commit. On a fork, it asserts the not-permitted path.
+
 - **A poster for the behavioral gate comment: `cmd/trustvian-ci-comment`**
   (task 079, still partially implemented;
   [ADR 0058](docs/adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)).
@@ -17,7 +64,7 @@ actually depend on.
   Posts a `trustvian-ci-render` rendering as the pull request's one gate
   comment and edits it in place. It is standard library only, reads the token
   from `GITHUB_TOKEN` alone, and is the only Trustvian code that writes to
-  GitHub. The comment action that runs it follows in the next pull request.
+  GitHub. `.github/actions/trustvian-comment`, above, runs it.
 
   - **Ownership.** A comment is the poster's only if `github-actions[bot]`
     wrote it and its first line is `<!-- trustvian-behavioral-gate:<id> -->`.
@@ -39,10 +86,10 @@ actually depend on.
   [ADR 0057](docs/adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md),
   [guide](docs/ci-github-action.md#rendering-the-artifact)).
 
-  Turns a downloaded `trustvian-run` artifact into Markdown for a future pull
+  Turns a downloaded `trustvian-run` artifact into Markdown for a pull
   request comment or job summary. It works offline, needs no credential,
   executes nothing from the artifact, and is built from the Go standard library
-  alone. It posts nothing: the comment job is the next slice.
+  alone. It posts nothing itself; `.github/actions/trustvian-comment` runs it.
 
   - **The caller supplies the identity.** The head commit, repository, run id
     and attempt, and the run job's exit code are flags. `trustvian-run.json`
@@ -117,15 +164,14 @@ actually depend on.
   - **Refuses `pull_request_target` and `workflow_run`.**
   - **A minimal job summary:** head commit, run link, exit code and artifact
     availability. No verdict is rendered.
-  - **A run-only example workflow**,
-    `examples/github-actions/behavioral-gate-run.yml`:
+  - **A run-only example workflow**, since extended to the two-job
+    `examples/github-actions/behavioral-gate.yml`:
     - `pull_request` only;
     - `contents: read` per job;
     - commit-pinned actions and `persist-credentials: false`;
     - no secrets.
-  - **Not yet:** the pull request comment, which will be a separate job that
-    never checks out or runs pull request code; the strict renderer; and
-    caching. Task 078's criteria 9 and 11 remain open. Running a scenario in
+  - **Not yet:** caching the runtime across jobs. The comment and the
+    renderer followed, above. Task 078's criteria 9 and 11 remain open. Running a scenario in
     CI does not make a nondeterministic workload's verdict any more reliable.
 
 - **Scenario suites: `trustvian eval run --suite DIR --scenario-timeout D`**
@@ -324,6 +370,14 @@ actually depend on.
   and cannot make one pass that should have failed.
 
 ### Changed
+
+- **The run action's runtime pin** moves to `5521759` (#140), the first commit
+  with both the renderer and the poster. #138–#140 changed no CLI,
+  control-plane or Collector code.
+- **Every `actions/checkout` in `ci.yml`, `nightly.yml` and `release.yml`** now
+  sets `persist-credentials: false`. Nothing after a checkout needs the token.
+- **`trustvian-ci-comment`'s superseded notice** names the newer head by 12
+  characters rather than the full SHA.
 
 - **The browser surface is now an admin console, and no journey through it
   requires typing an identifier** (task 096). Task 074 removed the identifier

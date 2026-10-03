@@ -38,7 +38,8 @@ carries it because it contradicts
 evaluation foundation, local persistence, the local control-plane API and
 realtime, the developer CLI, the TUI, the WebUI, the PostgreSQL backend, the
 environment model and promotion (tasks 051–066, 073 and 074) exist, while
-078–080 are specified, 067, 075, 076 and 077 are implemented, and 068–072
+078 is partially implemented, 080 is specified, 067, 075, 076, 077 and 079 are
+implemented, and 068–072
 are still PLANNED. [Task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md)
 is a planning task, in 049's shape: it reserves and scopes 083–090 — inspection
 and evaluation depth — and implements nothing.
@@ -283,7 +284,7 @@ until then.
 | 075 | **Implemented** | [AI semantic telemetry normalization](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) |
 | 077 | **Implemented** | [Unified OTLP local dev runtime](tasks/v1.0/077-unified-otlp-local-dev-runtime.md) |
 | 078 | Partially implemented: `eval run`, repeated evaluation, persisted executions with `--reference <execution>\|last` (schema 9) and suites (`--suite`, per-scenario deadlines) ship; acceptance criteria 9 and 11 remain open | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) |
-| 079 | Partially implemented: the run side ships — `.github/actions/trustvian-run` runs a scenario or suite, passes the exit code through and preserves the result as an artifact ([ADR 0056](adr/0056-the-run-action-builds-a-pinned-source-commit.md)), and `cmd/trustvian-ci-render` renders that artifact as inert Markdown or an explicit no-verdict state, offline ([ADR 0057](adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md)); the pull request comment and its job are the next slice | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
+| 079 | **Implemented**: `.github/actions/trustvian-run` runs a scenario or suite, passes the exit code through and preserves the result as an artifact ([ADR 0056](adr/0056-the-run-action-builds-a-pinned-source-commit.md)); `cmd/trustvian-ci-render` renders that artifact as inert Markdown or an explicit no-verdict state, offline ([ADR 0057](adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md)); and `.github/actions/trustvian-comment` posts it as one pull request comment from a separate job that holds `pull-requests: write` and runs no pull request code ([ADR 0058](adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)) | [CI integration — a GitHub Action over the 078 command](tasks/v1.0/079-ci-integration-github-action.md) |
 
 **The build order inside this preview is 075 → 078 → 079**, not the four in
 parallel: 078's thresholds can only be measured at 075's tool-name fidelity — see
@@ -532,8 +533,8 @@ gate result the decision consumed is snapshotted field for field rather than
 re-derived on read, and the write commits only against the environment state it
 was decided against. Schema version is now **4** on both backends.
 
-**Three gap-closing milestones remain open: 078 and 079 are partially
-implemented, and 080 is specified. 074, 075, 076 and 077 are implemented.**
+**Two gap-closing milestones remain open: 078 is partially implemented, and
+080 is specified. 074, 075, 076, 077 and 079 are implemented.**
 075–078 were each found by running the product end to end — an instrumented
 agent, a browser, and a developer who has not read the source — rather than by
 planning, which is why they sit outside the reserved 049–072 block alongside
@@ -595,8 +596,8 @@ exit criterion.
   scenario runs N times per side, because an LLM-driven agent may call a tool
   in one execution and not the next, and a gate that FAILs on unchanged code
   teaches a team to re-run CI. `N = 1` reproduces today's semantics exactly.
-- **[079 — CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md).**
-  A gate nobody reads is a gate nobody acts on. 078 makes the verdict
+- **[079 — CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md)
+  is implemented.** A gate nobody reads is a gate nobody acts on. 078 makes the verdict
   scriptable; 079 makes it legible where the change is reviewed — a pull request
   comment rendered from 078's result document and nothing else, with the exit
   codes passed through untouched so an unreachable control plane is never

@@ -1,0 +1,95 @@
+# Trustvian behavioral gate.
+#
+# Copy into your repository as .github/workflows/behavioral-gate.yml.
+#
+# Two jobs, and the split is the security property — do not merge them:
+#
+#   run      runs your scenario (or suite) — your pull request's own code —
+#            fails the check with the scenario's exit code, and uploads the
+#            result document as an artifact. It holds no write scope.
+#   comment  renders that artifact and posts it as one comment on the pull
+#            request, edited in place on every push. It holds
+#            pull-requests: write, and checks out and runs nothing from the
+#            pull request.
+#
+# The check is the run job's. A comment job that fails, is skipped, or cannot
+# write — on a fork pull request, GitHub gives it a read-only token — changes
+# nothing about the gate; it says so in a warning and in the job summary.
+#
+# Before using it:
+#   - Replace both REPLACE_WITH_A_REVIEWED_TRUSTVIAN_COMMIT_SHA with the full
+#     40-character commit of the Trustvian revision you have reviewed. As
+#     written, the references cannot resolve, so an unedited copy fails at
+#     setup instead of running an unpinned action.
+#   - Point `scenario:` at your scenario file, or use `suite:` and
+#     `scenario-timeout:` for a directory of them.
+
+name: Behavioral gate
+
+# pull_request, never pull_request_target: the run job runs the pull
+# request's own code, and pull_request_target would run it with a token that
+# can write to your repository and with your secrets. Both actions refuse to
+# run under pull_request_target and workflow_run.
+on:
+  pull_request:
+    branches: [main]
+
+# A newer push to the same pull request cancels the older run, comment job
+# included, so an older verdict does not land after a newer one. The poster
+# also re-checks the pull request's head just before writing, which covers
+# the window cancellation cannot.
+concurrency:
+  group: behavioral-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# No workflow-level permissions. A workflow-level grant would reach the job
+# that runs the workload; each job states the least it needs instead.
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    # The comment job's only input from this job besides the artifact.
+    outputs:
+      exit-code: ${{ steps.gate.outputs.exit-code }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # actions/checkout defaults to persist-credentials: true, which
+          # writes the job's token into .git/config — where the workload this
+          # job runs, and every dependency it loads, could read it. The
+          # scenario needs your source, not the ability to push it. Keep this.
+          persist-credentials: false
+
+      # Runs `trustvian eval run --json`, uploads the result as the artifact
+      # `trustvian-run`, and exits with the CLI's code: 0 PASS, 1 gate FAIL,
+      # 2 usage, 3 operational. This step is the gate.
+      - id: gate
+        uses: trustvian/trustvian/.github/actions/trustvian-run@REPLACE_WITH_A_REVIEWED_TRUSTVIAN_COMMIT_SHA
+        with:
+          scenario: scenarios/support-login.yaml
+
+  comment:
+    needs: run
+    # After a FAIL and an operational error too — exactly when the comment
+    # matters — but not after a cancellation, which made no claim.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The one write scope in the workflow, and nothing else: no contents
+    # scope, because this job checks nothing out.
+    permissions:
+      pull-requests: write
+
+    # No actions/checkout, and no step of your own. The action downloads the
+    # run job's artifact as data, and builds the renderer and the poster from
+    # the Trustvian commit you pinned — never from the pull request. Adding a
+    # checkout or a build step here would put the pull request's code next to
+    # a write-scoped token.
+    steps:
+      - uses: trustvian/trustvian/.github/actions/trustvian-comment@REPLACE_WITH_A_REVIEWED_TRUSTVIAN_COMMIT_SHA
+        with:
+          exit-code: ${{ needs.run.outputs.exit-code }}

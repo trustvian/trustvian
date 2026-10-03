@@ -221,5 +221,6 @@ func summarize(getenv func(string) string, stderr io.Writer, note string) {
 	}
 }
 
-// shortSHA is a head GitHub named, already validated as a commit SHA.
-func shortSHA(sha string) string { return sha }
+// shortSHA abbreviates a head GitHub named, already validated as a commit
+// SHA, to the 12 characters an annotation needs to identify it.
+func shortSHA(sha string) string { return sha[:min(len(sha), 12)] }

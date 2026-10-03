@@ -62,6 +62,8 @@ reconstructed later. Everything else in this table is already released.
 | `trustvian-ci-render` flags and exit codes | OPERATIONALLY STABLE | See [GitHub Action](#github-action) | New optional flags | Major to remove or repurpose |
 | `trustvian-ci-render` Markdown | OBSERVATIONAL | Not a machine interface | Any change | None |
 | `trustvian-ci-comment` flags, exit codes and marker line | OPERATIONALLY STABLE | See [GitHub Action](#github-action) | New optional flags | Major to remove or repurpose; changing the marker orphans existing comments |
+| `trustvian-comment` GitHub Action inputs and outputs | OPERATIONALLY STABLE | See [GitHub Action](#github-action) | New inputs and outputs | Major to remove or repurpose |
+| Gate comment body | OBSERVATIONAL | Not a machine interface | Any change | None |
 | CLI human-readable output | OBSERVATIONAL | Not a machine interface — no wording, spacing, or ordering promise | Any change | None |
 | Environment variables read by shipped binaries | OPERATIONALLY STABLE | See [environment variables](#environment-variables) | New variables | Major to remove or rename |
 | Collector processor type name and config fields | OPERATIONALLY STABLE | `policy`, `storage`, `health`, `evaluation` keys and their meaning | New optional keys | Major |
@@ -741,11 +743,14 @@ of an archive is not.
 
 ## GitHub Action
 
-`.github/actions/trustvian-run` is the run side of
-[task 079](tasks/v1.0/079-ci-integration-github-action.md), documented in
-[Running behavioral scenarios in GitHub Actions](ci-github-action.md). It is
+`.github/actions/trustvian-run` and `.github/actions/trustvian-comment` are the
+two jobs of [task 079](tasks/v1.0/079-ci-integration-github-action.md),
+documented in
+[Running behavioral scenarios in GitHub Actions](ci-github-action.md). Each is
 pinned by commit, so a caller only ever gets the version they named; the
 classes below say what a newer commit may change.
+
+The run action:
 
 | Surface | Class | Promise |
 |---|---|---|
@@ -758,9 +763,21 @@ classes below say what a newer commit may change.
 | The pinned runtime commit and Go version (`runtime.env`) | OBSERVATIONAL | Change with the action's commit; the artifact records which were used |
 | Job summary wording and layout | OBSERVATIONAL | Head commit, run link, exit code and artifact availability are present; nothing else is promised |
 
+The comment action
+([ADR 0058](adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)):
+
+| Surface | Class | Promise |
+|---|---|---|
+| Inputs `exit-code`, `artifact-name`, `marker-id`, `github-token` | OPERATIONALLY STABLE | Keep their names and meanings. `exit-code` is required, and empty means the CLI did not run. `marker-id` defaults to `artifact-name`. `github-token` defaults to `github.token`, and only that token is supported, because ownership is `github-actions[bot]` authorship |
+| Outputs `renderer-exit`, `posted`, `outcome` | OPERATIONALLY STABLE | `renderer-exit` is `trustvian-ci-render`'s code. `posted` is `true` or `false`. `outcome` is one of `created`, `updated`, `superseded`, `not-permitted`, or empty when nothing was posted |
+| What it posts | OPERATIONALLY STABLE | Renderer exits `0`, `1` and `3` are posted, so a no verdict replaces a stale verdict; `2` posts nothing and fails the job. A refused write (a fork) succeeds with a warning and a summary note. Only an API failure or a usage error fails the job |
+| Built from the pinned source only, never from `$GITHUB_WORKSPACE` | OPERATIONALLY STABLE | Never relaxed by a minor |
+| Refusal of `pull_request_target` and `workflow_run`, and of any event but `pull_request` | OPERATIONALLY STABLE | Never relaxed by a minor |
+| Job summary | OBSERVATIONAL | Carries the rendering, plus the poster's note when it could not post |
+
 `cmd/trustvian-ci-render` renders a downloaded artifact as Markdown, offline
 ([ADR 0057](adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md)).
-Nothing posts that Markdown yet.
+The comment action runs it.
 
 | Surface | Class | Promise |
 |---|---|---|
@@ -778,9 +795,10 @@ comment ([ADR 0058](adr/0058-the-comment-job-is-a-separate-action-that-posts-fro
 | Exit codes | OPERATIONALLY STABLE | `0` posted, superseded, or not permitted (a warning); `1` the API failed; `2` usage |
 | The marker line `<!-- trustvian-behavioral-gate:<id> -->` and ownership rule | OPERATIONALLY STABLE | A comment is the poster's only if `github-actions[bot]` wrote it and its first line is the marker |
 
-The job summary still carries no verdict, and no job posts the comment yet. The rendering, and the comment when it exists, are
-OBSERVATIONAL, like CLI human-readable output: anyone parsing it is parsing
-the wrong thing, and the result document is right there.
+The run job's summary carries no verdict. The rendering — in the comment job's
+summary and in the comment — is OBSERVATIONAL, like CLI human-readable output:
+anyone parsing it is parsing the wrong thing, and the result document is right
+there.
 
 ## Behavioral compatibility
 
