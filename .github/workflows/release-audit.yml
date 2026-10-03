@@ -1,0 +1,154 @@
+# Release audit: defense in depth behind the release pipeline.
+#
+# Every published release must have come from an approved release.yml run:
+#   - authored by trustvian-release[bot], the GitHub App only the approved
+#     publish job can act as;
+#   - its tag an annotated tag at a commit on main;
+#   - every asset carrying build provenance signed by release.yml.
+# The rulesets and the environment approval should make anything else
+# impossible (ADR 0060). This workflow checks that they did. On any finding it
+# fails and opens, or comments on, an issue labelled `release-audit`.
+#
+# Triggers: a release being created, edited or published (that release), and
+# a weekly run over every release. Releases up to v0.9.0 predate the App and
+# the attestations, and are listed as exempt below, by name.
+
+name: Release audit
+
+on:
+  release:
+    types: [published, created, edited]
+  schedule:
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Audit releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      attestations: read
+      issues: write
+
+    steps:
+      - name: Audit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          # The one release this event is about; empty on the schedule.
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # Published before the App and the attestations existed (ADR 0060).
+          exempt=" v0.1.0 v0.2.0 v0.3.0 v0.4.0 v0.5.0 v0.6.0 v0.7.0 v0.8.0 v0.9.0-rc.1 v0.9.0-rc.2 v0.9.0-rc.3 v0.9.0 "
+          readonly APP_LOGIN="trustvian-release[bot]"
+          readonly SIGNER="$GITHUB_REPOSITORY/.github/workflows/release.yml"
+
+          if [ -n "$EVENT_TAG" ]; then
+            tags="$EVENT_TAG"
+          else
+            tags="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name')"
+          fi
+
+          findings="$(mktemp)"
+          finding() { echo "- \`$1\`: $2" >> "$findings"; echo "::error::$1: $2"; }
+
+          for tag in $tags; do
+            # A tag name reaches an API path and a jq filter below; anything
+            # outside a release's character set is itself a finding.
+            if ! [[ "$tag" =~ ^[A-Za-z0-9._-]+$ ]]; then
+              finding "(unprintable)" "a release has a tag name outside [A-Za-z0-9._-]"
+              continue
+            fi
+            if [[ "$exempt" == *" $tag "* ]]; then
+              echo "exempt: $tag"
+              continue
+            fi
+            release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" 2>/dev/null || true)"
+            if [ -z "$release" ]; then
+              # A draft is not visible by tag; look it up in the list.
+              release="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+                --jq ".[] | select(.tag_name == \"$tag\")" | head -c 1000000)"
+            fi
+            author="$(jq -r '.author.login // ""' <<<"$release")"
+            draft="$(jq -r '.draft // false' <<<"$release")"
+
+            # 1. Authored by the release App.
+            if [ "$author" != "$APP_LOGIN" ]; then
+              finding "$tag" "authored by '$author', not $APP_LOGIN"
+            fi
+            # A draft is not public and may not have its tag or assets yet;
+            # its author is all that can be checked.
+            [ "$draft" = true ] && continue
+
+            # 2. An annotated tag at a commit on main.
+            if ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '"\(.object.type) \(.object.sha)"' 2>/dev/null)"; then
+              read -r type object <<<"$ref"
+              if [ "$type" != tag ]; then
+                finding "$tag" "the tag is lightweight, not annotated"
+              else
+                commit="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$object" --jq 'select(.object.type == "commit") | .object.sha')"
+                if [ -z "$commit" ]; then
+                  finding "$tag" "the annotated tag does not point at a commit"
+                else
+                  # identical or behind: the commit is main's head or an ancestor of it.
+                  status="$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$commit" --jq .status 2>/dev/null || echo unknown)"
+                  case "$status" in
+                    identical | behind) ;;
+                    *) finding "$tag" "its commit $commit is not on main (compare: $status)" ;;
+                  esac
+                fi
+              fi
+            else
+              finding "$tag" "the release has no tag"
+            fi
+
+            # 3. Every asset attested by release.yml.
+            dir="$(mktemp -d)"
+            gh release download "$tag" --dir "$dir" >/dev/null 2>&1 || finding "$tag" "its assets could not be downloaded"
+            count=0
+            for asset in "$dir"/*; do
+              [ -f "$asset" ] || continue
+              count=$((count + 1))
+              if ! gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY" \
+                --signer-workflow "$SIGNER" >/dev/null 2>&1; then
+                finding "$tag" "asset $(basename "$asset") has no build provenance signed by release.yml"
+              fi
+            done
+            [ "$count" -gt 0 ] || finding "$tag" "it has no assets"
+            rm -rf "$dir"
+            echo "audited: $tag"
+          done
+
+          if [ ! -s "$findings" ]; then
+            echo "### Release audit: no findings" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          {
+            echo "### Release audit: findings"
+            echo
+            cat "$findings"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          body="$(printf 'The release audit found releases that did not come from an approved release.yml run.\n\n%s\n\nRun: %s\n\nSee ADR 0060 and docs/release-runbook.md § 4.' "$(cat "$findings")" "$RUN_URL")"
+          gh label create release-audit --color B60205 \
+            --description "A release that did not come from an approved release run" 2>/dev/null || true
+          issue="$(gh issue list --label release-audit --state open --limit 1 --json number --jq '.[0].number // empty')"
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body" >/dev/null
+          else
+            gh issue create --title "Release audit: a release did not come from an approved release run" \
+              --label release-audit --body "$body" >/dev/null
+          fi
+          exit 1

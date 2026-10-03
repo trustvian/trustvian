@@ -8,7 +8,7 @@ GO       := go
 
 .PHONY: help build run demo baseline-demo test test-race bench vet fmt fmt-check tidy coverage install clean check examples \
 	compose-up compose-down compose-smoke recovery-drill integration-postgres \
-	local check-modules check-platform-boundary release-dry-run release vulncheck container-build container-scan sbom \
+	local check-modules check-platform-boundary release-dry-run release-prep release vulncheck container-build container-scan sbom \
 	pr-title
 
 help: ## Show this help
@@ -133,8 +133,11 @@ pr-title: ## Check a pull request title against docs/COMMIT_CONVENTION.md — ma
 release-dry-run: ## Build the full release artifact matrix locally — no tag, no credentials, no upload
 	./scripts/release-build.sh
 
-release: ## Release through release.yml — make release VERSION=vX.Y.Z [DRY_RUN=1] (a human Organization Admin; see docs/release-guide.md)
-	@VERSION='$(VERSION)' DRY_RUN='$(DRY_RUN)' ./scripts/release.sh
+release-prep: ## Open the release-prep PR — make release-prep BUMP=patch|minor TITLE="…" (or VERSION=v1.0.0); see docs/release-runbook.md
+	@MODE='$(MODE)' BUMP='$(BUMP)' VERSION='$(VERSION)' TITLE='$(TITLE)' ./scripts/release-prep.sh
+
+release: ## Release the declared version — make release [MODE=agent] [PRE=rc] [DRY_RUN=1] [NO_WAIT=1] [VERSION=vX.Y.Z]; see docs/release-runbook.md
+	@MODE='$(MODE)' VERSION='$(VERSION)' PRE='$(PRE)' DRY_RUN='$(DRY_RUN)' NO_WAIT='$(NO_WAIT)' ./scripts/release.sh
 
 compose-up: ## Start the reference Docker Compose deployment (see deployments/docker-compose/README.md)
 	$(COMPOSE) up -d --build

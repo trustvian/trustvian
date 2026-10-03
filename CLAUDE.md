@@ -121,13 +121,26 @@ Never change the repository default branch away from `main`.
 
 Never delete, move, or overwrite release tags.
 
+Never approve or reject a deployment, above all the `release` environment:
+that approval is the human decision to publish a release. The one exception is
+the boundary proof a user asks for (`docs/releasing-with-claude-code.md`,
+Setup step 4): a *rejection* attempt that must fail with 403. Never create, edit
+or delete a GitHub Release or a `v*` tag yourself; the release workflow does,
+after that approval. Claude may run a
+release (`make release-prep`, `make release`, `gh run rerun` on a release run)
+by following `docs/release-runbook.md`, and stops at printing where a human
+approves. Run it with the agent's own token, which has no Deployments,
+Administration or Environments permission (`docs/governance/agents.md`).
+
 Never use `--force` or `--force-with-lease` against protected branches or
 tags.
 
 Never add an AI agent, bot, automation identity, or the current credential as
 a ruleset bypass actor, and never use an existing bypass entry — including the
 Organization Admin bypass — even when running under a credential that holds
-it.
+it. The one bypass actor that exists, the `trustvian-release` GitHub App on
+the "Release tags: creation" ruleset, was configured by a human (ADR 0060);
+never change it, act as it, or see or handle its private key.
 
 These operations are prohibited even if the authenticated GitHub credential
 has administrator privileges. Technical capability is not authorization.

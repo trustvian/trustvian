@@ -7,10 +7,18 @@
 # digest is not a release. Only `publish` makes anything public, and only after
 # `verify` has passed on Linux and macOS.
 #
-# The release tag is the one step this workflow does not perform. The `v*`
-# ruleset lets only a human Organization Admin create a tag
-# (docs/governance/releases.md), so `publish` waits for it. scripts/release.sh,
-# run by that admin, creates it once `verify` has passed.
+# The human gate is the `release` environment. Every job up to `summary` runs
+# in `release-build` (main only, no reviewers). Only `publish` runs in
+# `release`, whose required reviewers are the Organization Admins: publish
+# waits there until one of them approves the deployment on GitHub, after
+# reading the summary job's page. Publish then mints a token for the
+# trustvian-release GitHub App, whose key is a secret of that environment,
+# and with it creates the annotated tag at the verified commit and the GitHub
+# Release. The App is the only actor the "Release tags: creation" ruleset
+# lets create a tag, so nothing but an approved publish job can. GITHUB_TOKEN
+# pushes the image tags only. scripts/release.sh never creates a tag, never
+# handles the App key, and approves only in manual mode, for a person at a
+# terminal. See docs/adr/0060-agent-operated-releases-with-environment-approval.md.
 #
 # There is no tag-push trigger. Pushing a v* tag by hand starts nothing, and
 # the guide says so.
@@ -23,7 +31,7 @@
 
 name: Release
 run-name: >-
-  Release ${{ inputs.version }} at ${{ inputs.commit }}${{ inputs.dry_run && ' (dry run)' || '' }}
+  Release ${{ inputs.version }} at ${{ inputs.commit }}${{ inputs.dry_run && ' (dry run)' || '' }} [${{ inputs.operator }}]
 
 on:
   workflow_dispatch:
@@ -36,6 +44,18 @@ on:
         description: "Full commit SHA on main to release (must be main's head at dispatch)"
         required: true
         type: string
+      operator:
+        description: "Who ran make release: manual (a person at a terminal) or agent (Claude Code, or no terminal). Informational, reported by scripts/release.sh"
+        required: true
+        type: choice
+        options:
+          - manual
+          - agent
+      derivation:
+        description: "How the version was derived; shown to the approver (set by scripts/release.sh)"
+        required: false
+        type: string
+        default: ""
       dry_run:
         description: "Build, sign and verify everything, publish nothing"
         required: false
@@ -59,6 +79,10 @@ env:
   COMMIT: ${{ inputs.commit }}
   # gh's repository, stated rather than inferred from a checkout's remote.
   GH_REPO: ${{ github.repository }}
+  # Informational: the mode scripts/release.sh reported. GitHub's own record
+  # of who triggered the run and who approved the deployment is the
+  # authoritative one; every job's summary shows both side by side.
+  OPERATOR: ${{ inputs.operator }}
 
 jobs:
   # ---------------------------------------------------------------------
@@ -68,7 +92,7 @@ jobs:
     name: Preflight
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: release
+    environment: release-build
     permissions:
       contents: read
       actions: read
@@ -76,6 +100,22 @@ jobs:
       prerelease: ${{ steps.check.outputs.prerelease }}
 
     steps:
+
+      - name: Operator
+        run: |
+          echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
+      - name: The release App is configured
+        # Only the trustvian-release App can create a tag (the "Release tags:
+        # creation" ruleset), and publish needs its id. Fail here, before
+        # anything is built, rather than after an approval.
+        env:
+          RELEASE_APP_ID: ${{ vars.RELEASE_APP_ID }}
+        run: |
+          if ! printf '%s' "$RELEASE_APP_ID" | grep -Eq '^[0-9]+$'; then
+            echo "::error::vars.RELEASE_APP_ID is empty or not a number. Create the trustvian-release GitHub App and set the variable: docs/release-runbook.md § 0, The release App (human-only)."
+            exit 1
+          fi
+
       - name: Refuse anything but main
         run: |
           # Inputs reach every script through the environment, never by
@@ -121,7 +161,7 @@ jobs:
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: release
+    environment: release-build
     permissions:
       contents: read
 
@@ -143,6 +183,10 @@ jobs:
           --health-retries 10
 
     steps:
+
+      - name: Operator
+        run: |
+          echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -208,7 +252,7 @@ jobs:
     needs: gates
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: release
+    environment: release-build
     permissions:
       contents: read
       # Keyless signing of the build provenance, and storing it.
@@ -216,6 +260,10 @@ jobs:
       attestations: write
 
     steps:
+
+      - name: Operator
+        run: |
+          echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -275,7 +323,7 @@ jobs:
     needs: gates
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: release
+    environment: release-build
     permissions:
       contents: read
       packages: write
@@ -285,6 +333,10 @@ jobs:
       digest: ${{ steps.push.outputs.digest }}
 
     steps:
+
+      - name: Operator
+        run: |
+          echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -371,7 +423,7 @@ jobs:
     needs: [build, image]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    environment: release
+    environment: release-build
     permissions:
       contents: read
       attestations: read
@@ -381,6 +433,10 @@ jobs:
         os: [ubuntu-latest, macos-latest]
 
     steps:
+
+      - name: Operator
+        run: |
+          echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The scenario fixtures and the workload's source; nothing from this
@@ -518,56 +574,179 @@ jobs:
   # "Re-run failed jobs" finishes a partial publish instead of repeating or
   # contradicting it.
   # ---------------------------------------------------------------------
-  publish:
-    name: Publish
+  # ---------------------------------------------------------------------
+  # The page the approver reads before approving publish.
+  # ---------------------------------------------------------------------
+  summary:
+    name: Approval summary
     needs: [preflight, gates, build, image, verify]
-    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
-    # Includes the wait for a human to create the tag.
-    timeout-minutes: 75
-    environment: release
+    timeout-minutes: 5
+    environment: release-build
     permissions:
-      contents: write
-      packages: write
+      contents: read
+      actions: read
 
     steps:
+
+      - name: Operator
+        run: |
+          echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+
+      - name: Write the approval summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DERIVATION: ${{ inputs.derivation }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # The CHANGELOG section that declares the version (or, for a
+          # candidate, its base version), verbatim.
+          base="${VERSION%%-*}"
+          section="$(awk -v v="$base" '
+            $0 ~ "^## " v "( |$)" { seen = 1; print; next }
+            seen && /^## / { exit }
+            seen { print }
+          ' CHANGELOG.md)"
+          [ -n "$section" ] || section="(CHANGELOG.md has no ## $base section at this commit)"
+
+          # The derivation is free text from whoever dispatched the run, so it
+          # is shown as a single code span: newlines, pipes, backticks and
+          # angle brackets removed, at most 200 characters. It cannot end the
+          # table, add rows, or render a link or an image.
+          derivation="$(printf '%s' "${DERIVATION:-not recorded}" | tr '\r\n|`<>' '      ' | cut -c1-200)"
+
+          # A fence longer than any backtick run in the section, so the
+          # section cannot close it early.
+          longest="$(printf '%s\n' "$section" | { grep -o '``*' || true; } | awk '{ if (length > m) m = length } END { print m + 0 }')"
+          fence="$(printf '%*s' "$(( longest < 3 ? 4 : longest + 1 ))" '' | tr ' ' '`')"
+
+          # A major bump, above all leaving 0.x, is called out: it changes
+          # the compatibility promise (docs/compatibility.md).
+          # shellcheck source=/dev/null
+          source scripts/release-preflight.sh
+          tags="$(git ls-remote --tags --refs "https://github.com/$GITHUB_REPOSITORY" 'v*' | sed 's|.*refs/tags/||')"
+          # shellcheck disable=SC2086 # one tag per word
+          latest="$(latest_stable $tags)"
+          major_note=""
+          if [ -n "$latest" ] && [ "${base%%.*}" != "${latest%%.*}" ]; then
+            major_note="**Major release:** $latest → $base."
+            [[ "$latest" == v0.* ]] && major_note="$major_note It leaves 0.x: from here on the compatibility contract applies."
+          fi
+          {
+            if [ "$DRY_RUN" = true ]; then
+              echo "## Dry run of $VERSION: nothing will be published"
+            else
+              echo "## Approve publishing Trustvian $VERSION?"
+              echo
+              echo "Approving the \`release\` deployment of this run creates the annotated tag \`$VERSION\` at the commit below, publishes the GitHub Release$([ "$PRERELEASE" = true ] && echo ' as a **prerelease**'), and tags the verified image. It cannot be undone."
+            fi
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Version | \`$VERSION\`$([ "$PRERELEASE" = true ] && echo ' (prerelease)') |"
+            echo "| Commit | [\`${COMMIT:0:12}\`](https://github.com/$GITHUB_REPOSITORY/commit/$COMMIT) on \`main\` |"
+            echo "| Derived (as stated by the dispatcher) | \`$derivation\` |"
+            echo "| Operator (as reported by scripts/release.sh) | \`$OPERATOR\` — dispatched by @$GITHUB_TRIGGERING_ACTOR |"
+            echo "| Newest stable tag | \`${latest:-none}\` |"
+            echo "| Image | \`$IMAGE@$DIGEST\` |"
+            echo
+            if [ -n "$major_note" ]; then
+              echo "> [!WARNING]"
+              echo "> $major_note"
+              echo
+            fi
+            echo "### Checks"
+            echo
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=50" \
+              --jq '.jobs[] | select(.name != "Approval summary" and .name != "Publish") | "- \(.name): **\(.conclusion // .status)**"'
+            echo
+            echo "### CHANGELOG"
+            echo
+            echo "${fence}markdown"
+            printf '%s\n' "$section"
+            echo "$fence"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish
+    needs: [preflight, gates, build, image, verify, summary]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The human gate: required reviewers (the Organization Admins) approve
+    # this deployment on GitHub before any step below runs.
+    environment: release
+    # The tag and the GitHub Release are written with the trustvian-release
+    # App's token, minted below; GITHUB_TOKEN only reads the source, pushes
+    # image tags to GHCR and reads the approvals. No job holds contents: write.
+    permissions:
+      contents: read
+      packages: write
+      # To read who approved this run's deployment, for the summary.
+      actions: read
+
+    steps:
+
+      - name: Operator
+        run: |
+          echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # release-notes.md, exactly as preflight checked it.
           persist-credentials: false
           ref: ${{ inputs.commit }}
 
-      - name: 1. Wait for the release tag
-        # Only a human Organization Admin can create a v* tag. scripts/release.sh
-        # creates it, as that admin, once verify has passed. This step waits for
-        # it, and refuses a tag that is not annotated or not at $COMMIT.
+      - id: app
+        name: Mint the release App's token
+        # The only place the App's key is used. The private key is a secret of
+        # the `release` environment, so it exists only in this job, after a
+        # required reviewer approved it. The token is scoped to this
+        # repository and to contents: write, and is revoked when the job ends.
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      - name: 1. Create the release tag
+        # An annotated tag at exactly $COMMIT, created through the API as
+        # trustvian-release[bot], now that a person has approved. An existing tag
+        # is accepted only if it is that same annotated tag (a re-run);
+        # anything else stops here, before anything is published.
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Authored by trustvian-release[bot], the only actor the ruleset
+          # lets create a tag.
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           set -euo pipefail
-          deadline=$(( $(date +%s) + 3600 ))
-          while :; do
-            if ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" 2>/dev/null)"; then
-              type="$(jq -r .object.type <<<"$ref")"
-              if [ "$type" != tag ]; then
-                echo "::error::$VERSION is a lightweight tag; a release tag must be annotated"
-                exit 1
-              fi
-              target="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r .object.sha <<<"$ref")" \
-                --jq '"\(.object.type) \(.object.sha)"')"
-              if [ "$target" != "commit $COMMIT" ]; then
-                echo "::error::$VERSION points at '$target', not commit $COMMIT"
-                exit 1
-              fi
-              echo "ok: $VERSION is an annotated tag at $COMMIT"
-              break
-            fi
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::error::no $VERSION tag after 60 minutes; nothing was published. Re-run this job once the tag exists."
+          if ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" 2>/dev/null)"; then
+            if [ "$(jq -r .object.type <<<"$ref")" != tag ]; then
+              echo "::error::$VERSION already exists as a lightweight tag; a release tag is annotated. Nothing was published."
               exit 1
             fi
-            sleep 15
-          done
+            target="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r .object.sha <<<"$ref")" \
+              --jq '"\(.object.type) \(.object.sha)"')"
+            if [ "$target" != "commit $COMMIT" ]; then
+              echo "::error::$VERSION already exists at '$target', not commit $COMMIT. Nothing was published."
+              exit 1
+            fi
+            echo "ok: $VERSION is already the annotated tag at $COMMIT"
+          else
+            object="$(gh api "repos/$GITHUB_REPOSITORY/git/tags" \
+              -f tag="$VERSION" -f message="Trustvian $VERSION" -f object="$COMMIT" -f type=commit --jq .sha)"
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$VERSION" -f sha="$object" >/dev/null
+            echo "ok: created the annotated tag $VERSION at $COMMIT"
+          fi
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -601,7 +780,7 @@ jobs:
 
       - name: 2. GitHub Release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
           NEWEST: ${{ steps.newest.outputs.newest }}
         run: |
@@ -612,12 +791,24 @@ jobs:
           assets=(dist/*.tar.gz dist/*.zip dist/checksums.txt)
           want="$(for a in "${assets[@]}"; do basename "$a"; done | sort)"
 
-          if state="$(gh release view "$VERSION" --json isDraft,assets 2>/dev/null)"; then
+          state="$(gh release view "$VERSION" --json isDraft,assets,author 2>/dev/null || true)"
+          if [ -n "$state" ] && [ "$(jq -r .isDraft <<<"$state")" = true ] &&
+            [ "$(jq -r '.author.login // ""' <<<"$state")" != "trustvian-release[bot]" ]; then
+            # A draft somebody else left, such as one from before the App.
+            # A release keeps its author when published, and the audit
+            # requires trustvian-release[bot], so it is replaced, not
+            # finished. A draft is not public; the tag is left alone.
+            gh release delete "$VERSION" --yes
+            echo "removed a draft of $VERSION authored by $(jq -r '.author.login // "unknown"' <<<"$state")"
+            state=""
+          fi
+
+          if [ -n "$state" ]; then
             if [ "$(jq -r .isDraft <<<"$state")" = true ]; then
-              # A draft for this tag: an interrupted create (gh creates a
-              # draft, uploads, then publishes), or one somebody else left.
-              # Make it exactly this release before publishing it: these
-              # assets and no others, this title and these notes.
+              # The App's own draft for this tag: an interrupted create (gh
+              # creates a draft, uploads, then publishes). Make it exactly
+              # this release before publishing it: these assets and no
+              # others, this title and these notes.
               for name in $(jq -r '.assets[].name' <<<"$state"); do
                 if ! grep -Fxq -- "$name" <<<"$want"; then
                   gh release delete-asset "$VERSION" "$name" --yes
@@ -700,17 +891,24 @@ jobs:
       - name: Summarize
         if: always()
         env:
+          # GITHUB_TOKEN reads the approvals; the App's token reads the release.
           GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app.outputs.token }}
           IMAGE: ${{ needs.image.outputs.image }}
           DIGEST: ${{ needs.image.outputs.digest }}
         run: |
-          url="$(gh release view "$VERSION" --json url --jq .url 2>/dev/null || echo "(no release)")"
+          url="$(GH_TOKEN="$APP_TOKEN" gh release view "$VERSION" --json url --jq .url 2>/dev/null || echo "(no release)")"
           {
             echo "### Trustvian $VERSION"
             echo
             echo "- Release: $url"
             echo "- Image: \`$IMAGE:$VERSION\` = \`$IMAGE@$DIGEST\`"
             echo "- Commit: \`$COMMIT\`"
+            echo "- Operator: \`$OPERATOR\` (informational) · triggered by @$GITHUB_TRIGGERING_ACTOR"
+            echo "- Approved by (GitHub's record):"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/approvals" \
+              --jq '.[] | "  - @\(.user.login): \(.state)\(if (.comment // "") != "" then " — \(.comment)" else "" end)"' 2>/dev/null ||
+              echo "  - (could not read the approvals)"
             echo
             echo "Verify an archive:"
             echo

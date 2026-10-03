@@ -3,6 +3,11 @@
 **Status:** Accepted. Replaces the tag-push pipeline that shipped `v0.9.0`
 (task 040, task 041). `make release` is the only release path.
 
+**Amended by [ADR 0060](0060-agent-operated-releases-with-environment-approval.md):** the human decision moves from a terminal confirmation and a
+human-created tag (§ 5) to approving the `release` environment on GitHub,
+after which `publish` creates the tag. The version is derived from the
+CHANGELOG instead of typed. Everything else here stands.
+
 ## Context
 
 Through `v0.9.0`, a release began when a human Organization Admin pushed a

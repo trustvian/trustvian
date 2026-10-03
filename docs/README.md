@@ -98,13 +98,16 @@ Its decomposition into implementation tasks lands in
 |---|---|
 | [Repository Governance](governance/repository.md) | The enforced GitHub configuration: rulesets, required checks, review and merge authority, bypass scope |
 | [Release Governance](governance/releases.md) | **Who** may release, tag protection, candidate immutability, same-SHA promotion |
-| [Release Guide](release-guide.md) | **How** a release is produced and verified |
+| [Release Runbook](release-runbook.md) | **What to run**, step by step: every release type, every failure, the after-release checklist |
+| [Releasing with Claude Code](releasing-with-claude-code.md) | Worked examples of releasing by asking Claude Code: every release type, every failure, and every request it refuses |
+| [Release Guide](release-guide.md) | **How** a release is produced and verified, and why it works that way |
 | [Branching Strategy](governance/branching.md) | Branches, release candidates, hotfixes, maintenance lines |
 | [Agent Governance](governance/agents.md) | What AI coding agents may and may not do, and the credential boundary |
 
 Release *authority* and release *procedure* are deliberately separate
 documents. If the question is "am I allowed to do this", it is governance; if
-it is "what do I run", it is the guide.
+it is "what do I run", it is the runbook; if it is "why does it work this
+way", it is the guide.
 
 ## Historical material
 

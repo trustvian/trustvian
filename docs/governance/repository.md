@@ -364,7 +364,7 @@ promotion, what a human must do rather than automation — is
 |---|---|---|
 | `ci.yml` | push / PR on `main` | `contents: read` |
 | `nightly.yml` | schedule, manual | `contents: read` |
-| `release.yml` | `workflow_dispatch` from `main` | `contents: read`; `build` `id-token`/`attestations: write`; `image` `packages: write` + `id-token: write`; only `publish` `contents: write` (+ `packages: write`) |
+| `release.yml` | `workflow_dispatch` from `main` | `contents: read`; `build` `id-token`/`attestations: write`; `image` `packages: write` + `id-token: write`; only `publish` `contents: write` (+ `packages: write`), in the `release` environment that an Organization Admin approves |
 
 No workflow merges pull requests or pushes to `main`: there is no `gh pr
 merge`, no `pulls.merge`, and no `git push origin main` anywhere in

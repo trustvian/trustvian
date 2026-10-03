@@ -13,13 +13,17 @@
 # Checks, in order:
 #   1. the version is SemVer (vMAJOR.MINOR.PATCH[-prerelease], no build
 #      metadata: `+` is not valid in an OCI image tag);
-#   2. the version is greater than every existing v* tag;
+#   2. the version is greater than every existing v* tag, and its base
+#      (the version without a prerelease suffix) is exactly one bump — patch,
+#      minor or major — above the newest stable tag;
 #   3. the version's tag does not exist yet;
 #   4. the commit is a full SHA reachable from main;
 #   5. the latest CI and Nightly runs for exactly that commit succeeded;
 #   6. for a stable version, CHANGELOG.md at that commit has a "## <version>"
 #      section;
-#   7. release-notes.md at that commit exists and names the version.
+#   7. release-notes.md at that commit exists and names the version (for a
+#      prerelease, the version or its base: one set of notes serves a
+#      version's candidates and its stable release).
 #
 # Needs git, with the repository's main branch fetched as $RELEASE_MAIN_REF
 # (default origin/main), and an authenticated gh for check 5. Reads nothing
@@ -116,6 +120,47 @@ semver_cmp() {
     if ((${#a_ids[@]} < ${#b_ids[@]})); then echo -1; elif ((${#a_ids[@]} > ${#b_ids[@]})); then echo 1; else echo 0; fi
 }
 
+# base_version VERSION: the version without its prerelease suffix.
+base_version() {
+    printf '%s\n' "${1%%-*}"
+}
+
+# latest_stable TAG...: the highest stable SemVer tag, or nothing.
+latest_stable() {
+    local best="" tag
+    for tag in "$@"; do
+        is_semver "$tag" || continue
+        is_prerelease "$tag" && continue
+        if [ -z "$best" ] || [ "$(semver_cmp "$tag" "$best")" = 1 ]; then
+            best="$tag"
+        fi
+    done
+    [ -z "$best" ] || printf '%s\n' "$best"
+}
+
+# bumps LATEST: the patch, minor and major versions one step above LATEST,
+# space-separated. The major step from 0.x is v1.0.0.
+bumps() {
+    [[ "$1" =~ $SEMVER_RE ]] || fail "not SemVer: $1"
+    local x="${BASH_REMATCH[1]}" y="${BASH_REMATCH[2]}" z="${BASH_REMATCH[3]}"
+    echo "v$x.$y.$((z + 1)) v$x.$((y + 1)).0 v$((x + 1)).0.0"
+}
+
+# check_bump VERSION LATEST: VERSION's base is exactly one bump above LATEST,
+# the newest stable tag. With no stable tag yet, any version is a first
+# release.
+check_bump() {
+    local version="$1" latest="$2" base
+    [ -n "$latest" ] || return 0
+    base="$(base_version "$version")"
+    local p m M
+    read -r p m M <<<"$(bumps "$latest")"
+    case "$base" in
+        "$p" | "$m" | "$M") ;;
+        *) fail "$version is not a valid single bump above $latest: want $p (patch), $m (minor) or $M (major)" ;;
+    esac
+}
+
 # check_newer VERSION TAG...: VERSION outranks every SemVer tag given. Tags
 # that are not SemVer (none exist today) are ignored rather than compared.
 check_newer() {
@@ -138,11 +183,15 @@ check_changelog() {
 }
 
 # check_notes VERSION FILE: the release body exists and names the version.
+# A prerelease may instead name its base version: the notes written for
+# v0.11.0 serve v0.11.0-rc.1, rc.2 and v0.11.0 itself.
 check_notes() {
-    local version="$1" file="$2"
+    local version="$1" file="$2" base
     [ -s "$file" ] || fail "release-notes.md is missing or empty"
-    grep -Fq -- "$version" "$file" ||
-        fail "release-notes.md does not name $version — it would publish another release's notes"
+    base="$(base_version "$version")"
+    if grep -Fq -- "$version" "$file"; then return 0; fi
+    if is_prerelease "$version" && grep -Eq -- "${base//./\\.}([^.0-9-]|$)" "$file"; then return 0; fi
+    fail "release-notes.md does not name $version — it would publish another release's notes"
 }
 
 # latest_run_succeeded WORKFLOW COMMIT: the newest run of WORKFLOW for
@@ -182,6 +231,8 @@ main() {
     fi
     # shellcheck disable=SC2086 # one tag per word, by construction
     check_newer "$version" $tags
+    # shellcheck disable=SC2086
+    check_bump "$version" "$(latest_stable $tags)"
 
     git cat-file -e "$commit^{commit}" 2>/dev/null || fail "commit $commit is not in this clone"
     git merge-base --is-ancestor "$commit" "$MAIN_REF" ||

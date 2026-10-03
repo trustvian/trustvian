@@ -123,8 +123,10 @@ Debug through:
 
 One release run builds both artifact kinds, from one commit, after one set of
 gates. `make release` dispatches it from `main`; nothing becomes public until
-`verify` has passed and a human Organization Admin has created the tag
-([ADR 0059](adr/0059-releases-are-dispatched-verified-then-published.md)).
+`verify` has passed and an Organization Admin has approved the `release`
+deployment, after which publish creates the tag
+([ADR 0059](adr/0059-releases-are-dispatched-verified-then-published.md),
+[ADR 0060](adr/0060-agent-operated-releases-with-environment-approval.md)).
 
 ```text
 workflow_dispatch on main (version, commit == main head)
@@ -133,8 +135,10 @@ workflow_dispatch on main (version, commit == main head)
   └─ image   build → scan → gate → push BY DIGEST (+ SBOM, provenance) → sign digest
   verify     ubuntu + macOS: checksums, contents, version, gh attestation verify,
              scenario from the archive; cosign verify the digest
-  ── human Organization Admin creates the annotated v* tag at the commit ──
-  publish    GitHub Release → image vX.Y.Z from the verified digest
+  summary    the approval page: version, derivation, commit, checks, CHANGELOG
+  ── an Organization Admin approves the `release` deployment ──
+  publish    annotated v* tag at the commit → GitHub Release
+             → image vX.Y.Z from the verified digest
              → X.Y and latest (stable only)
 ```
 
@@ -353,6 +357,26 @@ to the image index as BuildKit attestation manifests, which
 `docker buildx imagetools inspect` reads. Cosign signs the digest but attaches
 no attestation of its own, so `cosign download attestation` finds none for
 this image.
+
+## Who authored a release
+
+From `v0.10.0`, every release and its tag are written by the
+`trustvian-release` GitHub App, after an Organization Admin approved the run.
+No other actor may create a tag
+([ADR 0060 § 3](adr/0060-agent-operated-releases-with-environment-approval.md#3-only-the-release-app-can-create-a-tag)).
+
+```bash
+V=v0.10.0
+gh api repos/trustvian/trustvian/releases/tags/$V --jq .author.login     # trustvian-release[bot]
+ref=$(gh api repos/trustvian/trustvian/git/ref/tags/$V --jq '"\(.object.type) \(.object.sha)"')
+echo "$ref"                                                               # tag <sha>: annotated
+gh api repos/trustvian/trustvian/git/tags/${ref#tag } --jq '"\(.tagger.name) → \(.object.type) \(.object.sha)"'
+```
+
+`.github/workflows/release-audit.yml` checks this for every release, on every
+release event and weekly, together with the tag's commit being on `main` and
+every asset's provenance. A finding opens an issue labelled `release-audit`.
+Releases up to `v0.9.0` predate the App and are exempt by name.
 
 ## Verifying a release archive
 

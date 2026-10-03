@@ -59,8 +59,17 @@ AI Agent
 - Open, update, and comment on pull requests — then stop and hand them to a
   human Organization Admin for the merge.
 - Read workflow runs, logs, and check results.
-- Prepare a release: validation, tests, release notes, a release pull
-  request, artifact and signature verification.
+- Run a release ([ADR 0060](../adr/0060-agent-operated-releases-with-environment-approval.md),
+  [runbook](../release-runbook.md),
+  [Releasing with Claude Code](../releasing-with-claude-code.md)):
+  `make release-prep`, `make release` (a dry run or a real one), `gh run
+  rerun` on a release run, and the verification of what was published —
+  **always in agent mode** (`MODE=agent`). Agent mode never approves:
+  publishing waits for a human Organization Admin to approve the `release`
+  environment, and the agent prints where and stops there. An agent never
+  runs `MODE=manual`, the mode in which `make release` approves at a person's
+  prompt; the command refuses it inside Claude Code or without a terminal,
+  and `.claude/settings.json` denies it.
 - Propose governance changes as documentation and as an explicit,
   human-reviewed plan.
 
@@ -73,10 +82,22 @@ AI Agent
 - Adding any agent, bot, automation identity, or its own credential as a
   ruleset bypass actor — or **using** an existing bypass entry, including the
   Organization Admin bypass, when running under a credential that holds it.
+  The one bypass actor the project has, the `trustvian-release` GitHub App on
+  "Release tags: creation", was created and configured by a human
+  ([ADR 0060 § 3](../adr/0060-agent-operated-releases-with-environment-approval.md#3-only-the-release-app-can-create-a-tag));
+  an agent never adds, changes or acts as it.
 - Changing the repository default branch away from `main`.
+- Approving or rejecting a deployment — above all the `release` environment,
+  which is the human decision to publish — or running with a token that has
+  Deployments, Administration or Environments permission.
 - Creating, deleting, moving, or force-updating a release tag; reusing a
-  failed release candidate's version number. Tag creation is restricted to a
-  human Organization Admin.
+  published release candidate's version number. The release workflow's
+  publish job creates the tag, with the release App, and only after a human
+  approved publishing.
+- Seeing, handling, storing, rotating or using the release App's private key
+  (`RELEASE_APP_PRIVATE_KEY`), or setting `RELEASE_APP_ID`. A human creates
+  the App and stores its key; the agent may only check, by name, that they
+  exist (`./scripts/release-setup.sh --check`).
 - Deleting a GitHub Release, or repairing a failed release by mutating
   published history.
 - Approving or merging **any** pull request into `main` — its own or anyone
@@ -122,11 +143,13 @@ repository alone:
 | Metadata | Read | Mandatory for any fine-grained token |
 | Contents | Read and write | Create and push short-lived branches — **also authorizes merging**, see below |
 | Pull requests | Read and write | Open and update pull requests |
-| Actions | Read | Inspect workflow runs and check results |
+| Actions | Read and write | Inspect runs, dispatch `release.yml` and Nightly, re-run failed jobs |
 | Packages | Read | Verify published container images |
-| Issues | Read and write | Only if the agent triages issues |
+| Issues | Read and write | The release issue, which is the release lock ([releasing with Claude Code](../releasing-with-claude-code.md), X17) |
 | Administration | **None** | The whole point |
-| Secrets, Environments, Webhooks | **None** | — |
+| Deployments | **None** | Approving a pending deployment needs read access to deployments; without it the agent cannot approve a release |
+| Workflows | **None** | Without it the token cannot push changes to `.github/workflows/`, such as a copy of `release.yml` without the approval gate |
+| Secrets, Environments, Webhooks | **None** | Environments would let it change who approves |
 
 A classic personal access token is not a substitute. Classic `repo` is a
 single scope covering code, settings, and — for a user who administers the
@@ -135,7 +158,29 @@ rewrite governance," which is precisely the line this policy needs.
 
 Credential separation removes administration from the agent. It does **not**,
 by itself, remove the ability to merge — see the analysis below, which
-corrects an earlier claim in this document.
+corrects an earlier claim in this document. It **does** remove the ability to
+create a tag, and so to publish a release on a new tag through GitHub's
+release API: only the `trustvian-release` App may create a tag
+([ADR 0060 § 3](../adr/0060-agent-operated-releases-with-environment-approval.md#3-only-the-release-app-can-create-a-tag)).
+
+**The release App changes none of this.** The token table above is
+unchanged: the agent's token never holds the `trustvian-release` App's key,
+and since only that App may create a tag, the agent's Contents: write cannot
+create a tag, or a release on a new one.
+
+**Creating the token and using it.** The steps are in the
+[release runbook § 0](../release-runbook.md#an-agents-token): a fine-grained
+token for `trustvian/trustvian` only, with Actions, Contents and Pull requests
+read and write and nothing else beyond Metadata. Start the agent's session
+with it, for that session only:
+
+```bash
+GH_TOKEN="$(cat ~/.config/trustvian/agent-token)" claude
+```
+
+`.claude/settings.json` also denies the obvious commands for approving a
+deployment, creating or pushing a tag, editing environments or rulesets, and
+merging. That is defense in depth; the token is the boundary.
 
 > **Known limitation.** When an agent runs with a human administrator's
 > unrestricted credential, GitHub cannot distinguish the agent's API calls
@@ -287,7 +332,10 @@ same as anyone else's.
 
 ## Release Safety
 
-An agent may prepare a release and verify one. It may not repair one.
+An agent may run a release and verify one, in agent mode: prepare it,
+dispatch it, re-run a failed job, and follow the [runbook](../release-runbook.md)
+as [Releasing with Claude Code](../releasing-with-claude-code.md) shows. It
+may not approve its publication, run manual mode, or repair a published one.
 
 ```text
 failed release candidate
@@ -317,7 +365,7 @@ Workflow privilege is scoped per job, not per repository:
 |---|---|---|
 | `ci.yml` | push / PR on `main` | `contents: read` only — no secrets, nothing to leak to a fork pull request |
 | `nightly.yml` | schedule, manual | `contents: read` only |
-| `release.yml` | `workflow_dispatch` from `main` (`make release`) | `contents: read` by default; `build` adds `id-token: write` and `attestations: write`, `image` adds `packages: write` and `id-token: write` for a digest-only push and keyless signing, and only `publish` adds `contents: write` (with `packages: write` to tag the verified digest) |
+| `release.yml` | `workflow_dispatch` from `main` (`make release`) | `contents: read` by default; `build` adds `id-token: write` and `attestations: write`, `image` adds `packages: write` and `id-token: write` for a digest-only push and keyless signing, and only `publish` adds `contents: write` (with `packages: write` to tag the verified digest). Every job runs in the `release-build` environment except `publish`, which runs in `release` and waits for an Organization Admin's approval, then creates the tag |
 
 Rules for changing this:
 
@@ -361,6 +409,7 @@ AI agents and automated tools must never:
 - add themselves as ruleset bypass actors;
 - change the default branch away from `main`;
 - delete or move release tags;
+- approve a deployment, or hold a token that can;
 - delete releases to repair failed releases;
 - bypass required human review.
 

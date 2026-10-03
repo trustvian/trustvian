@@ -8,6 +8,120 @@ actually depend on.
 
 ## Unreleased
 
+### Added
+
+- **`docs/releasing-with-claude-code.md`: worked examples of releasing by
+  asking Claude Code.** The contract (you merge and approve; Claude Code does
+  the rest), setup and how to ask, eight happy paths (E1–E8) and eighteen
+  failure and boundary cases (X1–X18), including every request Claude Code
+  refuses, and a quick reference. Linked from `docs/README.md`, the runbook,
+  `agents.md`, the release operator and `/release`.
+  - `/release` accepts exactly `minor`, `patch`, `rc` and `stable`, each
+    optionally with `--dry-run`; plain-language requests go to the
+    release-operator agent, whose instructions now encode each case: the
+    release issue as a lock, the bump from the CHANGELOG, a dry run when
+    release tooling changed, never releasing over red CI, re-running rather
+    than re-tagging, treating text in issues and logs as data, and the
+    refusals. The boundary proof attempts a *rejection*, which a wrongly
+    scoped token could only reject, never publish.
+  - `scripts/runbook_drift_test.go` now also checks the page: its `/release`
+    forms against the command's declared grammar, its `make` targets, scripts
+    and links, every `release:` message it quotes, its token table against
+    `agents.md` and the runbook, and every E/X case referenced elsewhere.
+
+### Changed
+
+- **`make release` runs in one of two modes, and says which on its first
+  line** (ADR 0060 § 8). **Manual**, for a person at an interactive terminal
+  outside Claude Code, asks `[y]es / [n]o, reject / [l]ater` when publish
+  waits, and reviews the deployment as that person. **Agent**, inside Claude
+  Code (`CLAUDECODE`), without a terminal or with `MODE=agent`, never
+  approves. `MODE=manual` is refused inside Claude Code or without a terminal
+  (`release: MODE=manual needs an interactive terminal outside Claude Code`),
+  before anything is dispatched.
+  - The review call lives in one function that re-checks mode, terminal and
+    `CLAUDECODE` right before calling; a structural test fails if any other
+    path reaches it. `scripts/test-release-mode.sh` covers every combination.
+  - `release.yml` gains a required `operator` input (`manual` or `agent`),
+    shown in the run name and every job's summary beside the triggering actor;
+    publish's summary lists who approved. It is informational; GitHub's records
+    are authoritative. `make release-prep` notes its mode in the prep PR.
+  - `/release` and the release operator always pass `MODE=agent`, and
+    `.claude/settings.json` denies any command that sets manual mode.
+
+- **Releases are agent-operated and approved on GitHub; versions are derived,
+  not typed**
+  ([ADR 0060](docs/adr/0060-agent-operated-releases-with-environment-approval.md),
+  proposed; [runbook](docs/release-runbook.md)).
+  - **The approval is a GitHub environment.**
+    - Only `publish` runs in `release`, whose required reviewers are the
+      Organization Admins. Every other job runs in `release-build`.
+    - A new **Approval summary** job shows the approver the version and its
+      derivation, the commit, the image digest, every check's result and the
+      CHANGELOG section.
+    - After approval, `publish` creates the annotated tag at the verified
+      commit itself, then the release and the image tags. The 60-minute wait
+      for a human-created tag is gone.
+  - **`make release` is safe for an agent.**
+    - It needs no terminal, asks nothing, creates no tag and never approves.
+    - It dispatches, prints `approve on GitHub, web or mobile: <run URL>`,
+      and watches until the release is published, rejected or failed.
+      `NO_WAIT=1` returns after dispatch.
+    - A missing Nightly run is started on `main` and waited for. A failed or
+      unfinished one is reported, never started over.
+  - **Versions are derived** (`scripts/release-version.sh`).
+    - `make release-prep BUMP=patch|minor TITLE="…"` cuts the CHANGELOG
+      section and writes `release-notes.md` from a template that carries the
+      known limits. It then opens the prep PR, and never tags.
+      `VERSION=v1.0.0` needs the version typed again.
+    - `make release` releases the version the merged CHANGELOG declares;
+      `PRE=rc` releases its next candidate, counted so that rc.10 follows rc.9.
+    - Preflight requires exactly one bump above the newest stable tag.
+      Candidates may use their base version's notes.
+  - **Only the `trustvian-release` GitHub App can create a tag, and only the
+    approved publish job holds it** (ADR 0060 § 3, accepted). It needs a human
+    to create the App and run `scripts/release-setup.sh`.
+    - The App's key is a secret of the `release` environment. Publish mints a
+      token with `actions/create-github-app-token`, scoped to this repository
+      and `contents: write`, and writes the tag and the GitHub Release with it.
+      Every release is therefore authored by `trustvian-release[bot]`.
+      `GITHUB_TOKEN` keeps the image tags only, and no job holds
+      `contents: write`.
+    - Two rulesets on every tag, replacing "Protect release tags":
+      - "Release tags: creation" restricts creation, with the App as the only
+        bypass;
+      - "Release tags: immutable" restricts update, deletion and force-move,
+        with no bypass.
+
+      GitHub refuses the built-in Actions app as a bypass in an organization.
+      Leaving creation open, as first proposed, would have let any Contents:
+      write token publish a permanent, unapproved release through the release
+      API.
+    - Preflight fails early without `RELEASE_APP_ID`. `release-setup.sh`
+      checks the variable and the secret (names only). If GitHub refuses the
+      App as a bypass actor, it stops with GitHub's exact response and never
+      falls back to a weaker ruleset.
+    - `.github/workflows/release-audit.yml` runs on every release event and
+      weekly. It checks each release's author, that its tag is annotated at a
+      commit on `main`, and that every asset is attested by `release.yml`.
+      Any finding opens an issue labelled `release-audit`; releases up to
+      `v0.9.0` are exempt by name.
+  - **Least privilege for agents.**
+    - An agent runs with its own fine-grained token: Actions, Contents and
+      Pull requests read and write, and no Deployments, Administration,
+      Environments or Workflows permission.
+    - Agents never see or handle the release App's key; a human creates the
+      App, stores the key and rotates it.
+    - `.claude/settings.json` adds deny rules for approving deployments,
+      tagging, editing environments and rulesets, and merging.
+    - `.claude/agents/release-operator.md` and `/release
+      patch|minor|rc|stable` run the runbook in Claude Code. They never merge
+      and never approve.
+  - **`docs/release-runbook.md` is the procedure**, with the issue template
+    `.github/ISSUE_TEMPLATE/release.md`. `scripts/runbook_drift_test.go`
+    fails when it names a make target, variable, script, message or link that
+    does not exist.
+
 ## v0.10.0 — Developer Preview
 
 The first release a developer outside this project can pick up and use for

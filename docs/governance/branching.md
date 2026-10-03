@@ -176,7 +176,7 @@ release branch, and nothing is frozen.
 
 ```text
 main@<sha>  →  make release  →  preflight, gates, build, sign, verify
-            →  a human Organization Admin tags vX.Y.Z at <sha>  →  publish
+            →  an Organization Admin approves on GitHub  →  publish tags vX.Y.Z at <sha>
 ```
 
 Nothing is tagged until verification has passed, so a failure burns no

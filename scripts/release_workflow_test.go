@@ -104,8 +104,9 @@ func TestReleaseIsDispatchedOnly(t *testing.T) {
 	}
 }
 
-// Every job runs in the release environment, and the order is preflight →
-// gates → build and image → verify → publish.
+// The order is preflight → gates → build and image → verify → summary →
+// publish. Only publish runs in the `release` environment, whose required
+// reviewers are the human gate; every other job runs in `release-build`.
 func TestReleaseJobOrder(t *testing.T) {
 	_, jobs := releaseJobs(t)
 	want := map[string][]string{
@@ -114,7 +115,8 @@ func TestReleaseJobOrder(t *testing.T) {
 		"build":     {"gates"},
 		"image":     {"gates"},
 		"verify":    {"build", "image"},
-		"publish":   {"preflight", "gates", "build", "image", "verify"},
+		"summary":   {"preflight", "gates", "build", "image", "verify"},
+		"publish":   {"preflight", "gates", "build", "image", "verify", "summary"},
 	}
 	if got := slices.Sorted(maps.Keys(jobs)); !slices.Equal(got, slices.Sorted(maps.Keys(want))) {
 		t.Fatalf("jobs = %v, want %v", got, slices.Sorted(maps.Keys(want)))
@@ -126,8 +128,12 @@ func TestReleaseJobOrder(t *testing.T) {
 		if !slices.Equal(got, needs) {
 			t.Errorf("%s needs %v, want %v", name, got, needs)
 		}
-		if jobs[name]["environment"] != "release" {
-			t.Errorf("%s runs in environment %v, want release", name, jobs[name]["environment"])
+		wantEnv := "release-build"
+		if name == "publish" {
+			wantEnv = "release"
+		}
+		if jobs[name]["environment"] != wantEnv {
+			t.Errorf("%s runs in environment %v, want %s", name, jobs[name]["environment"], wantEnv)
 		}
 	}
 	matrix, _ := jobs["verify"]["strategy"].(map[string]any)["matrix"].(map[string]any)
@@ -145,7 +151,8 @@ func TestOnlyPublishCanPublish(t *testing.T) {
 		t.Errorf("workflow-level permissions = %v, want contents: read only", perms)
 	}
 	writers := map[string][]string{
-		"contents": {"publish"},
+		// No job: the trustvian-release App's token writes tags and releases.
+		"contents": {},
 		"packages": {"image", "publish"},
 	}
 	for name, job := range jobs {
@@ -175,10 +182,9 @@ func TestOnlyPublishCanPublish(t *testing.T) {
 	}
 }
 
-// The image job pushes by digest and nothing else; tags are created only in
-// publish, from that digest. No job pushes git, and no job creates a git ref
-// or tag object: the release tag is a human Organization Admin's, made by
-// scripts/release.sh, and publish only reads it.
+// The image job pushes by digest and nothing else; image tags are created only
+// in publish, from that digest. No job pushes git, and only publish, after
+// approval, creates a git ref or tag object: the release tag.
 func TestImageIsPushedByDigestAndNoJobMintsATag(t *testing.T) {
 	_, jobs := releaseJobs(t)
 	pushes := 0
@@ -213,8 +219,8 @@ func TestImageIsPushedByDigestAndNoJobMintsATag(t *testing.T) {
 			}
 			// publish reads git/ref and git/tags to check the human's tag;
 			// nothing may write them.
-			if refCreation.MatchString(run) && (strings.Contains(run, "-X POST") || strings.Contains(run, " -f ")) {
-				t.Errorf("%s step %q writes a git ref or tag", name, s["name"])
+			if refCreation.MatchString(run) && (strings.Contains(run, "-X POST") || strings.Contains(run, " -f ")) && name != "publish" {
+				t.Errorf("%s step %q writes a git ref or tag; only publish may", name, s["name"])
 			}
 		}
 	}
@@ -266,22 +272,28 @@ func publishStep(t *testing.T, jobs map[string]map[string]any, prefix string) (i
 	return -1, nil
 }
 
-// publish waits for and checks the human's tag before anything else, creates
-// the release only against that existing tag, makes a leftover draft exactly
-// this release, never reads a failed image lookup as "absent", and moves the
-// floating tags only for the newest stable release.
+// publish creates the annotated tag at $COMMIT before anything else (and
+// accepts an existing tag only if it is that same tag), creates the release
+// only against that tag, makes a leftover draft exactly this release, never
+// reads a failed image lookup as "absent", and moves the floating tags only
+// for the newest stable release.
 func TestPublishIsIdempotentAndCannotMoveATag(t *testing.T) {
 	_, jobs := releaseJobs(t)
-	waitAt, wait := publishStep(t, jobs, "1. Wait for the release tag")
+	tagAt, tag := publishStep(t, jobs, "1. Create the release tag")
 	releaseAt, release := publishStep(t, jobs, "2. GitHub Release")
 	_, image := publishStep(t, jobs, "3. Image version tag")
 	_, floating := publishStep(t, jobs, "4. Floating tags")
-	if waitAt > releaseAt {
-		t.Error("publish creates the release before checking the tag")
+	if tagAt > releaseAt {
+		t.Error("publish creates the release before the tag")
 	}
-	for _, want := range []string{`type" != tag`, `"commit $COMMIT"`} {
-		if !strings.Contains(stepRun(wait), want) {
-			t.Errorf("the tag wait does not check %s", want)
+	for _, want := range []string{`!= tag ]`, `"commit $COMMIT"`, "git/tags", "-f object=\"$COMMIT\" -f type=commit", "git/refs"} {
+		if !strings.Contains(stepRun(tag), want) {
+			t.Errorf("the tag step lacks %s", want)
+		}
+	}
+	for _, s := range stepsOf(jobs["publish"]) {
+		if strings.Contains(stepRun(s), "sleep") {
+			t.Errorf("publish step %q waits; the approval is the environment's, not a polling loop", s["name"])
 		}
 	}
 	for _, want := range []string{"--verify-tag", "delete-asset", "--notes-file release-notes.md"} {
@@ -297,37 +309,148 @@ func TestPublishIsIdempotentAndCannotMoveATag(t *testing.T) {
 	}
 }
 
-// release.sh waits for jobs by their display names; they must be the
-// workflow's, or the script would wait forever. Its confirmation reads a
-// terminal and cannot be bypassed by an environment variable.
-func TestReleaseScriptMatchesTheWorkflow(t *testing.T) {
-	_, jobs := releaseJobs(t)
-	names := map[string]bool{}
-	for _, job := range jobs {
-		name, _ := job["name"].(string)
-		if strings.Contains(name, "${{ matrix.os }}") {
-			for _, os := range []string{"ubuntu-latest", "macos-latest"} {
-				names[strings.ReplaceAll(name, "${{ matrix.os }}", os)] = true
-			}
+// release.sh creates no tag, pushes nothing and creates no release. The one
+// place it can review a deployment is manual_review_deployment, which
+// re-checks manual mode, an interactive terminal and CLAUDECODE right before
+// the call; only manual_prompt calls it, and manual_prompt is called only on
+// the manual branch. Agent mode prints where to approve on GitHub instead.
+func TestReleaseScriptApprovesOnlyInManualMode(t *testing.T) {
+	script := readFile(t, "release.sh")
+	code := stripShellComments(script)
+	for _, forbidden := range []string{"git/tags", "git/refs", "git tag", "git push", "release create", "RELEASE_CONFIRM"} {
+		if strings.Contains(code, forbidden) {
+			t.Errorf("release.sh runs %q", forbidden)
+		}
+	}
+
+	review := shellFunction(t, code, "manual_review_deployment")
+	prompt := shellFunction(t, code, "manual_prompt")
+	outside := strings.Replace(code, review, "", 1)
+	if strings.Contains(outside, "pending_deployments") {
+		t.Error("release.sh calls the pending_deployments API outside manual_review_deployment")
+	}
+	for _, guard := range []string{`[ "$mode" = manual ] || die`, `[ -z "${CLAUDECODE:-}" ] || die`, `[ "$(is_interactive)" = yes ] || die`} {
+		if !strings.Contains(review, guard) {
+			t.Errorf("manual_review_deployment does not re-check %s", guard)
+		}
+	}
+	if strings.Index(review, "-X POST") < strings.Index(review, "is_interactive") {
+		t.Error("manual_review_deployment calls the API before its checks")
+	}
+	if n := strings.Count(strings.Replace(code, prompt, "", 1), "manual_review_deployment "); n != 0 {
+		t.Errorf("manual_review_deployment is called %d times outside manual_prompt", n)
+	}
+	lines := strings.Split(code, "\n")
+	calls := 0
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "manual_prompt" {
 			continue
 		}
-		names[name] = true
-	}
-	script := readFile(t, "release.sh")
-	m := regexp.MustCompile(`(?m)^readonly VERIFIED_JOBS='(\[.*\])'$`).FindStringSubmatch(script)
-	if m == nil {
-		t.Fatal("release.sh has no VERIFIED_JOBS")
-	}
-	listed := regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(m[1], -1)
-	for _, l := range listed {
-		if !names[l[1]] {
-			t.Errorf("release.sh waits for %q, which is not a job in release.yml", l[1])
+		calls++
+		if i == 0 || strings.TrimSpace(lines[i-1]) != `if [ "$mode" = manual ]; then` {
+			t.Errorf("manual_prompt is called at line %d outside the manual branch", i+1)
 		}
 	}
-	if !strings.Contains(script, `[ "$ok" = `+fmt.Sprint(len(listed))+` ]`) {
-		t.Errorf("release.sh does not wait for all %d listed jobs", len(listed))
+	if calls != 1 {
+		t.Errorf("manual_prompt is called %d times, want exactly once, on the manual branch", calls)
 	}
-	if strings.Contains(script, "RELEASE_CONFIRM") || !strings.Contains(script, "</dev/tty") {
-		t.Error("release.sh's confirmation can be skipped or does not read the terminal")
+
+	for _, want := range []string{
+		"approve on GitHub, web or mobile: $run_url",
+		"release: approve the release deployment for $version? [y]es / [n]o, reject / [l]ater, on GitHub",
+		"approved at the make release prompt (manual mode)",
+		"-f operator=\"$mode\"",
+		`title="$title [$mode]"`,
+		"--no-wait",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("release.sh lacks %q", want)
+		}
 	}
+}
+
+// shellFunction returns the body of a shell function NAME() { … } that
+// starts at column 0 and ends at the next "}" at column 0.
+func shellFunction(t *testing.T, src, name string) string {
+	t.Helper()
+	start := strings.Index(src, "\n"+name+"() {")
+	if start < 0 {
+		t.Fatalf("no function %s", name)
+	}
+	end := strings.Index(src[start+1:], "\n}")
+	if end < 0 {
+		t.Fatalf("function %s does not end", name)
+	}
+	return src[start+1 : start+1+end+2]
+}
+
+// Every run records its operator: a required choice input, in the run name
+// (which release.sh matches), and in every job's summary next to who
+// triggered it. Publish's summary also lists GitHub's record of who
+// approved.
+func TestEveryJobRecordsTheOperator(t *testing.T) {
+	doc, jobs := releaseJobs(t)
+	on, _ := doc["on"].(map[string]any)
+	dispatch, _ := on["workflow_dispatch"].(map[string]any)
+	inputs, _ := dispatch["inputs"].(map[string]any)
+	op, _ := inputs["operator"].(map[string]any)
+	if op["type"] != "choice" || fmt.Sprint(op["required"]) != "true" || fmt.Sprint(op["options"]) != "[manual agent]" {
+		t.Errorf("operator input = %v, want a required choice of manual and agent", op)
+	}
+	if name := fmt.Sprint(doc["run-name"]); !strings.Contains(name, "[${{ inputs.operator }}]") {
+		t.Errorf("run-name %q does not show the operator", name)
+	}
+	for name, job := range jobs {
+		steps := stepsOf(job)
+		if len(steps) == 0 || steps[0]["name"] != "Operator" ||
+			!strings.Contains(stepRun(steps[0]), "$OPERATOR") || !strings.Contains(stepRun(steps[0]), "$GITHUB_TRIGGERING_ACTOR") {
+			t.Errorf("%s does not start by recording the operator and the triggering actor", name)
+		}
+	}
+	var publish string
+	for _, s := range stepsOf(jobs["publish"]) {
+		publish += stepRun(s)
+	}
+	if !strings.Contains(publish, "actions/runs/$GITHUB_RUN_ID/approvals") {
+		t.Error("publish's summary does not list who approved")
+	}
+}
+
+// Only publish uses the release environment, and the summary the approver
+// reads exists before it: version, commit, derivation, every check's result,
+// and the CHANGELOG section.
+func TestApproverReadsASummaryFirst(t *testing.T) {
+	_, jobs := releaseJobs(t)
+	for name, job := range jobs {
+		if job["environment"] == "release" && name != "publish" {
+			t.Errorf("%s runs in the release environment; only publish may", name)
+		}
+	}
+	var run string
+	for _, s := range stepsOf(jobs["summary"]) {
+		run += stepRun(s)
+	}
+	for _, want := range []string{"GITHUB_STEP_SUMMARY", "$VERSION", "$COMMIT", "DERIVATION", "actions/runs/$GITHUB_RUN_ID", "CHANGELOG.md"} {
+		if !strings.Contains(run, want) {
+			t.Errorf("the approval summary lacks %s", want)
+		}
+	}
+}
+
+// stripShellComments drops comment lines and trailing comments, roughly:
+// enough that prose explaining what a script never does is not mistaken for
+// doing it.
+func stripShellComments(src string) string {
+	var out []string
+	for _, line := range strings.Split(src, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if i := strings.Index(line, " # "); i >= 0 {
+			line = line[:i]
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
 }
