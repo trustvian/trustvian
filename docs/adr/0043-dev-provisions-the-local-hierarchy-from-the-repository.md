@@ -180,3 +180,8 @@ so a developer knows which control plane they are looking at.
   `trustvian`, because the helpers live in repository-internal modules the root
   module must not import — the not-found message names that case explicitly
   instead of implying a misconfiguration.
+
+  *Note, 2026-10-03.* #114 closed this consequence on `main` on 2026-09-28
+  (`scripts/release-build.sh`, `HELPERS`). No published release carries the
+  helpers yet: `v0.9.0` predates #114, and the first archive with them is the
+  next release, planned as `v0.10.0`. The decision above is unchanged.

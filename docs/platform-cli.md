@@ -585,7 +585,8 @@ trustvian eval run --scenario scenarios/support-login.yaml --json > result.json
 - `k = 1, j = 0` is the documented guidance for a workload whose variance you
   have not measured. It is set semantics — "in at least one candidate run and no
   reference run" — at every N. It is guidance, not a default, and the
-  measurement does not justify any other value as one.
+  measurement does not justify any other value as one. For a nondeterministic
+  workload, [calibrate it first](#calibrating-n-k-and-j).
 
 **What runs.**
 - Every invocation is a recorded **scenario execution**, named by the
@@ -644,7 +645,8 @@ Gate (k = 1, j = 0)
   ([ADR 0053](adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)).
 - **Checks 5 and 6 are marked `advisory: fresh scope` when `runs > 1`.** Each
   repetition's learning scope is new, so neither a pass nor a fail there is a
-  learned-policy verdict. The marker changes no verdict.
+  learned-policy verdict. The marker changes no verdict. Sequence evidence
+  from a reorder cannot fail them; see [Ordering](#ordering-a-scenario-asserts-none).
 - At `runs: 1, k: 1, j: 0` the verdict is exactly `eval compare`'s, check for
   check.
 
@@ -652,6 +654,84 @@ Gate (k = 1, j = 0)
 execution id, both producer versions (`cli_version`, `control_plane_version`),
 and the server's repeated result under `comparison`. With `--reference` it also
 carries `reference`: the mode asked for and the execution that was reused.
+
+### Calibrating `N`, `k` and `j`
+
+**An unchanged deterministic workload passes at `k = 1, j = 0`.** Its behavior
+set is the same in every run, so nothing is ever present on the candidate side
+and absent from the reference side. CI asserts this at the control plane
+(`TestAnUnchangedDeterministicWorkloadPassesAtTheDocumentedLimits`, `N = 5`) and
+through the real binaries (`TestEvalRunAgainstRealBinaries`).
+
+**An unchanged nondeterministic workload can fail at `k = 1, j = 0`, and no
+default `k` ships.** Task 078 measured a model-driven agent
+([2026-10-01, tool-name fidelity](https://github.com/trustvian/trustvian-python-agent-demo/blob/a19d7f4/docs/results/2026-10-01-stability-tool-fidelity.md),
+summarized in [the task](tasks/v1.0/078-behavioral-scenario-suites.md#the-re-run-at-tool-name-fidelity-2026-10-01)):
+- At `N = 5, j = 0`, the `k = 1` gate failed 6 of 252 unchanged
+  self-comparison splits at T = 0.7, and 1 of 252 at T = 1.3.
+- At T = 1.3, no `k` removed every crossing.
+
+That is one agent, one model and one toolset. It justifies no default, so you
+calibrate from your own workload's self-comparison false-FAIL rate, with the
+commands that already exist:
+
+1. **Write a self-comparison scenario** at the `N` you intend to run: `candidate`
+   identical to `reference` (same command, same `env`), and the gate you are
+   considering. Start from `k = 1, j = 0` with every maximum at `0`.
+2. **Run it `M` times**, saving each result:
+   `trustvian eval run --scenario self.yaml --json > self-$i.json`. Both sides
+   are the unchanged workload, so every FAIL is a false FAIL.
+3. **Count the FAILs.** Exit `1` and `"verdict": "fail"` both mark one.
+4. **Choose limits where that count is 0 of `M`.** If it is not 0, raise `k`,
+   raise `N`, or budget the variance with `max_repeated_added_behaviors`, and
+   measure again. Then confirm that a candidate with a known added behavior
+   still FAILs at the limits you chose.
+5. **Record `N`, `k`, `j`, `M` and the count beside the scenario.** Measure
+   again when the model, its temperature, the prompt or the toolset changes.
+
+**Cost: `M × 2N` workload runs.** At the measurement's 2.7 minutes per
+repetition, `M = 10` at `N = 5` is 100 repetitions, about four and a half hours.
+
+**What it shows.** 0 FAILs in `M` runs describes those `M` runs. It does not make
+the rate zero, and a larger `M` is stronger evidence. Some workloads have no
+limits that reach 0 at a given `N`, as the T = 1.3 measurement did not.
+
+The companion repository's
+[`make stability`](https://github.com/trustvian/trustvian-python-agent-demo/blob/a19d7f4/Makefile)
+(`tools/stability.py`) is a reference implementation of this measurement. It
+runs an unchanged agent under isolated profiles, counts how often it fails
+against itself, and is what produced the numbers above.
+
+### Ordering: a scenario asserts none
+
+A scenario file has no step list and no expected sequence. An `order:`,
+`sequence:` or `steps:` key is refused as an unknown field. So the runner has no
+ordering rule to pass or fail. A reorder reaches the verdict only as evidence
+the engine itself recorded: a block decision or a critical-risk observation,
+read by checks 5 and 6.
+
+**Under `trustvian eval run`, a reorder cannot produce gated evidence end to
+end, and checks 5 and 6 are advisory there.**
+- Every repetition runs under `trustvian dev`, whose generated Collector
+  configuration sets no anomaly block. So every sequence weight is at its
+  default of 0: `transition_weight`, `transition_rarity_weight`, the n-gram
+  weights and the Markov weight. The signals are reported, and they add nothing
+  to the anomaly score.
+- Each repetition also starts from a fresh learning scope, with no learned
+  order to deviate from. Anomaly confidence stays at its floor (0.1786
+  measured), so no anomaly yields a block.
+
+This covers what order alone tells the engine. Signals that read a behavior's
+own history are unaffected: latency, errors and novelty.
+
+Neither is suppression. Nothing in the scenario path suppresses the engine's
+sequence evidence. Where the sequence signals are opted in against a learned
+profile, a reorder the engine blocks fails the same checks, and the same
+reorder at weight 0 passes. Two tests prove it:
+- `TestAnalyzeReorderedSequenceIsGatedOnlyWithTransitionWeight` covers the
+  engine.
+- `TestAReorderFailsTheRepeatedGateOnlyThroughEngineEvidence` goes through the
+  real control plane.
 
 ### Reusing a recorded reference: `--reference`
 

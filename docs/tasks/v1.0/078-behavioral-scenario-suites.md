@@ -1,11 +1,13 @@
 # 078 — Behavioral Scenario Suites
 
-Status: partially implemented. Repeated evaluation ships —
+Status: implemented. Repeated evaluation ships —
 `trustvian eval run` and `POST /v1/evaluations/compare-repeated` ([ADR 0053](../../adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)) —
 and so do persisted scenario executions with `--reference <execution>|last`
 at schema 9 ([ADR 0054](../../adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)),
 and suites of scenarios with per-scenario deadlines ([ADR 0055](../../adr/0055-a-scenario-suite-is-a-bounded-schedule-and-a-report-not-an-evaluation.md)).
-Acceptance criteria 9 and 11 remain open; see [Implementation status](#implementation-status). Measurement re-run at tool
+Acceptance criteria 9 and 11 were amended on 2026-10-03 to what the evidence
+supports, and are met as amended; see
+[Amendment — criteria 9 and 11](#amendment--criteria-9-and-11-2026-10-03). Measurement re-run at tool
 fidelity recorded 2026-10-01 — see
 [The re-run at tool-name fidelity](#the-re-run-at-tool-name-fidelity-2026-10-01)
 Milestone: `v1.0`
@@ -992,6 +994,11 @@ one. A scenario still asserts no sequence, and the engine's learned sequence
 evidence still reaches the verdict through checks 5 and 6 of the repeated gate,
 exactly as it reached task 056's checks 4 and 5.
 
+*Note, 2026-10-03.* Under `trustvian eval run`, that evidence cannot arise: `dev`
+runs the sequence signals at weight 0, and each scope is fresh. "Reaches the
+verdict" is proven where it can arise; see
+[the amendment](#amendment--criteria-9-and-11-2026-10-03).
+
 ### Repeatedly removed is a classification, not a gate
 
 The gate above names only *repeatedly added* behaviors, and that leaves a hole a
@@ -1499,8 +1506,8 @@ Against the criteria below:
 | # | Status |
 |---|---|
 | 1–8, 10, 12–16, 18–20 | Met by the slice above, with tests at the config, control-plane, `/v1`, CLI and real-binary end-to-end levels |
-| 9 | **Partly.** The scenario asserts no ordering, and engine block and critical-risk evidence reaches checks 5 and 6. No reorder-specific test drives the engine to a block yet |
-| 11 | **Not met as written.** CI asserts it for a deterministic unchanged workload. The 2026-10-01 measurement shows an unchanged *nondeterministic* workload can fail the documented `k = 1, j = 0` limits (6/252 and 1/252 splits at N = 5), and at T = 1.3 no `k` removed every crossing |
+| 9 | **Met as [amended](#amendment--criteria-9-and-11-2026-10-03).** Ordering keys are refused (`TestScenarioRefusesOrderingKeys`). Non-suppression is proven where gated sequence evidence is reachable, with a learned baseline and `TransitionWeight > 0`: at the engine (`TestAnalyzeReorderedSequenceIsGatedOnlyWithTransitionWeight`) and through the control plane's checks 5 and 6 (`TestAReorderFailsTheRepeatedGateOnlyThroughEngineEvidence`) |
+| 11 | **Met as [amended](#amendment--criteria-9-and-11-2026-10-03).** An unchanged deterministic workload passes, asserted in CI. The guide documents how to calibrate `N`, `k` and `j` for a nondeterministic workload. No default `k` ships. As first written, it was not met: the 2026-10-01 measurement shows an unchanged *nondeterministic* workload can fail `k = 1, j = 0` (6/252 and 1/252 splits at N = 5), and at T = 1.3 no `k` removed every crossing |
 | 17 | Met by the 2026-10-01 measurement |
 | 21, 22 | Met earlier (the run-scoped behavior route and `--behavioral-profile`) |
 
@@ -1550,14 +1557,13 @@ suites.
     a trapped exit 0 and SIGKILL escalation;
   - a real-binary, model-free suite end to end.
 
-**What the suite does not change.** The measured nondeterminism in criterion 11
+**What the suite does not change.** The measured nondeterminism behind criterion 11
 applies to each member, as it does to a single scenario. A suite composes
 members' verdicts by precedence and makes none of them more reliable.
 
 **Not built:**
 - A listing route for scenario executions; `GET` by id exists.
 - Per-member reference maps, suite manifests, and parallel members.
-- A reorder-specific test for criterion 9.
 - A repeated limit over counted changes (ADR 0053 § 1).
 
 ## Acceptance criteria
@@ -1579,15 +1585,22 @@ members' verdicts by precedence and makes none of them more reliable.
    and the [result document](#result-document) carries every field listed there
    — `N`, `k` and `j`, every behavior with both counts and its classification,
    all six checks with their outcomes, the verdict, and both producer versions.
-9. A scenario asserts no action ordering of its own, **and** does not suppress
-   the engine's sequence-aware evidence: a reorder that produces gated
-   evidence fails, and one that does not, passes. The runner decides neither.
+9. **Scenarios assert no ordering, and nothing in the scenario path suppresses
+   sequence evidence. Under fresh-scope repetitions with the default
+   `transition_weight = 0`, a reorder cannot produce gated evidence end to end;
+   checks 5/6 are advisory there.**
+   *Amended 2026-10-03; the original wording, the reason and the tests are in
+   [the amendment](#amendment--criteria-9-and-11-2026-10-03).*
 10. **`runs` is required, bounded to `[1, 64]`, and has no default.** Absent,
     zero or out of range is a usage error naming the field, before the workload
     runs.
-11. **An unchanged, nondeterministic workload compared with itself at N runs
-    PASSES** under the documented limits — the property the repetition exists
-    to deliver.
+11. **An unchanged deterministic workload compared with itself at N runs
+    PASSES** under the documented limits, asserted in CI. **For a
+    nondeterministic workload, no default `k` ships: the scenario guide
+    documents how to calibrate `N`, `k` and `j` from the workload's own
+    self-comparison false-FAIL rate.**
+    *Amended 2026-10-03; the original wording and the reason are in
+    [the amendment](#amendment--criteria-9-and-11-2026-10-03).*
 12. **A behavior present in k of N candidate runs FAILS at threshold k and
     PASSES at threshold k + 1**, with nothing else changed.
 13. **`runs: 1` with `k = 1` and `j = 0` reproduces task 056's verdict
@@ -1673,8 +1686,14 @@ members' verdicts by precedence and makes none of them more reliable.
    5 and 6 are marked advisory at `N > 1` instead — see
    [Checks 5 and 6](#checks-5-and-6-are-advisory-against-a-fresh-scope) for the
    numbers and the two rejected alternatives.
-7. **What `N` and `k` the documentation should recommend.** Still open for `k`,
-   and now open for a different reason: the measurement was performed and
+7. **What `N` and `k` the documentation should recommend.** **Resolved
+   2026-10-03:** no `k` is recommended. The scenario guide gives a per-workload
+   calibration procedure instead; see
+   [the amendment](#amendment--criteria-9-and-11-2026-10-03). The history
+   follows.
+
+   *Before the re-run:* still open for `k`, and now open for a different
+   reason: the measurement was performed and
    produced no threshold, because the workload could not vary. The documented
    guidance is `k = 1, j = 0` — set semantics, asserting nothing — until a sweep
    against one of the
@@ -1782,3 +1801,121 @@ consequences this task should also hold to when it is implemented: a deployment
 that samples its trace pipeline records the ratio or declares it unknown, and an
 incomplete run stays a distinct state from a clean run with a small behavioral
 surface.
+
+## Amendment — criteria 9 and 11 (2026-10-03)
+
+Two acceptance criteria asked for more than the evidence or the runtime can
+deliver. They are restated below to what can be shown. This section records the
+change, so the amendment can be seen and is not a quiet weakening.
+
+### Criterion 11
+
+**As first written:**
+
+> **An unchanged, nondeterministic workload compared with itself at N runs
+> PASSES** under the documented limits — the property the repetition exists
+> to deliver.
+
+**Why it cannot be met.** The
+[2026-10-01 re-run](#the-re-run-at-tool-name-fidelity-2026-10-01) refutes it for
+one real workload:
+- At N = 5, j = 0, 6 and 1 of 252 unchanged self-comparisons failed `k = 1`.
+- At T = 1.3, no `k` from 1 to 5 removed every failure.
+
+No limit can be documented that makes every unchanged nondeterministic workload
+pass. Choosing a default `k` from this data would be the guessed threshold
+[this task refuses](#no-default-k-ships-and-the-guidance-is-set-semantics).
+
+**As amended:**
+- An unchanged *deterministic* workload passes at `k = 1, j = 0`. CI asserts
+  this: `TestAnUnchangedDeterministicWorkloadPassesAtTheDocumentedLimits` at the
+  control plane, and `TestEvalRunAgainstRealBinaries` through the real
+  binaries.
+- For a nondeterministic workload, no default `k` ships. The scenario guide
+  ([`docs/platform-cli.md` § Calibrating `N`, `k` and `j`](../../platform-cli.md#calibrating-n-k-and-j))
+  documents how to calibrate `N`, `k` and `j` from the workload's own
+  self-comparison false-FAIL rate:
+  - run the unchanged workload as both sides `M` times at the intended N, with
+    existing commands only;
+  - count the FAILs, and choose limits where that count is 0 of `M`.
+
+  The guide states the cost, `M × 2N` workload runs, and cites the measurement.
+  It names the companion repository's `make stability` as a reference
+  implementation.
+
+**What this does not weaken.** The gate, its limits and their validation are
+unchanged. The amendment withdraws one claim the evidence refutes. It loosens
+no check, and it puts calibration with the caller, where `k` and `j` already
+sat as required, explicit values.
+
+### Criterion 9
+
+**As first written:**
+
+> A scenario asserts no action ordering of its own, **and** does not suppress
+> the engine's sequence-aware evidence: a reorder that produces gated
+> evidence fails, and one that does not, passes. The runner decides neither.
+
+**Why "a reorder that produces gated evidence fails" cannot be shown from a
+scenario.** Under `trustvian eval run`, the engine's sequence signals cannot
+turn a reorder into gated evidence:
+- Every repetition runs under `trustvian dev`. Its generated Collector
+  configuration has no `anomaly:` block, and the processor's `Config` has no
+  anomaly field. So the engine runs with `anomaly.DefaultConfig()`, where
+  `TransitionWeight`, `TransitionRarityWeight`, `NGramWeight`,
+  `NGramRarityWeight` and `MarkovWeight` are all 0. The sequence signals are
+  reported and contribute nothing to the score, the decision or the risk level.
+- Each repetition's learning scope is fresh, so there is no learned order to
+  deviate from. Anomaly confidence stays at its floor in isolated repetitions,
+  measured at 0.1786 in
+  [Checks 5 and 6 are advisory against a fresh scope](#checks-5-and-6-are-advisory-against-a-fresh-scope).
+  At that confidence no anomaly yields `BLOCK`, which is why checks 5 and 6
+  carry the `fresh_scope` advisory.
+
+So a scenario-level reorder test could only pass, and it would prove nothing
+about suppression.
+
+**As amended:**
+
+> **Scenarios assert no ordering, and nothing in the scenario path suppresses
+> sequence evidence. Under fresh-scope repetitions with the default
+> `transition_weight = 0`, a reorder cannot produce gated evidence end to end;
+> checks 5/6 are advisory there.**
+
+Each half is proven by a test:
+
+- **No ordering.** A scenario has no ordering field, and `config/scenario.go`
+  decodes with `KnownFields(true)`. `TestScenarioRefusesOrderingKeys`
+  (`config/scenario_test.go`) shows that `order:`, `sequence:` and `steps:` are
+  refused as unknown fields rather than ignored.
+- **No suppression, at the engine.**
+  `TestAnalyzeReorderedSequenceIsGatedOnlyWithTransitionWeight`
+  (`engine_test.go`) learns `plan → fetch → apply` through the gated
+  Analyze+Observe loop, with `TransitionWeight = 0.7` and a policy that blocks
+  high risk. It then replays the order in reverse. The reorder yields `BLOCK`
+  or critical risk. At weight 0 it yields neither.
+  `TestAnalyzeTransitionDeviationEndToEnd` already showed the contributor, but
+  not a gated decision.
+- **No suppression, through the platform.**
+  `TestAReorderFailsTheRepeatedGateOnlyThroughEngineEvidence`
+  (`platform/repeated_reorder_test.go`) runs the same engine setup:
+  - each repetition's profile is warmed on one order;
+  - the candidate repetitions run the same behaviors in reverse;
+  - each `DecisionRecord` goes through the real control plane's ingest into
+    `CompareRepeatedEvaluations`.
+
+  The reorder adds no behavior, and the engine's block decisions fail check 5.
+  At weight 0, which is what `dev` runs with, the same reorder passes.
+
+The guide states that a reorder cannot produce gated evidence under `eval run`.
+Signals that read a behavior's own history are outside that statement: latency,
+errors and novelty.
+
+**No runtime change.** Making a scenario able to reach that evidence would
+require one of two runtime changes:
+- an anomaly configuration surface on the processor and in `dev`;
+- warmed profiles, which this task
+  [rejected](#checks-5-and-6-are-advisory-against-a-fresh-scope).
+
+Neither is part of this task.
+

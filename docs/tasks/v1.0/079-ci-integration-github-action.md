@@ -1195,11 +1195,12 @@ Against the criteria below:
   authorship, so another identity would duplicate comments.
 
 **What this does not change.** The action passes task 078's verdicts on; it does
-not make them more reliable. [Task 078](078-behavioral-scenario-suites.md)'s
-acceptance criteria 9 and 11 remain open. In particular, an unchanged
-*nondeterministic* workload can still fail the documented `k = 1, j = 0` limits,
-as the 2026-10-01 measurement recorded, and running it in CI changes nothing
-about that.
+not make them more reliable. An unchanged *nondeterministic* workload can still
+fail the documented `k = 1, j = 0` limits, as the 2026-10-01 measurement
+recorded, and running it in CI changes nothing about that. [Task
+078](078-behavioral-scenario-suites.md#amendment--criteria-9-and-11-2026-10-03)'s
+amended criterion 11 says so. Calibrate `k` and `j` for the workload first
+([guide](../../platform-cli.md#calibrating-n-k-and-j)).
 
 ## Acceptance criteria
 
