@@ -55,7 +55,10 @@
       "Bash(*release-setup.sh)",
       "Bash(*MODE=manual*)",
       "Bash(*MODE='manual'*)",
-      "Bash(*MODE=\"manual\"*)"
+      "Bash(*MODE=\"manual\"*)",
+      "Bash(gh secret *)",
+      "Bash(gh variable set*)",
+      "Bash(gh variable delete*)"
     ]
   },
   "hooks": {

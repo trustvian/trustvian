@@ -1,12 +1,14 @@
 # 0060 — Agent-operated releases, approved through a GitHub environment
 
-**Status:** Proposed. Amends [ADR 0059](0059-releases-are-dispatched-verified-then-published.md):
+**Status:** Accepted, with § 3's open decision closed by option 2: an
+organization-owned GitHub App, `trustvian-release`, is the only actor that can
+create a tag. Amends [ADR 0059](0059-releases-are-dispatched-verified-then-published.md):
 § 5 (who creates the tag) and the confirmation step are replaced, and version
 selection is added. The pipeline's order, its verification, the digest-only
 push and the signing identity are unchanged. Takes effect when a human
-repository administrator runs `scripts/release-setup.sh` after this is merged.
-Until then, `publish` cannot create the tag: the current `v*` ruleset refuses
-it.
+repository administrator has created the App and run `scripts/release-setup.sh`
+after this is merged (`docs/release-runbook.md` § 0). Until then, preflight
+stops at the missing `RELEASE_APP_ID`.
 
 ## Context
 
@@ -57,62 +59,93 @@ Before `publish`, the `summary` job writes the page the approver reads:
 ### 2. `publish` creates the tag, after approval
 
 `publish` creates the annotated tag at `$COMMIT` through the API, as
-`github-actions[bot]`. It then creates the release and the image tags,
-idempotently, as before:
+`trustvian-release[bot]` (§ 3). It then creates the release, with the same
+token, and the image tags, with `GITHUB_TOKEN`, idempotently, as before:
 - an existing tag is accepted only if it is that same annotated tag at that
   commit, which happens on a re-run;
 - anything else stops publish before anything is published.
 
 The 60-minute wait for a human-created tag is gone.
 
-### 3. The tag ruleset: creation is no longer restricted
+### 3. Only the release App can create a tag
 
-The design asked first for creation restricted, with GitHub Actions as its
+The design asked first for tag creation restricted, with GitHub Actions as its
 only bypass. That is not possible here. In an organization's repository,
 GitHub refuses the built-in GitHub Actions app as a ruleset bypass actor:
 HTTP 422, *"Actor GitHub Actions integration must be part of the ruleset
-source or owner organization"*. The REST API offers no other actor type for
-it. Restricting creation would therefore refuse the release itself.
+source or owner organization"*. The REST API offers no other actor type for it.
 
-The ruleset on `refs/tags/v*` keeps **update, deletion and force-move
-restricted, with no bypass actor at all**, not even Organization Admin, and
-drops the creation rule. Why that is acceptable:
+The first version of this ADR therefore dropped the creation rule, keeping
+update, deletion and force-move restricted, and argued that a squatted tag
+blocks a version but releases nothing. Review found where that argument
+fails, and it was recorded as an open decision.
 
-- **Creating a `v*` tag publishes nothing.** There is no tag trigger. The
-  only thing that publishes is an approved `publish` job.
-- **A squatted name blocks, it does not release.** Preflight refuses a
-  version whose tag already exists, and `publish` refuses a tag that is not
-  its own annotated tag at the verified commit. A squatted tag makes that
-  version unusable until a human deals with it: a nuisance, visible, and
-  never a release.
-- **What must never change can't.** No one, human or workflow, can move or
-  delete a published tag, and immutable releases protect the published
-  release.
+**Why the gap mattered.** The argument held for the *workflow's* path to
+publication, not for GitHub's release API. `POST /repos/{owner}/{repo}/releases`
+with a new `tag_name` creates the tag and a published release in one call,
+with nothing but Contents: write:
+- **Who could do it:** every maintainer, and the agent's token (§ 6), which
+  needs Contents: write to push branches.
+- **Deny rules don't stop it.** They match the command an agent types. A
+  three-line `go run` program, a `curl` or a `make` target makes the same call,
+  and `go run`, `make` and `curl` are everyday commands an agent must be able
+  to use.
+- **It isn't limited to `main`.** `target_commitish` may name any branch or
+  commit, so the release could carry code nobody reviewed.
+- **It can't be undone.** Immutable releases, which protect real releases from
+  tampering, would make such a release permanent under the project's name.
 
-**The gap this opens, found in review and not closed by this change.** The
-argument above holds for the *workflow's* path to publication. It does not
-hold for GitHub's release API. `POST /repos/{owner}/{repo}/releases` with a new
-`tag_name` creates the tag and a published release in one call, and needs
-only Contents: write.
-- **Who can do it:** every maintainer, and the agent token of § 6.
-- **What it produces:** a public release under the project's name, with no
-  approval. It has no attestation and no signature, and immutable releases
-  then make it permanent.
-- **What used to stop it:** with creation restricted, the ruleset refused it.
-  Without the restriction, only the deny rules and the governance stand in the
-  way.
+So "nothing is public without a human's approval" would have rested on
+compliance, not on anything GitHub enforces.
 
-**Open decision, for the maintainers before `scripts/release-setup.sh` is
-applied:**
-1. **Accept it.** A maintainer can already damage the project in many ways,
-   and agents are bound by the deny rules and the governance.
-2. **Close it first.** Make a dedicated GitHub App, owned by the organization,
-   the creation bypass actor. GitHub accepts an organization's own app,
-   unlike the Actions app. Publish creates the tag with that app's token, and
-   the ruleset keeps restricting creation. That adds a credential, the app's
-   private key, held as a `release` environment secret, to issue and rotate.
+**Decision: option 2.** A dedicated GitHub App, `trustvian-release`, owned by
+the organization and installed only on this repository, with Contents: read
+and write and Metadata: read, is the only actor that can create a tag.
+- **Two rulesets**, both on **every tag** (`refs/tags/*`), so no release can
+  be created on a non-`v` tag either:
+  - **"Release tags: creation"** restricts creation, with one bypass actor:
+    the App (`Integration`, its id, mode `always`). GitHub accepts an
+    organization's own app as a bypass actor, unlike the Actions app.
+  - **"Release tags: immutable"** restricts update, deletion and force-move,
+    with no bypass actor at all.
+- **Only the approved publish job holds the App.**
+  - The App's private key is a secret of the `release` environment, so it
+    exists only in `publish`, after a required reviewer approved it.
+  - Publish mints a token with `actions/create-github-app-token`, scoped to
+    this repository and to `contents: write`, and revoked when the job ends.
+  - It writes the tag and every `gh release` call with that token, so every
+    release is authored by `trustvian-release[bot]`.
+  - `GITHUB_TOKEN` pushes the image tags to GHCR and reads the approvals.
+    No job holds `contents: write`.
+- **The id is a repository variable**, `RELEASE_APP_ID`. Preflight fails
+  early, naming the setup step, when it is missing.
+- **A human sets it up** (`docs/release-runbook.md` § 0): creating the App,
+  generating and storing its key, and setting the variable. No agent ever
+  handles the key. `scripts/release-setup.sh` checks the variable and the
+  secret by name, and applies both rulesets. If GitHub refuses the App as a
+  bypass actor, it stops with GitHub's exact response; it never falls back to
+  a weaker ruleset.
+- **A release audit** (`.github/workflows/release-audit.yml`) checks each
+  release as it is created, edited or published, and every release weekly. It
+  requires that the release:
+  - is authored by `trustvian-release[bot]`;
+  - has an annotated tag at a commit on `main`;
+  - has every asset attested by `release.yml`.
 
-This ADR stays **Proposed** until that choice is made.
+  On any finding it fails and opens or updates an issue labelled
+  `release-audit`. Releases up to `v0.9.0` are exempt by name.
+
+**What this closes, and what it costs.**
+- Neither a maintainer, nor an agent, nor any workflow other than the approved
+  publish job can create a tag, and therefore no one can create a release on a
+  new tag.
+- An Organization Admin can't create one by hand any more either. That is the
+  point: every tag comes from an approved, verified run.
+- The cost is one credential, the App's private key: issued by a human, held
+  only in the `release` environment, and rotated by generating a new key.
+- A release on an *existing* tag without one stays possible with Contents
+  write. Today every tag has its release; the audit reports any that doesn't
+  come from the App.
 
 ### 4. The scripts are agent-safe
 
@@ -179,13 +212,11 @@ cannot approve. It cannot change rulesets or environments either.
 
 The token is the real boundary.
 
-**What the token does not prevent:** with Contents write and creation
-unrestricted (§ 3), the agent's token *could* create a `v*` tag. Through the
-release API, it could also publish a release without approval: the open
-decision in § 3. The governance forbids both, and the deny rules block the
-obvious commands, including `gh api *releases*`. Deny rules match the command
-an agent types, not what a wrapper script runs, so the token is the only real
-boundary.
+**What the token cannot do.** Since § 3, the agent's token cannot create a
+tag, and so cannot create a release on a new tag either: the "Release tags:
+creation" ruleset admits only the release App. The token table is otherwise
+unchanged. Agents never see or handle the App's key, which only a human
+stores. The deny rules remain defense in depth.
 
 ### 7. A release operator for Claude Code
 
@@ -237,8 +268,11 @@ of who triggered the run and who approved it are the authoritative ones.
   terminal, which is the problem this solves.
 - **GitHub Actions as the creation bypass.** It is what was asked first;
   GitHub refuses it for an organization's repository (§ 3).
-- **A GitHub App as the creation bypass.** It works, but it adds a credential
-  to issue, store and rotate. It is recorded as future hardening (§ 3).
+- **Leaving tag creation unrestricted (this ADR's first version).** It needs
+  no credential, but anyone with Contents: write could publish an unapproved,
+  permanent release through the API (§ 3).
+- **A GitHub App as the creation bypass: chosen** (§ 3), at the cost of one
+  credential held only by the approved publish job.
 - **Approval by an agent with an admin's token.** It defeats the point of the
   gate, which is why the agent's token has no Deployments permission.
 
@@ -246,13 +280,16 @@ of who triggered the run and who approved it are the authoritative ones.
 
 - Releasing: an agent or a person runs `make release`, and an Organization
   Admin approves the deployment on GitHub, from anywhere.
-- The `v*` ruleset gets weaker on creation and stronger on update and
-  deletion: Organization Admin loses its bypass there. A human administrator
-  applies it with `scripts/release-setup.sh`, and `--check` shows the
-  difference first.
+- The single `v*` ruleset is replaced by two on every tag. Creation is
+  admitted only for the release App, and update, deletion and force-move for
+  no one: Organization Admin loses its tag bypass. A human administrator
+  creates the App and applies the rulesets with `scripts/release-setup.sh`,
+  and `--check` shows the difference first.
+- Every release from now on is authored by `trustvian-release[bot]`, and the
+  release audit checks that it is.
 - Governance changes: `docs/governance/releases.md`,
-  `docs/governance/agents.md` and CLAUDE.md now describe the workflow as the
-  tag's creator, the environment approval as the human decision, and what an
+  `docs/governance/agents.md` and CLAUDE.md now describe the release App,
+  used only by the approved publish job, as the tag's creator, the environment approval as the human decision, and what an
   agent may run.
 - `docs/release-runbook.md` is the procedure, kept honest by
   `scripts/runbook_drift_test.go`.

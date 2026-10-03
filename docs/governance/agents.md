@@ -82,13 +82,22 @@ AI Agent
 - Adding any agent, bot, automation identity, or its own credential as a
   ruleset bypass actor — or **using** an existing bypass entry, including the
   Organization Admin bypass, when running under a credential that holds it.
+  The one bypass actor the project has, the `trustvian-release` GitHub App on
+  "Release tags: creation", was created and configured by a human
+  ([ADR 0060 § 3](../adr/0060-agent-operated-releases-with-environment-approval.md#3-only-the-release-app-can-create-a-tag));
+  an agent never adds, changes or acts as it.
 - Changing the repository default branch away from `main`.
 - Approving or rejecting a deployment — above all the `release` environment,
   which is the human decision to publish — or running with a token that has
   Deployments, Administration or Environments permission.
 - Creating, deleting, moving, or force-updating a release tag; reusing a
-  published release candidate's version number. The release workflow creates
-  the tag, and only after a human approved publishing.
+  published release candidate's version number. The release workflow's
+  publish job creates the tag, with the release App, and only after a human
+  approved publishing.
+- Seeing, handling, storing, rotating or using the release App's private key
+  (`RELEASE_APP_PRIVATE_KEY`), or setting `RELEASE_APP_ID`. A human creates
+  the App and stores its key; the agent may only check, by name, that they
+  exist (`./scripts/release-setup.sh --check`).
 - Deleting a GitHub Release, or repairing a failed release by mutating
   published history.
 - Approving or merging **any** pull request into `main` — its own or anyone
@@ -149,12 +158,15 @@ rewrite governance," which is precisely the line this policy needs.
 
 Credential separation removes administration from the agent. It does **not**,
 by itself, remove the ability to merge — see the analysis below, which
-corrects an earlier claim in this document — nor, since tag creation is not
-restricted ([ADR 0060 § 3](../adr/0060-agent-operated-releases-with-environment-approval.md#3-the-tag-ruleset-creation-is-no-longer-restricted)),
-the ability to create a `v*` tag, or to publish a release through GitHub's
-release API without approval. Both are prohibited above, and the deny rules
-block the obvious commands. ADR 0060 § 3 records the release-API gap as an
-open decision.
+corrects an earlier claim in this document. It **does** remove the ability to
+create a tag, and so to publish a release on a new tag through GitHub's
+release API: only the `trustvian-release` App may create a tag
+([ADR 0060 § 3](../adr/0060-agent-operated-releases-with-environment-approval.md#3-only-the-release-app-can-create-a-tag)).
+
+**The release App changes none of this.** The token table above is
+unchanged: the agent's token never holds the `trustvian-release` App's key,
+and since only that App may create a tag, the agent's Contents: write cannot
+create a tag, or a release on a new one.
 
 **Creating the token and using it.** The steps are in the
 [release runbook § 0](../release-runbook.md#an-agents-token): a fine-grained

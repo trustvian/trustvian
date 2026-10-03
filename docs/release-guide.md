@@ -279,11 +279,12 @@ publish creates no tag, no release and no image tag, so nothing needs a new
 number, and a dry run is the rehearsal. Candidates (`PRE=rc`) are for putting
 a build in front of users.
 
-**The tag.** `publish` creates the annotated tag at the verified commit, as
-`github-actions[bot]`, after the approval. The `v*` ruleset forbids anyone to
-move or delete it. It does not restrict creation, because GitHub accepts no
-bypass for the Actions app in an organization; why that is acceptable is in
-[Release Governance](governance/releases.md#protected-tag-semantics).
+**The tag.** `publish` creates the annotated tag at the verified commit, after
+the approval, with a token for the `trustvian-release` GitHub App, and writes
+the GitHub Release with it too, so every release is authored by
+`trustvian-release[bot]`. The App is the only actor allowed to create any tag,
+and only the approved publish job holds its key. Nobody can move or delete a
+tag ([Release Governance](governance/releases.md#protected-tag-semantics)).
 `make release` also refuses while another release run is queued or running.
 
 ### Dry runs
@@ -349,9 +350,17 @@ differs:
 - [ ] **`release` environment**, deployable from `main` only, with the
   organization's admins as required reviewers (GitHub allows six), no wait
   timer, and self-review allowed.
-- [ ] **Tag ruleset on `refs/tags/v*`**: update, deletion and force-move
-  restricted, with no bypass actor; creation not restricted
-  ([why](governance/releases.md#protected-tag-semantics)).
+- [ ] **The `trustvian-release` GitHub App**, created by a human: its id in the
+  repository variable `RELEASE_APP_ID`, its private key in the `release`
+  environment's secret `RELEASE_APP_PRIVATE_KEY`
+  ([runbook § 0](release-runbook.md#the-release-app-human-only)). The script
+  checks both, the secret by name only.
+- [ ] **"Release tags: creation"** on every tag: creation restricted, the App
+  the only bypass actor. **"Release tags: immutable"** on every tag: update,
+  deletion and force-move restricted, no bypass actor
+  ([why](governance/releases.md#protected-tag-semantics)). They replace the
+  single "Protect release tags" ruleset, which the script removes once both
+  are in place.
 - [ ] **Immutable releases**, enabled when the repository offers it (Settings
   → General → Releases). Once a release is published, its assets and tag cannot
   change. That is why publish uploads everything before publishing, and why a
@@ -359,8 +368,9 @@ differs:
 - [ ] **The GHCR package is public.** GitHub creates a new container package as
   private on its first push. Check it once at
   `https://github.com/orgs/trustvian/packages/container/package/trustvian-collector`.
-- [ ] **Agents have their own token** with no Deployments, Administration or
-  Environments permission ([runbook § 0](release-runbook.md#an-agents-token)).
+- [ ] **Agents have their own token** with no Deployments, Administration,
+  Environments or Workflows permission
+  ([runbook § 0](release-runbook.md#an-agents-token)).
 
 ## Artifacts
 

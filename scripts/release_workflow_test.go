@@ -151,7 +151,8 @@ func TestOnlyPublishCanPublish(t *testing.T) {
 		t.Errorf("workflow-level permissions = %v, want contents: read only", perms)
 	}
 	writers := map[string][]string{
-		"contents": {"publish"},
+		// No job: the trustvian-release App's token writes tags and releases.
+		"contents": {},
 		"packages": {"image", "publish"},
 	}
 	for name, job := range jobs {

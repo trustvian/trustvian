@@ -11,10 +11,14 @@
 # in `release-build` (main only, no reviewers). Only `publish` runs in
 # `release`, whose required reviewers are the Organization Admins: publish
 # waits there until one of them approves the deployment on GitHub, after
-# reading the summary job's page. Publish then creates the annotated tag at
-# the verified commit itself, the GitHub Release and the image tags.
-# scripts/release.sh never creates a tag and never approves anything, so an
-# agent may run it. See docs/adr/0060-agent-operated-releases-with-environment-approval.md.
+# reading the summary job's page. Publish then mints a token for the
+# trustvian-release GitHub App, whose key is a secret of that environment,
+# and with it creates the annotated tag at the verified commit and the GitHub
+# Release. The App is the only actor the "Release tags: creation" ruleset
+# lets create a tag, so nothing but an approved publish job can. GITHUB_TOKEN
+# pushes the image tags only. scripts/release.sh never creates a tag, never
+# handles the App key, and approves only in manual mode, for a person at a
+# terminal. See docs/adr/0060-agent-operated-releases-with-environment-approval.md.
 #
 # There is no tag-push trigger. Pushing a v* tag by hand starts nothing, and
 # the guide says so.
@@ -100,6 +104,18 @@ jobs:
       - name: Operator
         run: |
           echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
+      - name: The release App is configured
+        # Only the trustvian-release App can create a tag (the "Release tags:
+        # creation" ruleset), and publish needs its id. Fail here, before
+        # anything is built, rather than after an approval.
+        env:
+          RELEASE_APP_ID: ${{ vars.RELEASE_APP_ID }}
+        run: |
+          if ! printf '%s' "$RELEASE_APP_ID" | grep -Eq '^[0-9]+$'; then
+            echo "::error::vars.RELEASE_APP_ID is empty or not a number. Create the trustvian-release GitHub App and set the variable: docs/release-runbook.md § 0, The release App (human-only)."
+            exit 1
+          fi
+
       - name: Refuse anything but main
         run: |
           # Inputs reach every script through the environment, never by
@@ -668,8 +684,11 @@ jobs:
     # The human gate: required reviewers (the Organization Admins) approve
     # this deployment on GitHub before any step below runs.
     environment: release
+    # The tag and the GitHub Release are written with the trustvian-release
+    # App's token, minted below; GITHUB_TOKEN only reads the source, pushes
+    # image tags to GHCR and reads the approvals. No job holds contents: write.
     permissions:
-      contents: write
+      contents: read
       packages: write
       # To read who approved this run's deployment, for the summary.
       actions: read
@@ -685,13 +704,29 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.commit }}
 
+      - id: app
+        name: Mint the release App's token
+        # The only place the App's key is used. The private key is a secret of
+        # the `release` environment, so it exists only in this job, after a
+        # required reviewer approved it. The token is scoped to this
+        # repository and to contents: write, and is revoked when the job ends.
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
       - name: 1. Create the release tag
         # An annotated tag at exactly $COMMIT, created through the API as
-        # github-actions[bot], now that a person has approved. An existing tag
+        # trustvian-release[bot], now that a person has approved. An existing tag
         # is accepted only if it is that same annotated tag (a re-run);
         # anything else stops here, before anything is published.
         env:
-          GH_TOKEN: ${{ github.token }}
+          # Authored by trustvian-release[bot], the only actor the ruleset
+          # lets create a tag.
+          GH_TOKEN: ${{ steps.app.outputs.token }}
         run: |
           set -euo pipefail
           if ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" 2>/dev/null)"; then
@@ -745,7 +780,7 @@ jobs:
 
       - name: 2. GitHub Release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
           PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
           NEWEST: ${{ steps.newest.outputs.newest }}
         run: |
@@ -844,11 +879,13 @@ jobs:
       - name: Summarize
         if: always()
         env:
+          # GITHUB_TOKEN reads the approvals; the App's token reads the release.
           GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app.outputs.token }}
           IMAGE: ${{ needs.image.outputs.image }}
           DIGEST: ${{ needs.image.outputs.digest }}
         run: |
-          url="$(gh release view "$VERSION" --json url --jq .url 2>/dev/null || echo "(no release)")"
+          url="$(GH_TOKEN="$APP_TOKEN" gh release view "$VERSION" --json url --jq .url 2>/dev/null || echo "(no release)")"
           {
             echo "### Trustvian $VERSION"
             echo

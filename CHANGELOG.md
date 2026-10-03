@@ -78,20 +78,40 @@ actually depend on.
       `PRE=rc` releases its next candidate, counted so that rc.10 follows rc.9.
     - Preflight requires exactly one bump above the newest stable tag.
       Candidates may use their base version's notes.
-  - **The tag ruleset changes, once a human applies it**
-    (`scripts/release-setup.sh`).
-    - Update, deletion and force-move of `v*` tags are restricted with no
-      bypass actor at all.
-    - Creation is no longer restricted. GitHub refuses the Actions app as a
-      bypass actor in an organization's repository, and a tag nobody approved
-      publishes nothing.
+  - **Only the `trustvian-release` GitHub App can create a tag, and only the
+    approved publish job holds it** (ADR 0060 § 3, accepted). It needs a human
+    to create the App and run `scripts/release-setup.sh`.
+    - The App's key is a secret of the `release` environment. Publish mints a
+      token with `actions/create-github-app-token`, scoped to this repository
+      and `contents: write`, and writes the tag and the GitHub Release with it.
+      Every release is therefore authored by `trustvian-release[bot]`.
+      `GITHUB_TOKEN` keeps the image tags only, and no job holds
+      `contents: write`.
+    - Two rulesets on every tag, replacing "Protect release tags":
+      - "Release tags: creation" restricts creation, with the App as the only
+        bypass;
+      - "Release tags: immutable" restricts update, deletion and force-move,
+        with no bypass.
+
+      GitHub refuses the built-in Actions app as a bypass in an organization.
+      Leaving creation open, as first proposed, would have let any Contents:
+      write token publish a permanent, unapproved release through the release
+      API.
+    - Preflight fails early without `RELEASE_APP_ID`. `release-setup.sh`
+      checks the variable and the secret (names only). If GitHub refuses the
+      App as a bypass actor, it stops with GitHub's exact response and never
+      falls back to a weaker ruleset.
+    - `.github/workflows/release-audit.yml` runs on every release event and
+      weekly. It checks each release's author, that its tag is annotated at a
+      commit on `main`, and that every asset is attested by `release.yml`.
+      Any finding opens an issue labelled `release-audit`; releases up to
+      `v0.9.0` are exempt by name.
   - **Least privilege for agents.**
     - An agent runs with its own fine-grained token: Actions, Contents and
       Pull requests read and write, and no Deployments, Administration,
       Environments or Workflows permission.
-    - **Open decision before applying the ruleset change:** without restricted
-      creation, anyone with Contents: write can publish a release through
-      GitHub's release API without approval (ADR 0060 § 3).
+    - Agents never see or handle the release App's key; a human creates the
+      App, stores the key and rotates it.
     - `.claude/settings.json` adds deny rules for approving deployments,
       tagging, editing environments and rulesets, and merging.
     - `.claude/agents/release-operator.md` and `/release

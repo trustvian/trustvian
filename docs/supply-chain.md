@@ -358,6 +358,26 @@ to the image index as BuildKit attestation manifests, which
 no attestation of its own, so `cosign download attestation` finds none for
 this image.
 
+## Who authored a release
+
+From `v0.10.0`, every release and its tag are written by the
+`trustvian-release` GitHub App, after an Organization Admin approved the run.
+No other actor may create a tag
+([ADR 0060 § 3](adr/0060-agent-operated-releases-with-environment-approval.md#3-only-the-release-app-can-create-a-tag)).
+
+```bash
+V=v0.10.0
+gh api repos/trustvian/trustvian/releases/tags/$V --jq .author.login     # trustvian-release[bot]
+ref=$(gh api repos/trustvian/trustvian/git/ref/tags/$V --jq '"\(.object.type) \(.object.sha)"')
+echo "$ref"                                                               # tag <sha>: annotated
+gh api repos/trustvian/trustvian/git/tags/${ref#tag } --jq '"\(.tagger.name) → \(.object.type) \(.object.sha)"'
+```
+
+`.github/workflows/release-audit.yml` checks this for every release, on every
+release event and weekly, together with the tag's commit being on `main` and
+every asset's provenance. A finding opens an issue labelled `release-audit`.
+Releases up to `v0.9.0` predate the App and are exempt by name.
+
 ## Verifying a release archive
 
 From `v0.10.0`. `gh attestation verify` checks the archive's SLSA build

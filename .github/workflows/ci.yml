@@ -631,7 +631,7 @@ jobs:
       - name: The release workflow and the release docs match the code
         # Structural tests of release.yml and release.sh, and the drift tests
         # of docs/release-runbook.md and docs/releasing-with-claude-code.md.
-        run: go test ./scripts -run 'Release|Publish|Pinned|Digest|SigningIdentity|Approver|Operator|Runbook|Docs|TokenTables|CaseIDs' -count=1
+        run: go test ./scripts -run 'Release|Publish|Pinned|Digest|SigningIdentity|Approver|Operator|Runbook|Docs|TokenTables|CaseIDs|App|Audit|ReleaseSetup' -count=1
 
       - name: Lint the release scripts
         # shellcheck ships on GitHub's Ubuntu runners.

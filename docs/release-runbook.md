@@ -77,6 +77,39 @@ git --version
 You need nothing else: no Go, no Docker, no signing key. Everything is built
 and signed in GitHub Actions.
 
+### The release App (human-only)
+
+Only one actor may create a tag: the `trustvian-release` GitHub App, and only
+the approved `publish` job holds its key
+([ADR 0060 § 3](adr/0060-agent-operated-releases-with-environment-approval.md#3-only-the-release-app-can-create-a-tag)).
+**An Organization Admin does these steps by hand. An agent never does them,
+and never sees or handles the key.**
+
+1. **Create the App.** Organization settings → Developer settings → GitHub
+   Apps → New GitHub App:
+   - name `trustvian-release`; homepage the repository URL;
+   - webhook: off;
+   - repository permissions: **Contents: Read and write**, **Metadata:
+     Read-only**, nothing else;
+   - where it can be installed: only on this account.
+2. **Install it** on the organization, for **only** `trustvian/trustvian`.
+3. **Set its id** as a repository variable (the App's settings page shows it):
+   ```bash
+   gh variable set RELEASE_APP_ID --repo trustvian/trustvian --body <the App id>
+   ```
+4. **Run the repository setup below once.** It creates the `release`
+   environment and reports the missing key.
+5. **Generate a private key** on the App's page, store it as a secret of the
+   `release` environment, then delete the downloaded file:
+   ```bash
+   gh secret set RELEASE_APP_PRIVATE_KEY --repo trustvian/trustvian --env release < trustvian-release.*.private-key.pem
+   rm trustvian-release.*.private-key.pem
+   ```
+6. **Check:** `./scripts/release-setup.sh --check` says "ok" on every line.
+
+To rotate the key, generate a new one, repeat step 5, then delete the old key
+on the App's page.
+
 ### The repository (once, by an Organization Admin)
 
 ```bash
@@ -92,12 +125,18 @@ This sets:
   before publishing runs;
 - the `release` environment, deployable from `main` only, with the
   Organization Admins as required reviewers and self-review allowed. A sole
-  maintainer must be able to approve their own release;
-- the `v*` tag ruleset: nobody may update, delete or force-move a `v*` tag.
-  Creation is not restricted, because the workflow creates the tag after
-  approval and GitHub accepts no bypass for it
-  ([ADR 0060](adr/0060-agent-operated-releases-with-environment-approval.md));
+  maintainer must be able to approve their own release. It must hold the
+  secret `RELEASE_APP_PRIVATE_KEY`, which the script checks by name only;
+- the ruleset **"Release tags: creation"**, on every tag: only the
+  `trustvian-release` App may create one;
+- the ruleset **"Release tags: immutable"**, on every tag: nobody may update,
+  delete or force-move one;
 - immutable releases, where GitHub offers them.
+
+It also checks the variable `RELEASE_APP_ID`, and removes the obsolete
+"Protect release tags" ruleset once both replacements are in place. If GitHub
+refuses the App as a bypass actor, it stops with GitHub's exact response and
+changes nothing further.
 
 ### An agent's token
 

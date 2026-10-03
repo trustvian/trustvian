@@ -485,3 +485,50 @@ func hasAnchor(doc, anchor string) bool {
 	}
 	return false
 }
+
+// The runbook's human-only release App steps name exactly what the code
+// uses: the App, its variable and secret, the environment that holds the key,
+// both rulesets, and the bot login the audit expects.
+func TestRunbookReleaseAppSetupMatchesTheCode(t *testing.T) {
+	text := runbookText(t)
+	start := strings.Index(text, "### The release App (human-only)")
+	if start < 0 {
+		t.Fatal("the runbook has no human-only release App section")
+	}
+	end := strings.Index(text[start+1:], "\n### ")
+	section := text[start : start+1+end]
+	if !strings.Contains(section, "An agent never does them") {
+		t.Error("the release App section does not say agents never do these steps")
+	}
+	workflow := readFile(t, releaseWorkflow)
+	setup := readFile(t, "release-setup.sh")
+	audit := readFile(t, auditWorkflow)
+	for _, c := range []struct{ doc, code, where string }{
+		{"`trustvian-release`", `APP_LOGIN="trustvian-release[bot]"`, audit},
+		{"gh variable set RELEASE_APP_ID", "vars.RELEASE_APP_ID", workflow},
+		{"gh secret set RELEASE_APP_PRIVATE_KEY", "secrets.RELEASE_APP_PRIVATE_KEY", workflow},
+		{"--env release", "environment: release\n", workflow},
+		{"RELEASE_APP_PRIVATE_KEY", `APP_SECRET_NAME="RELEASE_APP_PRIVATE_KEY"`, setup},
+		{"**Contents: Read and write**", "permission-contents: write", workflow},
+		{"**Metadata:\n     Read-only**", "", ""},
+	} {
+		if !strings.Contains(section, c.doc) {
+			t.Errorf("the release App section lacks %q", c.doc)
+		}
+		if c.code != "" && !strings.Contains(c.where, c.code) {
+			t.Errorf("the code lacks %q, which the release App section relies on", c.code)
+		}
+	}
+	for _, name := range []string{"Release tags: creation", "Release tags: immutable", "Protect release tags"} {
+		if !strings.Contains(text, name) {
+			t.Errorf("the runbook does not name the ruleset %q", name)
+		}
+		if !strings.Contains(setup, `"`+name+`"`) {
+			t.Errorf("release-setup.sh does not define the ruleset %q the runbook names", name)
+		}
+	}
+	page := readFile(t, claudeCodePage)
+	if !strings.Contains(page, "release-runbook.md#the-release-app-human-only") || !strings.Contains(page, "never Claude Code") {
+		t.Error("the Claude Code page's setup does not hand the release App to a human via the runbook")
+	}
+}

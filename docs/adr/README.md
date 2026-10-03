@@ -83,7 +83,7 @@ as long as its own decision holds.
 | [0057](0057-the-ci-renderer-is-a-standalone-offline-transcriber.md) | The CI renderer is a standalone, offline transcriber of the run artifact | Accepted |
 | [0058](0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md) | The comment job is a separate action that posts from pinned source | Accepted |
 | [0059](0059-releases-are-dispatched-verified-then-published.md) | Releases are dispatched, verified, then published | Accepted; amended by 0060 |
-| [0060](0060-agent-operated-releases-with-environment-approval.md) | Agent-operated releases, approved through a GitHub environment | Proposed |
+| [0060](0060-agent-operated-releases-with-environment-approval.md) | Agent-operated releases, approved through a GitHub environment | Accepted |
 
 **0046 is the first record here carried as Proposed.** Its reasoning is
 complete and no maintainer has ratified it, which is exactly what this status

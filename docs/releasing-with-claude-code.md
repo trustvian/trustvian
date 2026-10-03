@@ -32,11 +32,13 @@ Claude Code does the work. You make the two decisions.
 | Tag, GitHub Release, image tags | The workflow, after your approval |
 | Verify the published release, open the follow-up PR, close the issue | Claude Code |
 
-Claude Code **cannot approve** a release, and this does not rest on its good
-behavior: its token has no Deployments permission, so GitHub refuses an
-approval from it ([§ Setup](#setup-once)). Creating tags or releases any other
-way is forbidden to it and blocked by deny rules; ADR 0060 § 3 records the one
-path its token does not close by itself, as an open decision.
+Claude Code **cannot publish** on its own, and this does not rest on its good
+behavior:
+- its token has no Deployments permission, so GitHub refuses an approval from
+  it ([§ Setup](#setup-once));
+- only the `trustvian-release` GitHub App may create a tag, any tag, so its
+  token cannot create a tag or a release on one either. Only the approved
+  publish job holds the App's key.
 
 ---
 
@@ -86,16 +88,24 @@ authoritative one, and the run's summaries show both.
 
 ### 1. The repository
 
-An Organization Admin runs:
+An Organization Admin, by hand — never Claude Code:
 
-```bash
-./scripts/release-setup.sh
-./scripts/release-setup.sh --check     # every line "ok"
-```
+1. Creates the `trustvian-release` GitHub App, sets `RELEASE_APP_ID`, and
+   stores the App's private key as the `release` environment's secret
+   `RELEASE_APP_PRIVATE_KEY`
+   ([runbook § 0, The release App](release-runbook.md#the-release-app-human-only)).
+2. Runs:
+   ```bash
+   ./scripts/release-setup.sh
+   ./scripts/release-setup.sh --check     # every line "ok"
+   ```
 
-It creates the `release-build` and `release` environments (the second with
-the Organization Admins as required reviewers), sets the `v*` tag ruleset, and
-turns on immutable releases where GitHub offers them.
+That creates the `release-build` and `release` environments (the second with
+the Organization Admins as required reviewers) and the "Release tags:
+creation" and "Release tags: immutable" rulesets: only the App may create a
+tag, and nobody may move or delete one. It also turns on immutable releases
+where GitHub offers them. Claude Code may run `--check` to see what is
+missing; it never handles the App's key.
 
 ### 2. A token for Claude Code
 
@@ -134,8 +144,9 @@ While your first release run waits for approval (E1), ask:
 >   `POST …/actions/runs/…/pending_deployments`, with state `rejected` so a
 >   wrongly scoped token could only reject: `403 Resource not accessible by
 >   personal access token`.
-> - `./scripts/release-setup.sh --check` reports the environments and the tag
->   ruleset. I did not try to create a tag.
+> - `./scripts/release-setup.sh --check` reports the environments, the App's
+>   variable and secret (by name), and both tag rulesets: only
+>   `trustvian-release` may create a tag. I did not try to create a tag.
 
 If the review succeeds, the token has more than it should: the run is now
 rejected, nothing was published, and you regenerate the token before the next
@@ -219,7 +230,8 @@ deploy**.
 > **Claude Code:**
 > - Published v0.11.0:
 >   https://github.com/trustvian/trustvian/releases/tag/v0.11.0
->   - tag `v0.11.0` at `9a1e…`, created by github-actions after your approval;
+>   - tag `v0.11.0` at `9a1e…`, and the release, authored by
+>     `trustvian-release[bot]` after your approval;
 >   - image `v0.11.0`, with `0.11` and `latest` moved to `sha256:…`.
 > - Verified as a user would (runbook § 6):
 >   - checksums ✓;

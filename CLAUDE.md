@@ -138,7 +138,9 @@ tags.
 Never add an AI agent, bot, automation identity, or the current credential as
 a ruleset bypass actor, and never use an existing bypass entry — including the
 Organization Admin bypass — even when running under a credential that holds
-it.
+it. The one bypass actor that exists, the `trustvian-release` GitHub App on
+the "Release tags: creation" ruleset, was configured by a human (ADR 0060);
+never change it, act as it, or see or handle its private key.
 
 These operations are prohibited even if the authenticated GitHub credential
 has administrator privileges. Technical capability is not authorization.

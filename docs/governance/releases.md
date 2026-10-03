@@ -53,31 +53,32 @@ everything else.
 
 ## Protected tag semantics
 
-Tags matching `v*` are covered by a repository ruleset that restricts
-**update, deletion, and force-move**, with **no bypass actor**: not an
-Organization Admin, not a workflow, nobody. A published tag is permanent, by
-server-side rule.
+Two rulesets cover **every tag** (`refs/tags/*`), not only `v*`, so a release
+cannot be created on any other tag either
+([ADR 0060 § 3](../adr/0060-agent-operated-releases-with-environment-approval.md#3-only-the-release-app-can-create-a-tag)):
 
-**Creation is not restricted** under ADR 0060 as proposed. The `publish` job
-creates the tag as `github-actions[bot]`, and GitHub does not accept the
-built-in GitHub Actions app as a bypass actor in an organization's
-repository, so restricting creation would refuse the release itself.
+- **"Release tags: creation"** restricts creation, with exactly one bypass
+  actor: the `trustvian-release` GitHub App. Its private key is a secret of the
+  `release` environment, so only the `publish` job, after an Organization
+  Admin approved it, can mint its token. No person can create a tag either,
+  not even an Organization Admin.
+- **"Release tags: immutable"** restricts update, deletion and force-move,
+  with **no bypass actor**: not an Organization Admin, not the App, nobody. A
+  published tag is permanent, by server-side rule.
 
-A `v*` tag created by anyone else cannot be released by the workflow:
-- there is no tag trigger;
-- preflight refuses a version whose tag exists;
-- `publish` refuses a tag that is not its own annotated tag at the verified
-  commit.
+Consequences worth stating plainly:
 
-At worst it blocks that version. Clearing it needs the ruleset edited in the
-UI, where the change is recorded.
-
-**It does not stop GitHub's release API.** Anyone with Contents: write can
-create a tag and a published release in one call, with no approval. Restricted
-creation used to refuse that. ADR 0060 § 3 records this as an **open decision**
-for the maintainers before the ruleset change is applied. The choice is to
-accept it, or to make an organization-owned GitHub App the creation bypass
-and keep creation restricted.
+- **No token but the App's can mint a release on a new tag.** Before this,
+  anyone with Contents: write could create a tag and a published release in
+  one call to GitHub's release API, with no approval. Now that call needs a
+  tag the ruleset refuses to create.
+- **Every release is authored by `trustvian-release[bot]`**, and the release
+  audit (`.github/workflows/release-audit.yml`) checks that, the tag, and the
+  assets' provenance on every release event and weekly. Any finding opens an
+  issue labelled `release-audit`.
+- **The App's key is human-only.** A human creates the App, generates its key,
+  stores it in the `release` environment, and rotates it. No agent ever sees or
+  handles it ([Agent Governance](agents.md)).
 
 **A burned version stays burned.** If `publish` creates the tag and a later
 step fails, re-running it finishes the release at the same commit. If the
