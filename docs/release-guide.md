@@ -149,144 +149,157 @@ of the *new* module path. The `replace` directive means nothing ever fetches
 it. Raise the floor to the first release published under the new path when
 one exists.
 
-## Preparing a release
+## Releasing
 
-### 1. Dry run first
-
-```bash
-make release-dry-run
-```
-
-Builds every advertised target, archives them, and generates and verifies
-checksums — with no tag, no credentials, and no upload. Run this before
-creating a tag; a target that fails to compile should be found now, not
-after a tag is public. CI also runs this on every push.
-
-### 2. Confirm the gates pass
+One command, run by a human Organization Admin from a clean `main`:
 
 ```bash
-make check                 # gofmt, vet, build, race
-make check-modules         # module publication invariants
-make integration-postgres  # PostgreSQL integration and stress tiers
-make vulncheck             # reachable vulnerabilities, all modules
+make release VERSION=v0.10.0              # build, sign, verify, then publish
+make release VERSION=v0.10.0 DRY_RUN=1    # build, sign, verify; publish nothing
 ```
 
-Then confirm, **on the exact commit you will tag**:
+It needs an authenticated `gh` and git, and nothing else. It builds nothing,
+holds no key, and runs nothing irreversible until every check has passed and
+you have confirmed. [ADR 0059](adr/0059-releases-are-dispatched-verified-then-published.md)
+records the design.
 
-- **CI is green** — every job in `ci.yml`, including *Backup, restore &
-  upgrade*, which is the only automated proof of the upgrade path from the
-  previous release, and *Workflow action references*, which proves every
-  action the release workflow uses actually exists. The release workflow
-  runs only on a tag, so an unresolvable action reference is otherwise
-  found only after the tag is public — that is how `v0.9.0-rc.1` failed.
-- **Nightly is green** — the PostgreSQL stress tier with database-restart
-  durability, the reference deployment smoke test, and the recovery drill.
-  The scheduled run covers `main`; if the release commit is newer than the
-  last run, start one from the Actions tab (*Nightly → Run workflow*).
-- **`make recovery-drill`** passes locally if Docker is available — it is
-  the end-to-end proof that a backup of this release restores and serves.
+**This is the only release path.** `release.yml` runs only on
+`workflow_dispatch` from `main`. Pushing a `v*` tag by hand starts nothing, and
+a tag pushed that way would make the next `make release` for that version
+refuse, because the tag would already exist.
 
-The release workflow re-runs format, vet, tests, race, PostgreSQL
-integration, the processor module, module consistency, and the
-vulnerability scan against the tagged commit. It does **not** re-run the
-backup/restore/upgrade tier, the examples module, or the nightly tiers,
-which is why this step asks for green runs of those on the same commit.
+### Before you run it
 
-### 3. Prepare the notes
+1. **The release pull request is merged.** It carries:
+   - `CHANGELOG.md` with a `## vX.Y.Z` section, cut from `## Unreleased` with an
+     empty `## Unreleased` above it;
+   - `release-notes.md` at the repository root, the release body, naming the
+     version.
 
-Release notes come from [`CHANGELOG.md`](../CHANGELOG.md), not from a
-generated commit dump. Through `v0.9.0`, the `## Unreleased` heading was
-renamed only after the tag existed. From `v0.10.0` on, the release-preparation
-pull request cuts the version's section, with an empty `## Unreleased` above
-it. The tagged commit then carries the changelog the release describes. If the
-tag is abandoned, rename the section back.
+   Preflight refuses a stable version without the section, and notes that do
+   not name the version, so last release's notes cannot be published again.
+2. **CI and Nightly are green on main's head.** CI runs on the merge. Nightly
+   runs on a schedule; if its last run is older than the merge, start one:
+   `gh workflow run nightly.yml --ref main`, then wait for it.
+3. **You are on `main`, clean, and equal to `origin/main`.** The release is
+   always `origin/main`'s head.
 
-To control the release body exactly, put it in `release-notes.md` at the
-repository root before tagging; the workflow uses it when present. The file
-stays on `main` after the tag, so the next release must replace it or delete
-it. Otherwise that release publishes this one's notes.
+### What happens
 
-### 4. Choose the version
-
-Semantic versioning, matching the compatibility promise in `CHANGELOG.md`.
-The workflow rejects any tag that is not `vMAJOR.MINOR.PATCH` with an
-optional prerelease or build suffix, so `v0.9.0` and `v0.9.0-rc.1` are
-valid and `0.9` or `v0.9` are not.
-
-### 5. Tag and push
-
-Release tags are cut from `main`, which every change reaches by pull
-request — see [Branching Strategy](governance/branching.md). Tag the commit on
-`main` that the candidate verified:
-
-```bash
-git checkout main && git pull origin main
-git tag -a v0.9.0 -m "Trustvian v0.9.0"
-git push origin v0.9.0
+```text
+make release VERSION=vX.Y.Z
+  local:  main, clean, == origin/main; scripts/release-preflight.sh
+  ↓ dispatch release.yml (version, commit = origin/main head)
+  preflight  SemVer; newer than every v* tag; tag absent; commit == main head;
+             CI and Nightly succeeded on it; CHANGELOG section; release notes
+  gates      modules, gofmt, vet, test, race, PostgreSQL, processor, govulncheck
+  build      archives (version stamped by a tag local to the runner), checksums,
+             build provenance attested for every archive and checksums.txt
+  image      scan (gate), push BY DIGEST (no tag), cosign sign the digest
+  verify     ubuntu + macOS: checksums, three binaries, `trustvian version`,
+             gh attestation verify, a model-free scenario from the archive;
+             cosign verify the digest (ubuntu)
+  ↓ the script waits for all of that, then asks you to confirm
+  you:       the script creates the annotated tag vX.Y.Z at the commit
+  publish    waits for that tag → GitHub Release (not a draft) → image vX.Y.Z
+             from the verified digest → X.Y and latest (stable only)
+  ↓
+  the script prints the release URL, or the failed job and its log
 ```
 
-Pushing the tag triggers `.github/workflows/release.yml`.
+**Version.** SemVer: `vMAJOR.MINOR.PATCH`, optionally `-prerelease`. Build
+metadata (`+…`) is refused, because `+` is not valid in an image tag. A
+prerelease is marked as one, never becomes *Latest*, and never moves `X.Y` or
+`latest`. The version must be newer than every existing `v*` tag. A patch to
+an older line is not supported by this path.
 
-## What the automation does
+**No release candidate is needed.** A candidate was how the old pipeline was
+tested, by tagging. Now a dry run tests it, and a failure before publish
+creates no tag, no release and no image tag, so nothing needs a new number. A
+prerelease version is still available for putting a build in front of users.
 
-| Step | Behavior |
-|---|---|
-| Trigger | Push of a tag matching `v*`. Never a branch push. |
-| Tag validation | Rejects non-SemVer tags before building anything. |
-| Source | Checks out `github.ref` — the tagged commit — and **verifies** `HEAD` equals the commit the tag points at. |
-| Gates | Re-runs module consistency, format, vet, tests, race, PostgreSQL integration (`-short`), the processor module with `GOWORK=off`, and `govulncheck` for the root and processor modules, against the tagged source. |
-| Prerelease | A tag with a prerelease suffix (`v0.9.0-rc.1`) is marked as a prerelease, so it never becomes GitHub's "Latest release", and the floating image tags are left alone. |
-| Artifacts | `scripts/release-build.sh` — the same script `make release-dry-run` runs. |
-| Checksums | SHA-256 manifest, generated and verified. |
-| Publish | Creates a **draft** GitHub Release with the archives and `checksums.txt` attached. |
-| Container | After the release job succeeds: build → Trivy scan (gate) → push `vX.Y.Z` → keyless Cosign signature → move `X.Y` and `latest` to the signed digest. See [supply-chain.md](supply-chain.md). |
+**The tag.** The `v*` ruleset lets only an Organization Admin create a tag
+([Release Governance](governance/releases.md)), so the workflow does not try.
+`scripts/release.sh` creates it with your credential, after `verify` has
+passed and you have answered `y`. Answer anything else, and the run is
+cancelled with nothing published. The confirmation reads from a terminal and
+cannot be skipped, so a shell without one (CI, an AI agent's tool call) can run
+only the dry run. `make release` also refuses while another release run is
+queued or running.
 
-The release is a draft on purpose: a human reviews the notes against the
-changelog and presses publish. That is the last cheap moment to catch a
-wrong version or an incomplete changelog.
+### Dry runs
 
-If any target fails to build, the script exits non-zero and the publish
-step never runs — no draft is created for a partial binary matrix.
+`DRY_RUN=1` runs preflight, gates, build, image and verify against real
+infrastructure: real archives, real attestations, and a real signed image,
+pushed by digest. It then skips publish. Nothing becomes public:
+- there is no tag and no release;
+- the image digest has no tag, so nobody can find it without being handed it;
+- the attestations name a commit and no version.
 
-**Permissions.** `ci.yml` and `nightly.yml` are `contents: read`. The
-release job takes `contents: write`, which is what creating a release
-requires, and nothing more. Only the container job takes `packages: write`
-(to push to GHCR, with the workflow-scoped token) and `id-token: write` (for
-keyless signing). No workflow uses `pull_request_target`.
+Run one after any change to the release pipeline, and whenever you want to
+know that a release would pass before you commit to it.
 
-### The release is not atomic
+`make release-dry-run` is the local counterpart and needs no infrastructure:
+it builds the archive matrix with `scripts/release-build.sh` and checks the
+checksums. CI runs it on every change.
 
-Two jobs publish to two places, so a failure can leave one half done. None
-of these states is presented to users as a finished release, because the
-GitHub Release stays a draft until a maintainer publishes it — but the
-registry is public as soon as an image is pushed.
+Preflight still applies to a dry run, including green CI and Nightly and the
+release notes naming the version.
 
-| Failure | What exists afterwards | Recovery |
+### When something fails
+
+| Fails in | What exists | What to do |
 |---|---|---|
-| A gate or binary build fails | Nothing | Fix on a new commit; tag it as the next patch version |
-| Container scan fails | Draft release; **no image** | Fix (usually a base-image or dependency bump) and release the next patch version. Delete the draft. |
-| Push fails | Draft release; no complete image | *Re-run failed jobs* on the workflow run — the build is repeatable from the same tag |
-| **Signing fails after push** | Draft release; `vX.Y.Z` pushed **unsigned**; `X.Y` and `latest` **not moved** | *Re-run failed jobs*: it rebuilds, re-pushes `vX.Y.Z`, and signs. Do not publish the draft until `cosign verify` succeeds for the digest the summary reports |
-| Floating-tag promotion fails | Draft release; signed `vX.Y.Z`; floating tags still on the previous release | Re-run failed jobs, or retag by digest: `docker buildx imagetools create -t ghcr.io/trustvian/trustvian-collector:latest ghcr.io/trustvian/trustvian-collector@<digest>` |
+| Local checks or preflight | Nothing | Fix what it names (merge, pull, start Nightly, update the notes), then run it again |
+| gates, build, image or verify | At most an untagged, signed image digest, and attestations for archives nobody received | Fix on a new commit, by pull request, then run `make release` again for the **same version**. No tag was created, so no number is burned |
+| You answer no | Same as above; the run is cancelled | Run it again when ready |
+| publish, waiting for the tag | Nothing public | No tag was created within an hour. Run `make release` again; it starts a fresh run |
+| publish, after the tag | The tag, and possibly a release or image tags | Re-run failed jobs in the Actions tab, or run `make release` again and confirm. Each publish step checks what already happened and finishes the rest |
 
-Floating tags move only after signing succeeds, so anyone pulling `latest`
-or `X.Y` always gets a signed image — the one ordering guarantee that
-matters for users who do not verify.
+`publish`'s steps are idempotent:
+- The tag must be annotated and at the commit, or the step stops.
+- A draft for the tag (an interrupted `gh release create`, or any other) is
+  made exactly this release before it is published: stray assets removed, every
+  asset uploaded, and the title and notes reset. A published release is checked
+  to have every asset.
+- An image tag lookup that fails for any reason other than "not found" stops
+  the step rather than being read as "absent".
+- An image version tag already at the digest is left alone. At another digest,
+  the step refuses: a version tag never moves.
+- The floating tags move only when this is the newest stable release, so
+  re-running an older release's publish never pulls `latest` back.
 
-Never move or re-push an existing release tag in git to "fix" a release.
-Released versions are immutable; ship the next patch instead.
+Never delete or move a release tag, and never delete a published release, to
+"fix" one. Released versions are immutable; ship the next version instead.
 
-### Before publishing the draft
+### One-time setup
 
-1. Every job in the release run is green.
-2. The image verifies — `cosign verify` as in
-   [supply-chain.md § Verifying a published image](supply-chain.md#verifying-a-published-image).
-3. **The package is public.** GitHub creates a new container package as
-   private on its first push. Check
-   `https://github.com/orgs/trustvian/packages/container/package/trustvian-collector`
-   and, the first time only, set its visibility to public — otherwise
-   `docker pull` fails for everyone else.
-4. The notes match `CHANGELOG.md`.
+```bash
+./scripts/release-setup.sh --check   # read-only: what is and is not set up
+./scripts/release-setup.sh           # an administrator: create what is missing
+```
+
+The script is idempotent:
+
+- [ ] **`release` environment**, deployable from `main` only. Every job in
+  `release.yml` runs in it. The script creates it if missing, and never edits
+  an existing one: an environment update replaces its protection rules.
+- [ ] **Tag ruleset on `refs/tags/v*`**: creation, update and deletion
+  restricted, with Organization Admin as the only bypass actor. The script
+  creates it if missing. If it exists but differs, the script reports the
+  difference and never edits it; change a ruleset in the GitHub UI, where the
+  change is recorded.
+- [ ] **No bypass for the workflow.** `GITHUB_TOKEN`, the GitHub Actions
+  integration and every app stay off the bypass list. The workflow never
+  creates a tag, and `gh release create --verify-tag` on an existing tag
+  creates no ref, so the ruleset does not apply to it.
+- [ ] **Immutable releases**, enabled when the repository offers it (Settings
+  → General → Releases). Once a release is published, its assets and tag cannot
+  change. That is why publish uploads everything before publishing, and why a
+  failed publish is finished rather than redone.
+- [ ] **The GHCR package is public.** GitHub creates a new container package as
+  private on its first push. Check it once at
+  `https://github.com/orgs/trustvian/packages/container/package/trustvian-collector`.
 
 ## Artifacts
 
@@ -348,34 +361,41 @@ untested reproducibility claim is worse than none.
 ## Verifying a published release
 
 ```bash
-# Checksums
-curl -sLO https://github.com/trustvian/trustvian/releases/download/v0.9.0/checksums.txt
-curl -sLO https://github.com/trustvian/trustvian/releases/download/v0.9.0/trustvian_v0.9.0_linux_amd64.tar.gz
+V=v0.10.0
+A=trustvian_${V}_linux_amd64
+curl -sLO https://github.com/trustvian/trustvian/releases/download/$V/$A.tar.gz
+curl -sLO https://github.com/trustvian/trustvian/releases/download/$V/checksums.txt
+
+# Integrity
 sha256sum -c checksums.txt --ignore-missing
 
-# The binary identifies the commit it was built from
-tar -xzf trustvian_v0.9.0_linux_amd64.tar.gz
-./trustvian_v0.9.0_linux_amd64/trustvian version
+# Provenance: built by release.yml, dispatched on main, at the tagged commit
+SHA=$(git ls-remote https://github.com/trustvian/trustvian "refs/tags/$V^{}" | cut -f1)
+gh attestation verify $A.tar.gz \
+  --repo trustvian/trustvian \
+  --signer-workflow trustvian/trustvian/.github/workflows/release.yml \
+  --source-ref refs/heads/main \
+  --source-digest "$SHA"
+
+# The binary reports the version
+tar -xzf $A.tar.gz && ./$A/trustvian version
 
 # The Go module resolves at the tag
-cd "$(mktemp -d)" && go mod init probe
-go get github.com/trustvian/trustvian@v0.9.0
+cd "$(mktemp -d)" && go mod init probe && go get github.com/trustvian/trustvian@$V
 ```
 
-The CLI archives are integrity-protected by `checksums.txt`, which is
-attached to the same release; they are **not** individually signed. The
-container image is signed and carries SBOM and provenance attestations —
-see [supply-chain.md § Verifying a published
+The container image: [supply-chain.md § Verifying a published
 image](supply-chain.md#verifying-a-published-image).
 
-The `v0.9.0` commands above are examples for the first release that ships
-these artifacts; substitute a real released version.
+Archives from `v0.10.0` on carry SLSA build provenance. `v0.9.0` and earlier
+have checksums only.
 
 ## After the release
 
-- Rename `## Unreleased` in `CHANGELOG.md` to the released version, unless
-  the preparation pull request already cut the section.
-- Delete `release-notes.md`, or replace it in the next release's preparation.
-- Update milestone status in [`docs/ROADMAP.md`](ROADMAP.md).
-- Leave [`README.md`](../README.md) alone — it is deliberately evergreen and
+- Open a pull request that opens the next `## Unreleased` work, updates
+  milestone status in [`docs/ROADMAP.md`](ROADMAP.md), and bumps pins that name
+  a release (`.github/actions/trustvian-run/runtime.env`).
+- Leave `release-notes.md` in place. Preflight refuses the next release until
+  it names the next version, which is when to replace it.
+- Leave [`README.md`](../README.md) alone. It is deliberately evergreen and
   carries no version status.

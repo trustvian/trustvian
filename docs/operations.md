@@ -423,35 +423,42 @@ across a schema-version change is never safe.
 
 ```bash
 IMAGE=ghcr.io/trustvian/trustvian-collector
-TAG=v0.9.0          # example — substitute a real, released version
+TAG=v0.10.0         # the version you are upgrading to
 DIGEST=$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{.Manifest.Digest}}')
 SHA=$(git ls-remote https://github.com/trustvian/trustvian "refs/tags/$TAG^{}" | cut -f1)
+# From v0.10.0. For v0.9.0, the identity is @refs/tags/$TAG with trigger push.
+# Why each flag: supply-chain.md § Verifying a published image.
 cosign verify "$IMAGE@$DIGEST" \
-  --certificate-identity "https://github.com/trustvian/trustvian/.github/workflows/release.yml@refs/tags/$TAG" \
+  --certificate-identity "https://github.com/trustvian/trustvian/.github/workflows/release.yml@refs/heads/main" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   --certificate-github-workflow-repository trustvian/trustvian \
-  --certificate-github-workflow-trigger push \
-  --certificate-github-workflow-sha "$SHA"     # why each flag: supply-chain.md § Verifying a published image
+  --certificate-github-workflow-trigger workflow_dispatch \
+  --certificate-github-workflow-sha "$SHA"
 
 docker stop trustvian-collector                      # SIGTERM; bounded graceful shutdown
-./scripts/backup-postgres.sh --output /secure/backups/pre-$TAG --trustvian-version v0.8.0
+./scripts/backup-postgres.sh --output /secure/backups/pre-$TAG --trustvian-version v0.9.0
 docker run -d --name trustvian-collector-$TAG ... "$IMAGE@$DIGEST" --config=/etc/trustvian/collector.yaml
 curl -fsS http://127.0.0.1:13133/readyz
 ```
 
-> **No official image exists yet.** `ghcr.io/trustvian/trustvian-collector`
-> is published from the first release after task 041; `v0.9.0` above is an
-> example, not an available tag. `v0.8.0` deployments ran a Collector built
-> from source, so the first image-based upgrade is into `v0.9.0`.
+> **The first official image is `v0.9.0`.** `v0.8.0` deployments ran a
+> Collector built from source, so the first image-based upgrade is into
+> `v0.9.0`, verified with that release's tag-push identity.
 
 ### Binary upgrade
 
 The same sequence, without containers:
 
 ```bash
+V=v0.10.0
+SHA=$(git ls-remote https://github.com/trustvian/trustvian "refs/tags/$V^{}" | cut -f1)
 sha256sum -c checksums.txt --ignore-missing          # verify the new release
+gh attestation verify trustvian_${V}_linux_amd64.tar.gz \
+  --repo trustvian/trustvian \
+  --signer-workflow trustvian/trustvian/.github/workflows/release.yml \
+  --source-ref refs/heads/main --source-digest "$SHA" # provenance, from v0.10.0
 systemctl stop trustvian-collector                   # or your supervisor's stop
-./scripts/backup-postgres.sh --output /secure/backups/pre-v0.9.0 --trustvian-version v0.8.0
+./scripts/backup-postgres.sh --output /secure/backups/pre-$V --trustvian-version v0.9.0
 install -m 0755 trustvian-collector /usr/local/bin/trustvian-collector
 systemctl start trustvian-collector
 curl -fsS http://127.0.0.1:13133/readyz

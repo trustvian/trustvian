@@ -1,44 +1,129 @@
-# Tag-triggered release: validate the tag, re-run the quality gates against
-# the tagged source, build the artifact matrix, and publish a GitHub
-# Release with the binaries and their checksums attached.
+# The release pipeline: dispatched, verified, then published.
 #
-# Written and structurally validated by
-# docs/tasks/040-release-artifacts-and-module-consistency.md, which
-# deliberately publishes nothing. It has run since: v0.9.0-rc.1 and rc.2
-# failed, each failure becoming a gate (see docs/release-guide.md), and
-# v0.9.0-rc.3 and v0.9.0 passed on 2026-09-17.
+# One path only. `make release VERSION=vX.Y.Z` (scripts/release.sh) dispatches
+# this workflow from main with the exact commit to release. Every job up to
+# and including `verify` builds, signs and checks; nothing in them is
+# irreversible. The image is pushed by digest, with no tag, and an untagged
+# digest is not a release. Only `publish` makes anything public, and only after
+# `verify` has passed on Linux and macOS.
 #
-# Everything it builds can be built locally first — `make release-dry-run`
-# runs the same script — so a broken target is found before a tag exists
-# rather than after.
+# The release tag is the one step this workflow does not perform. The `v*`
+# ruleset lets only a human Organization Admin create a tag
+# (docs/governance/releases.md), so `publish` waits for it. scripts/release.sh,
+# run by that admin, creates it once `verify` has passed.
 #
-# The container job below extends this same release identity rather than
-# forming a second one: it `needs` the release job, so the image is built
-# from source whose tag was already validated and whose gates already
-# passed. See docs/tasks/041-container-supply-chain-security.md
-# § Release integration.
+# There is no tag-push trigger. Pushing a v* tag by hand starts nothing, and
+# the guide says so.
+#
+# History: through v0.9.0 this workflow ran on a tag push and created a draft
+# for a human to publish. v0.9.0-rc.1 and rc.2 failed, each failure becoming a
+# gate (docs/release-guide.md), and v0.9.0-rc.3 and v0.9.0 passed on
+# 2026-09-17. ADR 0059 records why it changed:
+# docs/adr/0059-releases-are-dispatched-verified-then-published.md.
 
 name: Release
+run-name: >-
+  Release ${{ inputs.version }} at ${{ inputs.commit }}${{ inputs.dry_run && ' (dry run)' || '' }}
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, vMAJOR.MINOR.PATCH[-prerelease]"
+        required: true
+        type: string
+      commit:
+        description: "Full commit SHA on main to release (must be main's head at dispatch)"
+        required: true
+        type: string
+      dry_run:
+        description: "Build, sign and verify everything, publish nothing"
+        required: false
+        type: boolean
+        default: false
 
-# Read by default. Only the publishing job widens this, and only to
-# contents: write — the scope GitHub requires to create a release. No
-# packages: write and no id-token: write; nothing here pushes an image or
-# requests an OIDC token.
+# Two releases never overlap, and a running one is never cancelled: a
+# cancellation between publish's steps would leave a partial release for a
+# person to finish, where letting it run finishes it.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+# Nothing at workflow level beyond reading the source. Each job states what it
+# needs, and no job before `publish` holds contents: write.
 permissions:
   contents: read
 
+env:
+  VERSION: ${{ inputs.version }}
+  COMMIT: ${{ inputs.commit }}
+  # gh's repository, stated rather than inferred from a checkout's remote.
+  GH_REPO: ${{ github.repository }}
+
 jobs:
-  release:
-    name: Build and publish
+  # ---------------------------------------------------------------------
+  # a. Preflight: refuse before anything is built.
+  # ---------------------------------------------------------------------
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      prerelease: ${{ steps.check.outputs.prerelease }}
+
+    steps:
+      - name: Refuse anything but main
+        run: |
+          # Inputs reach every script through the environment, never by
+          # interpolation, so a crafted version string cannot become shell.
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::release.yml runs only from refs/heads/main, not $GITHUB_REF"
+            exit 1
+          fi
+          # The signing identity's workflow SHA is GITHUB_SHA. Requiring the
+          # released commit to be exactly that SHA is what lets cosign verify
+          # pin --certificate-github-workflow-sha to the released commit, and
+          # means the workflow definition that ran is the one being released.
+          if [ "$COMMIT" != "$GITHUB_SHA" ]; then
+            echo "::error::commit $COMMIT is not main's head at dispatch ($GITHUB_SHA); dispatch again"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+          # Full history and main, for "reachable from main".
+          fetch-depth: 0
+
+      - id: check
+        name: Preflight checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPO: ${{ github.repository }}
+        run: |
+          git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main
+          ./scripts/release-preflight.sh "$VERSION" "$COMMIT"
+
+  # ---------------------------------------------------------------------
+  # b. Gates, re-run against the exact commit.
+  #
+  # Not "CI probably passed": preflight requires CI and Nightly to have
+  # passed on this commit, and this re-runs the gates whose inputs move
+  # without a commit — the vulnerability database above all.
+  # ---------------------------------------------------------------------
+  gates:
+    name: Gates
+    needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    environment: release
     permissions:
-      contents: write
+      contents: read
 
     services:
       # The same PostgreSQL service ci.yml uses, so the release gates cover
@@ -58,53 +143,17 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # No token in .git/config: nothing after checkout needs one.
           persist-credentials: false
-          # github.ref is the tag, so this checks out the tagged commit —
-          # never a branch head that may have moved since the tag was cut.
-          ref: ${{ github.ref }}
-          # Full history so `git describe` and tag verification work.
+          ref: ${{ inputs.commit }}
+          # check-modules.sh verifies declared versions against local tags.
           fetch-depth: 0
 
-      - name: Validate tag is SemVer
-        env:
-          # Through the environment, not string-interpolated into the
-          # script body: a tag name is attacker-influenceable in principle,
-          # and interpolation would make it executable shell.
-          TAG: ${{ github.ref_name }}
-        run: |
-          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
-            echo "::error::tag '$TAG' is not a valid SemVer release tag (want vMAJOR.MINOR.PATCH[-prerelease][+build])"
-            exit 1
-          fi
-          echo "Releasing $TAG"
-
-      - name: Verify checkout matches the tag
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          # Proving, not assuming, that the working tree is the tagged
-          # commit — the difference between releasing what was reviewed and
-          # releasing whatever main happened to hold.
-          tagged="$(git rev-list -n 1 "refs/tags/$TAG")"
-          head="$(git rev-parse HEAD)"
-          if [ "$tagged" != "$head" ]; then
-            echo "::error::HEAD ($head) is not the commit tagged $TAG ($tagged)"
-            exit 1
-          fi
-          echo "HEAD is the tagged commit: $head"
-
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
           cache: true
-
-      # --- Quality gates, re-run against the exact tagged source ---------
-      #
-      # Not "some earlier workflow probably passed": that workflow ran on a
-      # different commit, and a tag can be placed on anything.
 
       - name: Module consistency
         run: ./scripts/check-modules.sh
@@ -142,137 +191,129 @@ jobs:
           go test -race ./...
 
       - name: Go vulnerability scan
-        # Re-run here, not inherited from CI: the vulnerability database moves
-        # independently of the code, so a commit that scanned clean when it
-        # merged can carry a reachable advisory by the time it is tagged.
-        # Both modules whose code ships — the CLI binaries and the image.
-        # GOWORK=off for the same reason as ci.yml.
+        # The vulnerability database moves independently of the code, so a
+        # commit that scanned clean when it merged can carry a reachable
+        # advisory by the time it is released. Both modules whose code ships.
         env:
           GOWORK: "off"
         run: |
           go run golang.org/x/vuln/cmd/govulncheck@latest ./...
           (cd processor && go run golang.org/x/vuln/cmd/govulncheck@latest ./...)
 
-      # --- Artifacts -----------------------------------------------------
-      #
-      # The same script a maintainer runs locally. Every target must build:
-      # the script exits non-zero on the first failure, so the publish step
-      # below never runs for a partial matrix.
+  # ---------------------------------------------------------------------
+  # c. Build the archives, and attest them.
+  # ---------------------------------------------------------------------
+  build:
+    name: Build archives
+    needs: gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+      # Keyless signing of the build provenance, and storing it.
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Tag the commit locally, so Go stamps the version
+        # Go records the main module's version from VCS when HEAD carries a
+        # SemVer tag and the tree is clean; there is no -ldflags injection.
+        # This tag exists in this runner's clone only: the checkout holds no
+        # credential, and nothing here pushes. The real tag is created later
+        # by a human Organization Admin, at this same commit.
+        run: |
+          git -c user.name="Trustvian release" -c user.email="release@invalid" \
+            tag -a "$VERSION" -m "Trustvian $VERSION (local, for version stamping)" "$COMMIT"
+          test -z "$(git status --porcelain)"
 
       - name: Build release artifacts
-        env:
-          TAG: ${{ github.ref_name }}
-        run: ./scripts/release-build.sh "$TAG"
+        run: ./scripts/release-build.sh "$VERSION"
 
       - name: Verify checksums
         working-directory: dist
         run: sha256sum -c checksums.txt
 
-      # --- Publish -------------------------------------------------------
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
 
-      - name: Publish GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          # --verify-tag so the release cannot be created for a tag that
-          # does not exist. Notes come from CHANGELOG.md via --notes-file
-          # when a maintainer has prepared them; otherwise the release is
-          # created as a draft for them to finish, rather than publishing
-          # an auto-generated commit dump.
-          notes_args=(--generate-notes)
-          if [ -f "release-notes.md" ]; then
-            notes_args=(--notes-file release-notes.md)
-          fi
-
-          # A prerelease tag is marked as one, using the same test that
-          # decides whether floating image tags move. Without this, a
-          # published v0.9.0-rc.1 draft would have become GitHub's "Latest
-          # release" — a release candidate presented as the stable version
-          # to everyone landing on the repository.
-          release_args=()
-          if printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-            kind="release"
-          else
-            release_args=(--prerelease)
-            kind="prerelease"
-          fi
-
-          gh release create "$TAG" \
-            --title "Trustvian $TAG" \
-            --verify-tag \
-            --draft \
-            "${release_args[@]}" \
-            "${notes_args[@]}" \
-            dist/*.tar.gz dist/*.zip dist/checksums.txt
-
-          echo "::notice::Draft $kind created for $TAG. Review the notes against CHANGELOG.md, then publish it."
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
 
   # ---------------------------------------------------------------------
-  # Official container image: build, scan, publish, sign, attest.
+  # d. Build, scan, push by digest, sign.
   #
-  # Depends on the release job, so it inherits that job's verified tag and
-  # passing gates instead of re-establishing trust in the source. One
-  # release identity, two artifact kinds.
-  #
-  # Ordering is build -> scan -> gate -> push (immutable tag) -> sign ->
-  # promote floating tags, so a known-bad image is never published and the
-  # floating tags (`X.Y`, `latest`) only ever point at a signed digest.
-  # Signing follows the push because Cosign signs a digest, which exists only
-  # once the image is in the registry.
+  # Pushed by digest only: no version tag, no release, nothing `latest` or a
+  # version resolves to, so this job publishes no release. The digest and its
+  # `sha256-….sig` signature tag are still visible in the package's version
+  # list and in the public transparency log, as for any signed image. The version tag, and
+  # for a stable release `X.Y` and `latest`, are created by `publish` from
+  # this exact digest after `verify` has checked its signature.
   # ---------------------------------------------------------------------
-  container:
+  image:
     name: Container image
-    needs: release
+    needs: gates
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    environment: release
     permissions:
-      # Read source; write packages to push to GHCR; id-token for keyless
-      # Cosign signing. contents: write is deliberately absent — this job
-      # does not touch GitHub Release state.
       contents: read
       packages: write
       id-token: write
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+      digest: ${{ steps.push.outputs.digest }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # No token in .git/config: nothing after checkout needs one.
           persist-credentials: false
-          # The tagged commit, exactly as the release job used. The image
-          # and the binaries are built from the same source.
-          ref: ${{ github.ref }}
+          ref: ${{ inputs.commit }}
 
-      - name: Resolve the image repository
-        # One source for every step below — build, scan, push, sign, retag —
-        # so it is not possible to scan one repository and sign another.
-        #
-        # Not `ghcr.io/${{ github.repository_owner }}/...`: that is the
-        # organization's display name, `Trustvian`, and an OCI repository
-        # must be lowercase. v0.9.0-rc.2 failed on exactly that, at the first
-        # container step. scripts/image-name.sh normalizes and validates it,
-        # and scripts/test-image-name.sh keeps it that way.
-        run: echo "IMAGE=$(./scripts/image-name.sh)" >> "$GITHUB_ENV"
+      - id: name
+        name: Resolve the image repository
+        # One source for every step below, so it is not possible to scan one
+        # repository and sign another. scripts/image-name.sh lowercases the
+        # owner, which v0.9.0-rc.2 failed on.
+        run: |
+          image="$(./scripts/image-name.sh)"
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          # The workflow-scoped token, not a stored PAT: nothing long-lived
-          # to leak or rotate.
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      # --- Build and scan before publishing ------------------------------
 
       - name: Build for scanning
         # Single platform and --load, because a multi-platform result cannot
-        # be loaded into the local daemon for a scanner to read. The
-        # multi-arch push below reuses this build's cache, so the pushed
-        # amd64 layer is the artifact scanned here; see
-        # docs/supply-chain.md § What the scan covers.
+        # be loaded into the local daemon for a scanner to read. The push
+        # below reuses this build's cache; see docs/supply-chain.md § What
+        # the scan covers.
         run: |
           docker buildx build \
             --platform linux/amd64 \
@@ -281,103 +322,413 @@ jobs:
             .
 
       - name: Scan image
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE }}:scan
           format: table
           severity: CRITICAL,HIGH
-          # Only findings with a fix can be acted on by rebuilding; an
-          # unfixed upstream advisory must not block shipping our own
-          # security fixes. Policy and exceptions: docs/supply-chain.md.
           ignore-unfixed: true
           exit-code: "1"
           scanners: vuln
 
-      # --- Publish -------------------------------------------------------
-
-      - name: Build and push the immutable tag
-        id: push
-        env:
-          TAG: ${{ github.ref_name }}
+      - id: push
+        name: Build and push by digest
         run: |
-          # ONLY the immutable vX.Y.Z tag here. The floating tags are moved
-          # after signing succeeds (below), so a failure between push and
-          # sign can never leave `latest` pointing at an unsigned image —
-          # someone pulling a floating tag has not opted into checking.
-          #
-          # BuildKit's own SBOM (SPDX) and SLSA provenance attestations,
-          # attached to the image in the registry. Platform-standard rather
-          # than a bespoke format, and no extra tool in the release path.
+          # No -t: push-by-digest stores the multi-arch index, with BuildKit's
+          # SBOM (SPDX) and SLSA provenance attestations, under its digest
+          # and nothing else.
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
             --sbom=true \
             --provenance=mode=max \
-            -t "$IMAGE:$TAG" \
+            --output "type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true" \
             --metadata-file /tmp/metadata.json \
-            --push \
             .
 
           digest="$(python3 -c "import json;print(json.load(open('/tmp/metadata.json'))['containerimage.digest'])")"
+          if ! printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::buildx reported no index digest: '$digest'"
+            exit 1
+          fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "::notice::pushed $IMAGE:$TAG@$digest"
+          echo "::notice::pushed $IMAGE@$digest (no tag)"
 
-      # --- Sign ----------------------------------------------------------
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      - name: Install Cosign
-        # Pinned to an exact release: sigstore/cosign-installer publishes
-        # only full version tags and no floating major, so `@v4` is not a
-        # ref that exists — which is exactly how v0.9.0-rc.1 failed, at job
-        # setup, before any step ran. `scripts/check-action-refs.sh` now
-        # checks every `uses:` ref against the API so this class of error
-        # cannot reach a tag again.
-        uses: sigstore/cosign-installer@v4.1.2
-
-      - name: Sign the image
-        # Keyless: identity comes from this workflow's OIDC token, so there
-        # is no private key in the repository or in a secret. Signs the
-        # digest rather than a tag, because a tag can later move.
+      - name: Sign the digest
+        # Keyless: the identity is this run's OIDC token —
+        # release.yml@refs/heads/main, triggered by workflow_dispatch, at
+        # $COMMIT — so there is no private key anywhere to leak or rotate.
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: cosign sign --yes "$IMAGE@$DIGEST"
 
-      # --- Promote floating tags ------------------------------------------
+  # ---------------------------------------------------------------------
+  # e. Verify what will be published, as a consumer would.
+  # ---------------------------------------------------------------------
+  verify:
+    name: Verify (${{ matrix.os }})
+    needs: [build, image]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+      attestations: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
-      - name: Promote floating tags
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The scenario fixtures and the workload's source; nothing from this
+          # checkout is put on the archive's PATH.
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: processor/go.mod
+          cache: false
+
+      - name: Build the model-free workload
+        working-directory: processor
         env:
-          TAG: ${{ github.ref_name }}
-          DIGEST: ${{ steps.push.outputs.digest }}
+          GOWORK: "off"
+        run: go build -o "$RUNNER_TEMP/agent-producer" ./cmd/agent-producer
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: ${{ runner.temp }}/dist
+
+      - name: Checksums, contents and version
         run: |
-          # A retag by digest: no rebuild, so `X.Y` and `latest` resolve to
-          # exactly the signed, attested index pushed above. A prerelease
-          # never moves them — someone tracking `latest` has not opted into
-          # release candidates.
-          if printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-            minor="${TAG#v}"; minor="${minor%.*}"
-            # One retag per call. Verified against a registry during task 045:
-            # every tag resolves to the pushed digest. Two -t flags in a single
-            # call behaved inconsistently in that verification, so they are
-            # not combined.
-            for floating in "$minor" latest; do
-              docker buildx imagetools create -t "$IMAGE:$floating" "$IMAGE@$DIGEST"
-            done
-            echo "::notice::$IMAGE:$minor and :latest now point at $DIGEST"
-          else
-            echo "::notice::prerelease $TAG — floating tags left unchanged"
+          set -euo pipefail
+          cd "$RUNNER_TEMP/dist"
+          shasum -a 256 -c checksums.txt
+
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          case "$(uname -m)" in
+            x86_64 | amd64) arch=amd64 ;;
+            arm64 | aarch64) arch=arm64 ;;
+            *) echo "::error::unexpected architecture $(uname -m)"; exit 1 ;;
+          esac
+          name="trustvian_${VERSION}_${os}_${arch}"
+          mkdir -p "$RUNNER_TEMP/extract"
+          tar -xzf "$name.tar.gz" -C "$RUNNER_TEMP/extract"
+          bin="$RUNNER_TEMP/extract/$name"
+          for b in trustvian trustvian-local trustvian-collector; do
+            [ -x "$bin/$b" ] || { echo "::error::$name.tar.gz has no executable $b"; exit 1; }
+          done
+
+          got="$("$bin/trustvian" version | head -n 1)"
+          if [ "$got" != "trustvian $VERSION" ]; then
+            echo "::error::trustvian version printed '$got', want 'trustvian $VERSION'"
+            exit 1
+          fi
+          echo "BIN=$bin" >> "$GITHUB_ENV"
+          echo "ok: $name.tar.gz — checksums, three binaries, $got"
+
+      - name: Verify the archives' build provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for f in "$RUNNER_TEMP"/dist/*.tar.gz "$RUNNER_TEMP"/dist/*.zip "$RUNNER_TEMP"/dist/checksums.txt; do
+            gh attestation verify "$f" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --source-ref refs/heads/main \
+              --source-digest "$COMMIT" \
+              --deny-self-hosted-runners >/dev/null
+            echo "ok: $(basename "$f")"
+          done
+
+      - name: End to end, from the archive alone
+        # A clean HOME and PATH: the archive's three binaries and the system's
+        # /usr/bin and /bin, nothing a toolchain installed. The scenario is the
+        # run action's PASS fixture: agent-producer emits the same two tools on
+        # both sides, so the gate passes, with no model involved.
+        run: |
+          set -euo pipefail
+          home="$RUNNER_TEMP/clean-home"
+          state="$RUNNER_TEMP/control-plane"
+          mkdir -p "$home" "$state"
+          clean() {
+            env -i HOME="$home" PATH="$BIN:/usr/bin:/bin" RUNNER_TEMP="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP" "$@"
+          }
+
+          # env, not the clean() function: a backgrounded function is a subshell,
+          # and $! would be its PID rather than trustvian-local's.
+          env -i HOME="$home" PATH="$BIN:/usr/bin:/bin" RUNNER_TEMP="$RUNNER_TEMP" TMPDIR="$RUNNER_TEMP" \
+            trustvian-local --state-dir "$state" --listen 127.0.0.1:0 >"$RUNNER_TEMP/control-plane.log" 2>&1 &
+          cp_pid=$!
+          trap 'kill "$cp_pid" 2>/dev/null || true' EXIT
+
+          api=""
+          for _ in $(seq 1 600); do
+            if [ -f "$state/runtime.json" ]; then
+              api="$(sed -n 's/.*"api_url":"\(http:\/\/127\.0\.0\.1:[0-9]*\)".*/\1/p' "$state/runtime.json")"
+              [ -z "$api" ] || break
+            fi
+            kill -0 "$cp_pid" 2>/dev/null || break
+            sleep 0.1
+          done
+          if [ -z "$api" ]; then
+            cat "$RUNNER_TEMP/control-plane.log"
+            echo "::error::trustvian-local published no endpoint"
+            exit 1
           fi
 
-      - name: Summarize
+          set +e
+          clean trustvian eval run --scenario scripts/testdata/trustvian-run/pass.yaml --api-url "$api"
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ]; then
+            echo "::error::trustvian eval run exited $code, want 0"
+            exit 1
+          fi
+          echo "ok: the PASS scenario passed from the extracted archive"
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        if: runner.os == 'Linux'
+
+      - name: Verify the image signature
+        if: runner.os == 'Linux'
         env:
-          TAG: ${{ github.ref_name }}
-          DIGEST: ${{ steps.push.outputs.digest }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          DIGEST: ${{ needs.image.outputs.digest }}
         run: |
+          cosign verify "$IMAGE@$DIGEST" \
+            --certificate-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/heads/main" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-repository "$GITHUB_REPOSITORY" \
+            --certificate-github-workflow-trigger workflow_dispatch \
+            --certificate-github-workflow-sha "$COMMIT" >/dev/null
+          echo "ok: $IMAGE@$DIGEST is signed by release.yml on main at $COMMIT"
+
+  # ---------------------------------------------------------------------
+  # f. Publish: the only irreversible job, and the only one with
+  # contents: write.
+  #
+  # Idempotent. Every step first checks whether it already happened, so
+  # "Re-run failed jobs" finishes a partial publish instead of repeating or
+  # contradicting it.
+  # ---------------------------------------------------------------------
+  publish:
+    name: Publish
+    needs: [preflight, gates, build, image, verify]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    # Includes the wait for a human to create the tag.
+    timeout-minutes: 75
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # release-notes.md, exactly as preflight checked it.
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+
+      - name: 1. Wait for the release tag
+        # Only a human Organization Admin can create a v* tag. scripts/release.sh
+        # creates it, as that admin, once verify has passed. This step waits for
+        # it, and refuses a tag that is not annotated or not at $COMMIT.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 3600 ))
+          while :; do
+            if ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" 2>/dev/null)"; then
+              type="$(jq -r .object.type <<<"$ref")"
+              if [ "$type" != tag ]; then
+                echo "::error::$VERSION is a lightweight tag; a release tag must be annotated"
+                exit 1
+              fi
+              target="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r .object.sha <<<"$ref")" \
+                --jq '"\(.object.type) \(.object.sha)"')"
+              if [ "$target" != "commit $COMMIT" ]; then
+                echo "::error::$VERSION points at '$target', not commit $COMMIT"
+                exit 1
+              fi
+              echo "ok: $VERSION is an annotated tag at $COMMIT"
+              break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::no $VERSION tag after 60 minutes; nothing was published. Re-run this job once the tag exists."
+              exit 1
+            fi
+            sleep 15
+          done
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: dist
+
+      - id: newest
+        name: Is this the newest stable release?
+        # Decides --latest and the floating tags. Computed now, not assumed, so
+        # re-running an older release's publish after a newer one has shipped
+        # cannot point `latest` back at it.
+        env:
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          newest=false
+          if [ "$PRERELEASE" != true ]; then
+            # shellcheck source=/dev/null
+            source scripts/release-preflight.sh
+            newest=true
+            for tag in $(git ls-remote --tags --refs "https://github.com/$GITHUB_REPOSITORY" 'v*' | sed 's|.*refs/tags/||'); do
+              [ "$tag" = "$VERSION" ] && continue
+              if ! is_semver "$tag" || is_prerelease "$tag"; then continue; fi
+              if [ "$(semver_cmp "$VERSION" "$tag")" != 1 ]; then
+                newest=false
+                echo "::notice::$tag is newer than $VERSION: latest and the floating tags stay where they are"
+              fi
+            done
+          fi
+          echo "newest=$newest" >> "$GITHUB_OUTPUT"
+
+      - name: 2. GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+          NEWEST: ${{ steps.newest.outputs.newest }}
+        run: |
+          set -euo pipefail
+          kind_args=(--latest=false)
+          [ "$NEWEST" = true ] && kind_args=(--latest)
+          [ "$PRERELEASE" = true ] && kind_args=(--prerelease --latest=false)
+          assets=(dist/*.tar.gz dist/*.zip dist/checksums.txt)
+          want="$(for a in "${assets[@]}"; do basename "$a"; done | sort)"
+
+          if state="$(gh release view "$VERSION" --json isDraft,assets 2>/dev/null)"; then
+            if [ "$(jq -r .isDraft <<<"$state")" = true ]; then
+              # A draft for this tag: an interrupted create (gh creates a
+              # draft, uploads, then publishes), or one somebody else left.
+              # Make it exactly this release before publishing it: these
+              # assets and no others, this title and these notes.
+              for name in $(jq -r '.assets[].name' <<<"$state"); do
+                if ! grep -Fxq -- "$name" <<<"$want"; then
+                  gh release delete-asset "$VERSION" "$name" --yes
+                  echo "removed stray asset $name from the draft"
+                fi
+              done
+              gh release upload "$VERSION" "${assets[@]}" --clobber
+              gh release edit "$VERSION" --title "Trustvian $VERSION" --notes-file release-notes.md \
+                --draft=false "${kind_args[@]}"
+              echo "ok: finished the draft release $VERSION"
+            else
+              have="$(jq -r '.assets[].name' <<<"$state" | sort)"
+              if [ "$have" != "$want" ]; then
+                echo "::error::$VERSION is already published with different assets"
+                diff <(echo "$want") <(echo "$have") || true
+                exit 1
+              fi
+              echo "ok: $VERSION is already published with every asset"
+            fi
+          else
+            gh release create "$VERSION" \
+              --verify-tag \
+              --title "Trustvian $VERSION" \
+              --notes-file release-notes.md \
+              "${kind_args[@]}" \
+              "${assets[@]}"
+            echo "ok: published $VERSION"
+          fi
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 3. Image version tag, from the verified digest
+        env:
+          IMAGE: ${{ needs.image.outputs.image }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # A retag by digest, no rebuild. An existing version tag on another
+          # digest is refused: a version tag never moves.
+          # Only a registry that answers "no such tag" means absent. Any
+          # other failure (auth, network, rate limit) stops here, because
+          # treating it as absent would let the create below move a tag.
+          if current="$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{.Manifest.Digest}}' 2>"$RUNNER_TEMP/inspect.err")"; then
+            if [ "$current" != "$DIGEST" ]; then
+              echo "::error::$IMAGE:$VERSION already points at $current, not $DIGEST"
+              exit 1
+            fi
+            echo "ok: $IMAGE:$VERSION already points at $DIGEST"
+          elif grep -Eqi 'not found|manifest unknown|MANIFEST_UNKNOWN' "$RUNNER_TEMP/inspect.err"; then
+            docker buildx imagetools create -t "$IMAGE:$VERSION" "$IMAGE@$DIGEST"
+            echo "ok: tagged $IMAGE:$VERSION"
+          else
+            cat "$RUNNER_TEMP/inspect.err"
+            echo "::error::could not tell whether $IMAGE:$VERSION exists; nothing was tagged. Re-run this job."
+            exit 1
+          fi
+
+      - name: 4. Floating tags, for the newest stable release
+        if: steps.newest.outputs.newest == 'true'
+        env:
+          IMAGE: ${{ needs.image.outputs.image }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          minor="${VERSION#v}"; minor="${minor%.*}"
+          # One retag per call: two -t flags in one call behaved
+          # inconsistently when verified during task 045.
+          for floating in "$minor" latest; do
+            docker buildx imagetools create -t "$IMAGE:$floating" "$IMAGE@$DIGEST"
+          done
+          echo "ok: $IMAGE:$minor and :latest point at $DIGEST"
+
+      - name: Summarize
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          url="$(gh release view "$VERSION" --json url --jq .url 2>/dev/null || echo "(no release)")"
           {
-            echo "### Container image"
+            echo "### Trustvian $VERSION"
             echo
-            echo '```'
-            echo "$IMAGE:$TAG"
-            echo "$IMAGE@$DIGEST"
+            echo "- Release: $url"
+            echo "- Image: \`$IMAGE:$VERSION\` = \`$IMAGE@$DIGEST\`"
+            echo "- Commit: \`$COMMIT\`"
+            echo
+            echo "Verify an archive:"
+            echo
+            echo '```bash'
+            echo "gh attestation verify trustvian_${VERSION}_linux_amd64.tar.gz \\"
+            echo "  --repo $GITHUB_REPOSITORY \\"
+            echo "  --signer-workflow $GITHUB_REPOSITORY/.github/workflows/release.yml \\"
+            echo "  --source-ref refs/heads/main --source-digest $COMMIT"
             echo '```'
             echo
-            echo "Signed keylessly; SBOM and SLSA provenance attached as attestations."
-            echo "Verification: docs/supply-chain.md"
+            echo "Verify the image:"
+            echo
+            echo '```bash'
+            echo "cosign verify $IMAGE@$DIGEST \\"
+            echo "  --certificate-identity https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/heads/main \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\"
+            echo "  --certificate-github-workflow-repository $GITHUB_REPOSITORY \\"
+            echo "  --certificate-github-workflow-trigger workflow_dispatch \\"
+            echo "  --certificate-github-workflow-sha $COMMIT"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

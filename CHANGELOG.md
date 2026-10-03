@@ -2143,6 +2143,52 @@ Entries are grouped by capability. Within a group, `Added` comes first, then
 
   No public API, configuration, CLI, Collector, or storage schema change.
 
+### Releasing
+
+#### Added
+
+- **One command releases Trustvian, and verifies it before anything is
+  public: `make release VERSION=vX.Y.Z [DRY_RUN=1]`**
+  ([ADR 0059](docs/adr/0059-releases-are-dispatched-verified-then-published.md),
+  [guide](docs/release-guide.md#releasing)).
+  - **Dispatched, not tag-triggered.** `release.yml` runs only on
+    `workflow_dispatch` from `main`, in a `release` environment, one release at
+    a time. Pushing a `v*` tag starts nothing.
+  - **Order:** preflight, then gates, then build and image, then verify on
+    ubuntu and macOS, then publish. Preflight refuses:
+    - a version that is not newer than every tag, or is already tagged;
+    - a commit that is not main's head, or whose CI or Nightly did not pass;
+    - a stable version without its CHANGELOG section;
+    - release notes that do not name the version.
+  - **Nothing is public before verify passes.**
+    - The image is pushed by digest, with no tag, and signed.
+    - Every archive and `checksums.txt` gets SLSA build provenance.
+    - `verify` checks the checksums, the three binaries, `trustvian version`,
+      `gh attestation verify`, a model-free scenario run from the extracted
+      archive, and `cosign verify` with the exact identity.
+  - **A human creates the tag.** The `v*` ruleset admits only an Organization
+    Admin, and no automation is given a bypass. `scripts/release.sh` creates
+    the annotated tag after verification and a confirmation, then `publish`
+    finishes:
+    - a GitHub Release, which is not a draft;
+    - the image version tag from the verified digest;
+    - `X.Y` and `latest`, for a stable release.
+  - **Idempotent publish.** *Re-run failed jobs* finishes a partial release. A
+    failure before publish creates no tag, so no release candidate is needed
+    to test the pipeline. A dry run does that.
+  - **The image's signing identity changes** to
+    `release.yml@refs/heads/main`, trigger `workflow_dispatch`, with the
+    workflow SHA as the tagged commit. `docs/supply-chain.md` and
+    `docs/operations.md` show both identities. Images up to `v0.9.0` keep the
+    tag-push identity.
+  - **Archives are attested** for the first time, closing the gap
+    `docs/supply-chain.md` recorded.
+  - `scripts/release-setup.sh` sets up the `release` environment, the tag
+    ruleset and Immutable releases idempotently, and `--check` only reports.
+    It never adds a bypass actor or edits an existing ruleset.
+  - `docs/governance/releases.md` records the new order of authority: a human
+    decides, the pipeline verifies, a human tags, and the pipeline publishes.
+
 ### Repository
 
 #### Changed
@@ -2586,7 +2632,7 @@ One change is visible to Go consumers: the module path is now lowercase
   re-runs `govulncheck` against the tagged source, since the vulnerability
   database changes independently of the commit. Partial-release states and
   their recovery are documented in
-  [`docs/release-guide.md`](docs/release-guide.md#the-release-is-not-atomic).
+  [`docs/release-guide.md`](docs/release-guide.md#when-something-fails).
 
 ### Removed
 
