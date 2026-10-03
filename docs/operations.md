@@ -425,9 +425,13 @@ across a schema-version change is never safe.
 IMAGE=ghcr.io/trustvian/trustvian-collector
 TAG=v0.9.0          # example — substitute a real, released version
 DIGEST=$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{.Manifest.Digest}}')
+SHA=$(git ls-remote https://github.com/trustvian/trustvian "refs/tags/$TAG^{}" | cut -f1)
 cosign verify "$IMAGE@$DIGEST" \
-  --certificate-identity-regexp '^https://github.com/trustvian/trustvian/' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  --certificate-identity "https://github.com/trustvian/trustvian/.github/workflows/release.yml@refs/tags/$TAG" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-repository trustvian/trustvian \
+  --certificate-github-workflow-trigger push \
+  --certificate-github-workflow-sha "$SHA"     # why each flag: supply-chain.md § Verifying a published image
 
 docker stop trustvian-collector                      # SIGTERM; bounded graceful shutdown
 ./scripts/backup-postgres.sh --output /secure/backups/pre-$TAG --trustvian-version v0.8.0
