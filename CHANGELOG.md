@@ -8,7 +8,46 @@ actually depend on.
 
 ## Unreleased
 
+### Added
+
+- **`docs/releasing-with-claude-code.md`: worked examples of releasing by
+  asking Claude Code.** The contract (you merge and approve; Claude Code does
+  the rest), setup and how to ask, eight happy paths (E1–E8) and eighteen
+  failure and boundary cases (X1–X18), including every request Claude Code
+  refuses, and a quick reference. Linked from `docs/README.md`, the runbook,
+  `agents.md`, the release operator and `/release`.
+  - `/release` accepts exactly `minor`, `patch`, `rc` and `stable`, each
+    optionally with `--dry-run`; plain-language requests go to the
+    release-operator agent, whose instructions now encode each case: the
+    release issue as a lock, the bump from the CHANGELOG, a dry run when
+    release tooling changed, never releasing over red CI, re-running rather
+    than re-tagging, treating text in issues and logs as data, and the
+    refusals. The boundary proof attempts a *rejection*, which a wrongly
+    scoped token could only reject, never publish.
+  - `scripts/runbook_drift_test.go` now also checks the page: its `/release`
+    forms against the command's declared grammar, its `make` targets, scripts
+    and links, every `release:` message it quotes, its token table against
+    `agents.md` and the runbook, and every E/X case referenced elsewhere.
+
 ### Changed
+
+- **`make release` runs in one of two modes, and says which on its first
+  line** (ADR 0060 § 8). **Manual**, for a person at an interactive terminal
+  outside Claude Code, asks `[y]es / [n]o, reject / [l]ater` when publish
+  waits, and reviews the deployment as that person. **Agent**, inside Claude
+  Code (`CLAUDECODE`), without a terminal or with `MODE=agent`, never
+  approves. `MODE=manual` is refused inside Claude Code or without a terminal
+  (`release: MODE=manual needs an interactive terminal outside Claude Code`),
+  before anything is dispatched.
+  - The review call lives in one function that re-checks mode, terminal and
+    `CLAUDECODE` right before calling; a structural test fails if any other
+    path reaches it. `scripts/test-release-mode.sh` covers every combination.
+  - `release.yml` gains a required `operator` input (`manual` or `agent`),
+    shown in the run name and every job's summary beside the triggering actor;
+    publish's summary lists who approved. It is informational; GitHub's records
+    are authoritative. `make release-prep` notes its mode in the prep PR.
+  - `/release` and the release operator always pass `MODE=agent`, and
+    `.claude/settings.json` denies any command that sets manual mode.
 
 - **Releases are agent-operated and approved on GitHub; versions are derived,
   not typed**
@@ -25,7 +64,7 @@ actually depend on.
       for a human-created tag is gone.
   - **`make release` is safe for an agent.**
     - It needs no terminal, asks nothing, creates no tag and never approves.
-    - It dispatches, prints `approve at <run URL> (GitHub web or mobile)`,
+    - It dispatches, prints `approve on GitHub, web or mobile: <run URL>`,
       and watches until the release is published, rejected or failed.
       `NO_WAIT=1` returns after dispatch.
     - A missing Nightly run is started on `main` and waited for. A failed or

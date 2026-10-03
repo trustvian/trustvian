@@ -17,17 +17,52 @@ script, message or link in this file stops matching the code.
 
 ## 0. Before your first release
 
+### Two ways to run a release: manual, or with Claude Code
+
+Every release follows the same pipeline and ends with the same human
+approval. What differs is who types the commands.
+
+| | **Manual** | **With Claude Code** |
+|---|---|---|
+| Who runs the commands | You, in your own terminal | Claude Code, through its release operator |
+| How you start | `make release` (this runbook) | `/release minor`, `/release patch`, … ([Releasing with Claude Code](releasing-with-claude-code.md)) |
+| `make release` runs in | `MODE=manual` | `MODE=agent` |
+| Token | Your own `gh` login | A fine-grained token with no Deployments, Environments, Administration or Workflows permission ([below](#an-agents-token)) |
+| The approval | At the end, the command asks `[y]es / [n]o, reject / [l]ater`. `y` approves the deployment as you | Claude Code prints the run link and waits. You approve on GitHub, web or mobile |
+| Recorded in the run as | `operator: manual` | `operator: agent` |
+
+`make release` chooses the mode itself and prints it on its first line:
+- **agent** when it runs inside Claude Code (`CLAUDECODE` is set) or without
+  an interactive terminal:
+  `release: mode agent (CLAUDECODE is set) — approval happens on GitHub`, or
+  `release: mode agent (no interactive terminal) — approval happens on GitHub`;
+- **manual** otherwise:
+  `release: mode manual (interactive terminal, not inside Claude Code)`.
+
+You may force `MODE=agent` from your terminal, to dispatch and approve later
+on GitHub: `release: mode agent (MODE=agent) — approval happens on GitHub`.
+Nothing can force `MODE=manual` inside Claude Code or without a terminal: the
+command refuses, before anything is dispatched, with
+`release: MODE=manual needs an interactive terminal outside Claude Code`.
+Agent mode never approves anything, so an agent can never approve its own
+release.
+
+Both modes stop at the same point, and nothing is published without a
+person's approval. `operator` is what `make release` reported, and is
+informational; GitHub's record of who triggered the run and who approved the
+deployment is the authoritative one.
+
 ### Who may do what
 
 | Role | May | May not |
 |---|---|---|
-| **Organization Admin** (a release owner) | Everything below, including **approving the `release` deployment** on GitHub, which publishes | Push a `v*` tag by hand; move or delete a tag or a published release |
-| **Maintainer** (write access) | Run `make release-prep`, review the prep PR, run `make release` (with or without `DRY_RUN=1`) | Approve the `release` deployment: only its required reviewers, the Organization Admins, can |
-| **AI agent** (Claude Code or any other) | Run `make release-prep`, open PRs, run `make release` and `gh run rerun`, with its own token ([§ 0, An agent's token](#an-agents-token)) | Approve a deployment; create or push a `v*` tag; create or edit a GitHub Release; merge a PR; run with a token that has Deployments, Administration, Environments or Workflows permission ([agents.md](governance/agents.md)) |
+| **Organization Admin** (a release owner) | Everything below, including **approving the `release` deployment**, either at the `make release` prompt (manual mode) or on GitHub | Push a `v*` tag by hand; move or delete a tag or a published release |
+| **Maintainer** (write access) | Run `make release-prep`, review the prep PR, run dry runs, dispatch in agent mode | Approve the `release` deployment: only its required reviewers, the Organization Admins, can |
+| **AI agent** (Claude Code or any other) | Run `make release-prep`, open PRs, run `make release` in agent mode and `gh run rerun`, with its own token ([§ 0, An agent's token](#an-agents-token)) | Approve a deployment; run `MODE=manual`; create or push a `v*` tag; create or edit a GitHub Release; merge a PR; run with a token that has Deployments, Environments, Administration or Workflows permission ([agents.md](governance/agents.md)) |
 
 Publishing always waits for a person: the `publish` job runs in the `release`
-environment, and GitHub holds it until an Organization Admin approves it, in
-the web UI or the GitHub mobile app.
+environment, and GitHub holds it until an Organization Admin approves it — at
+the manual-mode prompt, in the web UI, or in the GitHub mobile app.
 
 ### Your machine
 
@@ -68,7 +103,8 @@ This sets:
 
 An agent runs with its own fine-grained personal access token, never with
 your `gh` login. Create it at **GitHub → Settings → Developer settings →
-Fine-grained tokens → Generate new token**:
+Fine-grained tokens → Generate new token**; the full walkthrough is
+[Releasing with Claude Code § Setup](releasing-with-claude-code.md#setup-once):
 
 | Field | Value |
 |---|---|
@@ -77,8 +113,10 @@ Fine-grained tokens → Generate new token**:
 | Actions | Read and write |
 | Contents | Read and write |
 | Pull requests | Read and write |
-| Metadata | Read-only (added automatically) |
-| Everything else | **No access.** In particular no Deployments (approving a release), no Administration (rulesets), no Environments, and no Workflows (changing `.github/workflows/`) |
+| Issues | Read and write |
+| Packages | Read |
+| Metadata | Read (added automatically) |
+| Deployments, Environments, Administration, Workflows, Secrets, Webhooks | **No access.** Deployments would let it approve a release, Administration change rulesets, Environments change who approves, Workflows change `.github/workflows/` |
 
 Store it outside the repository and start Claude Code with it for that
 session only:
@@ -140,13 +178,18 @@ If the `Unreleased` section lists anything under **Added** or
  1  make release-prep BUMP=…        opens a PR: CHANGELOG section + release-notes.md
  2  review and merge that PR         (a human merges; squash)
  3  make release DRY_RUN=1           optional rehearsal: everything except publishing
- 4  make release [PRE=rc]            preflight → Nightly if needed → build → sign
-                                     → verify on Linux and macOS → approval summary
-                                     → "approve at <run URL>"
- 5  approve the deployment           an Organization Admin, on GitHub (web or mobile):
-                                     tag, GitHub Release, image tags — in that order
- 6  after-release checklist          § 5
+ 4  make release [PRE=rc]            prints the mode, then preflight → Nightly if needed
+                                     → build → sign → verify on Linux and macOS
+                                     → approval summary → publish waits for approval
+ 5  approve                          manual: answer y at the prompt
+                                     with Claude Code: approve the deployment on GitHub
+ 6  (the run)                        tag, GitHub Release, image tags — in that order
+ 7  after-release checklist          § 5
 ```
+
+With Claude Code, steps 1, 3, 4 and 7 are its work. Steps 2 and 5 stay
+yours: see [Releasing with Claude Code](releasing-with-claude-code.md).
+Everything below is written for the manual mode.
 
 Steps 3 and 4 resolve the version themselves: from the CHANGELOG section the
 merged prep PR declared, plus the next `-rc.N` with `PRE=rc`. You never type
@@ -196,17 +239,20 @@ Example: `v0.10.1` is out; `main` has the inspection-depth work.
    ```bash
    make release
    ```
-   Same checks, same build and verification, then:
    ```text
+   release: mode manual (interactive terminal, not inside Claude Code)
+   release: v0.11.0 — declared by CHANGELOG.md at 4f3c…; newest stable tag: v0.10.1
+   …
    release: every check passed for v0.11.0 at 4f3c…
-   release: approve at https://github.com/trustvian/trustvian/actions/runs/… (GitHub web or mobile)
+   release: approve the release deployment for v0.11.0? [y]es / [n]o, reject / [l]ater, on GitHub
    ```
-   **Approve the deployment.** An Organization Admin opens that link, reads
-   the run's **Approval summary** (version, commit, how it was derived, the
-   CHANGELOG section, every check's result), then chooses **Review
-   deployments → release → Approve and deploy**. The workflow then creates
-   the tag, publishes the GitHub Release and the image `v0.11.0`, and moves
-   `0.11` and `latest`. The command ends with the release URL.
+   Read the run's **Approval summary** first if you like (version, how it was
+   derived, the commit, the CHANGELOG section, every check's result). Type
+   `y`. This approves the run's `release` deployment as you, with the comment
+   "approved at the make release prompt (manual mode)"; GitHub records it as
+   your review. The workflow then creates the tag, publishes the GitHub
+   Release and the image `v0.11.0`, and moves `0.11` and `latest`. The command
+   ends with the release URL.
 6. **Do the after-release checklist** ([§ 5](#5-after-every-release)) and
    close the release issue.
 
@@ -226,7 +272,7 @@ Example: a bug in `trustvian dev` is fixed on `main` after `v0.11.0`.
 3. **Release.**
    ```bash
    git pull --ff-only origin main
-   make release            # → v0.11.1; then approve the deployment
+   make release            # → v0.11.1; answer y to approve
    ```
    A patch of the newest line moves `0.11` and `latest`. A patch of an older
    line cannot be made: releases come from `main` only.
@@ -240,7 +286,7 @@ Example: design partners should try `v0.11.0` before it is stable.
    CHANGELOG now declares `v0.11.0`.
 2. **First candidate.**
    ```bash
-   make release PRE=rc     # → v0.11.0-rc.1; then approve the deployment
+   make release PRE=rc     # → v0.11.0-rc.1; answer y to approve
    ```
    It is published as a **prerelease**: never GitHub's "Latest", and the
    image's `0.11` and `latest` do not move. Only `v0.11.0-rc.1` exists. The
@@ -260,7 +306,7 @@ Example: design partners should try `v0.11.0` before it is stable.
    ```
 6. **Stable**, when testers are satisfied:
    ```bash
-   make release            # → v0.11.0; then approve the deployment
+   make release            # → v0.11.0; answer y to approve
    ```
    The stable release is built from `main`'s head and verified again. It is
    the same code as the last candidate when nothing merged since.
@@ -297,7 +343,7 @@ verifies the gate against the release candidate.
 2. **Candidates** as in S3 (`make release PRE=rc` → `v1.0.0-rc.1`, …).
    Verify every v1.0 exit criterion against the candidate and record the
    result in the release issue.
-3. **Stable:** `make release` → `v1.0.0`; then approve the deployment.
+3. **Stable:** `make release` → `v1.0.0`; answer `y` to approve.
 4. **After-release checklist**, plus: from now on the
    [compatibility contract](compatibility.md) applies.
 
@@ -305,8 +351,8 @@ verifies the gate against the release candidate.
 
 ## 4. When something goes wrong
 
-Nothing before the approval publishes anything. Read the message, fix the
-cause, run the same command again.
+Nothing before the approval (your `y`, or Approve on GitHub) publishes
+anything. Read the message, fix the cause, run the same command again.
 
 ### F1. Preflight refuses
 
@@ -348,15 +394,28 @@ a release and needs no cleanup.
 3. `git pull --ff-only origin main` and run the same `make release …` again.
    The new head gets its own CI and Nightly run first.
 
-### F3. Approval is pending or was rejected
+### F3. You answered `n` or `l`, or closed the terminal
 
-- **Pending:** the run waits on GitHub, and `make release` keeps watching. You
-  may stop watching (`Ctrl-C`, or `NO_WAIT=1` next time); the run keeps
-  waiting. Any Organization Admin can approve it later from the run page.
-- **Rejected:** the run ends, `make release` reports *"the release deployment
-  was rejected or not approved in time; nothing was published"*. No tag was
-  created. Run `make release` again when ready.
-- **Approved after a long wait:** fine. Publishing starts when approved.
+The publish job waits for approval without using a runner. GitHub keeps the
+request open for 30 days.
+
+- **`n`:** the deployment is rejected, with the comment "rejected at the make
+  release prompt (manual mode)". The command ends with
+  `release: the release deployment was rejected or not approved in time; nothing was published`.
+  No tag exists. Run `make release` again when ready.
+- **`l`:** nothing changes. The command prints
+  `release: left pending; approve or reject it on GitHub, web or mobile: https://github.com/trustvian/trustvian/actions/runs/…`
+  and exits; the run waits, and you approve or reject it on GitHub (Actions →
+  the run → *Review deployments*), web or mobile.
+- **You closed the terminal, or lost the connection:** the same as `l`.
+  Find the run and approve it on GitHub:
+  ```bash
+  gh run list --repo trustvian/trustvian --workflow release.yml --limit 3
+  ```
+- **In agent mode**, the command never asks. It prints
+  `release: waiting for approval — approve on GitHub, web or mobile: https://github.com/trustvian/trustvian/actions/runs/…`
+  and keeps watching (`NO_WAIT=1` returns after dispatch). Approve or reject
+  on GitHub. See [Releasing with Claude Code, X6 and X7](releasing-with-claude-code.md#x6-the-approval-waits).
 
 ### F4. Publishing failed halfway
 
@@ -488,7 +547,8 @@ The owner is the only person (or agent, on the owner's behalf) who runs
 | `make release-prep BUMP=patch\|minor TITLE="…"` | Computes the next version from the newest stable tag, cuts the CHANGELOG section, writes `release-notes.md`, opens the prep PR. Never tags, never dispatches |
 | `make release-prep VERSION=v1.0.0 TITLE="…"` | The same for an explicit version; leaving 0.x asks you to type the version again |
 | `make release DRY_RUN=1` | Everything up to and including verification and the approval summary. Publishes nothing |
-| `make release` | Releases the version the merged CHANGELOG declares. Publishing waits for an Organization Admin's approval on GitHub |
+| `make release` | Releases the version the merged CHANGELOG declares. Prints its mode first. In manual mode, asks `[y]es / [n]o, reject / [l]ater` before reviewing the deployment as you |
+| `make release MODE=agent` | From your terminal: dispatch, verify, then leave the approval to GitHub, web or mobile. Inside Claude Code it is the only mode |
 | `make release PRE=rc` | Releases the next `-rc.N` of the declared version, as a prerelease |
 | `make release VERSION=vX.Y.Z` | Explicit override, validated the same way |
 | `make release NO_WAIT=1` | Dispatches, prints the run URL, and returns without watching |
@@ -497,10 +557,12 @@ The owner is the only person (or agent, on the owner's behalf) who runs
 | `./scripts/release-version.sh resolve <commit>` | What `make release` would release at a commit, and how |
 | `./scripts/release-setup.sh [--check]` | One-time repository setup, or a read-only check of it |
 | `gh run rerun <id> --failed` | Finishes a failed or interrupted publish; every publish step is idempotent |
-| `/release patch\|minor\|rc\|stable` | In Claude Code: the release operator agent runs this runbook. It never approves and never merges |
+| `/release minor\|patch\|rc\|stable [--dry-run]` | In Claude Code: the same release in agent mode; see [Releasing with Claude Code](releasing-with-claude-code.md). It never approves and never merges |
 
 | Term | Means |
 |---|---|
+| Manual mode | `make release` run by a person at a terminal, outside Claude Code, approving at its prompt |
+| Agent mode | `make release` run by Claude Code, without a terminal, or with `MODE=agent`; never approves, the approval happens on GitHub |
 | Dry run | Build, sign and verify; publish nothing |
 | Approval | An Organization Admin approving the `release` deployment of a run on GitHub; the only step that publishes |
 | Prerelease / RC | `vX.Y.Z-rc.N`: published for testers, never "Latest", moves no floating image tag |

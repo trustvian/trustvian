@@ -27,7 +27,7 @@
 
 name: Release
 run-name: >-
-  Release ${{ inputs.version }} at ${{ inputs.commit }}${{ inputs.dry_run && ' (dry run)' || '' }}
+  Release ${{ inputs.version }} at ${{ inputs.commit }}${{ inputs.dry_run && ' (dry run)' || '' }} [${{ inputs.operator }}]
 
 on:
   workflow_dispatch:
@@ -40,6 +40,13 @@ on:
         description: "Full commit SHA on main to release (must be main's head at dispatch)"
         required: true
         type: string
+      operator:
+        description: "Who ran make release: manual (a person at a terminal) or agent (Claude Code, or no terminal). Informational, reported by scripts/release.sh"
+        required: true
+        type: choice
+        options:
+          - manual
+          - agent
       derivation:
         description: "How the version was derived; shown to the approver (set by scripts/release.sh)"
         required: false
@@ -68,6 +75,10 @@ env:
   COMMIT: ${{ inputs.commit }}
   # gh's repository, stated rather than inferred from a checkout's remote.
   GH_REPO: ${{ github.repository }}
+  # Informational: the mode scripts/release.sh reported. GitHub's own record
+  # of who triggered the run and who approved the deployment is the
+  # authoritative one; every job's summary shows both side by side.
+  OPERATOR: ${{ inputs.operator }}
 
 jobs:
   # ---------------------------------------------------------------------
@@ -85,6 +96,10 @@ jobs:
       prerelease: ${{ steps.check.outputs.prerelease }}
 
     steps:
+
+      - name: Operator
+        run: |
+          echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
       - name: Refuse anything but main
         run: |
           # Inputs reach every script through the environment, never by
@@ -152,6 +167,10 @@ jobs:
           --health-retries 10
 
     steps:
+
+      - name: Operator
+        run: |
+          echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -225,6 +244,10 @@ jobs:
       attestations: write
 
     steps:
+
+      - name: Operator
+        run: |
+          echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -294,6 +317,10 @@ jobs:
       digest: ${{ steps.push.outputs.digest }}
 
     steps:
+
+      - name: Operator
+        run: |
+          echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -390,6 +417,10 @@ jobs:
         os: [ubuntu-latest, macos-latest]
 
     steps:
+
+      - name: Operator
+        run: |
+          echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The scenario fixtures and the workload's source; nothing from this
@@ -541,6 +572,10 @@ jobs:
       actions: read
 
     steps:
+
+      - name: Operator
+        run: |
+          echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -603,6 +638,7 @@ jobs:
             echo "| Version | \`$VERSION\`$([ "$PRERELEASE" = true ] && echo ' (prerelease)') |"
             echo "| Commit | [\`${COMMIT:0:12}\`](https://github.com/$GITHUB_REPOSITORY/commit/$COMMIT) on \`main\` |"
             echo "| Derived (as stated by the dispatcher) | \`$derivation\` |"
+            echo "| Operator (as reported by scripts/release.sh) | \`$OPERATOR\` — dispatched by @$GITHUB_TRIGGERING_ACTOR |"
             echo "| Newest stable tag | \`${latest:-none}\` |"
             echo "| Image | \`$IMAGE@$DIGEST\` |"
             echo
@@ -635,8 +671,14 @@ jobs:
     permissions:
       contents: write
       packages: write
+      # To read who approved this run's deployment, for the summary.
+      actions: read
 
     steps:
+
+      - name: Operator
+        run: |
+          echo "**Operator:** \`$OPERATOR\` (as reported by scripts/release.sh; informational) · **Triggered by:** @$GITHUB_TRIGGERING_ACTOR" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # release-notes.md, exactly as preflight checked it.
@@ -813,6 +855,11 @@ jobs:
             echo "- Release: $url"
             echo "- Image: \`$IMAGE:$VERSION\` = \`$IMAGE@$DIGEST\`"
             echo "- Commit: \`$COMMIT\`"
+            echo "- Operator: \`$OPERATOR\` (informational) · triggered by @$GITHUB_TRIGGERING_ACTOR"
+            echo "- Approved by (GitHub's record):"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/approvals" \
+              --jq '.[] | "  - @\(.user.login): \(.state)\(if (.comment // "") != "" then " — \(.comment)" else "" end)"' 2>/dev/null ||
+              echo "  - (could not read the approvals)"
             echo
             echo "Verify an archive:"
             echo

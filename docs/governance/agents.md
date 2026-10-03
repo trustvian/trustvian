@@ -60,11 +60,16 @@ AI Agent
   human Organization Admin for the merge.
 - Read workflow runs, logs, and check results.
 - Run a release ([ADR 0060](../adr/0060-agent-operated-releases-with-environment-approval.md),
-  [runbook](../release-runbook.md)): `make release-prep`, `make release` (a
-  dry run or a real one), `gh run rerun` on a release run, and the
-  verification of what was published. Publishing waits for a human
-  Organization Admin to approve the `release` environment; the agent prints
-  where, and stops there.
+  [runbook](../release-runbook.md),
+  [Releasing with Claude Code](../releasing-with-claude-code.md)):
+  `make release-prep`, `make release` (a dry run or a real one), `gh run
+  rerun` on a release run, and the verification of what was published —
+  **always in agent mode** (`MODE=agent`). Agent mode never approves:
+  publishing waits for a human Organization Admin to approve the `release`
+  environment, and the agent prints where and stops there. An agent never
+  runs `MODE=manual`, the mode in which `make release` approves at a person's
+  prompt; the command refuses it inside Claude Code or without a terminal,
+  and `.claude/settings.json` denies it.
 - Propose governance changes as documentation and as an explicit,
   human-reviewed plan.
 
@@ -131,7 +136,7 @@ repository alone:
 | Pull requests | Read and write | Open and update pull requests |
 | Actions | Read and write | Inspect runs, dispatch `release.yml` and Nightly, re-run failed jobs |
 | Packages | Read | Verify published container images |
-| Issues | Read and write | Only if the agent triages issues |
+| Issues | Read and write | The release issue, which is the release lock ([releasing with Claude Code](../releasing-with-claude-code.md), X17) |
 | Administration | **None** | The whole point |
 | Deployments | **None** | Approving a pending deployment needs read access to deployments; without it the agent cannot approve a release |
 | Workflows | **None** | Without it the token cannot push changes to `.github/workflows/`, such as a copy of `release.yml` without the approval gate |
@@ -315,9 +320,10 @@ same as anyone else's.
 
 ## Release Safety
 
-An agent may run a release and verify one: prepare it, dispatch it, re-run a
-failed job, and follow the [runbook](../release-runbook.md). It may not
-approve its publication, and it may not repair a published one.
+An agent may run a release and verify one, in agent mode: prepare it,
+dispatch it, re-run a failed job, and follow the [runbook](../release-runbook.md)
+as [Releasing with Claude Code](../releasing-with-claude-code.md) shows. It
+may not approve its publication, run manual mode, or repair a published one.
 
 ```text
 failed release candidate

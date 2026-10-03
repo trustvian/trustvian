@@ -122,7 +122,9 @@ Never change the repository default branch away from `main`.
 Never delete, move, or overwrite release tags.
 
 Never approve or reject a deployment, above all the `release` environment:
-that approval is the human decision to publish a release. Never create, edit
+that approval is the human decision to publish a release. The one exception is
+the boundary proof a user asks for (`docs/releasing-with-claude-code.md`,
+Setup step 4): a *rejection* attempt that must fail with 403. Never create, edit
 or delete a GitHub Release or a `v*` tag yourself; the release workflow does,
 after that approval. Claude may run a
 release (`make release-prep`, `make release`, `gh run rerun` on a release run)

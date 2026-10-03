@@ -308,22 +308,110 @@ func TestPublishIsIdempotentAndCannotMoveATag(t *testing.T) {
 	}
 }
 
-// release.sh is safe for an agent to run: it creates no tag, pushes nothing,
-// creates no release and never approves a deployment, and it tells the user
-// where to approve. Its watch loop reads the run's status, which needs no
-// Deployments permission.
-func TestReleaseScriptCannotTagOrApprove(t *testing.T) {
+// release.sh creates no tag, pushes nothing and creates no release. The one
+// place it can review a deployment is manual_review_deployment, which
+// re-checks manual mode, an interactive terminal and CLAUDECODE right before
+// the call; only manual_prompt calls it, and manual_prompt is called only on
+// the manual branch. Agent mode prints where to approve on GitHub instead.
+func TestReleaseScriptApprovesOnlyInManualMode(t *testing.T) {
 	script := readFile(t, "release.sh")
 	code := stripShellComments(script)
-	for _, forbidden := range []string{"pending_deployments", "git/tags", "git/refs", "git tag", "git push", "release create", "RELEASE_CONFIRM"} {
+	for _, forbidden := range []string{"git/tags", "git/refs", "git tag", "git push", "release create", "RELEASE_CONFIRM"} {
 		if strings.Contains(code, forbidden) {
 			t.Errorf("release.sh runs %q", forbidden)
 		}
 	}
-	for _, want := range []string{"approve at $run_url (GitHub web or mobile)", "waiting)", "--no-wait"} {
+
+	review := shellFunction(t, code, "manual_review_deployment")
+	prompt := shellFunction(t, code, "manual_prompt")
+	outside := strings.Replace(code, review, "", 1)
+	if strings.Contains(outside, "pending_deployments") {
+		t.Error("release.sh calls the pending_deployments API outside manual_review_deployment")
+	}
+	for _, guard := range []string{`[ "$mode" = manual ] || die`, `[ -z "${CLAUDECODE:-}" ] || die`, `[ "$(is_interactive)" = yes ] || die`} {
+		if !strings.Contains(review, guard) {
+			t.Errorf("manual_review_deployment does not re-check %s", guard)
+		}
+	}
+	if strings.Index(review, "-X POST") < strings.Index(review, "is_interactive") {
+		t.Error("manual_review_deployment calls the API before its checks")
+	}
+	if n := strings.Count(strings.Replace(code, prompt, "", 1), "manual_review_deployment "); n != 0 {
+		t.Errorf("manual_review_deployment is called %d times outside manual_prompt", n)
+	}
+	lines := strings.Split(code, "\n")
+	calls := 0
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "manual_prompt" {
+			continue
+		}
+		calls++
+		if i == 0 || strings.TrimSpace(lines[i-1]) != `if [ "$mode" = manual ]; then` {
+			t.Errorf("manual_prompt is called at line %d outside the manual branch", i+1)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("manual_prompt is called %d times, want exactly once, on the manual branch", calls)
+	}
+
+	for _, want := range []string{
+		"approve on GitHub, web or mobile: $run_url",
+		"release: approve the release deployment for $version? [y]es / [n]o, reject / [l]ater, on GitHub",
+		"approved at the make release prompt (manual mode)",
+		"-f operator=\"$mode\"",
+		`title="$title [$mode]"`,
+		"--no-wait",
+	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("release.sh lacks %q", want)
 		}
+	}
+}
+
+// shellFunction returns the body of a shell function NAME() { … } that
+// starts at column 0 and ends at the next "}" at column 0.
+func shellFunction(t *testing.T, src, name string) string {
+	t.Helper()
+	start := strings.Index(src, "\n"+name+"() {")
+	if start < 0 {
+		t.Fatalf("no function %s", name)
+	}
+	end := strings.Index(src[start+1:], "\n}")
+	if end < 0 {
+		t.Fatalf("function %s does not end", name)
+	}
+	return src[start+1 : start+1+end+2]
+}
+
+// Every run records its operator: a required choice input, in the run name
+// (which release.sh matches), and in every job's summary next to who
+// triggered it. Publish's summary also lists GitHub's record of who
+// approved.
+func TestEveryJobRecordsTheOperator(t *testing.T) {
+	doc, jobs := releaseJobs(t)
+	on, _ := doc["on"].(map[string]any)
+	dispatch, _ := on["workflow_dispatch"].(map[string]any)
+	inputs, _ := dispatch["inputs"].(map[string]any)
+	op, _ := inputs["operator"].(map[string]any)
+	if op["type"] != "choice" || fmt.Sprint(op["required"]) != "true" || fmt.Sprint(op["options"]) != "[manual agent]" {
+		t.Errorf("operator input = %v, want a required choice of manual and agent", op)
+	}
+	if name := fmt.Sprint(doc["run-name"]); !strings.Contains(name, "[${{ inputs.operator }}]") {
+		t.Errorf("run-name %q does not show the operator", name)
+	}
+	for name, job := range jobs {
+		steps := stepsOf(job)
+		if len(steps) == 0 || steps[0]["name"] != "Operator" ||
+			!strings.Contains(stepRun(steps[0]), "$OPERATOR") || !strings.Contains(stepRun(steps[0]), "$GITHUB_TRIGGERING_ACTOR") {
+			t.Errorf("%s does not start by recording the operator and the triggering actor", name)
+		}
+	}
+	var publish string
+	for _, s := range stepsOf(jobs["publish"]) {
+		publish += stepRun(s)
+	}
+	if !strings.Contains(publish, "actions/runs/$GITHUB_RUN_ID/approvals") {
+		t.Error("publish's summary does not list who approved")
 	}
 }
 

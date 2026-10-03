@@ -28,6 +28,8 @@ cd "$(dirname "$0")/.."
 
 # shellcheck source-path=SCRIPTDIR source=release-version.sh
 source ./scripts/release-version.sh
+# shellcheck source-path=SCRIPTDIR source=release-mode.sh
+source ./scripts/release-mode.sh
 
 # REPO (from $RELEASE_REPO) comes from release-preflight.sh, through
 # release-version.sh.
@@ -36,6 +38,14 @@ die() {
     echo "release-prep: $*" >&2
     exit 1
 }
+
+# The mode, first: it is recorded in the pull request. Agent mode cannot type
+# the confirmation leaving 0.x needs, and MODE=manual is refused where it
+# cannot be manual, exactly as in scripts/release.sh.
+resolved_mode="$(resolve_mode "${MODE:-}" "${CLAUDECODE:-}" "$(is_interactive)" 2>&1)" || die "$resolved_mode"
+mode="${resolved_mode%%|*}"
+mode_reason="${resolved_mode#*|}"
+mode_line release-prep "$mode" "$mode_reason"
 
 bump="${BUMP:-}"
 explicit="${VERSION:-}"
@@ -71,7 +81,7 @@ else
     version="$explicit"
     how="given explicitly"
     if [[ "${latest:-v0.0.0}" == v0.* ]] && [[ "$version" == v1.* ]]; then
-        [ -t 0 ] || die "leaving 0.x needs a person at a terminal to confirm"
+        [ "$mode" = manual ] || die "leaving 0.x needs a person to confirm at a terminal, in manual mode"
         echo "release-prep: $version leaves 0.x: from then on the compatibility contract applies (docs/compatibility.md)."
         printf 'release-prep: type %s to confirm: ' "$version"
         answer=""
@@ -185,6 +195,8 @@ git push --quiet -u origin "$branch"
 url="$(gh pr create --repo "$REPO" --base main --head "$branch" --title "$subject" --body "$(
     cat <<EOF
 Prepares **$version** — $title (${latest:-no stable tag} → $version, $how).
+
+Prepared in **$mode mode** ($mode_reason) by \`make release-prep\`.
 
 - \`CHANGELOG.md\`: \`## Unreleased\` becomes \`$heading\`, with a new empty \`## Unreleased\` above it.
 - \`release-notes.md\`: the release body, from the template. The known limits are carried over from the previous release.

@@ -14,7 +14,11 @@
       "Bash(git log *)"
     ],
     "deny": [
-      "Bash(gh api *pending_deployments*)",
+      "Bash(*pending_deployments*state='approved'*)",
+      "Bash(*pending_deployments*state=\"approved\"*)",
+      "Bash(*pending_deployments*--input*)",
+      "Bash(*state=approved*pending_deployments*)",
+      "Bash(*pending_deployments*state=approved*)",
       "Bash(git tag*)",
       "Bash(git push *--tags*)",
       "Bash(git push *refs/tags/*)",
@@ -48,7 +52,10 @@
       "Bash(gh api *environments* --raw-field*)",
       "Bash(gh api *rulesets* --field*)",
       "Bash(gh api *rulesets* --raw-field*)",
-      "Bash(*release-setup.sh)"
+      "Bash(*release-setup.sh)",
+      "Bash(*MODE=manual*)",
+      "Bash(*MODE='manual'*)",
+      "Bash(*MODE=\"manual\"*)"
     ]
   },
   "hooks": {

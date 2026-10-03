@@ -134,10 +134,10 @@ release-dry-run: ## Build the full release artifact matrix locally — no tag, n
 	./scripts/release-build.sh
 
 release-prep: ## Open the release-prep PR — make release-prep BUMP=patch|minor TITLE="…" (or VERSION=v1.0.0); see docs/release-runbook.md
-	@BUMP='$(BUMP)' VERSION='$(VERSION)' TITLE='$(TITLE)' ./scripts/release-prep.sh
+	@MODE='$(MODE)' BUMP='$(BUMP)' VERSION='$(VERSION)' TITLE='$(TITLE)' ./scripts/release-prep.sh
 
-release: ## Release the declared version — make release [PRE=rc] [DRY_RUN=1] [NO_WAIT=1] [VERSION=vX.Y.Z]; publishing waits for approval on GitHub
-	@VERSION='$(VERSION)' PRE='$(PRE)' DRY_RUN='$(DRY_RUN)' NO_WAIT='$(NO_WAIT)' ./scripts/release.sh
+release: ## Release the declared version — make release [MODE=agent] [PRE=rc] [DRY_RUN=1] [NO_WAIT=1] [VERSION=vX.Y.Z]; see docs/release-runbook.md
+	@MODE='$(MODE)' VERSION='$(VERSION)' PRE='$(PRE)' DRY_RUN='$(DRY_RUN)' NO_WAIT='$(NO_WAIT)' ./scripts/release.sh
 
 compose-up: ## Start the reference Docker Compose deployment (see deployments/docker-compose/README.md)
 	$(COMPOSE) up -d --build

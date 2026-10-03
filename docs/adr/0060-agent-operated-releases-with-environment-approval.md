@@ -116,11 +116,11 @@ This ADR stays **Proposed** until that choice is made.
 
 ### 4. The scripts are agent-safe
 
-`scripts/release.sh`:
+`scripts/release.sh`, in agent mode (§ 8):
 - needs no terminal, asks nothing for a release, creates no tag, pushes
   nothing, and never approves a deployment;
 - dispatches the run and watches it. When the run is `waiting`, it prints
-  `approve at <run URL> (GitHub web or mobile)` and keeps watching until the
+  `approve on GitHub, web or mobile: <run URL>` and keeps watching until the
   release is published, rejected or failed;
 - with `--no-wait` (`NO_WAIT=1`), returns after dispatch.
 
@@ -190,9 +190,45 @@ boundary.
 ### 7. A release operator for Claude Code
 
 `.claude/agents/release-operator.md` follows `docs/release-runbook.md` step by
-step. Its instructions forbid it to merge a pull request or approve a
+step, as `docs/releasing-with-claude-code.md` shows case by case (E1–E8,
+X1–X18). Its instructions forbid it to merge a pull request or approve a
 deployment, and require it to stop and ask when a step would need either.
-`/release patch|minor|rc|stable` invokes it.
+`/release minor|patch|rc|stable [--dry-run]`, and nothing else, invokes it;
+plain-language requests go to the agent directly. Both always pass
+`MODE=agent`.
+
+### 8. Two modes: manual and agent
+
+The same `make release` serves a person at a terminal and an agent, and says
+which on its first line (`scripts/release-mode.sh`, a pure
+`resolve_mode(requested, CLAUDECODE, interactive)`):
+
+| | Manual | Agent |
+|---|---|---|
+| When | an interactive terminal (stdin and stdout), `CLAUDECODE` unset | `CLAUDECODE` set (Claude Code sets it in every shell it runs; verified), no interactive terminal, or `MODE=agent` |
+| At the approval | asks `[y]es / [n]o, reject / [l]ater`; `y`/`n` review the deployment as that person, with a comment saying so | never reviews anything; prints where to approve on GitHub and keeps watching |
+| Forced by | `MODE=manual`, refused (before anything is dispatched) inside Claude Code or without a terminal | `MODE=agent`, always allowed |
+
+**Why the terminal path may approve.** A person who runs `make release` in
+their own terminal already holds the authority to approve; making them leave
+the terminal for GitHub's web UI added a step, not a safeguard. The approval
+still goes through GitHub's `pending_deployments` API, as that person, and
+GitHub records it as their review.
+
+**Why an agent can never reach it.** The review call lives in one function,
+`manual_review_deployment`. It re-checks manual mode, an interactive terminal
+and an unset `CLAUDECODE` immediately before calling. Only the manual prompt
+calls it, and only the manual branch calls the prompt; a structural test
+fails if that ever changes. Behind it sit the same boundaries as before: the
+agent's token has no Deployments permission, and `.claude/settings.json`
+denies any command that sets manual mode.
+
+**Who ran it is recorded, informationally.** `release.yml` takes a required
+`operator` input (`manual` or `agent`), which `scripts/release.sh` sets. It
+shows in the run name and in every job's summary next to
+`github.triggering_actor`; publish's summary lists who approved, from the
+run's approvals API. `operator` is what the script reported. GitHub's records
+of who triggered the run and who approved it are the authoritative ones.
 
 ## Alternatives considered
 

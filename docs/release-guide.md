@@ -153,7 +153,31 @@ one exists.
 
 **The procedure is the [release runbook](release-runbook.md):** every scenario
 (minor, patch, candidates, security fix, 1.0), every failure, and the
-after-release checklist, step by step. This section keeps the why.
+after-release checklist, step by step. [Releasing with Claude
+Code](releasing-with-claude-code.md) shows the same procedure run by an agent,
+case by case. This section keeps the why.
+
+### Two modes: manual and agent
+
+`make release` runs in one of two modes, chosen by `scripts/release-mode.sh`
+and printed on its first line:
+
+- **Manual**: a person at an interactive terminal, outside Claude Code.
+  When publish waits for the `release` environment, the command asks
+  `[y]es / [n]o, reject / [l]ater` and, on `y` or `n`, reviews the deployment
+  as that person through GitHub's `pending_deployments` API. That call lives in
+  one function, which re-checks the mode, the terminal and `CLAUDECODE` right
+  before making it.
+- **Agent**: inside Claude Code (`CLAUDECODE` is set), without an interactive
+  terminal, or forced with `MODE=agent`. It never approves: it prints where to
+  approve on GitHub and keeps watching.
+
+Manual mode cannot be forced where it does not apply: the command refuses it
+inside Claude Code or without a terminal, before anything is dispatched. Each
+run records the mode as its `operator` input, in the run name and every job's
+summary next to the triggering actor. That record is informational: GitHub's
+own record of who triggered the run and who approved the deployment, which
+publish's summary lists, is the authoritative one.
 
 ```bash
 make release-prep BUMP=minor TITLE="…"   # opens the prep PR; a human merges it
@@ -229,7 +253,8 @@ make release [PRE=rc]
              cosign verify the digest (ubuntu)
   summary    the page the approver reads: version, derivation, commit, image,
              every check's result, the CHANGELOG section
-  ↓ the script prints "approve at <run URL> (GitHub web or mobile)"
+  ↓ manual mode asks [y]es / [n]o, reject / [l]ater; agent mode prints
+    "waiting for approval — approve on GitHub, web or mobile: <run URL>"
   approval   an Organization Admin approves the `release` deployment
   publish    annotated tag vX.Y.Z at the commit → GitHub Release (not a draft)
              → image vX.Y.Z from the verified digest → X.Y and latest (newest

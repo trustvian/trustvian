@@ -112,7 +112,9 @@ resolve() {
             rc)
                 # shellcheck disable=SC2086 # one tag per word
                 version="$(next_rc "$version" $tags)"
-                how="next candidate of $(base_version "$version"), $how"
+                local base
+                base="$(base_version "$version")"
+                how="next candidate of $base, $how"
                 ;;
             *) fail "PRE must be rc, not '$PRE'" ;;
         esac

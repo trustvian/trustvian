@@ -1,21 +1,33 @@
 ---
-description: Run a Trustvian release with the release-operator agent (patch | minor | rc | stable)
-argument-hint: patch | minor | rc | stable
+description: Release Trustvian with the release-operator agent — /release minor|patch|rc|stable [--dry-run]. Worked examples in docs/releasing-with-claude-code.md
+argument-hint: minor | patch | rc | stable [--dry-run]
 ---
 
-Use the `release-operator` agent to run this release by following
-`docs/release-runbook.md`. Requested: **$ARGUMENTS**
+<!-- release-forms: minor patch rc stable; flags: --dry-run -->
 
-- `patch` / `minor`: runbook S2 / S1 — open the release issue,
-  `make release-prep BUMP=$ARGUMENTS TITLE="…"` (propose a title from the
-  CHANGELOG), write the notes, wait for a human to merge, dry run if release
-  tooling changed, then `make release`.
-- `rc`: runbook S3 — the version the merged CHANGELOG declares, as its next
-  candidate: `make release PRE=rc`.
-- `stable`: runbook S3 step 6 — `make release` for the declared version after
-  its candidates.
-- Anything else, or nothing: ask which of the four is meant.
+Requested: `/release $ARGUMENTS`
 
-The agent never merges a pull request and never approves a deployment.
-Publishing waits for an Organization Admin to approve the `release`
-environment on GitHub; the agent prints where.
+**Accepted forms, and nothing else:** `/release minor`, `/release patch`,
+`/release rc`, `/release stable`, each optionally followed by `--dry-run`. If
+the arguments are anything else (empty, `major`, a version, more words),
+do not start anything: answer that `/release` accepts only those forms, and
+that anything else (*"Release whatever main has"*, *"Release v1.0.0"*) can be
+asked in plain words, which the `release-operator` agent handles.
+
+For an accepted form, use the `release-operator` agent to run it by following
+`docs/release-runbook.md`, with the examples in
+`docs/releasing-with-claude-code.md`. Every `make release` and
+`make release-prep` it runs passes **`MODE=agent`** explicitly.
+
+| Form | Runbook | What the agent runs |
+|---|---|---|
+| `minor` | S1 | the release issue; `make release-prep MODE=agent BUMP=minor TITLE="…"`; notes; after a human merges, a dry run first if release tooling changed; `make release MODE=agent` |
+| `patch` | S2 | the same with `BUMP=patch` |
+| `rc` | S3 | `make release MODE=agent PRE=rc` for the version the merged CHANGELOG declares |
+| `stable` | S3 step 6 | `make release MODE=agent` for the declared version after its candidates |
+| any of them `--dry-run` | — | the same steps, with `make release MODE=agent DRY_RUN=1`, publishing nothing |
+
+The agent never merges a pull request, never approves a deployment, never
+creates or pushes a tag, and never runs `MODE=manual`. Publishing waits for an
+Organization Admin to approve the `release` environment on GitHub; the agent
+prints where.
