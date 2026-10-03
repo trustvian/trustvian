@@ -41,6 +41,9 @@ refuses() {
     if ("$@") >/dev/null 2>&1; then bad "$what"; else ok "$what"; fi
 }
 
+# env_run_check: run_check with missing runs recorded in $missing.
+env_run_check() { RELEASE_PREFLIGHT_MISSING_RUNS="$missing" run_check; }
+
 cmp_is() {
     local a="$1" b="$2" want="$3" got
     got="$(semver_cmp "$a" "$b")"
@@ -89,6 +92,27 @@ refuses "notes do not name v0.11.0" check_notes v0.11.0 "$tmp/notes.md"
 : >"$tmp/empty.md"
 refuses "empty notes" check_notes v0.10.0 "$tmp/empty.md"
 refuses "missing notes" check_notes v0.10.0 "$tmp/absent.md"
+
+# --- CI and Nightly runs, through a stubbed gh ------------------------------
+# gh is replaced by a function that answers with $GH_ANSWER, the shape the real
+# call's --jq produces: "none", or "<status> <conclusion> <url>".
+# shellcheck disable=SC2329 # invoked by latest_run_succeeded, in place of gh
+gh() { echo "$GH_ANSWER"; }
+missing="$tmp/missing"
+run_check() { latest_run_succeeded nightly.yml 0123456789abcdef0123456789abcdef01234567; }
+
+GH_ANSWER="completed success https://example.invalid/run/1"
+succeeds "a successful run passes" run_check
+GH_ANSWER="none"
+refuses "no run fails by default" run_check
+: >"$missing"
+succeeds "no run is recorded, not failed, when asked" env_run_check
+GH_ANSWER="completed failure https://example.invalid/run/2"
+refuses "a failed run fails even when missing runs are recorded" env_run_check
+GH_ANSWER="in_progress null https://example.invalid/run/3"
+refuses "a running run fails even when missing runs are recorded" env_run_check
+if [ "$(cat "$missing")" = nightly.yml ]; then ok "only the missing workflow is recorded"; else bad "recorded: $(cat "$missing")"; fi
+unset -f gh
 
 echo
 echo "$pass_count passed, $fail_count failed"

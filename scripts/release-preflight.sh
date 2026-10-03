@@ -27,6 +27,13 @@
 # commit itself, so what is checked is what will be released.
 #
 # Writes `prerelease=true|false` to $GITHUB_OUTPUT when it is set.
+#
+# Exit status: 0 passes; 1 fails. With RELEASE_PREFLIGHT_MISSING_RUNS set to
+# a file path, a workflow that has *no run at all* for the commit does not
+# fail check 5: its file name is appended to that file, every other check
+# still runs, and the script exits 3 when everything else passed. A run that
+# failed, or has not finished, still fails, because starting another would
+# hide it. scripts/release.sh uses this to offer starting Nightly.
 
 set -euo pipefail
 export LC_ALL=C
@@ -147,7 +154,14 @@ latest_run_succeeded() {
         fail "could not read $workflow runs for $commit"
     case "$result" in
         "completed success "*) echo "  $workflow: success (${result##* })" ;;
-        none) fail "$workflow has no run for $commit — start one: gh workflow run $workflow --ref main" ;;
+        none)
+            if [ -n "${RELEASE_PREFLIGHT_MISSING_RUNS:-}" ]; then
+                echo "$workflow" >>"$RELEASE_PREFLIGHT_MISSING_RUNS"
+                echo "  $workflow: no run for $commit"
+                return 0
+            fi
+            fail "$workflow has no run for $commit — start one: gh workflow run $workflow --ref main"
+            ;;
         *) fail "the latest $workflow run for $commit is not a success: $result" ;;
     esac
 }
@@ -184,6 +198,11 @@ main() {
     git show "$commit:release-notes.md" >"$tmp/release-notes.md" 2>/dev/null || : >"$tmp/release-notes.md"
     check_changelog "$version" "$tmp/CHANGELOG.md"
     check_notes "$version" "$tmp/release-notes.md"
+
+    if [ -n "${RELEASE_PREFLIGHT_MISSING_RUNS:-}" ] && [ -s "$RELEASE_PREFLIGHT_MISSING_RUNS" ]; then
+        echo "release preflight: everything else passes; no run yet for $commit: $(tr '\n' ' ' <"$RELEASE_PREFLIGHT_MISSING_RUNS")" >&2
+        exit 3
+    fi
 
     local prerelease=false
     is_prerelease "$version" && prerelease=true

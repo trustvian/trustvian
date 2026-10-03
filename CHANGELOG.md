@@ -2160,6 +2160,10 @@ Entries are grouped by capability. Within a group, `Added` comes first, then
     - a commit that is not main's head, or whose CI or Nightly did not pass;
     - a stable version without its CHANGELOG section;
     - release notes that do not name the version.
+
+    When the commit has no Nightly run yet, `make release` offers to start one
+    on `main` and waits for it (a dry run does so without asking). A failed or
+    unfinished run is reported, never started over.
   - **Nothing is public before verify passes.**
     - The image is pushed by digest, with no tag, and signed.
     - Every archive and `checksums.txt` gets SLSA build provenance.

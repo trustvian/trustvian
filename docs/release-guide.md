@@ -178,9 +178,19 @@ refuse, because the tag would already exist.
 
    Preflight refuses a stable version without the section, and notes that do
    not name the version, so last release's notes cannot be published again.
-2. **CI and Nightly are green on main's head.** CI runs on the merge. Nightly
-   runs on a schedule; if its last run is older than the merge, start one:
-   `gh workflow run nightly.yml --ref main`, then wait for it.
+2. **CI and Nightly are green on main's head.** Preflight reads the latest run
+   of each for that exact commit:
+   - **No Nightly run yet**, the usual case after a merge: `make release` offers
+     to start one on `main`, waits for it with `gh run watch --exit-status`, and
+     runs preflight again. With `DRY_RUN=1`, or in a shell with no terminal, it
+     starts Nightly without asking. A real release always needs a terminal, so
+     in practice that means a dry run.
+   - **No CI run yet:** CI starts on the merge to `main` and has no manual
+     trigger, so `make release` stops and asks you to wait for it.
+   - **A failed or unfinished run of either** is reported with its link, never
+     started over: a second run would hide the first one's result. Investigate
+     it; if it was a flake, *Re-run failed jobs* on that run, then run
+     `make release` again.
 3. **You are on `main`, clean, and equal to `origin/main`.** The release is
    always `origin/main`'s head.
 
@@ -250,7 +260,7 @@ release notes naming the version.
 
 | Fails in | What exists | What to do |
 |---|---|---|
-| Local checks or preflight | Nothing | Fix what it names (merge, pull, start Nightly, update the notes), then run it again |
+| Local checks or preflight | Nothing, or a Nightly run it started | Fix what it names (merge, pull, wait for CI, investigate a failed run, update the notes), then run it again |
 | gates, build, image or verify | At most an untagged, signed image digest, and attestations for archives nobody received | Fix on a new commit, by pull request, then run `make release` again for the **same version**. No tag was created, so no number is burned |
 | You answer no | Same as above; the run is cancelled | Run it again when ready |
 | publish, waiting for the tag | Nothing public | No tag was created within an hour. Run `make release` again; it starts a fresh run |

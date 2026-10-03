@@ -178,8 +178,11 @@ a build in front of users, not for testing the pipeline.
 
 - Releasing is `make release VERSION=vX.Y.Z`, plus one confirmation. A dry run
   is the same command with `DRY_RUN=1`.
-- Every release now needs a green Nightly on its exact commit. Preflight
-  refuses otherwise, and the error names `gh workflow run nightly.yml`.
+- Every release now needs a green Nightly on its exact commit. When the
+  commit has no Nightly run yet, `make release` starts one on `main` and waits
+  for it; it asks first, except for a dry run. A failed or unfinished CI or
+  Nightly run is reported and never started over, so a flaky failure needs a
+  person to look at it and re-run it.
 - Only a version newer than every existing tag can be released. A patch to an
   older line (`release/X.Y`, `docs/governance/branching.md`) is not supported
   by this path. It would need its own preflight rule when it first happens.

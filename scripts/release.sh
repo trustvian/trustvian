@@ -18,7 +18,11 @@
 #
 # Steps:
 #   1. Local checks: on main, clean, equal to origin/main, then the same
-#      preflight release.yml runs (scripts/release-preflight.sh).
+#      preflight release.yml runs (scripts/release-preflight.sh). If Nightly
+#      has no run for the commit, offer to start it on main and wait for it
+#      (without asking for DRY_RUN or a shell with no terminal), then run
+#      preflight again. A failed or unfinished CI or Nightly run is reported,
+#      never started over; a missing CI run is waited for, never dispatched.
 #   2. Dispatch release.yml with commit = origin/main's head, and find the run.
 #   3. Wait for every job up to `verify` to pass. A failure stops here, with
 #      the failed job's log link, and nothing has been published.
@@ -66,13 +70,80 @@ git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main --tags
 commit="$(git rev-parse origin/main)"
 [ "$(git rev-parse HEAD)" = "$commit" ] || die "main is not equal to origin/main ($commit); pull or push first"
 
-RELEASE_REPO="$REPO" ./scripts/release-preflight.sh "$version" "$commit"
-
 # A real release needs a person at a terminal for step 4. Refuse now, before
 # anything is dispatched, rather than after verification.
 if ! $dry_run && ! [ -t 0 ]; then
     die "a release needs an interactive terminal to confirm the tag; DRY_RUN=1 runs without one"
 fi
+
+# start_nightly: dispatch nightly.yml on main for $commit, wait for it to
+# succeed, or die with its link.
+#
+# Only for a commit with *no* Nightly run: preflight reports a failed or
+# unfinished run as a failure, and this is never reached for one. Nightly runs
+# on main's head, so the run is checked to be at $commit, in case main moved.
+start_nightly() {
+    local known ids id sha nightly_id="" nightly_url
+    if ! $dry_run && [ -t 0 ]; then
+        printf 'release: Nightly has no run for %s. Start it on main and wait for it? [y/N] ' "$commit"
+        local answer=""
+        read -r answer </dev/tty || true
+        if [ "$answer" != y ] && [ "$answer" != Y ]; then
+            die "not started; start it yourself with gh workflow run nightly.yml --ref main, then run make release again"
+        fi
+    else
+        echo "release: Nightly has no run for $commit; starting it on main"
+    fi
+
+    known="$(gh run list --repo "$REPO" --workflow nightly.yml --event workflow_dispatch --limit 50 \
+        --json databaseId --jq 'map(.databaseId) | join(" ")')"
+    gh workflow run nightly.yml --repo "$REPO" --ref main
+    for _ in $(seq 1 30); do
+        ids="$(gh run list --repo "$REPO" --workflow nightly.yml --event workflow_dispatch --limit 50 \
+            --json databaseId,headSha --jq 'map("\(.databaseId):\(.headSha)") | join(" ")')"
+        for id in $ids; do
+            sha="${id#*:}"
+            id="${id%%:*}"
+            if [[ " $known " != *" $id "* ]]; then
+                [ "$sha" = "$commit" ] ||
+                    die "main moved to $sha before Nightly started; run make release again"
+                nightly_id="$id"
+                break
+            fi
+        done
+        [ -n "$nightly_id" ] && break
+        sleep 2
+    done
+    [ -n "$nightly_id" ] || die "the Nightly run did not appear within a minute; see gh run list --workflow nightly.yml"
+    nightly_url="https://github.com/$REPO/actions/runs/$nightly_id"
+    echo "release: waiting for Nightly: $nightly_url"
+    gh run watch "$nightly_id" --repo "$REPO" --interval 30 --exit-status >/dev/null ||
+        die "Nightly failed for $commit: $nightly_url"
+    echo "release: Nightly passed"
+}
+
+# Preflight, reporting a workflow with no run for this commit separately
+# (exit 3) from any other failure.
+missing_runs="$(mktemp)"
+trap 'rm -f "$missing_runs"' EXIT
+set +e
+RELEASE_REPO="$REPO" RELEASE_PREFLIGHT_MISSING_RUNS="$missing_runs" \
+    ./scripts/release-preflight.sh "$version" "$commit"
+preflight=$?
+set -e
+case "$preflight" in
+    0) ;;
+    3)
+        # CI runs on the push to main and cannot be dispatched; it is only
+        # ever waited for, never started by this script.
+        if grep -qx ci.yml "$missing_runs"; then
+            die "CI has no run for $commit yet. It starts on the merge to main; wait for it to finish, then run make release again"
+        fi
+        start_nightly
+        RELEASE_REPO="$REPO" ./scripts/release-preflight.sh "$version" "$commit"
+        ;;
+    *) exit 1 ;;
+esac
 
 # One release at a time. GitHub's concurrency group would otherwise cancel an
 # older *queued* run when this one is dispatched, even with cancel-in-progress
