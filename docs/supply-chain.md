@@ -274,7 +274,8 @@ binaries. Recorded here so it is a known gap rather than an assumed guarantee.
 
 ## Verifying a published image
 
-These commands apply once a release exists.
+These commands apply once a release exists. Use **Cosign v3 or newer** (see
+above).
 
 ```bash
 IMAGE=ghcr.io/trustvian/trustvian-collector
@@ -282,14 +283,20 @@ TAG=v0.9.0   # substitute a real released tag
 
 # Resolve the immutable digest, and use it for everything below.
 DIGEST=$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{.Manifest.Digest}}')
+# Without Docker: DIGEST=$(crane digest "$IMAGE:$TAG")
 
-# Signature: keyless, so verification asserts *which workflow* signed it.
+# The commit the tag points at. No clone needed.
+SHA=$(git ls-remote https://github.com/trustvian/trustvian "refs/tags/$TAG^{}" | cut -f1)
+
+# Signature: keyless, so verification asserts *which workflow run* signed it.
 cosign verify "$IMAGE@$DIGEST" \
-  --certificate-identity-regexp '^https://github.com/trustvian/trustvian/' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  --certificate-identity "https://github.com/trustvian/trustvian/.github/workflows/release.yml@refs/tags/$TAG" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-repository trustvian/trustvian \
+  --certificate-github-workflow-trigger push \
+  --certificate-github-workflow-sha "$SHA"
 
 # SBOM and provenance attestations.
-cosign download attestation "$IMAGE@$DIGEST" | jq -r '.payload' | base64 -d | jq .predicateType
 docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{ json .SBOM }}'
 docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{ json .Provenance }}'
 
@@ -297,10 +304,33 @@ docker buildx imagetools inspect "$IMAGE@$DIGEST" --format '{{ json .Provenance 
 docker buildx imagetools inspect "$IMAGE:$TAG"
 ```
 
-The `--certificate-identity-regexp` is the part that matters: a keyless
-signature is only meaningful together with an assertion about *who* signed,
-and pinning it to this repository's workflows is what makes the check
-useful.
+**The identity is the part that matters.** A keyless signature means nothing
+without an assertion about *who* signed. Each flag pins one property of the
+certificate Fulcio issued to the signing run:
+
+| Flag | Pins | A signature it rejects |
+|---|---|---|
+| `--certificate-identity` | the workflow file, `release.yml`, and the ref it ran on, `refs/tags/$TAG` | one made by another workflow file in this repository, from a branch, or for a different tag |
+| `--certificate-oidc-issuer` | GitHub Actions as the token issuer | one from any other OIDC provider |
+| `--certificate-github-workflow-repository` | `trustvian/trustvian` | one from a fork or a renamed copy |
+| `--certificate-github-workflow-trigger` | the `push` event, the only one `release.yml` runs on | one from a manual or scheduled run |
+| `--certificate-github-workflow-sha` | the commit the tag points at | one from a tag that was moved to another commit |
+
+**Why the regular expression is weaker.** Earlier versions of this guide
+matched `--certificate-identity-regexp '^https://github.com/trustvian/trustvian/'`.
+That accepts a certificate from *any* workflow file in the repository, on *any*
+ref, from *any* trigger. Someone who can push a branch that adds a workflow
+with `id-token: write` could therefore sign an image that passes, without
+running the release pipeline or its gates. It would also accept a release
+image signed for a different tag. The exact identity accepts only `release.yml`,
+run by a tag push, for this tag, at this tag's commit.
+
+**Attestations are BuildKit's, not Cosign's.** `release.yml` builds with
+`--sbom=true --provenance=mode=max`. That attaches the SBOM and the provenance
+to the image index as BuildKit attestation manifests, which
+`docker buildx imagetools inspect` reads. Cosign signs the digest but attaches
+no attestation of its own, so `cosign download attestation` finds none for this
+image.
 
 ## Local verification
 
