@@ -195,13 +195,16 @@ which is why this step asks for green runs of those on the same commit.
 ### 3. Prepare the notes
 
 Release notes come from [`CHANGELOG.md`](../CHANGELOG.md), not from a
-generated commit dump. Rename the `## Unreleased` heading to the version
-being released — the changelog's own convention is that this rename
-happens only once a real tag exists, so it is part of releasing, not part
-of preparing.
+generated commit dump. Through `v0.9.0`, the `## Unreleased` heading was
+renamed only after the tag existed. From `v0.10.0` on, the release-preparation
+pull request cuts the version's section, with an empty `## Unreleased` above
+it. The tagged commit then carries the changelog the release describes. If the
+tag is abandoned, rename the section back.
 
 To control the release body exactly, put it in `release-notes.md` at the
-repository root before tagging; the workflow uses it when present.
+repository root before tagging; the workflow uses it when present. The file
+stays on `main` after the tag, so the next release must replace it or delete
+it. Otherwise that release publishes this one's notes.
 
 ### 4. Choose the version
 
@@ -370,7 +373,9 @@ these artifacts; substitute a real released version.
 
 ## After the release
 
-- Rename `## Unreleased` in `CHANGELOG.md` to the released version.
+- Rename `## Unreleased` in `CHANGELOG.md` to the released version, unless
+  the preparation pull request already cut the section.
+- Delete `release-notes.md`, or replace it in the next release's preparation.
 - Update milestone status in [`docs/ROADMAP.md`](ROADMAP.md).
 - Leave [`README.md`](../README.md) alone — it is deliberately evergreen and
   carries no version status.
