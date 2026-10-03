@@ -96,7 +96,8 @@ refuses "missing notes" check_notes v0.10.0 "$tmp/absent.md"
 # --- CI and Nightly runs, through a stubbed gh ------------------------------
 # gh is replaced by a function that answers with $GH_ANSWER, the shape the real
 # call's --jq produces: "none", or "<status> <conclusion> <url>".
-# shellcheck disable=SC2329 # invoked by latest_run_succeeded, in place of gh
+# Older shellcheck reports this as SC2317, newer as SC2329.
+# shellcheck disable=SC2317,SC2329 # invoked by latest_run_succeeded, in place of gh
 gh() { echo "$GH_ANSWER"; }
 missing="$tmp/missing"
 run_check() { latest_run_succeeded nightly.yml 0123456789abcdef0123456789abcdef01234567; }
