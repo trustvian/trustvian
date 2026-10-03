@@ -8,6 +8,61 @@ actually depend on.
 
 ## Unreleased
 
+### Changed
+
+- **Releases are agent-operated and approved on GitHub; versions are derived,
+  not typed**
+  ([ADR 0060](docs/adr/0060-agent-operated-releases-with-environment-approval.md),
+  proposed; [runbook](docs/release-runbook.md)).
+  - **The approval is a GitHub environment.**
+    - Only `publish` runs in `release`, whose required reviewers are the
+      Organization Admins. Every other job runs in `release-build`.
+    - A new **Approval summary** job shows the approver the version and its
+      derivation, the commit, the image digest, every check's result and the
+      CHANGELOG section.
+    - After approval, `publish` creates the annotated tag at the verified
+      commit itself, then the release and the image tags. The 60-minute wait
+      for a human-created tag is gone.
+  - **`make release` is safe for an agent.**
+    - It needs no terminal, asks nothing, creates no tag and never approves.
+    - It dispatches, prints `approve at <run URL> (GitHub web or mobile)`,
+      and watches until the release is published, rejected or failed.
+      `NO_WAIT=1` returns after dispatch.
+    - A missing Nightly run is started on `main` and waited for. A failed or
+      unfinished one is reported, never started over.
+  - **Versions are derived** (`scripts/release-version.sh`).
+    - `make release-prep BUMP=patch|minor TITLE="…"` cuts the CHANGELOG
+      section and writes `release-notes.md` from a template that carries the
+      known limits. It then opens the prep PR, and never tags.
+      `VERSION=v1.0.0` needs the version typed again.
+    - `make release` releases the version the merged CHANGELOG declares;
+      `PRE=rc` releases its next candidate, counted so that rc.10 follows rc.9.
+    - Preflight requires exactly one bump above the newest stable tag.
+      Candidates may use their base version's notes.
+  - **The tag ruleset changes, once a human applies it**
+    (`scripts/release-setup.sh`).
+    - Update, deletion and force-move of `v*` tags are restricted with no
+      bypass actor at all.
+    - Creation is no longer restricted. GitHub refuses the Actions app as a
+      bypass actor in an organization's repository, and a tag nobody approved
+      publishes nothing.
+  - **Least privilege for agents.**
+    - An agent runs with its own fine-grained token: Actions, Contents and
+      Pull requests read and write, and no Deployments, Administration,
+      Environments or Workflows permission.
+    - **Open decision before applying the ruleset change:** without restricted
+      creation, anyone with Contents: write can publish a release through
+      GitHub's release API without approval (ADR 0060 § 3).
+    - `.claude/settings.json` adds deny rules for approving deployments,
+      tagging, editing environments and rulesets, and merging.
+    - `.claude/agents/release-operator.md` and `/release
+      patch|minor|rc|stable` run the runbook in Claude Code. They never merge
+      and never approve.
+  - **`docs/release-runbook.md` is the procedure**, with the issue template
+    `.github/ISSUE_TEMPLATE/release.md`. `scripts/runbook_drift_test.go`
+    fails when it names a make target, variable, script, message or link that
+    does not exist.
+
 ## v0.10.0 — Developer Preview
 
 The first release a developer outside this project can pick up and use for

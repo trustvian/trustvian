@@ -121,6 +121,15 @@ Never change the repository default branch away from `main`.
 
 Never delete, move, or overwrite release tags.
 
+Never approve or reject a deployment, above all the `release` environment:
+that approval is the human decision to publish a release. Never create, edit
+or delete a GitHub Release or a `v*` tag yourself; the release workflow does,
+after that approval. Claude may run a
+release (`make release-prep`, `make release`, `gh run rerun` on a release run)
+by following `docs/release-runbook.md`, and stops at printing where a human
+approves. Run it with the agent's own token, which has no Deployments,
+Administration or Environments permission (`docs/governance/agents.md`).
+
 Never use `--force` or `--force-with-lease` against protected branches or
 tags.
 

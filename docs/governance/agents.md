@@ -59,8 +59,12 @@ AI Agent
 - Open, update, and comment on pull requests — then stop and hand them to a
   human Organization Admin for the merge.
 - Read workflow runs, logs, and check results.
-- Prepare a release: validation, tests, release notes, a release pull
-  request, artifact and signature verification.
+- Run a release ([ADR 0060](../adr/0060-agent-operated-releases-with-environment-approval.md),
+  [runbook](../release-runbook.md)): `make release-prep`, `make release` (a
+  dry run or a real one), `gh run rerun` on a release run, and the
+  verification of what was published. Publishing waits for a human
+  Organization Admin to approve the `release` environment; the agent prints
+  where, and stops there.
 - Propose governance changes as documentation and as an explicit,
   human-reviewed plan.
 
@@ -74,9 +78,12 @@ AI Agent
   ruleset bypass actor — or **using** an existing bypass entry, including the
   Organization Admin bypass, when running under a credential that holds it.
 - Changing the repository default branch away from `main`.
+- Approving or rejecting a deployment — above all the `release` environment,
+  which is the human decision to publish — or running with a token that has
+  Deployments, Administration or Environments permission.
 - Creating, deleting, moving, or force-updating a release tag; reusing a
-  failed release candidate's version number. Tag creation is restricted to a
-  human Organization Admin.
+  published release candidate's version number. The release workflow creates
+  the tag, and only after a human approved publishing.
 - Deleting a GitHub Release, or repairing a failed release by mutating
   published history.
 - Approving or merging **any** pull request into `main` — its own or anyone
@@ -122,11 +129,13 @@ repository alone:
 | Metadata | Read | Mandatory for any fine-grained token |
 | Contents | Read and write | Create and push short-lived branches — **also authorizes merging**, see below |
 | Pull requests | Read and write | Open and update pull requests |
-| Actions | Read | Inspect workflow runs and check results |
+| Actions | Read and write | Inspect runs, dispatch `release.yml` and Nightly, re-run failed jobs |
 | Packages | Read | Verify published container images |
 | Issues | Read and write | Only if the agent triages issues |
 | Administration | **None** | The whole point |
-| Secrets, Environments, Webhooks | **None** | — |
+| Deployments | **None** | Approving a pending deployment needs read access to deployments; without it the agent cannot approve a release |
+| Workflows | **None** | Without it the token cannot push changes to `.github/workflows/`, such as a copy of `release.yml` without the approval gate |
+| Secrets, Environments, Webhooks | **None** | Environments would let it change who approves |
 
 A classic personal access token is not a substitute. Classic `repo` is a
 single scope covering code, settings, and — for a user who administers the
@@ -135,7 +144,26 @@ rewrite governance," which is precisely the line this policy needs.
 
 Credential separation removes administration from the agent. It does **not**,
 by itself, remove the ability to merge — see the analysis below, which
-corrects an earlier claim in this document.
+corrects an earlier claim in this document — nor, since tag creation is not
+restricted ([ADR 0060 § 3](../adr/0060-agent-operated-releases-with-environment-approval.md#3-the-tag-ruleset-creation-is-no-longer-restricted)),
+the ability to create a `v*` tag, or to publish a release through GitHub's
+release API without approval. Both are prohibited above, and the deny rules
+block the obvious commands. ADR 0060 § 3 records the release-API gap as an
+open decision.
+
+**Creating the token and using it.** The steps are in the
+[release runbook § 0](../release-runbook.md#an-agents-token): a fine-grained
+token for `trustvian/trustvian` only, with Actions, Contents and Pull requests
+read and write and nothing else beyond Metadata. Start the agent's session
+with it, for that session only:
+
+```bash
+GH_TOKEN="$(cat ~/.config/trustvian/agent-token)" claude
+```
+
+`.claude/settings.json` also denies the obvious commands for approving a
+deployment, creating or pushing a tag, editing environments or rulesets, and
+merging. That is defense in depth; the token is the boundary.
 
 > **Known limitation.** When an agent runs with a human administrator's
 > unrestricted credential, GitHub cannot distinguish the agent's API calls
@@ -287,7 +315,9 @@ same as anyone else's.
 
 ## Release Safety
 
-An agent may prepare a release and verify one. It may not repair one.
+An agent may run a release and verify one: prepare it, dispatch it, re-run a
+failed job, and follow the [runbook](../release-runbook.md). It may not
+approve its publication, and it may not repair a published one.
 
 ```text
 failed release candidate
@@ -317,7 +347,7 @@ Workflow privilege is scoped per job, not per repository:
 |---|---|---|
 | `ci.yml` | push / PR on `main` | `contents: read` only — no secrets, nothing to leak to a fork pull request |
 | `nightly.yml` | schedule, manual | `contents: read` only |
-| `release.yml` | `workflow_dispatch` from `main` (`make release`) | `contents: read` by default; `build` adds `id-token: write` and `attestations: write`, `image` adds `packages: write` and `id-token: write` for a digest-only push and keyless signing, and only `publish` adds `contents: write` (with `packages: write` to tag the verified digest) |
+| `release.yml` | `workflow_dispatch` from `main` (`make release`) | `contents: read` by default; `build` adds `id-token: write` and `attestations: write`, `image` adds `packages: write` and `id-token: write` for a digest-only push and keyless signing, and only `publish` adds `contents: write` (with `packages: write` to tag the verified digest). Every job runs in the `release-build` environment except `publish`, which runs in `release` and waits for an Organization Admin's approval, then creates the tag |
 
 Rules for changing this:
 
@@ -361,6 +391,7 @@ AI agents and automated tools must never:
 - add themselves as ruleset bypass actors;
 - change the default branch away from `main`;
 - delete or move release tags;
+- approve a deployment, or hold a token that can;
 - delete releases to repair failed releases;
 - bypass required human review.
 

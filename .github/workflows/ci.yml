@@ -606,7 +606,7 @@ jobs:
   release-tooling:
     name: Release tooling
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v7
@@ -614,15 +614,30 @@ jobs:
           # No token in .git/config: nothing after checkout needs one.
           persist-credentials: false
 
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - name: Test the release preflight
         run: ./scripts/test-release-preflight.sh
+
+      - name: Test version derivation
+        run: ./scripts/test-release-version.sh
+
+      - name: The release workflow and the runbook match the code
+        # Structural tests of release.yml and release.sh, and the runbook's
+        # make targets, scripts, quoted messages and links.
+        run: go test ./scripts -run 'Release|Publish|Pinned|Digest|SigningIdentity|Approver|Runbook' -count=1
 
       - name: Lint the release scripts
         # shellcheck ships on GitHub's Ubuntu runners.
         run: |
           shellcheck --version | head -n 2
           shellcheck -x scripts/release.sh scripts/release-preflight.sh \
-            scripts/release-setup.sh scripts/test-release-preflight.sh
+            scripts/release-setup.sh scripts/test-release-preflight.sh \
+            scripts/release-version.sh scripts/test-release-version.sh \
+            scripts/release-prep.sh
 
   # ---------------------------------------------------------------------
   # Pull request title: the squash commit subject, and therefore the only

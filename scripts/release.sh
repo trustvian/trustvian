@@ -1,39 +1,34 @@
 #!/usr/bin/env bash
 #
-# Release Trustvian with one command.
+# Release Trustvian with one command. Safe for an AI agent to run.
 #
-#   make release VERSION=v0.10.0              # or: ./scripts/release.sh v0.10.0
-#   make release VERSION=v0.10.0 DRY_RUN=1    # build, sign, verify; publish nothing
+#   make release                     # the version CHANGELOG.md declares
+#   make release PRE=rc              # its next release candidate
+#   make release VERSION=vX.Y.Z      # explicit, validated the same way
+#   make release DRY_RUN=1           # build, sign, verify; publish nothing
+#   make release NO_WAIT=1           # dispatch, print the run URL, return
+#   ./scripts/release.sh [--no-wait]
 #
-# Run by a human Organization Admin, from a clean main that equals origin/main.
-# It needs only an authenticated `gh` and git. It builds nothing and holds no
-# key. Its one write is the release tag: the v* ruleset lets only an
-# Organization Admin create one (docs/governance/releases.md). This script
-# creates it, through the API, after the workflow has built, signed and
-# verified everything, and only once you confirm.
-#
-# An AI agent must never run this script except with DRY_RUN=1: creating a
-# v* tag is reserved to a human, and an agent may not use the admin bypass
-# even when its credential holds it (docs/governance/agents.md).
+# It needs only an authenticated `gh` and git. It builds nothing, holds no
+# key, never creates or pushes a tag, and never approves a deployment.
+# Publishing waits on GitHub for a required reviewer of the `release`
+# environment (an Organization Admin) to approve it, in the web UI or the
+# mobile app. The workflow's publish job then creates the tag itself.
 #
 # Steps:
-#   1. Local checks: on main, clean, equal to origin/main, then the same
-#      preflight release.yml runs (scripts/release-preflight.sh). If Nightly
-#      has no run for the commit, offer to start it on main and wait for it
-#      (without asking for DRY_RUN or a shell with no terminal), then run
-#      preflight again. A failed or unfinished CI or Nightly run is reported,
+#   1. Local checks: on main, clean, equal to origin/main. Resolve the version
+#      (scripts/release-version.sh) and print it, with how it was derived,
+#      before anything else. Run the same preflight release.yml runs. When
+#      Nightly has no run for the commit, start one on main and wait for it:
+#      ask first in an interactive shell, just do it under DRY_RUN or without
+#      a terminal. A failed or unfinished CI or Nightly run is reported,
 #      never started over; a missing CI run is waited for, never dispatched.
-#   2. Dispatch release.yml with commit = origin/main's head, and find the run.
-#   3. Wait for every job up to `verify` to pass. A failure stops here, with
-#      the failed job's log link, and nothing has been published.
-#   4. Unless DRY_RUN: confirm, create the annotated tag at that commit, and
-#      let `publish` finish.
-#   5. Print the release URL, or which job failed and its log link.
+#   2. Dispatch release.yml with commit = origin/main's head.
+#   3. Watch it. When publish is waiting for approval, print where to approve
+#      and keep watching until it is published, rejected or failed.
 #
-# The confirmation in step 4 reads from a terminal and cannot be skipped: a
-# shell with no terminal (CI, an agent's tool call) can dry-run, never release.
-# See docs/release-guide.md and
-# docs/adr/0059-releases-are-dispatched-verified-then-published.md.
+# See docs/release-runbook.md (the procedure) and
+# docs/adr/0060-agent-operated-releases-with-environment-approval.md.
 
 set -euo pipefail
 
@@ -42,22 +37,21 @@ cd "$(dirname "$0")/.."
 readonly REPO="${RELEASE_REPO:-trustvian/trustvian}"
 readonly WORKFLOW=release.yml
 readonly POLL_SECONDS=20
-# The jobs that must pass before a tag may exist, as a jq array literal: gh's
-# --jq takes no --arg, and these names are constants.
-readonly VERIFIED_JOBS='["Preflight","Gates","Build archives","Container image","Verify (ubuntu-latest)","Verify (macos-latest)"]'
 
 die() {
     echo "release: $*" >&2
     exit 1
 }
 
-version="${1:-${VERSION:-}}"
-[ -n "$version" ] || die "usage: make release VERSION=vX.Y.Z [DRY_RUN=1]"
-dry_run=false
-case "${DRY_RUN:-}" in
-    "" | 0 | false) ;;
-    *) dry_run=true ;;
+no_wait=false
+case "${1:-}" in
+    "") ;;
+    --no-wait) no_wait=true ;;
+    *) die "usage: release.sh [--no-wait]   (version from VERSION, PRE, DRY_RUN in the environment)" ;;
 esac
+case "${NO_WAIT:-}" in "" | 0 | false) ;; *) no_wait=true ;; esac
+dry_run=false
+case "${DRY_RUN:-}" in "" | 0 | false) ;; *) dry_run=true ;; esac
 
 command -v gh >/dev/null || die "gh is required: https://cli.github.com"
 gh auth status >/dev/null 2>&1 || die "gh is not authenticated: run gh auth login"
@@ -70,11 +64,19 @@ git fetch --quiet origin +refs/heads/main:refs/remotes/origin/main --tags
 commit="$(git rev-parse origin/main)"
 [ "$(git rev-parse HEAD)" = "$commit" ] || die "main is not equal to origin/main ($commit); pull or push first"
 
-# A real release needs a person at a terminal for step 4. Refuse now, before
-# anything is dispatched, rather than after verification.
-if ! $dry_run && ! [ -t 0 ]; then
-    die "a release needs an interactive terminal to confirm the tag; DRY_RUN=1 runs without one"
-fi
+# The version, and how it was derived, before anything else happens.
+resolved="$(RELEASE_REPO="$REPO" ./scripts/release-version.sh resolve "$commit")"
+version="$(sed -n 1p <<<"$resolved")"
+derivation="$(sed -n 2p <<<"$resolved")"
+echo "release: $version — $derivation"
+$dry_run && echo "release: dry run: build, sign and verify; nothing will be published"
+
+# One release at a time. GitHub's concurrency group would otherwise cancel an
+# older *queued* run when this one is dispatched, even with cancel-in-progress
+# off, so refuse rather than displace it.
+active="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 20 --json status,url \
+    --jq '[.[] | select(.status != "completed")] | map(.url) | join(" ")')"
+[ -z "$active" ] || die "another release run is not finished: $active"
 
 # start_nightly: dispatch nightly.yml on main for $commit, wait for it to
 # succeed, or die with its link.
@@ -145,13 +147,6 @@ case "$preflight" in
     *) exit 1 ;;
 esac
 
-# One release at a time. GitHub's concurrency group would otherwise cancel an
-# older *queued* run when this one is dispatched, even with cancel-in-progress
-# off, so refuse rather than displace it.
-active="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 20 --json status,url \
-    --jq '[.[] | select(.status != "completed")] | map(.url) | join(" ")')"
-[ -z "$active" ] || die "another release run is not finished: $active"
-
 # --- 2. Dispatch ---------------------------------------------------------------
 
 title="Release $version at $commit"
@@ -162,7 +157,7 @@ known="$(gh run list --repo "$REPO" --workflow "$WORKFLOW" --event workflow_disp
     --json databaseId,displayTitle \
     --jq "map(select(.displayTitle == \"$title\") | .databaseId) | join(\" \")")"
 gh workflow run "$WORKFLOW" --repo "$REPO" --ref main \
-    -f version="$version" -f commit="$commit" -f dry_run="$dry_run"
+    -f version="$version" -f commit="$commit" -f dry_run="$dry_run" -f derivation="$derivation"
 echo "release: dispatched $title"
 
 run_id=""
@@ -183,6 +178,15 @@ done
 run_url="https://github.com/$REPO/actions/runs/$run_id"
 echo "release: run $run_url"
 
+if $no_wait; then
+    if $dry_run; then
+        echo "release: not waiting; follow it at $run_url"
+    else
+        echo "release: not waiting; when verification passes, approve at $run_url (GitHub web or mobile)"
+    fi
+    exit 0
+fi
+
 report_failure() {
     echo "release: $1" >&2
     gh run view "$run_id" --repo "$REPO" --json jobs \
@@ -192,61 +196,58 @@ report_failure() {
     exit 1
 }
 
+# --- 3. Watch ---------------------------------------------------------------------
+
+# The run's status is "waiting" while publish waits for a reviewer of the
+# `release` environment. Read from the run itself: it needs no Deployments
+# permission, which an agent's token deliberately lacks.
+announced=false
+lookup_failures=0
+while :; do
+    # A gh that keeps failing (token expired, access revoked) must not look
+    # like a run that is still waiting: ten failed lookups in a row stop the
+    # watch. The run itself is unaffected; approval can take as long as it
+    # takes.
+    if ! state="$(gh run view "$run_id" --repo "$REPO" --json status,conclusion \
+        --jq '"\(.status) \(.conclusion // "-")"')" || [ -z "$state" ]; then
+        lookup_failures=$((lookup_failures + 1))
+        [ "$lookup_failures" -lt 10 ] ||
+            die "lost contact with the run after $lookup_failures failed lookups; it continues on GitHub: $run_url"
+        sleep "$POLL_SECONDS"
+        continue
+    fi
+    lookup_failures=0
+    read -r status conclusion <<<"$state"
+    case "$status" in
+        completed) break ;;
+        waiting)
+            # A dry run skips publish, so it never waits for approval.
+            if ! $dry_run && ! $announced; then
+                echo "release: every check passed for $version at $commit"
+                echo "release: approve at $run_url (GitHub web or mobile)"
+                echo "release: an Organization Admin reviews the run's Approval summary and approves the 'release' deployment; waiting"
+                announced=true
+            fi
+            ;;
+    esac
+    sleep "$POLL_SECONDS"
+done
+
+if [ "$conclusion" != success ]; then
+    # A publish job that never ran a step was rejected, or not approved before
+    # GitHub gave up: nothing was tagged or published.
+    if $announced && [ "$(gh run view "$run_id" --repo "$REPO" --json jobs \
+        --jq '[.jobs[] | select(.name == "Publish" and .conclusion != "success" and ((.steps // []) | length) == 0)] | length')" != 0 ]; then
+        report_failure "the release deployment was rejected or not approved in time; nothing was published"
+    fi
+    report_failure "the run ended $conclusion; nothing is published unless the Publish job started (see docs/release-runbook.md § 4)"
+fi
+
 if $dry_run; then
-    gh run watch "$run_id" --repo "$REPO" --interval "$POLL_SECONDS" --exit-status >/dev/null ||
-        report_failure "the dry run failed; nothing was published"
     echo "release: dry run of $version passed: built, signed and verified; nothing published"
     echo "  run: $run_url"
     exit 0
 fi
-
-# --- 3. Wait for verification -------------------------------------------------
-
-echo "release: waiting for preflight, gates, build, image and verify"
-while :; do
-    # "<failed jobs> <run status> <verified jobs that succeeded>"
-    state="$(gh run view "$run_id" --repo "$REPO" --json status,jobs --jq "
-        ([.jobs[] | select(.conclusion == \"failure\" or .conclusion == \"cancelled\" or .conclusion == \"timed_out\")] | length) as \$failed
-        | ([.jobs[] | select(.conclusion == \"success\" and (.name as \$n | $VERIFIED_JOBS | index(\$n)))] | length) as \$ok
-        | \"\\(\$failed) \\(.status) \\(\$ok)\"")"
-    read -r failed status ok <<<"$state"
-    if [ "$failed" != 0 ] || [ "$status" = completed ]; then
-        report_failure "verification did not pass; nothing was published and no tag was created"
-    fi
-    [ "$ok" = 6 ] && break
-    sleep "$POLL_SECONDS"
-done
-echo "release: every check passed for $version at $commit"
-
-# --- 4. The tag ---------------------------------------------------------------
-
-me="$(gh api user --jq .login)"
-printf 'release: create the annotated tag %s at %s as %s, and publish? [y/N] ' "$version" "$commit" "$me"
-answer=""
-read -r answer </dev/tty || true
-if [ "$answer" != y ] && [ "$answer" != Y ]; then
-    gh run cancel "$run_id" --repo "$REPO" >/dev/null || true
-    die "not released; the run was cancelled and nothing was published"
-fi
-
-if existing="$(gh api "repos/$REPO/git/ref/tags/$version" --jq '"\(.object.type) \(.object.sha)"' 2>/dev/null)"; then
-    # A re-run after the tag was created: it must be the same tag.
-    read -r type object <<<"$existing"
-    [ "$type" = tag ] || die "$version exists and is not an annotated tag"
-    target="$(gh api "repos/$REPO/git/tags/$object" --jq .object.sha)"
-    [ "$target" = "$commit" ] || die "$version already exists at $target, not $commit"
-    echo "release: the tag $version already exists at $commit"
-else
-    tag_object="$(gh api "repos/$REPO/git/tags" \
-        -f tag="$version" -f message="Trustvian $version" -f object="$commit" -f type=commit --jq .sha)"
-    gh api "repos/$REPO/git/refs" -f ref="refs/tags/$version" -f sha="$tag_object" >/dev/null
-    echo "release: created the annotated tag $version at $commit"
-fi
-
-# --- 5. Publish -----------------------------------------------------------------
-
-gh run watch "$run_id" --repo "$REPO" --interval "$POLL_SECONDS" --exit-status >/dev/null ||
-    report_failure "publishing failed; re-run the failed jobs to finish it (each publish step is idempotent)"
 echo "release: $version is published"
 echo "  $(gh release view "$version" --repo "$REPO" --json url --jq .url)"
 echo "  run: $run_url"

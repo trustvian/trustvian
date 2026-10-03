@@ -7,10 +7,14 @@
 # digest is not a release. Only `publish` makes anything public, and only after
 # `verify` has passed on Linux and macOS.
 #
-# The release tag is the one step this workflow does not perform. The `v*`
-# ruleset lets only a human Organization Admin create a tag
-# (docs/governance/releases.md), so `publish` waits for it. scripts/release.sh,
-# run by that admin, creates it once `verify` has passed.
+# The human gate is the `release` environment. Every job up to `summary` runs
+# in `release-build` (main only, no reviewers). Only `publish` runs in
+# `release`, whose required reviewers are the Organization Admins: publish
+# waits there until one of them approves the deployment on GitHub, after
+# reading the summary job's page. Publish then creates the annotated tag at
+# the verified commit itself, the GitHub Release and the image tags.
+# scripts/release.sh never creates a tag and never approves anything, so an
+# agent may run it. See docs/adr/0060-agent-operated-releases-with-environment-approval.md.
 #
 # There is no tag-push trigger. Pushing a v* tag by hand starts nothing, and
 # the guide says so.
@@ -36,6 +40,11 @@ on:
         description: "Full commit SHA on main to release (must be main's head at dispatch)"
         required: true
         type: string
+      derivation:
+        description: "How the version was derived; shown to the approver (set by scripts/release.sh)"
+        required: false
+        type: string
+        default: ""
       dry_run:
         description: "Build, sign and verify everything, publish nothing"
         required: false
@@ -68,7 +77,7 @@ jobs:
     name: Preflight
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: release
+    environment: release-build
     permissions:
       contents: read
       actions: read
@@ -121,7 +130,7 @@ jobs:
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: release
+    environment: release-build
     permissions:
       contents: read
 
@@ -208,7 +217,7 @@ jobs:
     needs: gates
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: release
+    environment: release-build
     permissions:
       contents: read
       # Keyless signing of the build provenance, and storing it.
@@ -275,7 +284,7 @@ jobs:
     needs: gates
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    environment: release
+    environment: release-build
     permissions:
       contents: read
       packages: write
@@ -371,7 +380,7 @@ jobs:
     needs: [build, image]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    environment: release
+    environment: release-build
     permissions:
       contents: read
       attestations: read
@@ -518,13 +527,110 @@ jobs:
   # "Re-run failed jobs" finishes a partial publish instead of repeating or
   # contradicting it.
   # ---------------------------------------------------------------------
+  # ---------------------------------------------------------------------
+  # The page the approver reads before approving publish.
+  # ---------------------------------------------------------------------
+  summary:
+    name: Approval summary
+    needs: [preflight, gates, build, image, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: release-build
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.commit }}
+
+      - name: Write the approval summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DERIVATION: ${{ inputs.derivation }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
+          IMAGE: ${{ needs.image.outputs.image }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # The CHANGELOG section that declares the version (or, for a
+          # candidate, its base version), verbatim.
+          base="${VERSION%%-*}"
+          section="$(awk -v v="$base" '
+            $0 ~ "^## " v "( |$)" { seen = 1; print; next }
+            seen && /^## / { exit }
+            seen { print }
+          ' CHANGELOG.md)"
+          [ -n "$section" ] || section="(CHANGELOG.md has no ## $base section at this commit)"
+
+          # The derivation is free text from whoever dispatched the run, so it
+          # is shown as a single code span: newlines, pipes, backticks and
+          # angle brackets removed, at most 200 characters. It cannot end the
+          # table, add rows, or render a link or an image.
+          derivation="$(printf '%s' "${DERIVATION:-not recorded}" | tr '\r\n|`<>' '      ' | cut -c1-200)"
+
+          # A fence longer than any backtick run in the section, so the
+          # section cannot close it early.
+          longest="$(printf '%s\n' "$section" | { grep -o '``*' || true; } | awk '{ if (length > m) m = length } END { print m + 0 }')"
+          fence="$(printf '%*s' "$(( longest < 3 ? 4 : longest + 1 ))" '' | tr ' ' '`')"
+
+          # A major bump, above all leaving 0.x, is called out: it changes
+          # the compatibility promise (docs/compatibility.md).
+          # shellcheck source=/dev/null
+          source scripts/release-preflight.sh
+          tags="$(git ls-remote --tags --refs "https://github.com/$GITHUB_REPOSITORY" 'v*' | sed 's|.*refs/tags/||')"
+          # shellcheck disable=SC2086 # one tag per word
+          latest="$(latest_stable $tags)"
+          major_note=""
+          if [ -n "$latest" ] && [ "${base%%.*}" != "${latest%%.*}" ]; then
+            major_note="**Major release:** $latest → $base."
+            [[ "$latest" == v0.* ]] && major_note="$major_note It leaves 0.x: from here on the compatibility contract applies."
+          fi
+          {
+            if [ "$DRY_RUN" = true ]; then
+              echo "## Dry run of $VERSION: nothing will be published"
+            else
+              echo "## Approve publishing Trustvian $VERSION?"
+              echo
+              echo "Approving the \`release\` deployment of this run creates the annotated tag \`$VERSION\` at the commit below, publishes the GitHub Release$([ "$PRERELEASE" = true ] && echo ' as a **prerelease**'), and tags the verified image. It cannot be undone."
+            fi
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Version | \`$VERSION\`$([ "$PRERELEASE" = true ] && echo ' (prerelease)') |"
+            echo "| Commit | [\`${COMMIT:0:12}\`](https://github.com/$GITHUB_REPOSITORY/commit/$COMMIT) on \`main\` |"
+            echo "| Derived (as stated by the dispatcher) | \`$derivation\` |"
+            echo "| Newest stable tag | \`${latest:-none}\` |"
+            echo "| Image | \`$IMAGE@$DIGEST\` |"
+            echo
+            if [ -n "$major_note" ]; then
+              echo "> [!WARNING]"
+              echo "> $major_note"
+              echo
+            fi
+            echo "### Checks"
+            echo
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=50" \
+              --jq '.jobs[] | select(.name != "Approval summary" and .name != "Publish") | "- \(.name): **\(.conclusion // .status)**"'
+            echo
+            echo "### CHANGELOG"
+            echo
+            echo "${fence}markdown"
+            printf '%s\n' "$section"
+            echo "$fence"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   publish:
     name: Publish
-    needs: [preflight, gates, build, image, verify]
+    needs: [preflight, gates, build, image, verify, summary]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
-    # Includes the wait for a human to create the tag.
-    timeout-minutes: 75
+    timeout-minutes: 20
+    # The human gate: required reviewers (the Organization Admins) approve
+    # this deployment on GitHub before any step below runs.
     environment: release
     permissions:
       contents: write
@@ -537,37 +643,33 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.commit }}
 
-      - name: 1. Wait for the release tag
-        # Only a human Organization Admin can create a v* tag. scripts/release.sh
-        # creates it, as that admin, once verify has passed. This step waits for
-        # it, and refuses a tag that is not annotated or not at $COMMIT.
+      - name: 1. Create the release tag
+        # An annotated tag at exactly $COMMIT, created through the API as
+        # github-actions[bot], now that a person has approved. An existing tag
+        # is accepted only if it is that same annotated tag (a re-run);
+        # anything else stops here, before anything is published.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          deadline=$(( $(date +%s) + 3600 ))
-          while :; do
-            if ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" 2>/dev/null)"; then
-              type="$(jq -r .object.type <<<"$ref")"
-              if [ "$type" != tag ]; then
-                echo "::error::$VERSION is a lightweight tag; a release tag must be annotated"
-                exit 1
-              fi
-              target="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r .object.sha <<<"$ref")" \
-                --jq '"\(.object.type) \(.object.sha)"')"
-              if [ "$target" != "commit $COMMIT" ]; then
-                echo "::error::$VERSION points at '$target', not commit $COMMIT"
-                exit 1
-              fi
-              echo "ok: $VERSION is an annotated tag at $COMMIT"
-              break
-            fi
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "::error::no $VERSION tag after 60 minutes; nothing was published. Re-run this job once the tag exists."
+          if ref="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" 2>/dev/null)"; then
+            if [ "$(jq -r .object.type <<<"$ref")" != tag ]; then
+              echo "::error::$VERSION already exists as a lightweight tag; a release tag is annotated. Nothing was published."
               exit 1
             fi
-            sleep 15
-          done
+            target="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$(jq -r .object.sha <<<"$ref")" \
+              --jq '"\(.object.type) \(.object.sha)"')"
+            if [ "$target" != "commit $COMMIT" ]; then
+              echo "::error::$VERSION already exists at '$target', not commit $COMMIT. Nothing was published."
+              exit 1
+            fi
+            echo "ok: $VERSION is already the annotated tag at $COMMIT"
+          else
+            object="$(gh api "repos/$GITHUB_REPOSITORY/git/tags" \
+              -f tag="$VERSION" -f message="Trustvian $VERSION" -f object="$COMMIT" -f type=commit --jq .sha)"
+            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$VERSION" -f sha="$object" >/dev/null
+            echo "ok: created the annotated tag $VERSION at $COMMIT"
+          fi
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:

@@ -11,55 +11,79 @@ undone".
 
 ## Release authority
 
+The procedure is the [release runbook](../release-runbook.md). This section
+says who decides.
+
 ```text
-Human Organization Admin runs `make release VERSION=vX.Y.Z`
+a person, or an agent on their behalf, runs `make release`
         |
         v
-release automation: preflight, gates, build, sign, verify   <- publishes nothing
+release automation: preflight, gates, build, sign, verify,
+approval summary                                            <- publishes nothing
         |
         v
-Human Organization Admin confirms, and the script creates
-the protected v* tag at the verified commit                  <- the only way a release begins
+an Organization Admin approves the `release` deployment
+on GitHub (web or mobile), after reading the summary         <- the human decision
         |
         v
-release automation publishes: GitHub Release, image tags
+release automation publishes: the v* tag at the verified
+commit, the GitHub Release, the image tags
 ```
 
-A release begins with a human decision and cannot become public without a
-second one, made after verification. Automation does the work in between and
-decides nothing: it never creates the tag, and it publishes nothing until the
-tag exists.
+Nothing becomes public without a human's approval, made after verification,
+on a page that shows what is being approved. Automation does everything
+around that decision and makes none of it: it publishes only once a required
+reviewer of the `release` environment has approved.
 
 | Action | Who |
 |---|---|
-| Decide that a release happens | Human Organization Admin, by running `make release` |
-| Run the release pipeline | Automation, dispatched by that command |
-| Create a `v*` tag | Human Organization Admin — nobody else can. `scripts/release.sh` creates it with the admin's own credential, after verification and confirmation |
-| Publish the GitHub Release and image tags | Automation, and only once that tag exists at the verified commit |
+| Start a release (`make release-prep`, `make release`) | A maintainer, an Organization Admin, or an AI agent on their behalf |
+| Run the release pipeline up to verification | Automation, dispatched by that command |
+| **Approve publishing** | **An Organization Admin**, the `release` environment's required reviewers. Never an agent |
+| Create the `v*` tag | The release workflow's `publish` job, after that approval, at the verified commit |
+| Publish the GitHub Release and image tags | The same job, after the tag |
 | Run a dry run | Anyone who may dispatch workflows. It builds, signs and verifies, and publishes nothing |
 
-Until `v0.9.0` the order was reversed: a human pushed the tag first, the
-pipeline ran on it, and a human published a draft afterwards. Verification
-now happens before the tag exists, so a failed attempt leaves no tag and no
-draft behind. [ADR 0059](../adr/0059-releases-are-dispatched-verified-then-published.md)
-records why.
+History: until `v0.9.0`, a human pushed the tag first and published a draft
+afterwards. Under [ADR 0059](../adr/0059-releases-are-dispatched-verified-then-published.md),
+a human created the tag at a terminal after verification. Under
+[ADR 0060](../adr/0060-agent-operated-releases-with-environment-approval.md),
+the human decision is the environment approval, and an agent may operate
+everything else.
 
 ## Protected tag semantics
 
 Tags matching `v*` are covered by a repository ruleset that restricts
-**creation, update, deletion, and force-move**. A human Organization Admin is
-the authorized bypass actor; every other identity — contributors, agents, CI,
-`GITHUB_TOKEN` — is refused.
+**update, deletion, and force-move**, with **no bypass actor**: not an
+Organization Admin, not a workflow, nobody. A published tag is permanent, by
+server-side rule.
 
-Two consequences worth stating plainly:
+**Creation is not restricted** under ADR 0060 as proposed. The `publish` job
+creates the tag as `github-actions[bot]`, and GitHub does not accept the
+built-in GitHub Actions app as a bypass actor in an organization's
+repository, so restricting creation would refuse the release itself.
 
-- **No workflow can mint a release.** The publish job holds `contents: write`,
-  which would otherwise be enough to create a tag. It is not an Organization
-  Admin, so the ruleset refuses it, and it does not try: it waits for the tag
-  a human creates. No bypass entry exists for `GITHUB_TOKEN`, the GitHub
-  Actions integration, or any app, and none may be added
-  ([Agent Governance](agents.md)).
-- **A published tag is permanent.** Not by convention — by server-side rule.
+A `v*` tag created by anyone else cannot be released by the workflow:
+- there is no tag trigger;
+- preflight refuses a version whose tag exists;
+- `publish` refuses a tag that is not its own annotated tag at the verified
+  commit.
+
+At worst it blocks that version. Clearing it needs the ruleset edited in the
+UI, where the change is recorded.
+
+**It does not stop GitHub's release API.** Anyone with Contents: write can
+create a tag and a published release in one call, with no approval. Restricted
+creation used to refuse that. ADR 0060 § 3 records this as an **open decision**
+for the maintainers before the ruleset change is applied. The choice is to
+accept it, or to make an organization-owned GitHub App the creation bypass
+and keep creation restricted.
+
+**A burned version stays burned.** If `publish` creates the tag and a later
+step fails, re-running it finishes the release at the same commit. If the
+commit itself must change, that version can never be released: the tag cannot
+be moved or deleted, and preflight refuses a version whose tag exists. Release
+the next version.
 
 The live values are readable from the ruleset itself; see
 [Repository Governance § Reading the live configuration](repository.md#reading-the-live-configuration)
@@ -121,8 +145,8 @@ verified while claiming the candidate's evidence.
 ## What automation may do
 
 The release workflow runs only when dispatched from `main`
-(`on: workflow_dispatch`, with the version and the exact commit as inputs), and
-it never creates a tag. Given those inputs, it:
+(`on: workflow_dispatch`, with the version and the exact commit as inputs).
+Given those inputs, it:
 
 - refuses a version that is not SemVer, not newer than every `v*` tag, or
   already tagged; a commit that is not `main`'s head; a commit whose CI or
@@ -137,47 +161,51 @@ it never creates a tag. Given those inputs, it:
 - verifies all of it as a consumer would, on Linux and macOS: checksums,
   contents, `trustvian version`, the archives' attestations, the image
   signature, and an end-to-end scenario run from the extracted archive;
-- then, and only once a human has created the tag at that commit, publishes
-  the GitHub Release (not a draft) and creates the image tags from the
-  verified digest. Floating tags move only for a stable release.
+- writes an approval summary: the version and how it was derived, the commit,
+  the image digest, every check's result, and the CHANGELOG section;
+- then, and only once an Organization Admin has approved the `release`
+  deployment, creates the annotated tag at that commit, publishes the GitHub
+  Release (not a draft) and creates the image tags from the verified digest.
+  Floating tags move only for the newest stable release.
 
-What it may **not** do: create, move, or delete a tag; publish before the
-human's tag exists; decide that a release should happen.
+What it may **not** do: move or delete a tag; publish without that approval;
+decide that a release should happen.
 
-The human tag is the deliberate seam. It is created after every check has
-passed, by someone who has seen them pass, at the one commit they verified.
+The approval is the deliberate seam. It is given after every check has passed,
+by someone who has read what passed, for the one commit the run verified.
 
 ## Agent authority
 
-An AI agent may prepare and verify a release:
+An AI agent may operate a release, end to end up to the approval:
 
 - run gates, inspect CI, verify published artifacts and signatures;
-- run a release dry run (`make release VERSION=… DRY_RUN=1`), which publishes
-  nothing and creates no tag;
-- draft release notes and open a pull request for them;
-- report that a candidate is ready for a human decision.
+- run `make release-prep`, write the release notes, and open the pull request;
+- run `make release`, a dry run or a real one, and `gh run rerun` on a release
+  run;
+- follow the [runbook](../release-runbook.md), and report where to approve.
 
 An agent may **not**, whatever credential it happens to hold:
 
-- create, move, delete, or reuse a `v*` tag — including by running
-  `make release` without `DRY_RUN`, whose confirmation step creates one;
-- publish or edit a GitHub Release;
-- promote a candidate to stable;
-- repair a failed release by mutating published history;
-- use the Organization Admin bypass to do any of the above.
+- approve or reject a deployment, or run with a token that can;
+- create, move, delete, or reuse a `v*` tag, or create a GitHub Release
+  itself;
+- merge a pull request;
+- repair a published release by mutating published history;
+- use the Organization Admin bypass of any ruleset.
 
 A failed release is fixed by moving forward — fix branch, pull request, review,
-next candidate — never by rewriting what was published. See
+next attempt — never by rewriting what was published. See
 [Agent Governance](agents.md).
 
 ## Human checklist
 
-`make release` checks most of this itself. Before answering its confirmation:
+Before approving the `release` deployment, on the run's **Approval summary**:
 
 ```text
-[ ] every job up to verify succeeded (the script waits for this)
-[ ] the commit it names is the one I meant to release
-[ ] CHANGELOG.md and release-notes.md describe this release
+[ ] every check above the summary passed
+[ ] the version, and how it was derived, are what this release should be
+[ ] the commit is the one I meant to release
+[ ] the CHANGELOG section describes this release
 [ ] for a stable version after a candidate: main has not moved since it
 ```
 

@@ -151,40 +151,56 @@ one exists.
 
 ## Releasing
 
-One command, run by a human Organization Admin from a clean `main`:
+**The procedure is the [release runbook](release-runbook.md):** every scenario
+(minor, patch, candidates, security fix, 1.0), every failure, and the
+after-release checklist, step by step. This section keeps the why.
 
 ```bash
-make release VERSION=v0.10.0              # build, sign, verify, then publish
-make release VERSION=v0.10.0 DRY_RUN=1    # build, sign, verify; publish nothing
+make release-prep BUMP=minor TITLE="…"   # opens the prep PR; a human merges it
+make release                             # build, sign, verify; publish after approval
+make release DRY_RUN=1                   # build, sign, verify; publish nothing
 ```
 
-It needs an authenticated `gh` and git, and nothing else. It builds nothing,
-holds no key, and runs nothing irreversible until every check has passed and
-you have confirmed. [ADR 0059](adr/0059-releases-are-dispatched-verified-then-published.md)
-records the design.
+The commands need an authenticated `gh` and git, and nothing else. They build
+nothing, hold no key, create no tag and approve nothing, so an AI agent may
+run them ([Agent Governance](governance/agents.md)). Nothing irreversible
+happens until every check has passed **and an Organization Admin has approved
+the `release` deployment on GitHub**. [ADR 0059](adr/0059-releases-are-dispatched-verified-then-published.md)
+and [ADR 0060](adr/0060-agent-operated-releases-with-environment-approval.md)
+record the design.
 
 **This is the only release path.** `release.yml` runs only on
 `workflow_dispatch` from `main`. Pushing a `v*` tag by hand starts nothing, and
 a tag pushed that way would make the next `make release` for that version
 refuse, because the tag would already exist.
 
+### The version is derived, not typed
+
+`make release-prep` cuts the CHANGELOG section for the next version: one
+`BUMP` (patch or minor) above the newest stable tag, computed by
+`scripts/release-version.sh`. A major bump is refused in 0.x: leaving 0.x is
+`VERSION=v1.0.0`, typed again to confirm. The merged section *declares* the
+version.
+
+`make release` releases the declared version, or with `PRE=rc` its next
+candidate (`-rc.N`, counted from the existing tags). It prints the version
+and how it was derived before anything else. Preflight requires the version's
+base to be exactly one bump above the newest stable tag, so a mistyped or
+skipped version is refused, and the message names both.
+
 ### Before you run it
 
-1. **The release pull request is merged.** It carries:
-   - `CHANGELOG.md` with a `## vX.Y.Z` section, cut from `## Unreleased` with an
-     empty `## Unreleased` above it;
+1. **The release-prep pull request is merged.** It carries:
+   - `CHANGELOG.md` with a `## vX.Y.Z` section, cut from `## Unreleased` with
+     an empty `## Unreleased` above it;
    - `release-notes.md` at the repository root, the release body, naming the
-     version.
-
-   Preflight refuses a stable version without the section, and notes that do
-   not name the version, so last release's notes cannot be published again.
+     version (its candidates use the same notes).
 2. **CI and Nightly are green on main's head.** Preflight reads the latest run
    of each for that exact commit:
-   - **No Nightly run yet**, the usual case after a merge: `make release` offers
-     to start one on `main`, waits for it with `gh run watch --exit-status`, and
-     runs preflight again. With `DRY_RUN=1`, or in a shell with no terminal, it
-     starts Nightly without asking. A real release always needs a terminal, so
-     in practice that means a dry run.
+   - **No Nightly run yet**, the usual case after a merge: `make release`
+     starts one on `main` and waits for it with `gh run watch --exit-status`,
+     then runs preflight again. In an interactive shell it asks first; under
+     `DRY_RUN=1` or without a terminal (an agent) it just does it.
    - **No CI run yet:** CI starts on the merge to `main` and has no manual
      trigger, so `make release` stops and asks you to wait for it.
    - **A failed or unfinished run of either** is reported with its link, never
@@ -197,11 +213,13 @@ refuse, because the tag would already exist.
 ### What happens
 
 ```text
-make release VERSION=vX.Y.Z
-  local:  main, clean, == origin/main; scripts/release-preflight.sh
-  ↓ dispatch release.yml (version, commit = origin/main head)
-  preflight  SemVer; newer than every v* tag; tag absent; commit == main head;
-             CI and Nightly succeeded on it; CHANGELOG section; release notes
+make release [PRE=rc]
+  local:  main, clean, == origin/main; resolve and print the version;
+          scripts/release-preflight.sh; start Nightly if it has no run
+  ↓ dispatch release.yml (version, commit = origin/main head, derivation)
+  preflight  SemVer; one bump above the newest stable tag; newer than every
+             v* tag; tag absent; commit == main head; CI and Nightly succeeded
+             on it; CHANGELOG section; release notes
   gates      modules, gofmt, vet, test, race, PostgreSQL, processor, govulncheck
   build      archives (version stamped by a tag local to the runner), checksums,
              build provenance attested for every archive and checksums.txt
@@ -209,41 +227,47 @@ make release VERSION=vX.Y.Z
   verify     ubuntu + macOS: checksums, three binaries, `trustvian version`,
              gh attestation verify, a model-free scenario from the archive;
              cosign verify the digest (ubuntu)
-  ↓ the script waits for all of that, then asks you to confirm
-  you:       the script creates the annotated tag vX.Y.Z at the commit
-  publish    waits for that tag → GitHub Release (not a draft) → image vX.Y.Z
-             from the verified digest → X.Y and latest (stable only)
+  summary    the page the approver reads: version, derivation, commit, image,
+             every check's result, the CHANGELOG section
+  ↓ the script prints "approve at <run URL> (GitHub web or mobile)"
+  approval   an Organization Admin approves the `release` deployment
+  publish    annotated tag vX.Y.Z at the commit → GitHub Release (not a draft)
+             → image vX.Y.Z from the verified digest → X.Y and latest (newest
+             stable only)
   ↓
   the script prints the release URL, or the failed job and its log
 ```
 
+Every job up to `summary` runs in the `release-build` environment, which has
+no reviewers. Only `publish` runs in `release`, whose required reviewers are
+the Organization Admins, so GitHub holds it until one approves. Self-review is
+allowed on purpose: a sole maintainer must be able to approve the release they
+started.
+
 **Version.** SemVer: `vMAJOR.MINOR.PATCH`, optionally `-prerelease`. Build
 metadata (`+…`) is refused, because `+` is not valid in an image tag. A
 prerelease is marked as one, never becomes *Latest*, and never moves `X.Y` or
-`latest`. The version must be newer than every existing `v*` tag. A patch to
-an older line is not supported by this path.
+`latest`. A patch to an older line is not supported by this path.
 
-**No release candidate is needed.** A candidate was how the old pipeline was
-tested, by tagging. Now a dry run tests it, and a failure before publish
-creates no tag, no release and no image tag, so nothing needs a new number. A
-prerelease version is still available for putting a build in front of users.
+**No release candidate is needed to test the pipeline.** A failure before
+publish creates no tag, no release and no image tag, so nothing needs a new
+number, and a dry run is the rehearsal. Candidates (`PRE=rc`) are for putting
+a build in front of users.
 
-**The tag.** The `v*` ruleset lets only an Organization Admin create a tag
-([Release Governance](governance/releases.md)), so the workflow does not try.
-`scripts/release.sh` creates it with your credential, after `verify` has
-passed and you have answered `y`. Answer anything else, and the run is
-cancelled with nothing published. The confirmation reads from a terminal and
-cannot be skipped, so a shell without one (CI, an AI agent's tool call) can run
-only the dry run. `make release` also refuses while another release run is
-queued or running.
+**The tag.** `publish` creates the annotated tag at the verified commit, as
+`github-actions[bot]`, after the approval. The `v*` ruleset forbids anyone to
+move or delete it. It does not restrict creation, because GitHub accepts no
+bypass for the Actions app in an organization; why that is acceptable is in
+[Release Governance](governance/releases.md#protected-tag-semantics).
+`make release` also refuses while another release run is queued or running.
 
 ### Dry runs
 
-`DRY_RUN=1` runs preflight, gates, build, image and verify against real
-infrastructure: real archives, real attestations, and a real signed image,
-pushed by digest. It then skips publish. Nothing becomes public:
+`DRY_RUN=1` runs everything up to and including the approval summary against
+real infrastructure: real archives, real attestations, and a real signed
+image, pushed by digest. It then skips publish. Nothing becomes public:
 - there is no tag and no release;
-- the image digest has no tag, so nobody can find it without being handed it;
+- the image digest has no version tag;
 - the attestations name a commit and no version.
 
 Run one after any change to the release pipeline, and whenever you want to
@@ -258,16 +282,19 @@ release notes naming the version.
 
 ### When something fails
 
+The runbook's [§ 4](release-runbook.md#4-when-something-goes-wrong) has the
+procedure for each case. In short:
+
 | Fails in | What exists | What to do |
 |---|---|---|
-| Local checks or preflight | Nothing, or a Nightly run it started | Fix what it names (merge, pull, wait for CI, investigate a failed run, update the notes), then run it again |
-| gates, build, image or verify | At most an untagged, signed image digest, and attestations for archives nobody received | Fix on a new commit, by pull request, then run `make release` again for the **same version**. No tag was created, so no number is burned |
-| You answer no | Same as above; the run is cancelled | Run it again when ready |
-| publish, waiting for the tag | Nothing public | No tag was created within an hour. Run `make release` again; it starts a fresh run |
-| publish, after the tag | The tag, and possibly a release or image tags | Re-run failed jobs in the Actions tab, or run `make release` again and confirm. Each publish step checks what already happened and finishes the rest |
+| Local checks or preflight | Nothing, or a Nightly run it started | Fix what it names, then run it again |
+| gates, build, image, verify or summary | At most an untagged, signed image digest, and attestations for archives nobody received | Fix on a new commit, by pull request, then run `make release` again for the **same version**. No tag was created, so no number is burned |
+| Approval rejected, or never given | Same as above | Run it again when ready |
+| publish | The tag, and possibly a release or image tags | `gh run rerun <id> --failed`, and approve again. Each publish step checks what already happened and finishes the rest |
 
 `publish`'s steps are idempotent:
-- The tag must be annotated and at the commit, or the step stops.
+- An existing tag is accepted only if it is publish's own annotated tag at the
+  commit; anything else stops the step before anything is published.
 - A draft for the tag (an interrupted `gh release create`, or any other) is
   made exactly this release before it is published: stray assets removed, every
   asset uploaded, and the title and notes reset. A published release is checked
@@ -285,24 +312,21 @@ Never delete or move a release tag, and never delete a published release, to
 ### One-time setup
 
 ```bash
-./scripts/release-setup.sh --check   # read-only: what is and is not set up
-./scripts/release-setup.sh           # an administrator: create what is missing
+./scripts/release-setup.sh --check   # read-only: what differs
+./scripts/release-setup.sh           # a human administrator: make it so
 ```
 
-The script is idempotent:
+The script is idempotent and sets the whole desired state, replacing what
+differs:
 
-- [ ] **`release` environment**, deployable from `main` only. Every job in
-  `release.yml` runs in it. The script creates it if missing, and never edits
-  an existing one: an environment update replaces its protection rules.
-- [ ] **Tag ruleset on `refs/tags/v*`**: creation, update and deletion
-  restricted, with Organization Admin as the only bypass actor. The script
-  creates it if missing. If it exists but differs, the script reports the
-  difference and never edits it; change a ruleset in the GitHub UI, where the
-  change is recorded.
-- [ ] **No bypass for the workflow.** `GITHUB_TOKEN`, the GitHub Actions
-  integration and every app stay off the bypass list. The workflow never
-  creates a tag, and `gh release create --verify-tag` on an existing tag
-  creates no ref, so the ruleset does not apply to it.
+- [ ] **`release-build` environment**, deployable from `main` only, no
+  reviewers. Every job before publish runs in it.
+- [ ] **`release` environment**, deployable from `main` only, with the
+  organization's admins as required reviewers (GitHub allows six), no wait
+  timer, and self-review allowed.
+- [ ] **Tag ruleset on `refs/tags/v*`**: update, deletion and force-move
+  restricted, with no bypass actor; creation not restricted
+  ([why](governance/releases.md#protected-tag-semantics)).
 - [ ] **Immutable releases**, enabled when the repository offers it (Settings
   → General → Releases). Once a release is published, its assets and tag cannot
   change. That is why publish uploads everything before publishing, and why a
@@ -310,6 +334,8 @@ The script is idempotent:
 - [ ] **The GHCR package is public.** GitHub creates a new container package as
   private on its first push. Check it once at
   `https://github.com/orgs/trustvian/packages/container/package/trustvian-collector`.
+- [ ] **Agents have their own token** with no Deployments, Administration or
+  Environments permission ([runbook § 0](release-runbook.md#an-agents-token)).
 
 ## Artifacts
 
