@@ -8,8 +8,12 @@ Status: partially implemented. Two slices have shipped:
   and renders it as inert Markdown, or as an explicit no-verdict state,
   offline ([ADR 0057](../../adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md)).
 
-The pull request comment and its job remain; see
-[Implementation status](#implementation-status)
+- **The poster.** `cmd/trustvian-ci-comment` posts a rendering as the pull
+  request's one gate comment, edited in place, and degrades loudly on a fork
+  ([ADR 0058](../../adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)).
+
+The comment action and job that run it remain, and follow once the poster is on
+`main`; see [Implementation status](#implementation-status)
 Milestone: `v0.10.0` — the
 [developer preview](../../ROADMAP.md#v0100--developer-preview)
 Depends on: [078](078-behavioral-scenario-suites.md)
@@ -1013,6 +1017,57 @@ write-enabled job:
   checkout** — it has no checkout of the pull request at all;
 - consumes the artifact as **data only**.
 
+**The third slice is the poster**, `cmd/trustvian-ci-comment`, recorded in
+[ADR 0058](../../adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md).
+It is standard library only, and imports no process, plugin, reflection or
+`unsafe` package — asserted by an import scan and `go list -deps`.
+
+- **One comment per marker.**
+  - The body is `<!-- trustvian-behavioral-gate:<id> -->`, a newline, then the
+    rendering.
+  - A comment is the poster's only if `github-actions[bot]` wrote it and its
+    first line is exactly the marker.
+  - It updates the newest such comment, creates one if none exists, and warns
+    about duplicates.
+  - The search is bounded: 100 per page, 30 pages.
+- **The superseded guard.** If the pull request's head is no longer the event's
+  head commit, the poster writes nothing and emits a notice.
+- **Fork path.** A 403, or a 404 to a write, gives a `::warning::`, a
+  job-summary note, and exit `0`. A 404 to a read fails, because even a fork
+  can read the pull request.
+- **Retries.** 429, 5xx, a rate-limiting 403 and a transport error get one
+  bounded retry, then exit `1`. A failed POST is followed by a fresh listing
+  rather than a blind resend, so a comment that landed is never duplicated.
+- **No redirect is followed, and no response body is echoed.**
+- **The token** comes from `GITHUB_TOKEN` only. `GITHUB_API_URL` must be a bare
+  `https://` host.
+- **Tests** run against a TLS fake of the GitHub API:
+  - creation, and two runs editing one comment;
+  - a human comment carrying the marker, and quoted or later-line markers,
+    are never edited;
+  - the newest of several owned comments is the one updated;
+  - pagination and its bound;
+  - the superseded guard writes nothing;
+  - the fork path: a refused write or read is a warning, a summary note and
+    exit `0`, while a 404 to a read fails;
+  - one retry, then failure; `Retry-After` is capped; a rate-limiting 403 and
+    a transport error are retried;
+  - a POST that landed but answered 502 is edited, never duplicated;
+  - a comment deleted while being edited is posted again;
+  - a head that is not a commit fails rather than counting as superseded;
+  - no redirect is followed;
+  - malformed flags and environment never reach the network, and the token
+    never reaches the output.
+
+  The real `trustvian-ci-render` renders no-verdict bodies — for a missing
+  artifact, exit `3`, exit `2` and a missing required field — and each one,
+  posted over a stored PASS, replaces it. The test asserts the head commit and
+  that no number is present.
+
+The comment action that builds and runs the poster from the pinned source,
+the example's comment job, the structural scans and the real end-to-end
+comment are the next pull request (ADR 0058 § 6).
+
 Against the criteria below:
 
 | # | Status |
@@ -1029,14 +1084,15 @@ Against the criteria below:
 | 14 | Met for the run side, asserted by a source scan. The renderer converts no decimal-string count or limit to a number: JSON integers (`runs`, exit codes, the suite summary, `scenario_count`) are range-checked through `json.Number` and re-printed in canonical form. This is asserted by a source scan and a contradiction test |
 | 15 | **Met for the renderer**: both producer versions come from the document |
 | 16 | **Met for the job summary and the renderer**, whose output is the same for a comment and a summary |
-| 7, 8, 13 | **Not met.** They are about posting the comment and its job — the next slice |
+| 8 | **Met for the poster**: one comment per marker, edited in place, never another's. The action that runs it is the next pull request |
+| 7, 13 | **Not met.** They are about the comment job — the next pull request |
 
 **Not built:**
-- The comment job and its packaging (open question 2).
-- The comment API and its scope (open question 5).
-- One comment per pull request: the marker and its ownership.
-- Replacing a stale comment with the no-verdict state.
-- Fork-path and permission degradation of the comment.
+- The comment action and job (open question 2 is settled by ADR 0058: a
+  separate action), and confirming the comment API's scope against a real
+  pull request (open question 5).
+- Wiring the poster's stale-comment replacement and fork degradation into
+  that job.
 - The real end-to-end comment against GitHub's API.
 - Caching the runtime across jobs.
 - A release-archive runtime.

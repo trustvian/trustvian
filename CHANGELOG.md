@@ -10,6 +10,30 @@ actually depend on.
 
 ### Added
 
+- **A poster for the behavioral gate comment: `cmd/trustvian-ci-comment`**
+  (task 079, still partially implemented;
+  [ADR 0058](docs/adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)).
+
+  Posts a `trustvian-ci-render` rendering as the pull request's one gate
+  comment and edits it in place. It is standard library only, reads the token
+  from `GITHUB_TOKEN` alone, and is the only Trustvian code that writes to
+  GitHub. The comment action that runs it follows in the next pull request.
+
+  - **Ownership.** A comment is the poster's only if `github-actions[bot]`
+    wrote it and its first line is `<!-- trustvian-behavioral-gate:<id> -->`.
+    Human comments are never edited. The newest owned comment is updated, and
+    duplicates are reported.
+  - **Superseded runs write nothing.** If the pull request's head has moved
+    on, a newer run owns the comment.
+  - **Forks degrade loudly.** A refused write gives a warning and a
+    job-summary note, and exits `0`. 429 and 5xx get one bounded retry, then
+    the job fails visibly. A failed create is checked for having landed
+    before it is retried, so it is never duplicated.
+  - **No redirect is followed**, so the token reaches the validated API host
+    only.
+  - **Tested against a fake GitHub API**, including the renderer's real
+    no-verdict bodies replacing a stored PASS.
+
 - **An offline renderer for behavioral CI artifacts:
   `cmd/trustvian-ci-render`** (task 079, still partially implemented;
   [ADR 0057](docs/adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md),

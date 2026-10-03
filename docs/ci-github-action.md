@@ -464,6 +464,28 @@ The body is capped at 60,000 bytes, below GitHub's comment limit:
   note. Every added and removed behavior and every check stays.
 - When even that does not fit, the rendering is no verdict.
 
+## Posting the rendering
+
+`cmd/trustvian-ci-comment` posts a rendering as the pull request's one gate
+comment ([ADR 0058](adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)).
+No job runs it yet: the comment action that builds it from the pinned source
+is the next pull request.
+
+- **Ownership.** It finds its comment by a marker line,
+  `<!-- trustvian-behavioral-gate:<artifact-name> -->`. It owns only a comment
+  `github-actions[bot]` wrote with that exact first line, and edits the newest
+  one in place. A human comment carrying the marker is never edited.
+- **Superseded runs.** It writes nothing when the pull request's head has moved
+  on: a newer run owns the comment.
+- **Forks and read-only tokens.** A refused write is a `::warning::` and a
+  job-summary note, and the job still succeeds. The gate is the run job's,
+  either way.
+- **Transient failures.** 429 and 5xx get one bounded retry; a failed create
+  is checked for having landed before it is retried. Then the job fails
+  visibly, without touching the run job's check.
+- **github.com and GHE.com only.** `GITHUB_API_URL` must be a bare `https://`
+  host; GitHub Enterprise Server's `/api/v3` path is not supported yet.
+
 ## What comes next
 
 The next slice posts the rendering on the pull request. It will be a
