@@ -1,0 +1,97 @@
+# trustvian-comment — the comment side of task 079.
+#
+# Downloads a trustvian-run artifact from the same workflow run, renders it
+# with trustvian-ci-render, writes the rendering to the job summary, and posts
+# it as the pull request's one behavioral gate comment with
+# trustvian-ci-comment, editing that comment in place. Both commands are built
+# from the commit ../trustvian-run/runtime.env pins, never from the job's
+# workspace. See docs/ci-github-action.md and
+# docs/adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md.
+#
+# It is meant for a job that holds `pull-requests: write` and nothing else,
+# checks nothing out, and runs after the run job with `if: ${{ !cancelled() }}`.
+# It decides no verdict and changes no check: the gate is the run job's exit
+# code, in another job.
+#
+# As in trustvian-run, inputs reach the scripts only through the environment,
+# never through ${{ }} inside a script, and each script step execs its script.
+
+name: Trustvian comment
+description: Post a trustvian-run result as the pull request's behavioral gate comment, built from pinned source. Comment side only.
+author: Trustvian
+
+inputs:
+  exit-code:
+    description: The run job's exit-code output, passed through unchanged. An empty value means trustvian did not run, and renders as no verdict.
+    required: true
+  artifact-name:
+    description: The artifact the run job uploaded — its artifact-name input.
+    required: false
+    default: trustvian-run
+  marker-id:
+    description: Which gate comment this is. Empty (default) means artifact-name, so each scenario or suite has one comment per pull request.
+    required: false
+    default: ""
+  github-token:
+    description: The token the poster writes with. It must be the job's GITHUB_TOKEN — comments are found by github-actions[bot] authorship, so any other identity would create a second comment instead of editing the first.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  renderer-exit:
+    description: trustvian-ci-render's exit code — 0 evidence, 1 no verdict, 2 usage (nothing posted), 3 artifact rejected (no verdict).
+    value: ${{ steps.render.outputs.renderer-exit }}
+  posted:
+    description: "`true` when the comment was created or updated; `false` otherwise."
+    value: ${{ steps.post.outputs.posted || 'false' }}
+  outcome:
+    description: "What the poster did: created, updated, superseded (a newer head owns the comment) or not-permitted (a fork, or a read-only token). Empty when nothing was posted."
+    value: ${{ steps.post.outputs.outcome }}
+
+runs:
+  using: composite
+  steps:
+    - id: setup
+      name: Build the renderer and poster from the pinned source
+      shell: bash
+      env:
+        INPUT_ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        INPUT_MARKER_ID: ${{ inputs.marker-id }}
+      run: 'exec "$GITHUB_ACTION_PATH/setup.sh"'
+
+    # A missing artifact is not this action's failure: it is the renderer's
+    # "artifact is missing" no-verdict, which must still replace a stale
+    # verdict on the pull request. So this one step may fail without failing
+    # the action, and the renderer decides what an empty directory means. The
+    # directory is the setup step's fresh one, never a path the artifact names.
+    - id: download
+      name: Download the run artifact
+      continue-on-error: true
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.setup.outputs.artifact-dir }}
+
+    - id: render
+      name: Render the result
+      shell: bash
+      env:
+        TRUSTVIAN_COMMENT_BIN_DIR: ${{ steps.setup.outputs.bin-dir }}
+        TRUSTVIAN_COMMENT_HEAD_SHA: ${{ steps.setup.outputs.head-sha }}
+        TRUSTVIAN_COMMENT_ARTIFACT_DIR: ${{ steps.setup.outputs.artifact-dir }}
+        INPUT_EXIT_CODE: ${{ inputs.exit-code }}
+      run: 'exec "$GITHUB_ACTION_PATH/render.sh"'
+
+    # The only step whose environment holds the token, and the poster the only
+    # process that reads it.
+    - id: post
+      name: Post the gate comment
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        TRUSTVIAN_COMMENT_BIN_DIR: ${{ steps.setup.outputs.bin-dir }}
+        TRUSTVIAN_COMMENT_HEAD_SHA: ${{ steps.setup.outputs.head-sha }}
+        TRUSTVIAN_COMMENT_PULL_REQUEST: ${{ steps.setup.outputs.pull-request }}
+        TRUSTVIAN_COMMENT_MARKER_ID: ${{ steps.setup.outputs.marker-id }}
+        TRUSTVIAN_COMMENT_BODY_FILE: ${{ steps.render.outputs.body-file }}
+      run: 'exec "$GITHUB_ACTION_PATH/post.sh"'

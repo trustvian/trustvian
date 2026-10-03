@@ -8,7 +8,7 @@
 # The job summary is deliberately minimal: the head commit, a link to this
 # run, the CLI's exit code, and whether the result artifact was uploaded. It
 # publishes no verdict, no counts and no evidence; rendering the result
-# document is the next slice's strict renderer's job, from the artifact. Every
+# document is the comment job's, from the artifact (../trustvian-comment). Every
 # value is checked against the shape it must have, and is then rendered inert
 # and bounded anyway (lib.sh md_inert).
 #
@@ -65,8 +65,8 @@ fi
 # redirection would exit 1 here, and the CLI's code — the gate — would be lost.
 summary="### Trustvian run
 
-Run-side foundation: no behavioral verdict is rendered here. The
-result document, when there is one, is in the artifact.
+No behavioral verdict is rendered here. The result document, when
+there is one, is in the artifact, and the comment job renders it.
 
 | | |
 |---|---|

@@ -346,8 +346,8 @@ func TestPostWritesNothingWhenSuperseded(t *testing.T) {
 	if res.code != exitPosted {
 		t.Fatalf("exit %d\n%s%s", res.code, res.stdout, res.stderr)
 	}
-	if !strings.Contains(res.stdout, "::notice title=trustvian-comment::superseded by "+f.head) {
-		t.Errorf("no superseded notice:\n%s", res.stdout)
+	if !strings.Contains(res.stdout, "::notice title=trustvian-comment::superseded by "+f.head[:12]+":") {
+		t.Errorf("no superseded notice naming the newer head by 12 characters:\n%s", res.stdout)
 	}
 	if f.writes() != 0 {
 		t.Errorf("a superseded run wrote: %v", f.requests)

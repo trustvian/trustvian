@@ -29,9 +29,11 @@ README below has real, `go run`-captured output, not hand-written output.
 | [configured-engine](configured-engine/) | Every supported `Engine` option configured from outside the module: policy, storage, anomaly and trust through the `config` facade, plus a context-risk callback over `trustvian.StableFeatures` — and the caller-owned cleanup that goes with a compiled store | — |
 | [persistent-baseline](persistent-baseline/) | A learned baseline survives a process restart: a durable store selected through `config.StorageConfig`/`CompileStorage`, an `Engine` discarded entirely, and a fresh one reading the same state back off disk — the only example that persists anything, and impossible to write externally before `v0.8` | [persistent-baseline/README.md](persistent-baseline/README.md) |
 
-Not a Go program: [`github-actions/behavioral-gate-run.yml`](github-actions/behavioral-gate-run.yml)
-is a copyable, read-only workflow that runs a behavioral scenario on every pull
-request — see [Running behavioral scenarios in GitHub Actions](../docs/ci-github-action.md).
+Not a Go program: [`github-actions/behavioral-gate.yml`](github-actions/behavioral-gate.yml)
+is a copyable two-job workflow: a read-only job runs a behavioral scenario on
+every pull request and gates on it, and a separate job that runs no pull
+request code posts the result as one comment — see
+[Running behavioral scenarios in GitHub Actions](../docs/ci-github-action.md).
 
 ## Running them
 

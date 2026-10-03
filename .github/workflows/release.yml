@@ -59,6 +59,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
           # github.ref is the tag, so this checks out the tagged commit —
           # never a branch head that may have moved since the tag was cut.
           ref: ${{ github.ref }}
@@ -234,6 +236,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
           # The tagged commit, exactly as the release job used. The image
           # and the binaries are built from the same source.
           ref: ${{ github.ref }}

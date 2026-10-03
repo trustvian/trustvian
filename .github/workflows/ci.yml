@@ -70,6 +70,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
           # Tags, without the cost of full history. scripts/check-modules.sh
           # verifies that each module's declared root version is real, and a
           # local tag answers that offline; without tags it falls back to
@@ -178,6 +180,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
           # Full history, so the previous release's tagged source — not just
           # its tag ref — is present to build from.
           fetch-depth: 0
@@ -228,6 +232,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -279,6 +286,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -372,6 +382,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -499,6 +512,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
 
       - uses: actions/setup-go@v7
         with:
@@ -522,6 +538,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
 
       - uses: docker/setup-buildx-action@v4
 
@@ -563,6 +582,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
 
       - name: Test the checker
         # Its own tests first, including the two real lookups behind
@@ -594,6 +616,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
 
       - name: Test the checker
         run: ./scripts/test-check-pr-title.sh
@@ -617,6 +642,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
 
       - name: Validate Compose configuration
         working-directory: deployments/docker-compose

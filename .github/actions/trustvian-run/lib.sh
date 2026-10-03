@@ -1,6 +1,12 @@
 # shellcheck shell=bash
 #
-# Shared functions for the trustvian-run action's steps. Sourced, never run.
+# Shared functions for the trustvian-run action's steps, and for the
+# trustvian-comment action's, which sources this file through
+# $GITHUB_ACTION_PATH/../trustvian-run/lib.sh. Sourced, never run.
+#
+# TRUSTVIAN_ACTION names the action in every annotation. It is set here, never
+# inherited from the job's environment, and the comment action's scripts set
+# it to trustvian-comment after sourcing.
 #
 # Written for bash 3.2 as well as current bash, because a macOS runner's
 # /bin/bash is 3.2: no associative arrays, no mapfile, no ${var,,}.
@@ -17,18 +23,20 @@ readonly TRUSTVIAN_RUN_MAX_RESULT_BYTES=$((32 * 1024 * 1024 + 64 * 1024))
 # A summary value is capped at this many bytes before it is rendered.
 readonly TRUSTVIAN_RUN_MAX_SUMMARY_VALUE=256
 
+TRUSTVIAN_ACTION=trustvian-run
+
 # fail prints a workflow error annotation and exits 1.
 #
 # Exit 1 here is the action's own failure — setup, input, or preservation —
 # and it is never the CLI's code: whenever the CLI ran, its exact code is in
 # the exit-code output and the finish step exits with it.
 fail() {
-    printf '::error title=trustvian-run::%s\n' "$(annotation_text "$*")"
+    printf '::error title=%s::%s\n' "$TRUSTVIAN_ACTION" "$(annotation_text "$*")"
     exit 1
 }
 
 warn() {
-    printf '::warning title=trustvian-run::%s\n' "$(annotation_text "$*")"
+    printf '::warning title=%s::%s\n' "$TRUSTVIAN_ACTION" "$(annotation_text "$*")"
 }
 
 # annotation_text makes a message safe to place in a workflow command: a
@@ -92,7 +100,9 @@ load_runtime_pin() {
 }
 
 # go_platform sets GO_OS and GO_ARCH for this runner, or fails. Windows is
-# refused: `trustvian dev` refuses to start there, so there is nothing to run.
+# refused: `trustvian dev` refuses to start there, so the run action has
+# nothing to run, and the comment action follows it rather than pinning a
+# third toolchain archive for a job that would only ever post a no-verdict.
 #
 # Like every function here that can fail, it sets variables rather than
 # printing: fail inside a command substitution would exit only the subshell.
@@ -101,7 +111,7 @@ go_platform() {
     case "$(uname -s)" in
         Linux) GO_OS=linux ;;
         Darwin) GO_OS=darwin ;;
-        *) fail "unsupported runner OS $(uname -s): trustvian dev runs on Linux and macOS only" ;;
+        *) fail "unsupported runner OS $(uname -s): $TRUSTVIAN_ACTION runs on Linux and macOS runners only" ;;
     esac
     case "$(uname -m)" in
         x86_64 | amd64) GO_ARCH=amd64 ;;
@@ -127,12 +137,18 @@ verify_sha256() {
 }
 
 # refuse_privileged_event fails on an event that runs in the base repository's
-# context. This action executes the workload — the pull request's own code —
-# and those events hand that code a write-scoped token and repository secrets.
+# context. Those events hand the job a write-scoped token and repository
+# secrets. The run action executes the workload — the pull request's own code;
+# the comment action does not, but it belongs to the same workflow as a run
+# job that does, so under either event that run job would hold the same
+# privileges.
 refuse_privileged_event() {
+    local why="this action executes the workload"
+    [ "$TRUSTVIAN_ACTION" = trustvian-run ] ||
+        why="the run job of the same workflow executes the pull request's code"
     case "${GITHUB_EVENT_NAME:-}" in
         pull_request_target | workflow_run)
-            fail "refusing to run on ${GITHUB_EVENT_NAME}: that event runs with base-repository privileges, and this action executes the workload. Use pull_request — see docs/ci-github-action.md"
+            fail "refusing to run on ${GITHUB_EVENT_NAME}: that event runs with base-repository privileges, and $why. Use pull_request — see docs/ci-github-action.md"
             ;;
     esac
 }
@@ -290,4 +306,105 @@ go_isolated() {
             GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 GIT_TERMINAL_PROMPT=0 \
             "$GO_ISOLATED_BIN" "$@"
     )
+}
+
+# provide_pinned_source PIN_FILE provides the pinned toolchain and the pinned
+# source, both under $RUNNER_TEMP, and sets:
+#
+#   TRUSTVIAN_RUNNER_TEMP $RUNNER_TEMP, resolved to an absolute physical path
+#   TRUSTVIAN_TOOLING    the shared tooling directory
+#   TRUSTVIAN_SOURCE_DIR the checkout of exactly $TRUSTVIAN_SOURCE_COMMIT
+#   GO_ISOLATED_BIN, GO_ISOLATED_TOOLING   for go_isolated
+#
+# plus everything load_runtime_pin and go_platform set. Fails on any problem.
+#
+# The tooling directory is shared by every invocation of either action in one
+# job, so a second invocation reuses the toolchain, the source and the build
+# cache. It is keyed by what was pinned, so two pins never share a directory,
+# and resolved physically once, so every path is absolute and under
+# $RUNNER_TEMP.
+provide_pinned_source() {
+    local pin="$1" digest_key go_digest goroot_parent archive
+    load_runtime_pin "$pin"
+    go_platform
+    digest_key="GO_SHA256_$(printf '%s_%s' "$GO_OS" "$GO_ARCH" | tr '[:lower:]' '[:upper:]')"
+    go_digest="${!digest_key}"
+
+    TRUSTVIAN_RUNNER_TEMP="$(CDPATH='' cd -P -- "$RUNNER_TEMP" >/dev/null && pwd -P)" ||
+        fail "RUNNER_TEMP is not a directory"
+    TRUSTVIAN_TOOLING="$TRUSTVIAN_RUNNER_TEMP/trustvian-run-tooling"
+    goroot_parent="$TRUSTVIAN_TOOLING/go-$GO_VERSION-$GO_OS-$GO_ARCH"
+    TRUSTVIAN_SOURCE_DIR="$TRUSTVIAN_TOOLING/source-$TRUSTVIAN_SOURCE_COMMIT"
+    mkdir -p "$TRUSTVIAN_TOOLING/home"
+
+    # Every Go invocation runs through go_isolated: the pinned binary, a
+    # cleared environment, GOTOOLCHAIN=local, and a working directory of its
+    # own.
+    GO_ISOLATED_BIN="$goroot_parent/go/bin/go"
+    GO_ISOLATED_TOOLING="$TRUSTVIAN_TOOLING"
+
+    # --- The toolchain, checked against go.dev's published digest.
+    if ! pinned_go_present; then
+        archive="go$GO_VERSION.$GO_OS-$GO_ARCH.tar.gz"
+        echo "Downloading $archive from go.dev"
+        rm -rf "$goroot_parent"
+        mkdir -p "$goroot_parent"
+        # -q: no .curlrc from the job's HOME; TAR_OPTIONS unset: the archive
+        # is extracted with exactly these options.
+        curl -q -fsSL --retry 3 --proto '=https' --tlsv1.2 \
+            -o "$TRUSTVIAN_TOOLING/$archive" "https://go.dev/dl/$archive" ||
+            fail "could not download $archive from go.dev"
+        verify_sha256 "$TRUSTVIAN_TOOLING/$archive" "$go_digest"
+        env -u TAR_OPTIONS tar -xzf "$TRUSTVIAN_TOOLING/$archive" -C "$goroot_parent"
+        rm -f "$TRUSTVIAN_TOOLING/$archive"
+    fi
+    pinned_go_present || fail "the downloaded toolchain does not report go$GO_VERSION"
+
+    # --- The source. Every git command runs through git_isolated, against
+    # the source's own .git by name: an inherited GIT_DIR, GIT_WORK_TREE or
+    # Git configuration override can neither redirect it into the consumer's
+    # repository nor change what is fetched.
+    if ! source_is_pinned "$TRUSTVIAN_SOURCE_DIR" "$TRUSTVIAN_SOURCE_COMMIT"; then
+        echo "Fetching $TRUSTVIAN_SOURCE_COMMIT from $TRUSTVIAN_SOURCE_REPOSITORY"
+        fetch_source "$TRUSTVIAN_SOURCE_REPOSITORY" "$TRUSTVIAN_SOURCE_COMMIT" "$TRUSTVIAN_SOURCE_DIR" ||
+            fail "could not fetch $TRUSTVIAN_SOURCE_COMMIT from $TRUSTVIAN_SOURCE_REPOSITORY"
+    fi
+    source_is_pinned "$TRUSTVIAN_SOURCE_DIR" "$TRUSTVIAN_SOURCE_COMMIT" ||
+        fail "the fetched source is not exactly $TRUSTVIAN_SOURCE_COMMIT"
+}
+
+# pinned_go_present succeeds when the pinned toolchain is installed and
+# reports the pinned version.
+pinned_go_present() {
+    [ -x "$GO_ISOLATED_BIN" ] &&
+        [ "$(go_isolated "$TRUSTVIAN_TOOLING" env GOVERSION 2>/dev/null)" = "go$GO_VERSION" ]
+}
+
+# build_pinned MODULE_DIR PACKAGE OUTPUT builds one package of the pinned
+# source with the pinned toolchain, or fails.
+#
+# go_isolated's cleared environment is what makes this build the pinned one: a
+# GOFLAGS, GOPROXY, GONOSUMDB or GOTOOLCHAIN the job set for its own Go code
+# cannot change it. Checksums are verified against the public checksum
+# database. CGO_ENABLED=0 and -trimpath match the release build
+# (docs/release-guide.md). There is no -ldflags version injection: the binary
+# carries Go's own build information, which records the commit it was built
+# from.
+build_pinned() {
+    local module_dir="$1" package="$2" output="$3"
+    go_isolated "$TRUSTVIAN_SOURCE_DIR/$module_dir" build -o "$output" "$package" ||
+        fail "building $package from $TRUSTVIAN_SOURCE_COMMIT failed"
+}
+
+# verify_pinned_build BINARY fails unless the binary says, through its own
+# build information, that it was built from the pinned commit with no local
+# modification. This reads what Go recorded; it writes nothing.
+verify_pinned_build() {
+    local binary="$1" info
+    info="$(go_isolated "$TRUSTVIAN_TOOLING" version -m "$binary")" ||
+        fail "cannot read the build information of $(basename "$binary")"
+    printf '%s\n' "$info" | grep -qx "[[:space:]]*build[[:space:]]*vcs.revision=$TRUSTVIAN_SOURCE_COMMIT" ||
+        fail "$(basename "$binary") does not record vcs.revision=$TRUSTVIAN_SOURCE_COMMIT"
+    printf '%s\n' "$info" | grep -qx "[[:space:]]*build[[:space:]]*vcs.modified=false" ||
+        fail "$(basename "$binary") does not record an unmodified source tree"
 }

@@ -1,24 +1,30 @@
 # Running behavioral scenarios in GitHub Actions
 
-> **Run side, and an offline renderer.** These are the first two slices of
-> [task 079](tasks/v1.0/079-ci-integration-github-action.md). The action runs a
-> scenario or suite, fails the check with the scenario's own exit code, and
-> preserves the result document as an artifact.
-> [`trustvian-ci-render`](#rendering-the-artifact) turns that artifact into
-> Markdown, offline. Nothing **posts** to the pull request yet. The comment job
-> is the next slice and belongs in a separate job — see
-> [What comes next](#what-comes-next).
+[Task 079](tasks/v1.0/079-ci-integration-github-action.md) puts the behavioral
+gate where a change is reviewed. A pull request runs a scenario, and the
+scenario's exit code decides the check. The result is also posted on the pull
+request as one comment, edited in place. Two actions in this repository do it,
+in **two jobs** of one `pull_request` workflow:
 
-The action lives in this repository at `.github/actions/trustvian-run`. It is
-a thin workflow adapter over `trustvian eval run`
+| Job | Action | Does | Holds |
+|---|---|---|---|
+| `run` | `.github/actions/trustvian-run` | Runs `trustvian eval run` — the pull request's own code — exits with its code, uploads the result document | `contents: read` |
+| `comment` | `.github/actions/trustvian-comment` | Downloads that artifact as data, renders it, writes the job summary, posts the comment | `pull-requests: write` |
+
+The split is the security property. The job that runs pull request code holds
+no write scope. The job that holds the write scope runs no pull request code
+([ADR 0058](adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)).
+
+The run action is a thin workflow adapter over `trustvian eval run`
 ([Platform CLI](platform-cli.md#behavioral-scenarios-trustvian-eval-run)), in
 the sense [ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md) uses:
 the control plane decides, the CLI reports, and the action passes on what the
-CLI returned.
+CLI returned. The comment action decides nothing either. The gate is the run
+job's exit code.
 
 ## The workflow
 
-[`examples/github-actions/behavioral-gate-run.yml`](../examples/github-actions/behavioral-gate-run.yml)
+[`examples/github-actions/behavioral-gate.yml`](../examples/github-actions/behavioral-gate.yml)
 is the copyable version. In full:
 
 ```yaml
@@ -28,49 +34,96 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: behavioral-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      exit-code: ${{ steps.gate.outputs.exit-code }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: trustvian/trustvian/.github/actions/trustvian-run@REPLACE_WITH_A_REVIEWED_TRUSTVIAN_COMMIT_SHA
+      - id: gate
+        uses: trustvian/trustvian/.github/actions/trustvian-run@REPLACE_WITH_A_REVIEWED_TRUSTVIAN_COMMIT_SHA
         with:
           scenario: scenarios/support-login.yaml
+
+  comment:
+    needs: run
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: trustvian/trustvian/.github/actions/trustvian-comment@REPLACE_WITH_A_REVIEWED_TRUSTVIAN_COMMIT_SHA
+        with:
+          exit-code: ${{ needs.run.outputs.exit-code }}
 ```
 
-Replace the placeholder with the full commit of a Trustvian revision you have
-reviewed. As written it cannot resolve, so an unedited copy fails at setup
-rather than running an unpinned action.
+Replace both placeholders with the full commit of a Trustvian revision you have
+reviewed, the same one in both. As written they cannot resolve, so an unedited
+copy fails at setup rather than running an unpinned action.
 
-Every line of the security posture is deliberate, and each is the line most
+There is no one-job variant, and there must not be one. Adding the comment step
+to the run job would put a write-scoped token beside the workload, which is the
+one thing this design exists to prevent.
+
+### Why each line is there
+
+Every line of the security posture is deliberate, and each one is the line most
 likely to be deleted as noise:
 
 - **`pull_request`, and never `pull_request_target`.** `pull_request_target`
-  runs in the base repository's context: a token that can write to the
-  repository, and its secrets. A scenario file names a command, and on a pull
-  request that command is the pull request's own code — so under
-  `pull_request_target` a contributor's code would run holding that token.
-  There is no configuration of it that makes running the candidate safe. The
-  action refuses to run under `pull_request_target` and `workflow_run`.
+  runs in the base repository's context, with a token that can write to the
+  repository and access to its secrets. A scenario file names a command, and on
+  a pull request that command is the pull request's own code. Under
+  `pull_request_target`, a contributor's code would run holding that token, and
+  no configuration makes running the candidate safe. Both actions refuse to run
+  under `pull_request_target` and `workflow_run`. The comment action refuses too,
+  even though it runs no pull request code, because the run job in the same
+  workflow would.
 - **Permissions per job, and none at workflow level.** A workflow-level grant
-  reaches every job, including the one that runs the workload. The run job
-  needs `contents: read` and nothing else.
+  reaches every job, including the one that runs the workload.
+
+  | Job | Grant | Why |
+  |---|---|---|
+  | `run` | `contents: read` | To check out the source the scenario runs. Nothing else: it executes untrusted code |
+  | `comment` | `pull-requests: write` | To create and edit its one issue comment on the pull request. No `contents` scope, because it checks nothing out |
+
+  Downloading an artifact from the same workflow run needs no token scope at
+  all, so the comment job needs nothing beyond its one write.
 - **`persist-credentials: false`.** `actions/checkout` defaults to `true` and
   writes the job's token into `.git/config`, where the workload and every
   dependency it loads could read it. The scenario needs the source, not the
   ability to push it.
+- **No checkout, and no step of your own, in the comment job.** The action
+  builds the renderer and the poster from the Trustvian commit you pinned,
+  never from the pull request, and reads the artifact as data. A checkout or a
+  build step added there would put the pull request's code beside the write
+  token.
+- **`needs: run` and `if: ${{ !cancelled() }}`.** The comment job runs after a
+  PASS, after a FAIL and after an operational error. A FAIL or an error is
+  exactly when the comment matters. A cancelled workflow made no claim, so the
+  comment job does not run, and the existing comment is left as it was.
+- **Concurrency per pull request, with `cancel-in-progress`.** A newer push
+  cancels the older run, so an older verdict does not land after a newer one.
+  The poster also re-reads the pull request's head just before writing, which
+  covers the window cancellation cannot close.
 - **Every action pinned to a full commit.** A tag can be moved; a commit
   cannot.
-- **No secrets.** The run job uses none, so a fork pull request — which
-  GitHub gives a read-only token and no secrets — runs exactly as a
-  same-repository one does.
+- **No secrets.** Neither job uses one, so a fork pull request runs the gate
+  exactly as a same-repository one does. Only the comment degrades — see
+  [Fork pull requests](#fork-pull-requests).
 
-## Inputs
+## Run action inputs
 
 | Input | Passed as | Notes |
 |---|---|---|
@@ -93,7 +146,7 @@ one separate argument, attached to its flag (`--scenario=VALUE`), and the
 CLI's own usage error is the answer. Nothing is ever placed into a shell
 string.
 
-## Outputs
+## Run action outputs
 
 | Output | Meaning |
 |---|---|
@@ -167,8 +220,9 @@ files:
   writes none — and is recorded as `absent`.
 - **The action reads no field of the result.** It checks that stdout is one
   JSON object and stops there. It does not read the verdict, a count or a
-  limit. The next slice's renderer decodes the document strictly; it must not
-  trust this action, or this artifact, to have validated anything else.
+  limit. The [renderer](#rendering-the-artifact) decodes the document strictly;
+  it does not trust this action, or this artifact, to have validated anything
+  else.
 
 ### Which commit
 
@@ -189,20 +243,26 @@ identities and are recorded as such.
 
 Minimal on purpose: the head commit, a link to the run, the exit code, and
 whether the artifact was uploaded. It carries no verdict, no counts and no
-behavior names. The [renderer](#rendering-the-artifact) produces those, and
-nothing wires it into a job yet. Every value is checked
+behavior names. The [comment job](#the-comment-job) renders those, into its
+own job summary and the pull request comment. Every value is checked
 against the exact shape it must have (hex, digits, the artifact name's
 character set) before it is written, and prose values are escaped and capped
 as well.
 
 ## The runtime
 
-The action builds `trustvian`, `trustvian-local` and `trustvian-collector` from
-**one reviewed commit**, pinned in
+The run action builds `trustvian`, `trustvian-local` and `trustvian-collector`
+from **one reviewed commit**, pinned in
 [`runtime.env`](../.github/actions/trustvian-run/runtime.env), with a pinned Go
 toolchain whose archive is checked against the SHA-256 go.dev publishes. See
 [ADR 0056](adr/0056-the-run-action-builds-a-pinned-source-commit.md) for why it
 builds rather than downloads.
+
+The comment action builds `trustvian-ci-render` and `trustvian-ci-comment` from
+the same pin, with the same machinery. It sources the run action's `lib.sh`, so
+the toolchain digest, the isolated fetch, the check that the source is exactly
+the pin, and the `vcs.revision` check on every binary are the same code. Every
+point below holds for both.
 
 - **Everything under `$RUNNER_TEMP`.** Nothing is written to your checkout,
   nothing is added to the job's `PATH`, and a Go installation your job already
@@ -219,11 +279,15 @@ builds rather than downloads.
   whose record is not exactly the pinned commit, unmodified. The result
   document's `cli_version` and `control_plane_version` are what those binaries
   report.
-- **Cost.** The first invocation in a job downloads Go and builds three
-  binaries — about a minute on a laptop, longer on a hosted runner. Further
-  invocations in the same job reuse the toolchain, source and build cache.
-  Nothing is cached across jobs yet.
-- **Linux and macOS runners only.** `trustvian dev` does not run on Windows.
+- **Cost.** The first invocation in a job downloads Go and builds its binaries.
+  That takes about a minute on a laptop for the run action's three, and longer
+  on a hosted runner; the comment action's two are small, standard-library-only
+  commands. Further invocations in the same job reuse the toolchain, source and
+  build cache. Nothing is cached across jobs yet, so each of the two jobs
+  downloads Go once.
+- **Linux and macOS runners only.** `trustvian dev` does not run on Windows,
+  and the comment action follows the run action rather than pinning a third
+  toolchain archive.
 
 Changing the runtime is a pull request to `runtime.env`, which the action
 version you pin then carries. There is no floating `latest`.
@@ -286,41 +350,9 @@ both ([ADR 0057](adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md
 - It **executes nothing** from the artifact.
 - It is built from the Go standard library alone.
 
-It posts nothing; that is the next slice.
-
-Build it from a trusted, commit-pinned checkout of `trustvian/trustvian` in a
-path of its own — the commit you reviewed, never the pull request's:
-
-```yaml
-- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-  with:
-    repository: trustvian/trustvian
-    ref: REPLACE_WITH_A_REVIEWED_TRUSTVIAN_COMMIT_SHA # the full 40-character commit
-    path: trustvian-renderer
-    persist-credentials: false
-
-- name: Build the renderer
-  working-directory: trustvian-renderer
-  run: go build -o "$RUNNER_TEMP/trustvian-ci-render" ./cmd/trustvian-ci-render
-
-- name: Render
-  env:
-    HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-    RUN_EXIT_CODE: ${{ needs.run.outputs.exit-code }}
-  run: |
-    "$RUNNER_TEMP/trustvian-ci-render" \
-      --artifact-dir "$RUNNER_TEMP/artifact" \
-      --head-sha "$HEAD_SHA" \
-      --repository "$GITHUB_REPOSITORY" \
-      --run-id "$GITHUB_RUN_ID" \
-      --run-attempt "$GITHUB_RUN_ATTEMPT" \
-      --exit-code "$RUN_EXIT_CODE" \
-      > "$RUNNER_TEMP/comment.md"
-```
-
-The write-enabled job that will post this never checks out, builds or runs
-anything from the pull request: its only inputs from the pull request are the
-artifact, read as data, and the event's head commit.
+The [comment action](#the-comment-job) builds and runs it; nothing else in a
+workflow needs to. The flags below are its contract, for running it by hand
+against a downloaded artifact.
 
 **Every identity comes from the caller, never from the artifact.** Each flag
 but `--server-url` is required:
@@ -464,59 +496,145 @@ The body is capped at 60,000 bytes, below GitHub's comment limit:
   note. Every added and removed behavior and every check stays.
 - When even that does not fit, the rendering is no verdict.
 
-## Posting the rendering
+## The comment job
 
-`cmd/trustvian-ci-comment` posts a rendering as the pull request's one gate
-comment ([ADR 0058](adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)).
-No job runs it yet: the comment action that builds it from the pinned source
-is the next pull request.
+`.github/actions/trustvian-comment` is the second job's one step
+([ADR 0058](adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)).
+In order, it:
 
-- **Ownership.** It finds its comment by a marker line,
-  `<!-- trustvian-behavioral-gate:<artifact-name> -->`. It owns only a comment
-  `github-actions[bot]` wrote with that exact first line, and edits the newest
-  one in place. A human comment carrying the marker is never edited.
-- **Superseded runs.** It writes nothing when the pull request's head has moved
-  on: a newer run owns the comment.
-- **Forks and read-only tokens.** A refused write is a `::warning::` and a
-  job-summary note, and the job still succeeds. The gate is the run job's,
-  either way.
-- **Transient failures.** 429 and 5xx get one bounded retry; a failed create
-  is checked for having landed before it is retried. Then the job fails
-  visibly, without touching the run job's check.
+1. **Names the pull request** from the event: the head commit (never the merge
+   commit) and `pull_request.number`, a positive integer. It runs on
+   `pull_request` only, and refuses `pull_request_target` and `workflow_run`.
+2. **Builds the renderer and the poster** from the pinned commit — see
+   [The runtime](#the-runtime). It never reads `$GITHUB_WORKSPACE`, and if a
+   caller checked one out anyway, nothing in it is used.
+3. **Downloads the run artifact** by name into a fresh directory under
+   `$RUNNER_TEMP`. A missing artifact is not this job's failure. It reaches the
+   renderer as an empty directory and becomes the "artifact is missing" no
+   verdict. No path from the artifact is passed anywhere.
+4. **Renders it** against this run's identity, and **appends the rendering to
+   the job summary** whatever it says.
+5. **Posts it** as the pull request's gate comment. Only this step has
+   `GITHUB_TOKEN` in its environment, and the poster is the only process that
+   reads it.
+
+### Comment action inputs
+
+| Input | Default | Notes |
+|---|---|---|
+| `exit-code` | — (required) | The run job's `exit-code` output, passed through. Empty means the CLI did not run, which renders as no verdict |
+| `artifact-name` | `trustvian-run` | The run action's `artifact-name` |
+| `marker-id` | `artifact-name` | Which gate comment this is. One per scenario or suite per pull request |
+| `github-token` | `${{ github.token }}` | Must be the job's own `GITHUB_TOKEN` — see [Ownership](#ownership-github_token-only) |
+
+### Comment action outputs
+
+| Output | Meaning |
+|---|---|
+| `renderer-exit` | `trustvian-ci-render`'s exit: `0` evidence, `1` no verdict, `2` usage, `3` artifact rejected |
+| `posted` | `true` when the comment was created or updated, `false` otherwise |
+| `outcome` | `created`, `updated`, `superseded`, `not-permitted`, or empty when nothing was posted |
+
+### What it posts, and when the job fails
+
+| Renderer | Posted | Job |
+|---|---|---|
+| `0` evidence | the verdict or suite report | succeeds, unless the poster fails |
+| `1` no verdict | the no-verdict state, replacing any earlier verdict | succeeds, unless the poster fails |
+| `3` artifact rejected | the no-verdict state, replacing any earlier verdict | succeeds, unless the poster fails |
+| `2` usage | **nothing** | **fails**: this job's own context is malformed |
+
+| Poster | Meaning | Job |
+|---|---|---|
+| `0` | created, updated, superseded by a newer head, or not permitted | succeeds |
+| `1` | the GitHub API failed, after one bounded retry | **fails** |
+| `2` | usage | **fails** |
+
+Posting every rendering is what keeps a stale verdict from standing. If a
+later push produces no verdict — the artifact is missing, the CLI exited `2` or
+`3`, a required field is absent — the comment changes to the no-verdict state
+for the new head commit. It does not keep showing the older PASS.
+
+**A comment job failure never changes the gate.** The verdict is the run job's
+exit code, in another job. A red comment job means only that the comment was
+not posted, and the annotation says why. So in branch protection, require the
+**run** job's check, never the comment job's. Otherwise a GitHub API outage
+would block merges that the gate passed.
+
+### Ownership: `GITHUB_TOKEN` only
+
+The poster finds its comment by a marker line,
+`<!-- trustvian-behavioral-gate:<marker-id> -->`. It owns a comment only if
+**`github-actions[bot]`** wrote it and the comment's first line is exactly that
+marker. It edits the newest such comment in place, creates one if none exists,
+and warns about duplicates. A human comment carrying the marker is never
+edited, and neither is a marker quoted in a code span or on a later line.
+
+So **the token must be the job's own `GITHUB_TOKEN`**. A GitHub App
+installation token or a personal access token writes as a different identity.
+The poster would never find a comment it wrote under that identity, and would
+create a new one on every run. That is unsupported, not merely discouraged.
+
+Other behaviors:
+
+- **Superseded runs write nothing.** Just before writing, the poster re-reads
+  the pull request. If its head has moved on, a newer run owns the comment, and
+  this one leaves a notice instead.
+- **Transient failures.** 429 and 5xx get one bounded retry. A failed create is
+  checked for having landed before it is retried, so it never duplicates a
+  comment. After that the job fails visibly.
 - **github.com and GHE.com only.** `GITHUB_API_URL` must be a bare `https://`
-  host; GitHub Enterprise Server's `/api/v3` path is not supported yet.
+  host. GitHub Enterprise Server's `/api/v3` path is not supported yet.
 
-## What comes next
+### Fork pull requests
 
-The next slice posts the rendering on the pull request. It will be a
-**separate job** in the same `pull_request` workflow:
+GitHub gives a `pull_request` workflow from a fork a **read-only** token and no
+secrets, whatever the workflow's `permissions` say. For this workflow:
 
-- `needs: run`, with `if: ${{ !cancelled() }}`, so a FAIL and an operational
-  error are both reported and a cancellation is not;
-- holding the one write scope the comment needs, and nothing else;
-- **never checking out, and never executing, pull request code** — it
-  downloads the artifact and renders it;
-- **running only trusted, commit-pinned renderer and comment code** — the
-  renderer built from a reviewed commit of this repository, never a local
-  action, script or program from the pull request's checkout. The artifact is
-  data only;
-- with the run job's exit code remaining the check.
+- **The run job is unaffected.** It never needed a write scope or a secret. The
+  scenario runs, and a FAIL fails the check, exactly as on a same-repository
+  pull request.
+- **The comment degrades, loudly and successfully.** GitHub refuses the
+  poster's write. The poster then:
+  - emits a `::warning::`;
+  - adds a note to the job summary saying the comment was not posted and the
+    gate is unchanged;
+  - exits `0`, with `outcome` set to `not-permitted`.
 
-Marker ownership, replacing a stale comment with the no-verdict state,
-permission and fork degradation, and the comment API's scope are that slice's
-work.
+  The rendering is still in the job summary, written before the post was
+  attempted. A red comment job on every fork pull request would teach
+  reviewers to ignore it, which is why this path succeeds.
 
-It will not be a step added to the run job — that would put a write-scoped
-token next to the workload — and it will not be a `pull_request_target` or
-`workflow_run` workflow. Task 079 records the reasoning.
+Commenting on fork pull requests would need the base repository's write token
+in a job that handles a fork's artifact. `pull_request_target` and a
+`workflow_run` hand-off are the usual ways to get one. Both are refused, for the
+reasons in [task 079](tasks/v1.0/079-ci-integration-github-action.md#token-permissions-and-fork-pull-requests).
+
+### This repository's own end-to-end test
+
+`.github/workflows/trustvian-run-action.yml` runs both actions against the
+real API on this repository's pull requests:
+
+1. It posts a PASS under the marker `trustvian-run-action-e2e`.
+2. It reads the comments back and asserts exactly one marker comment, holding
+   the PASS for the head commit.
+3. It posts a no-verdict rendering for the same marker and asserts that the
+   same comment now holds it.
+
+It runs the comment action as a local `./` action, which needs a checkout, in
+a write-scoped job. That is acceptable for this repository and nowhere else
+(ADR 0058 § 7). A shipped workflow names the action by a reviewed commit, and
+the structural tests assert it.
 
 ## Related
 
 - [Task 079](tasks/v1.0/079-ci-integration-github-action.md) — the
-  specification, and what remains
+  specification
 - [Platform CLI § `trustvian eval run`](platform-cli.md#behavioral-scenarios-trustvian-eval-run)
 - [ADR 0056](adr/0056-the-run-action-builds-a-pinned-source-commit.md) —
   packaging and runtime acquisition
 - [ADR 0057](adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md) —
   the renderer
+- [ADR 0058](adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md) —
+  the comment job and its poster
 - [Compatibility](compatibility.md#github-action) — what the action promises
