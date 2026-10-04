@@ -638,6 +638,22 @@ export const runBehaviors = (runID, after) => {
   return request("GET", `/v1/evaluation-runs/${segment(runID)}/behaviors${query}`);
 };
 
+// listRecentRuns reads one page of runs newest first within a project, and
+// optionally one agent and one candidate of it (task 101, ADR 0063). The
+// cursor is the server's opaque `next_after`, passed back unchanged.
+export const listRecentRuns = (projectID, narrowing, after) => {
+  const params = new URLSearchParams();
+  const scope = narrowing === undefined || narrowing === null ? {} : narrowing;
+  if (scope.agentID) {
+    params.set("agent_id", scope.agentID);
+  }
+  if (scope.candidateID) {
+    params.set("candidate_id", scope.candidateID);
+  }
+  const query = pageQuery(params, after, null);
+  return request("GET", `/v1/projects/${segment(projectID)}/evaluation-runs/recent${query}`);
+};
+
 // runTraces reads one bounded page of the traces in a run's retained history
 // (task 100): each trace identifier with its retained-observation and
 // error-span counts. Ordered by each trace's first retained sequence, which is

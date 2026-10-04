@@ -10,6 +10,24 @@ actually depend on.
 
 ### Added
 
+- **Recency-ordered run discovery** (task 101,
+  [ADR 0063](docs/adr/0063-recency-is-a-stored-sort-key-and-a-composite-cursor.md)).
+  `GET /v1/projects/{project_id}/evaluation-runs/recent` lists runs newest
+  first within a project, optionally narrowed by `agent_id` and
+  `candidate_id`; a narrowing outside its parent is `400`, a missing one
+  `404`. Ties break by identifier, and the cursor carries both, so equal
+  creation times neither repeat nor skip. The Overview's runs panel and every
+  run selector read it at the deepest level chosen and say which scope that
+  is; choosing a run from a wider list brings its candidate and agent.
+
+### Changed
+
+- **Platform schema v10**, on SQLite and PostgreSQL: a fixed-width recency key
+  on evaluation runs and scenario executions, backfilled from stored times,
+  and three indexes. Every earlier version migrates forward in place.
+
+### Added
+
 - **WebUI themes: Light, Dark and System** (task 097,
   [ADR 0061](docs/adr/0061-the-theme-preference-is-the-one-value-the-browser-stores.md)).
   A radio group at the foot of the sidebar. A first visit follows the operating

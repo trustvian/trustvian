@@ -53,7 +53,7 @@ one URL and needs no second field.
 | Destination | Purpose |
 |---|---|
 | **Live** *(default)* | Watch. Active agents appear by themselves, one run's behavior flow animates as calls arrive, and an inspector shows what Trustvian decided |
-| **Overview** | Orient. Live activity, a candidate's runs by status, one run's authoritative evidence, recent gate verdicts and the project's environments — each saying what it covers and when it was read |
+| **Overview** | Orient. Live activity, the newest runs of a project, agent or candidate by status, one run's authoritative evidence, recent gate verdicts and the project's environments — each saying what it covers and when it was read |
 | **Projects** | Choose. A searchable table of what exists; picking a row scopes the whole console and the sidebar says which project that is |
 | **Runs** | Explore. A visible list of the project's agents and their candidates, then the run table itself. Clicking a run opens its workspace |
 | **Traces** | Investigate. A run's traces as a searchable list, one trace's evaluated actions as a waterfall, and one action's details beside it |
@@ -79,7 +79,7 @@ already chosen from any other destination — and five panels summarise them:
 | Panel | Reads | Says it covers |
 |---|---|---|
 | Live now | the Live connection's scope cards, for the project | this connection since it last synchronized |
-| Runs | one page of the candidate's runs | every run, or the first page when more exist |
+| Runs | the newest runs of the deepest level chosen — project, agent or candidate | every run newest first, or the newest page when more exist; **Load next page** reads on |
 | Newest run / Chosen run | that run's progress and first page of behaviors | one run; the newest by creation time unless you chose one |
 | Gate verdicts | the first page of the project's promotion decisions | identifier order, not newest first |
 | Environments | the project's whole environment collection | every environment |
@@ -103,11 +103,20 @@ decimal strings: a bar's length is drawn from the leading digits, never by
 converting the counter to a number, and the exact figure is printed beside it.
 A figure the server did not return reads *not available*, never `0`.
 
-What the Overview does not show, and says so on the page: a project-wide list of
-recent runs (`/v1` lists runs per candidate —
-[task 101](tasks/v0.11/101-recency-ordered-run-discovery.md)), a decision or
-risk distribution across a run (only a bounded page of retained history
-exists), trends, and any combined health score.
+**Runs are newest first across a scope** (task 101,
+[ADR 0063](adr/0063-recency-is-a-stored-sort-key-and-a-composite-cursor.md)).
+A project alone is enough: the panel reads
+`GET /v1/projects/{id}/evaluation-runs/recent`, narrowed to the agent and the
+candidate when they are chosen, and its heading names the scope. The order is
+the server's — by stored creation time, ties by identifier — so the first row
+is the newest in the whole scope, not the newest of an identifier-ordered page.
+A run created after the read is not on screen until **Refresh**; the read time
+says how old the list is. Pinning a run for the evidence panel is local to the
+Overview and does not narrow the page to that run's candidate.
+
+What the Overview does not show, and says so on the page: a decision or risk
+distribution across a run (only a bounded page of retained history exists),
+trends, and any combined health score.
 
 ## The Live Observatory
 
@@ -445,17 +454,19 @@ metadata and a failure reason are inputs, not choices.
 
 | Where | Chosen from |
 |---|---|
-| Live → Watch one run | the candidate's runs |
-| Evidence → Run history | the candidate's runs |
-| Evidence → Provenance | Compare's two sides; the candidate's runs |
+| Live → Watch one run | the newest runs in scope |
+| Evidence → Run history | the newest runs in scope |
+| Evidence → Provenance | Compare's two sides; the newest runs in scope |
 | Promotions → History | projects; each row opens its decision |
-| Promotions → Record one | Compare's two sides; the candidate's runs; the project's environments |
+| Promotions → Record one | Compare's two sides; the newest runs in scope; the project's environments |
 | Manage → Agents / Candidates / Evaluations | projects / agents / candidates and environments |
-| Manage → Lifecycle | the candidate's runs |
+| Manage → Lifecycle | the newest runs in scope |
 
-Scenario executions are not reachable from the browser and `/v1` publishes no
-collection of them; recency-ordered run discovery across a project is
-[task 101](tasks/v0.11/101-recency-ordered-run-discovery.md).
+**Run selectors are newest first across the deepest level chosen** (task 101):
+a project alone lists the project's runs, an agent narrows to its runs, a
+candidate to its own. The selector's footer names the scope. Choosing a run
+from a wider list brings its candidate and agent with it — resolved from the
+run's record — so the context never holds a run under the wrong candidate.
 
 ## Watching one run
 

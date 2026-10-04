@@ -1,6 +1,6 @@
 # 101 — Recency-Ordered Run Discovery
 
-Status: Planned
+Status: Implemented
 Milestone: [`v0.11.0`](../../ROADMAP.md#v0110--webui-experience)
 Depends on: [ADR 0041](../../adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md)
 Decision record: [ADR 0063](../../adr/0063-recency-is-a-stored-sort-key-and-a-composite-cursor.md)
@@ -41,7 +41,8 @@ same migration (task 102 reads it).
 - Schema v10: `platform_evaluation_runs.created_order`, a 20-digit zero-padded
   UTC Unix-nanosecond key, and indexes for each scope.
 - `GET /v1/projects/{project_id}/evaluation-runs/recent` with optional
-  `agent_id` and `candidate_id` narrowing (a candidate requires its agent),
+  `agent_id` and `candidate_id` narrowing (a candidate named without its agent
+  must still belong to the project),
   ordered by `(created_order DESC, id DESC)`, keyset cursor
   `<created_order>.<run id>`, `limit` 1..64, `next_after` exactly when more
   exist.
@@ -65,3 +66,14 @@ same migration (task 102 reads it).
 2. The route pages consistently under concurrent creation on both backends.
 3. Overview's runs panel can span the project, an agent or a candidate, and
    says which, newest first, with its pagination and read time.
+
+## What shipped
+
+- `platform/recency.go`: the key, the composite cursor, schema v10's
+  statements and backfill, `RecentRunStore`, and the control plane's scope
+  checks; both backends run one query.
+- The selection context's run page is the recency collection at the deepest
+  chosen level, read on demand at project and agent scope; choosing a run from
+  a wider list adopts its candidate and agent.
+- Verified: the conformance suite on SQLite and PostgreSQL 16, v9 → v10
+  migration and backfill on both, and a real v9 database migrated in place.

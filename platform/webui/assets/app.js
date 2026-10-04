@@ -3025,7 +3025,7 @@ const selection = createSelectionContext({
   listProjects: (after) => api.listProjects(after),
   listProjectAgents: (projectID, after) => api.listProjectAgents(projectID, after),
   listAgentCandidates: (agentID, after) => api.listAgentCandidates(agentID, after),
-  listCandidateRuns: (candidateID, after) => api.listCandidateRuns(candidateID, after),
+  listRecentRuns: (projectID, narrowing, after) => api.listRecentRuns(projectID, narrowing, after),
   listAllEnvironments: (projectID) => api.listAllEnvironments(projectID),
   getRun: (id) => api.getRun(id),
   getCandidate: (id) => api.getCandidate(id),
@@ -3125,7 +3125,7 @@ function requireField(id, message) {
 bindSelector(byID("watch-run-select"), selection, {
   level: "run",
   label: "Evaluation run",
-  hint: "Runs of the chosen candidate. Choose a project, agent and candidate in any destination.",
+  hint: "Newest first across the deepest level chosen — a project, an agent or a candidate, in any destination.",
   input: byID("watch-run-id"),
   paste: false,
 });
@@ -3247,6 +3247,7 @@ overview = createOverview({
     },
     useInCompare: (side, run) => { assignSide(side, run); },
     openCompare: () => { openView("view-compare"); onEnterView("view-compare"); },
+    openRuns: () => { openView("view-runs"); onEnterView("view-runs"); },
     openTraces: (runID) => { openTracesFor(runID, ""); },
     watchRun: (runID) => {
       byID("watch-run-id").value = runID;
@@ -3268,7 +3269,7 @@ byID("overview-refresh").addEventListener("click", () => overview.refresh());
 bindSelector(byID("traces-run-select"), selection, {
   level: "run",
   label: "Evaluation run",
-  hint: "Runs of the chosen candidate. Paste a run ID to reach any run.",
+  hint: "Newest first across the deepest level chosen. Paste a run ID to reach any run.",
   paste: true,
   onError: reportPaste,
 });

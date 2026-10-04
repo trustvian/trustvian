@@ -27,7 +27,23 @@ const PAGE_FOR = Object.freeze({
   candidate: "candidates",
   run: "runs",
 });
+// The pages each level's value is part of the parent key of — every one of
+// them is dropped when the level changes. Runs appear under all three: the
+// run list is the recency collection at the deepest chosen scope (task 101),
+// so choosing an agent or a candidate changes which runs it holds.
 const CHILD_PAGES = Object.freeze({
+  project: ["agents", "environments", "runs"],
+  agent: ["candidates", "runs"],
+  candidate: ["runs"],
+  run: [],
+});
+
+// The pages a fresh choice reads straight away, because preselection needs
+// them or every form on the project does. Runs at project or agent scope are
+// read when something asks for them — a selector opening, a destination being
+// shown — so choosing a project and then an agent costs no run read that the
+// next choice would throw away.
+const EAGER_PAGES = Object.freeze({
   project: ["agents", "environments"],
   agent: ["candidates"],
   candidate: ["runs"],
@@ -46,7 +62,7 @@ const PARENT_OF = Object.freeze({
   projects: "",
   agents: "project",
   candidates: "agent",
-  runs: "candidate",
+  runs: "project",
   environments: "project",
 });
 
@@ -111,13 +127,34 @@ export function createSelectionContext(deps) {
     }
   };
 
+  const idOf = (level) => (selection[level] === null ? "" : selection[level].id);
+
+  // parentIDOf is the key a page is listed under. For runs it is the whole
+  // scope — project, agent and candidate — because the recency collection is
+  // read at the deepest of them, and a page read for the project is not the
+  // agent's page.
   const parentIDOf = (pageName) => {
+    if (pageName === "runs") {
+      return idOf("project") === ""
+        ? ""
+        : [idOf("project"), idOf("agent"), idOf("candidate")].join("\u0000");
+    }
     const parentLevel = PARENT_OF[pageName];
     if (parentLevel === "") {
       return "";
     }
-    const parent = selection[parentLevel];
-    return parent === null ? "" : parent.id;
+    return idOf(parentLevel);
+  };
+
+  // runScope says which scope the run page is read at, for labels: the level
+  // and its name.
+  const runScope = () => {
+    for (const level of ["candidate", "agent", "project"]) {
+      if (selection[level] !== null) {
+        return { level, label: selection[level].label || selection[level].id };
+      }
+    }
+    return { level: "", label: "" };
   };
 
   // resetPage empties a page and abandons its reads, because its parent is
@@ -150,7 +187,10 @@ export function createSelectionContext(deps) {
       case "candidates":
         return deps.listAgentCandidates(parentID, after);
       case "runs":
-        return deps.listCandidateRuns(parentID, after);
+        return deps.listRecentRuns(idOf("project"), {
+          agentID: idOf("agent"),
+          candidateID: idOf("candidate"),
+        }, after);
       case "environments":
         // The whole collection: task 065's cap governs creation, not
         // existence, and api.js owns the bounded traversal.
@@ -229,7 +269,7 @@ export function createSelectionContext(deps) {
   // going. Bounded by the depth of the hierarchy, and every read in it was
   // caused by the reader's choice.
   async function descend(level) {
-    const children = CHILD_PAGES[level];
+    const children = EAGER_PAGES[level];
     await Promise.all(children.map((pageName) => load(pageName, "")));
     const childLevel = LEVELS[LEVELS.indexOf(level) + 1];
     if (childLevel === undefined) {
@@ -240,7 +280,7 @@ export function createSelectionContext(deps) {
       return;
     }
     const only = unambiguousSingle(page);
-    if (only !== null && page.parentID === (selection[level] ? selection[level].id : "")) {
+    if (only !== null && page.parentID === parentIDOf(PAGE_FOR[childLevel])) {
       selection[childLevel] = { id: only.id, label: labelFor(childLevel, only), row: only, preselected: true };
       notify(childLevel);
       await descend(childLevel);
@@ -269,12 +309,26 @@ export function createSelectionContext(deps) {
     return true;
   }
 
-  return {
+  const api = {
     get selection() { return selection; },
     get pages() { return pages; },
+    // The scope the run page is read at: { level, label }.
+    get runScope() { return runScope(); },
+    // The key the run page must carry to describe the current scope.
+    get runsKey() { return parentIDOf("runs"); },
 
     // choose is a reader's choice: record it, then read what it opens up.
+    //
+    // A run chosen from a project- or agent-wide list belongs to a candidate
+    // the context may not hold yet. Its parents are resolved from the record
+    // (adopt), so the context stays a chain that exists rather than a run
+    // filed under the wrong candidate.
     async choose(level, row) {
+      if (level === "run" && row && typeof row.candidate_id === "string"
+        && row.candidate_id !== idOf("candidate")) {
+        const result = await api.adopt("run", row.id);
+        return result.ok;
+      }
       const changed = set(level, row);
       if (changed && selection[level] !== null) {
         await descend(level);
@@ -361,7 +415,11 @@ export function createSelectionContext(deps) {
         }
         for (const each of LEVELS.slice(0, LEVELS.indexOf(level) + 1)) {
           for (const pageName of CHILD_PAGES[each]) {
-            if (!pages[pageName].loaded || pages[pageName].parentID !== parentIDOf(pageName)) {
+            // Once per page and key: runs are a child of every level, and a
+            // second read of the same page would supersede the first.
+            const page = pages[pageName];
+            const current = page.parentID === parentIDOf(pageName) && (page.loaded || page.loading);
+            if (!current) {
               void load(pageName, "");
             }
           }
@@ -403,4 +461,5 @@ export function createSelectionContext(deps) {
       return () => listeners.delete(listener);
     },
   };
+  return api;
 }
