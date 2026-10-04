@@ -8,6 +8,65 @@ actually depend on.
 
 ## Unreleased
 
+### Added
+
+- **WebUI themes: Light, Dark and System** (task 097,
+  [ADR 0061](docs/adr/0061-the-theme-preference-is-the-one-value-the-browser-stores.md)).
+  A radio group at the foot of the sidebar. A first visit follows the operating
+  system; an explicit choice is remembered in one `localStorage` key,
+  `trustvian.theme`, and applied before first paint by an external pre-paint
+  script, so a dark choice never flashes light. Choosing System removes the
+  key. Both schemes declare `color-scheme`, share one token sheet whose two
+  dark blocks a test keeps identical, and meet WCAG AA for text. Blocked
+  storage renders the system scheme and says the choice will not survive a
+  reload.
+
+- **WebUI selection-based workflows** (task 098). Every field that asked for an
+  existing project, agent, candidate, run or environment identifier is now a
+  searchable, keyboard-operable selector showing names with copyable
+  identifiers. One shared context carries the choice between destinations;
+  changing a parent clears its dependents and discards late responses for the
+  old one; a whole collection of exactly one is preselected. Each identifier
+  field remains as an "Advanced: paste an ID" path, and a pasted record is
+  resolved up its parent chain. Promotion history rows open their decision.
+
+- **WebUI Overview** (task 099). A new destination under *Observe* — Live stays
+  the landing view — summarising live activity for the project, the chosen
+  candidate's runs by status, one run's authoritative progress and top
+  behaviors, the project's recorded gate verdicts and its environments. Each
+  panel states its scope and read time, has its own loading, empty and error
+  state, and links to the record behind it; runs can be assigned to Compare
+  from it. No timer, no polling, no aggregate score, and an absent figure reads
+  "not available".
+
+- **Trace investigation in the WebUI** (task 100,
+  [ADR 0062](docs/adr/0062-trace-investigation-is-a-waterfall-over-retained-observations.md)).
+  A new **Traces** destination: a run's traces as a searchable list, one
+  trace's evaluated actions as a waterfall nested by recorded parent span with
+  bars from the producer's timestamp and measured duration, and a details panel
+  that opens on the right without redrawing the list or the waterfall. Keyboard
+  navigation, Escape to close with focus returned, and a drawer on narrow
+  screens. The view states that it is not a complete distributed trace and
+  what is not retained. Reachable from Overview, a run's workspace and an
+  observation's details; Evidence → Run history's trace and behavior
+  identifiers are now chosen from the run's lists.
+- **`GET /v1/evaluation-runs/{run_id}/traces`** (task 100). The distinct trace
+  identifiers in a run's retained history, with retained-observation and
+  error-status counts and the history state, ordered and paged by each trace's
+  first retained sequence. One bounded query over existing rows on both SQLite
+  and PostgreSQL; nothing new is retained.
+
+### Changed
+
+- **The browser keeps one presentation preference.** ADR 0036 § 10 is amended:
+  no platform state is stored in the browser, and the storage guard now allows
+  `localStorage` in exactly the two theme files, for one key.
+
+### Fixed
+
+- **Live no longer says "Resynchronizing…" after the stream is live** when no
+  run is selected.
+
 ## v0.10.0 — Developer preview
 
 ### Added

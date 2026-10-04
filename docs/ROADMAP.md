@@ -34,7 +34,8 @@ carries it because it contradicts
 [What Trustvian is not becoming](#what-trustvian-is-not-becoming) as written.
 
 `v0.10.0` — the [developer preview](#v0100--developer-preview) — is NEXT, and
-`v1.0` is the release gate beyond it. Track B is **partly implemented**: the
+`v1.0` is the release gate beyond it. `v0.11.0` — the
+[WebUI experience](#v0110--webui-experience) — is PLANNED after the preview. Track B is **partly implemented**: the
 evaluation foundation, local persistence, the local control-plane API and
 realtime, the developer CLI, the TUI, the WebUI, the PostgreSQL backend, the
 environment model and promotion (tasks 051–066, 073 and 074) exist; 067 and
@@ -373,6 +374,127 @@ on the evidence*
 needs a deployment more than one person uses. Neither is needed to answer
 "did my agent's behavior change, and does that change pass my limits", which
 is the question a developer preview has to answer.
+
+## v0.11.0 — WebUI Experience
+
+**PLANNED.** Tasks 097–100 are implemented, pending review and merge, and not in a
+release; task 101 remains planned. The release after the developer preview,
+and a WebUI-only one: the
+platform, the API contract and the engine change by exactly one bounded,
+run-scoped collection route (task 100). Everything else is presentation over
+data `/v1` already serves.
+
+The preview proved a developer can watch an agent and gate a candidate without
+typing an identifier at the front door. What it left is the *investigation*
+after that — the moment a gate fails or a behavior is new and the developer has
+to work out where to look. Today that means visiting four destinations to
+assemble one picture, pasting identifiers into the forms that remain, reading a
+trace as a flat table, and accepting whichever color scheme the operating
+system chose.
+
+### User journey
+
+```text
+open the WebUI in the theme you chose last time
+    ↓
+choose a project, agent and candidate once — by name, from searchable lists
+    ↓
+read the Overview: live activity, run status, the newest run's evidence,
+recent gate verdicts — each saying what it covers and when it was read
+    ↓
+open the run, or compare two runs with both sides already chosen
+    ↓
+open a trace: a searchable list, a waterfall of the evaluated actions,
+and the details of one span beside it
+    ↓
+follow the evidence — without typing an identifier at any step
+```
+
+### Contents
+
+| Task | Status | Milestone |
+|---|---|---|
+| 097 | **Implemented** | [Theme preference: Light, Dark and System](tasks/v0.11/097-theme-preference.md) |
+| 098 | **Implemented** | [Selection-based context workflows](tasks/v0.11/098-selection-based-context-workflows.md) |
+| 099 | **Implemented** | [Overview dashboard](tasks/v0.11/099-overview-dashboard.md) |
+| 100 | **Implemented** | [Trace investigation over retained evidence](tasks/v0.11/100-trace-investigation.md) |
+| 101 | Planned — not part of this build | [Recency-ordered run discovery](tasks/v0.11/101-recency-ordered-run-discovery.md) |
+
+**Build order 097 → 098 → 099 → 100.** Every later surface is drawn with 097's
+tokens and reads 098's context. 101 records the one capability the Overview
+needs and `/v1` does not have; it needs an ordering decision before it needs
+code, and the milestone ships without it.
+
+### Dependencies and missing capabilities
+
+- **Available:** every hierarchy collection (ADR 0041), environments,
+  promotions, run progress and behaviors, retained observations narrowed by
+  trace (067, 076), and the realtime scope cards (074).
+- **Added by this milestone:** `GET /v1/evaluation-runs/{run_id}/traces` — the
+  distinct trace identifiers in a run's retained history. Without it a trace is
+  reachable only by an identifier read off one observation (task 100).
+- **Missing, and not added:** a project-wide recency-ordered run collection
+  (101) and any scenario-execution collection. The Overview is scoped to one
+  candidate's runs and says so.
+
+### Exit criterion
+
+1. **Themes.** Light, Dark and System are selectable from every destination by
+   pointer and keyboard; a first visit follows the operating system, an explicit
+   choice survives a reload, and a dark choice does not flash light. Text meets
+   WCAG AA in both themes.
+2. **Dashboard.** With a context chosen, Overview shows live activity, run
+   status, the newest run's evidence and behaviors, recent gate verdicts and
+   environments, each with its scope, read time, drill-down, and distinct
+   loading, empty and error states. Absent data reads *not available*, never 0.
+3. **Investigation.** A run's traces are listed and searchable; a trace renders
+   as a hierarchy with timing bars, durations and status; a span's details open
+   on the right while the trace, filter and scroll positions are kept; Escape
+   closes and focus returns.
+4. **Selection.** Every identifier field that has a collection behind it is a
+   searchable selector showing names with copyable identifiers; dependent
+   selectors clear when their parent changes; context carries between
+   destinations and is preselected only when unambiguous; a paste path remains.
+5. **Accessibility.** Every new control is reachable and operable by keyboard
+   with a visible focus ring; nothing is conveyed by color alone;
+   `prefers-reduced-motion` is honored.
+6. **Responsive.** Every new surface works at desktop and at a phone-width
+   viewport in both themes, with the details panel becoming a drawer.
+
+### Exclusions
+
+- **No new retention.** Spans the engine did not evaluate, span events,
+  attributes, service names and all content stay unretained. The trace view is
+  the evaluated actions of a trace, says so, and never calls itself a complete
+  distributed trace.
+- **No polling, prefetch or auto-refresh.** Freshness is a read time and a
+  Refresh control; Live remains the landing view and its startup budget is
+  unchanged.
+- **No aggregate health score**, no trend charts, and no distribution drawn
+  from a bounded page as if it were the run.
+- **No authentication or remote access** (task 070), and no change to gate,
+  promotion or realtime semantics.
+
+### Known limitations after implementation
+
+- Overview's run summaries are per candidate until task 101 decides a
+  recency-ordered run collection.
+- The Runs destination keeps its own bounded browser, kept in step with the
+  shared selection context by hand in `app.js`; deriving it from the context
+  is a follow-up refactor, not a behavior gap.
+- A trace's `next_after` probe and its page are two reads, as on every other
+  collection route, so the cursor and the history state can describe adjacent
+  instants.
+- Live's authoritative header counts are still read once per selection, as
+  before this milestone.
+
+### Retained-data limitations
+
+The investigation view inherits 067's bounds: at most 4096 observations per
+run, the first ones admitted; one page of 64 per read; trace structure only as
+recorded; timestamps from the producer's clock, so bars from different
+producers can be skewed; and no fidelity, layer or sequence-deviation evidence
+per observation (076). Each is stated on screen where it applies.
 
 ## v1.0 — Local-First Behavioral Security Platform
 

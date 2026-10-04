@@ -196,6 +196,10 @@ so it does not imply a surface that does not exist.
 
 ### 10. The browser stores no platform state
 
+> Amended by [ADR 0061](0061-the-theme-preference-is-the-one-value-the-browser-stores.md):
+> one presentation preference — the colour scheme — is kept in `localStorage`.
+> Everything below still holds for platform state.
+
 No `localStorage`, `sessionStorage`, `IndexedDB` or cookies. A reload
 legitimately forgets which IDs were open, and the control-plane database stays
 the only source of truth. A watched run ID in the URL fragment is navigation

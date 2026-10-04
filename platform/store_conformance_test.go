@@ -160,6 +160,9 @@ func TestStoreConformance(t *testing.T) {
 			t.Run("observation-correlation", func(t *testing.T) {
 				conformObservationCorrelation(t, backend.open)
 			})
+			t.Run("trace-summaries", func(t *testing.T) {
+				conformTraceSummaries(t, backend.open)
+			})
 			t.Run("timestamps", func(t *testing.T) { conformTimestamps(t, backend.open) })
 			t.Run("cancellation", func(t *testing.T) { conformCancellation(t, backend.open) })
 		})

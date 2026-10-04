@@ -53,8 +53,10 @@ one URL and needs no second field.
 | Destination | Purpose |
 |---|---|
 | **Live** *(default)* | Watch. Active agents appear by themselves, one run's behavior flow animates as calls arrive, and an inspector shows what Trustvian decided |
+| **Overview** | Orient. Live activity, a candidate's runs by status, one run's authoritative evidence, recent gate verdicts and the project's environments — each saying what it covers and when it was read |
 | **Projects** | Choose. A searchable table of what exists; picking a row scopes the whole console and the sidebar says which project that is |
 | **Runs** | Explore. A visible list of the project's agents and their candidates, then the run table itself. Clicking a run opens its workspace |
+| **Traces** | Investigate. A run's traces as a searchable list, one trace's evaluated actions as a waterfall, and one action's details beside it |
 | **Compare** | Measure. Assign two runs from a table as reference and candidate, then read the server's gate, diff and scorecard |
 | **Evidence** | Explain. Follow a gate check or a behavioral delta to the observations behind it, and read one run's retained session, trace, sequence and timeline |
 | **Promotions** | Decide. Record a promotion decision and page the scoped project's history |
@@ -67,6 +69,45 @@ product is thinner than it is.
 What it deliberately cannot do: ingest decision records (that is the job of the
 application under evaluation, through the CLI or the API), or manage
 environments (task 065).
+
+## The Overview
+
+**Overview** answers *where should I look first?* from records `/v1` already
+serves. Choose a project, agent and candidate at the top — or arrive with them
+already chosen from any other destination — and five panels summarise them:
+
+| Panel | Reads | Says it covers |
+|---|---|---|
+| Live now | the Live connection's scope cards, for the project | this connection since it last synchronized |
+| Runs | one page of the candidate's runs | every run, or the first page when more exist |
+| Newest run / Chosen run | that run's progress and first page of behaviors | one run; the newest by creation time unless you chose one |
+| Gate verdicts | the first page of the project's promotion decisions | identifier order, not newest first |
+| Environments | the project's whole environment collection | every environment |
+
+Every panel prints when it was **read** as a clock time, has its own loading,
+empty and failed state, and fails alone: an unreachable control plane shows in
+the panels that needed it and leaves the rest standing. Nothing is re-read on a
+timer. **Refresh** reads every panel again; changing the context re-reads what
+the change affects.
+
+Everything links to the record behind it. A run's chip chooses it for the
+evidence panel and **Open** goes to its workspace; **Reference** and
+**Candidate** assign it as a side in Compare, which is then ready with both
+runs chosen; a verdict's **Open** opens its decision; a live card's **Watch**
+selects it in Live.
+
+**Charts are a second rendering of printed numbers.** The status bar counts the
+rows on the runs page and says so. The behavior bars are each behavior's
+authoritative observation count, ordered within the first page. Counters stay
+decimal strings: a bar's length is drawn from the leading digits, never by
+converting the counter to a number, and the exact figure is printed beside it.
+A figure the server did not return reads *not available*, never `0`.
+
+What the Overview does not show, and says so on the page: a project-wide list of
+recent runs (`/v1` lists runs per candidate —
+[task 101](tasks/v0.11/101-recency-ordered-run-discovery.md)), a decision or
+risk distribution across a run (only a bounded page of retained history
+exists), trends, and any combined health score.
 
 ## The Live Observatory
 
@@ -335,9 +376,12 @@ A stable identifier for the version being evaluated.
 Example: git:43af19c
 ```
 
-There is still no search. Every collection is parent-scoped, ordered by an
-immutable identifier in byte order, and bounded per page; filtering by name is
-a capability with its own design and nothing in this journey needs it.
+Where a form needs an existing record rather than a new name, it offers a
+searchable selector instead of a text box — see
+[Choosing a record without typing it](#choosing-a-record-without-typing-it).
+The search is over the pages a selector has loaded; there is still no
+server-side search. Every collection is parent-scoped, ordered by an immutable
+identifier in byte order, and bounded per page.
 
 You open things by the ID you already know, which is the same ID the CLI
 uses:
@@ -357,6 +401,61 @@ for why the collection capability was added after two deliberate deferrals, and
 why discovery is bounded as a whole workflow rather than only per route, and
 [ADR 0050](adr/0050-the-browser-surface-is-a-record-first-admin-console.md) for
 why what remains is a console of tables rather than a set of forms.
+
+## Choosing a record without typing it
+
+Every field that asks for an existing project, agent, candidate, run or
+environment is a **searchable selector** (task 098): type to narrow, arrow keys
+to move, Enter to choose, Escape to close. Each option leads with the name a
+person recognises — a project's or agent's name, a candidate's label, a run's
+status, environment and creation time — and shows the identifier beside it.
+The chosen record's identifier stays visible with a **Copy ID** control, because
+telling two records with the same name apart is what an identifier is for.
+
+**One context, carried everywhere.** The console holds one project, agent,
+candidate and run. Choosing one in any destination — a row under Runs, a
+selector under Manage, a project under Promotions — is the preselection in all
+the others. A selection belongs to its parent: choosing a different project
+clears the agent, candidate, run and environments; choosing a different agent
+clears the candidate and run. Lists read for the previous parent are dropped,
+reads still in flight for it are abandoned, and a late answer for it is
+discarded — so a selector never shows one agent's candidates under another's
+name.
+
+**Preselected only when unambiguous.** When a whole collection — no
+continuation — holds exactly one record, it is chosen and the selector says
+*Chosen for you: the only one*. The only entry on a page that has more after it
+is never treated as the only one.
+
+**What a selector lists.** One bounded page of the existing collection route,
+read when the selector is first opened, with **Load next page** where more
+exist, up to 512 options. Filtering is over what is loaded, and the footer says
+whether that is the whole collection or one page of it. Nothing is prefetched.
+
+**Pasting is still there.** Each selector's field moved into an **Advanced:
+paste an ID** disclosure, and it is still what the form sends — so an
+identifier from a log, a CI job or the CLI works exactly as before. A pasted
+project, agent, candidate or run in a selector's own paste path is resolved
+upward through its record (a run's candidate, that candidate's agent, that
+agent's project), so the context is always a chain that exists.
+
+Fields that create something keep their text box: a new project, agent,
+candidate, run or promotion identifier, a name, a behavioral profile, candidate
+metadata and a failure reason are inputs, not choices.
+
+| Where | Chosen from |
+|---|---|
+| Live → Watch one run | the candidate's runs |
+| Evidence → Run history | the candidate's runs |
+| Evidence → Provenance | Compare's two sides; the candidate's runs |
+| Promotions → History | projects; each row opens its decision |
+| Promotions → Record one | Compare's two sides; the candidate's runs; the project's environments |
+| Manage → Agents / Candidates / Evaluations | projects / agents / candidates and environments |
+| Manage → Lifecycle | the candidate's runs |
+
+Scenario executions are not reachable from the browser and `/v1` publishes no
+collection of them; recency-ordered run discovery across a project is
+[task 101](tasks/v0.11/101-recency-ordered-run-discovery.md).
 
 ## Watching one run
 
@@ -416,6 +515,46 @@ database's.
 Heartbeat traffic keeps an *established* stream alive but does not make a
 connection ready. A connection that never completes the realtime handshake
 fails or reconnects; it does not sit there looking like it is working.
+
+## Investigating a trace
+
+**Traces** lays one run's traces out the way Grafana Tempo and Jaeger do — a
+searchable list on the left, a waterfall in the middle, an action's details on
+the right — over what Trustvian actually retains
+([ADR 0062](adr/0062-trace-investigation-is-a-waterfall-over-retained-observations.md)).
+
+```text
+Overview ─ Investigate traces ─┐
+Run ─ Investigate traces ──────┼─▶ Traces: run ▸ trace list ▸ waterfall ▸ details
+Observation ─ Trace timeline ──┘
+```
+
+**What a row is.** Each row is an *evaluated action*: an observation Trustvian
+made a decision about. Spans it did not evaluate were never retained, nor were
+attributes, events, links, service names or content — so this is the evaluated
+part of a trace, and the page says so above the list and above the waterfall.
+
+**The list** is `GET /v1/evaluation-runs/{run_id}/traces`: every trace
+identifier in the run's retained history, in the order the run first produced
+each, with how many actions carried it and how many recorded an `error` status.
+The filter is over the loaded list; **Load next page** reads more.
+
+**The waterfall** nests rows by the recorded parent span reference and nothing
+else, exactly like the Evidence tree, so a parent the page does not hold reads
+*unresolved* rather than becoming a root. A bar starts at the producer's
+timestamp — span start, for OTLP — relative to the earliest on the page, and is
+as long as the measured duration. A row with no measured duration is a dashed
+marker, never a zero-width bar; a row without a readable timestamp has no bar.
+Producers' clocks can disagree and nothing corrects for it. A trace longer than
+64 actions is paged.
+
+**Details.** Clicking a row, or pressing Enter on it, opens the action beside
+the waterfall: the decision, timing, recorded structure, behavior, scores and
+identifiers, with session and behavior as links into Evidence. Selecting
+redraws nothing, so the chosen trace, the filter and both scroll positions
+stay. Arrow keys, Page Up/Down, Home and End move the selection and the panel
+follows; Escape closes it and returns focus to the row. On a narrow screen the
+panel is a drawer over the waterfall and focus moves into it.
 
 ## Comparing two runs
 
@@ -732,8 +871,11 @@ What the browser side adds:
   without someone deciding to show it. Prompts, completions, tool arguments,
   event attributes, policy reasons and raw decision records are absent from the
   realtime contract and are not displayed.
-- **Nothing is stored in the browser.** No `localStorage`, `sessionStorage`,
-  `IndexedDB` or cookies.
+- **No platform state is stored in the browser.** No identifier, record, page
+  or cursor goes into `localStorage`, `sessionStorage`, `IndexedDB` or a
+  cookie. The one exception is the colour-scheme choice: one `localStorage`
+  key, `trustvian.theme`, holding `light` or `dark` and nothing else
+  ([ADR 0061](adr/0061-the-theme-preference-is-the-one-value-the-browser-stores.md)).
 
 CSP is browser hardening. It is not authentication, and it does not make the
 runtime safe to expose.
@@ -763,6 +905,26 @@ other sheet fails a test. That is what keeps light and dark from drifting
 apart, and it is why the accent is blue: green, amber and red carry verdict
 and risk, violet carries "new", and an accent sharing any of those hues would
 make *selected* read as *severe*.
+
+### Themes
+
+Light, Dark and System sit at the foot of the sidebar as one radio group, so
+arrow keys move the choice and a screen reader announces it. A first visit
+follows the operating system. An explicit choice is remembered; choosing
+System forgets it, and the page then follows the operating system again —
+including when it changes while the page is open. The note under the switcher
+says which scheme System currently means, and says so when the browser is not
+keeping the choice.
+
+A remembered Dark never flashes light: `core/theme-boot.js` is a classic
+script in `<head>`, ahead of the stylesheets, that applies the stored choice
+before the first paint. It is external, so the CSP is unchanged.
+
+The dark palette is declared twice in `tokens.css` — for an explicit choice
+(`data-theme="dark"`) and for a dark system with no choice — and a test keeps
+the two bodies identical. Each scheme declares `color-scheme`, so native
+controls and scrollbars follow it. Body text meets WCAG AA (4.5:1) on every
+surface it sits on, in both.
 
 There is no web font. `font-src 'none'` is an honest policy only because
 nothing asks for one, so the type system's distinction is prose versus

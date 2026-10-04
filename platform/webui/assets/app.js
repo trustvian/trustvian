@@ -5,9 +5,11 @@
 // because all three belong to the control plane and a second copy in a browser
 // would be a rule that can disagree with the one that matters.
 //
-// It also stores nothing. There is no localStorage, sessionStorage, IndexedDB
-// or cookie: a reload legitimately forgets which IDs were open, and the
-// database stays the only source of truth. The watched run in the URL fragment
+// It also stores nothing about the platform. No identifier, record or page is
+// kept in browser storage: a reload legitimately forgets which IDs were open,
+// and the database stays the only source of truth. The one value the browser
+// keeps is the reader's colour-scheme choice, through core/theme.js and
+// nowhere else (ADR 0061). The watched run in the URL fragment
 // is navigation state, never read back as fact.
 
 import * as api from "./v1/api.js";
@@ -18,7 +20,7 @@ import { GraphCanvas, PULSE_MS } from "./live/graph.js";
 import { renderRail, renderCanvasNotices } from "./live/rail.js";
 import { TimelineFeed, renderTimeline } from "./live/timeline.js";
 import { renderInspector } from "./live/inspector.js";
-import { LabelCache, HierarchyBrowser, renderOptions } from "./v1/discovery.js";
+import { LabelCache, HierarchyBrowser } from "./v1/discovery.js";
 import * as dash from "./ui/dashboard.js";
 import { icon } from "./ui/icons.js";
 import { notify } from "./ui/feedback.js";
@@ -26,6 +28,12 @@ import { createRunState } from "./views/run-state.js";
 import { createProjectScope } from "./views/project-scope.js";
 import { createSurface } from "./core/ownership.js";
 import * as evidence from "./views/evidence.js";
+import * as theme from "./core/theme.js";
+import { createSelectionContext } from "./views/context.js";
+import { bindSelector } from "./views/selectors.js";
+import { createOverview } from "./views/overview.js";
+import { createTraces } from "./views/traces.js";
+import { createSelector } from "./ui/selector.js";
 
 const byID = (id) => document.getElementById(id);
 
@@ -59,6 +67,50 @@ function report(target, error) {
 }
 
 // ---------------------------------------------------------------------
+// Theme (task 097)
+// ---------------------------------------------------------------------
+//
+// The pre-paint script has already applied a stored choice. This wires the
+// switcher to it and keeps the note beside it honest about two things a
+// reader cannot otherwise see: which scheme System currently resolves to,
+// and whether a choice will survive a reload.
+
+const themeStorage = theme.browserStorage(window);
+const systemDarkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+let themePreference = theme.readThemePreference(themeStorage);
+let themePersisted = themeStorage !== null;
+
+function drawThemeSwitch() {
+  for (const preference of theme.THEME_PREFERENCES) {
+    byID(`theme-${preference}`).checked = preference === themePreference;
+  }
+  const note = byID("theme-note");
+  if (!themePersisted) {
+    note.textContent = "This browser is not keeping the choice; it lasts until reload.";
+  } else if (themePreference === "system") {
+    note.textContent = `Following the system: ${
+      theme.resolveTheme("system", systemDarkQuery.matches) === "dark" ? "dark" : "light"}.`;
+  } else {
+    note.textContent = "";
+  }
+}
+
+for (const preference of theme.THEME_PREFERENCES) {
+  byID(`theme-${preference}`).addEventListener("change", (event) => {
+    if (!event.target.checked) {
+      return;
+    }
+    themePreference = preference;
+    theme.applyThemePreference(document.documentElement, preference);
+    themePersisted = theme.writeThemePreference(themeStorage, preference);
+    drawThemeSwitch();
+  });
+}
+systemDarkQuery.addEventListener("change", drawThemeSwitch);
+theme.applyThemePreference(document.documentElement, themePreference);
+drawThemeSwitch();
+
+// ---------------------------------------------------------------------
 // Navigation
 // ---------------------------------------------------------------------
 //
@@ -76,8 +128,10 @@ function report(target, error) {
 // has room for.
 const PAGE_TITLES = Object.freeze([
   Object.freeze({ view: "view-live", title: "Live" }),
+  Object.freeze({ view: "view-overview", title: "Overview" }),
   Object.freeze({ view: "view-projects", title: "Projects" }),
   Object.freeze({ view: "view-runs", title: "Evaluation runs" }),
+  Object.freeze({ view: "view-traces", title: "Traces" }),
   Object.freeze({ view: "view-run", title: "Run" }),
   Object.freeze({ view: "view-compare", title: "Compare runs" }),
   Object.freeze({ view: "view-evidence", title: "Evidence" }),
@@ -128,11 +182,21 @@ for (const host of document.querySelectorAll("[data-icon]")) {
 byID("brand-mark").append(icon("evidence"));
 
 const navItems = Array.from(document.querySelectorAll(".nav-item"));
+// The Overview controller, created once the selection context exists. Null
+// until then; the two places that reach it before that check.
+let overview = null;
+let traces = null;
 const views = Array.from(document.querySelectorAll(".view"));
 let currentView = "view-live";
 
 // openView reveals one destination and marks the sidebar entry it belongs to.
 function openView(viewID) {
+  if (currentView === "view-overview" && viewID !== "view-overview" && overview !== null) {
+    overview.leave();
+  }
+  if (currentView === "view-traces" && viewID !== "view-traces" && traces !== null) {
+    traces.leave();
+  }
   currentView = viewID;
   const target = byID(viewID);
   const owner = target === null ? viewID : target.dataset.nav;
@@ -307,6 +371,9 @@ byID("form-create-project").addEventListener("submit", async (event) => {
 
 byID("form-create-agent").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!requireField("agent-project-id", "Choose the project this agent belongs to.")) {
+    return;
+  }
   await busy(event.submitter, async () => {
     try {
       render.renderAgent(agentResult, await api.createAgent(
@@ -321,6 +388,9 @@ byID("form-create-agent").addEventListener("submit", async (event) => {
 
 byID("form-create-candidate").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!requireField("candidate-agent-id", "Choose the agent this candidate is a version of.")) {
+    return;
+  }
   await busy(event.submitter, async () => {
     // The fixed metadata fields task 052 defines. Not a map: an open-ended bag
     // would be a schema this task has no mandate to invent.
@@ -397,6 +467,10 @@ async function loadRun(id, submitter) {
 
 byID("form-create-run").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!requireField("run-candidate-id", "Choose the candidate this run executes.")
+    || !requireField("run-environment", "Choose the environment this run records.")) {
+    return;
+  }
   await busy(event.submitter, async () => {
     try {
       const run = await api.createRun(
@@ -585,6 +659,9 @@ labels.onChange = () => {
 };
 
 function drawRail() {
+  if (overview !== null) {
+    overview.drawLive();
+  }
   renderRail(railHost, liveModel.cards, {
     selectedKey: liveModel.selectedKey,
     following: liveModel.following,
@@ -768,6 +845,11 @@ const liveSession = new RealtimeSession(
           ? "Disconnected. The graph below is paused and no longer live."
           : "Resynchronizing…";
       }
+      // Back to the selection's own wording once live again; without this the
+      // canvas kept saying "Resynchronizing…" after the stream had settled.
+      if (state === STATE.LIVE) {
+        drawHeader();
+      }
     },
     onRows: () => {
       // The timeline owns the feed, built from scoped observations. The
@@ -776,6 +858,9 @@ const liveSession = new RealtimeSession(
     },
     onSnapshot: (projects) => {
       renderProjectsLevel(projects);
+      // The project selector offers the page the snapshot already read, so
+      // opening it costs no request.
+      selection.offerProjects(hierarchy.levels.projects);
     },
     onLifecycle: () => {
       // Lifecycle frames move a card's activity, which the observation path
@@ -976,6 +1061,10 @@ function setProjectScope(id, name) {
     compareResult.append(render.emptyState("No comparison run."));
     render.clear(promotionHistory);
     promotionHistory.append(render.emptyState("No promotions listed."));
+    // A decision opened from the previous project's history is not this
+    // project's, however it is spelled.
+    byID("promotion-detail").hidden = true;
+    render.clear(byID("promotion-detail"));
     // The finding's evidence context came from a comparison of the previous
     // project's runs, so it is no longer about anything on screen. Reset to
     // the empty shape rather than null: the evidence controls read its two
@@ -1058,6 +1147,7 @@ function openProject(row) {
   openedAgent = "";
   openedAgentName = "";
   openedCandidate = "";
+  selection.assume("project", row);
   openView("view-runs");
   void openLevel("agents", () => hierarchy.loadAgents(row.id, ""));
 }
@@ -1121,6 +1211,7 @@ function renderAgentsList() {
       runsScopeOpen = true;
       labels.remember("agent", row.id, row.name);
       byID("candidate-agent-id").value = row.id;
+      selection.assume("agent", row);
       void openLevel("candidates", () => hierarchy.loadCandidates(row.id, ""));
     },
   });
@@ -1144,6 +1235,7 @@ function renderCandidatesList() {
       openedCandidate = row.id;
       byID("run-candidate-id").value = row.id;
       runsScopeOpen = false;
+      selection.assume("candidate", row);
       void openLevel("runs", () => hierarchy.loadRuns(row.id, ""));
     },
   });
@@ -1268,7 +1360,6 @@ byID("runs-more").addEventListener("click", () => {
 function renderProjectsLevel() {
   renderProjectsView();
   renderRunsView();
-  refreshCompareOptions();
 }
 
 // openLevel performs exactly one bounded request per user action.
@@ -1376,6 +1467,15 @@ async function openRunDetail(runID) {
     }
     render.renderRun(byID("investigate-run"), run);
     setOpenRun(runID);
+    // The run is now "the" run everywhere a run is chosen — when it belongs
+    // to the candidate the context is on. A run opened from somewhere else
+    // (a promotion row, a paste) carries its own chain and is adopted.
+    if (selection.selection.candidate !== null
+      && selection.selection.candidate.id === run.candidate_id) {
+      selection.assume("run", run);
+    } else {
+      void selection.adopt("run", runID);
+    }
     byID("watch-run-id").value = runID;
     byID("evidence-run-id").value = runID;
     clearProblem();
@@ -1426,6 +1526,11 @@ function renderRunActions() {
     byID("watch-start").focus();
   });
   host.append(watch);
+
+  const traceView = render.element("button", "link-button", "Investigate traces");
+  traceView.type = "button";
+  traceView.addEventListener("click", () => openTracesFor(runState.runID, ""));
+  host.append(traceView);
 
   const history = render.element("button", "link-button", "Open in evidence");
   history.type = "button";
@@ -1693,6 +1798,11 @@ function selectObservation(observation) {
       onOpen: (value) => narrowObservations("traceID", value),
     },
     {
+      key: "Trace timeline",
+      value: render.retainedValue(observation, "trace_id"),
+      onOpen: (value) => openTracesFor(runState.runID, value),
+    },
+    {
       key: "Behavior",
       value: render.retainedValue(observation, "fingerprint_id"),
       onOpen: (value) => narrowObservations("fingerprintID", value),
@@ -1824,6 +1934,12 @@ for (const tab of byID("run-tabs").querySelectorAll(".subtab")) {
 // a destination already holding a page is left alone so returning to it does
 // not re-fetch what is on screen.
 function onEnterView(viewID) {
+  if (viewID === "view-overview" && overview !== null) {
+    overview.enter();
+  }
+  if (viewID === "view-traces" && traces !== null) {
+    traces.enter("");
+  }
   if (viewID === "view-projects" && !hierarchy.levels.projects.loaded) {
     void openLevel("projects", () => hierarchy.loadProjects(""));
   }
@@ -1839,6 +1955,15 @@ function onEnterView(viewID) {
   // the form-first habit this console is replacing.
   if (viewID === "view-promotion" && projectScope.needsPromotions()) {
     void loadPromotionPage(openedProject, "", 1, null);
+  }
+  // The target list is the scoped project's environments, read once per
+  // project when somebody comes to record a decision.
+  if (viewID === "view-promotion") {
+    void selection.ensure("environments");
+  }
+  // Runs shows the context's agent and candidate, wherever they were chosen.
+  if (viewID === "view-runs" && runsNeedSync) {
+    void syncRunsHierarchy();
   }
 }
 
@@ -1887,6 +2012,7 @@ byID("form-watch").addEventListener("submit", (event) => {
   event.preventDefault();
   const runID = value("watch-run-id");
   if (runID === "") {
+    showProblem("Choose a run to watch, or paste its identifier.");
     return;
   }
   render.clear(liveSnapshot);
@@ -2007,6 +2133,14 @@ function renderCompareSides() {
     ? "" : compareSides.candidate.id;
   byID("promotion-candidate").value = compareSides.candidate === null
     ? "" : compareSides.candidate.id;
+  // The same two runs, shown by the selectors that send them. Declared later
+  // in the file, so guarded until the bindings exist.
+  if (sideSelectors !== null) {
+    sideSelectors.provenanceReference.setLocal(compareSides.reference);
+    sideSelectors.provenanceCandidate.setLocal(compareSides.candidate);
+    sideSelectors.promotionReference.setLocal(compareSides.reference);
+    sideSelectors.promotionCandidate.setLocal(compareSides.candidate);
+  }
 }
 
 // sideControl renders one row's assign button for one side.
@@ -2110,39 +2244,6 @@ byID("compare-runs-more").addEventListener("click", () => {
   ));
 });
 
-// refreshCompareOptions fills the promotion form's run pickers.
-//
-// Promotion keeps selects: recording one is an occasional administrative act
-// on two runs a reader has already compared, and the fields are filled from
-// that comparison. They are not how anybody moves around this page.
-function refreshCompareOptions() {
-  const runs = hierarchy.levels.runs.rows;
-  for (const picker of promotionRunPickers()) {
-    renderOptions(byID(picker.select), runs, {
-      placeholder: "Choose a run",
-      emptyLabel: "Browse to a candidate under Runs",
-      labelOf: (row) => row.id,
-      detailOf: (row) => [row.status, row.environment].filter((p) => p).join(" · "),
-    });
-  }
-}
-
-// Declared as a function because the promotion section is wired further down;
-// referencing its constant here would read it before initialization.
-function promotionRunPickers() {
-  return [
-    { select: "promotion-reference-pick", input: "promotion-reference" },
-    { select: "promotion-candidate-pick", input: "promotion-candidate" },
-  ];
-}
-
-for (const picker of promotionRunPickers()) {
-  byID(picker.select).addEventListener("change", (event) => {
-    if (event.target.value !== "") {
-      byID(picker.input).value = event.target.value;
-    }
-  });
-}
 const LIMIT_INPUTS = Object.freeze([
   Object.freeze({ id: "compare-max-added", key: "maxAddedBehaviors", label: "Max added behaviors" }),
   Object.freeze({ id: "compare-max-block", key: "maxBlockDecisions", label: "Max block decisions" }),
@@ -2282,6 +2383,7 @@ async function openRunView(runID, viewKey, identifier) {
   evidenceViewSelect.value = viewKey;
   byID("evidence-identifier").value = identifier;
   syncEvidenceViewFields();
+  resetEvidenceIdentifiers();
   openEvidence("evidence-run");
   await evidenceSurface.openRunView(runID, viewKey, identifier);
 }
@@ -2571,6 +2673,9 @@ syncEvidenceViewFields();
 
 byID("form-evidence-run").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!requireField("evidence-run-id", "Choose a run, or paste its identifier.")) {
+    return;
+  }
   await busy(event.submitter, async () => {
     await evidenceSurface.openRunView(
       value("evidence-run-id"), evidenceViewSelect.value, value("evidence-identifier"),
@@ -2580,6 +2685,10 @@ byID("form-evidence-run").addEventListener("submit", async (event) => {
 
 byID("form-evidence-provenance").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!requireField("evidence-provenance-reference", "Choose a reference run.")
+    || !requireField("evidence-provenance-candidate", "Choose a candidate run.")) {
+    return;
+  }
   await busy(event.submitter, async () => {
     await evidenceSurface.loadProvenance(
       value("evidence-provenance-reference"), value("evidence-provenance-candidate"),
@@ -2643,21 +2752,6 @@ const promotionResult = byID("promotion-result");
 const promotionHistory = byID("promotion-history");
 const promotionTarget = byID("promotion-target");
 
-// The promotion form's run pickers, filled from the same browsed page Compare
-// uses. Task 066's rules are untouched: the source environment is still
-// inferred by the server, no rank is compared here, and no verdict is derived.
-const promotionPickers = Object.freeze([
-  Object.freeze({ select: "promotion-reference-pick", input: "promotion-reference" }),
-  Object.freeze({ select: "promotion-candidate-pick", input: "promotion-candidate" }),
-]);
-
-for (const picker of promotionPickers) {
-  byID(picker.select).addEventListener("change", (event) => {
-    if (event.target.value !== "") {
-      byID(picker.input).value = event.target.value;
-    }
-  });
-}
 
 const PROMOTION_LIMIT_INPUTS = Object.freeze([
   Object.freeze({ id: "promotion-max-added", key: "maxAddedBehaviors", label: "Max added behaviors" }),
@@ -2700,6 +2794,10 @@ byID("promotion-load-environments").addEventListener("click", async (event) => {
 
 byID("form-promotion-create").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!requireField("promotion-reference", "Choose a reference run.")
+    || !requireField("promotion-candidate", "Choose a candidate run.")) {
+    return;
+  }
   await busy(event.submitter, async () => {
     const limits = {};
     for (const input of PROMOTION_LIMIT_INPUTS) {
@@ -2742,17 +2840,37 @@ byID("form-promotion-create").addEventListener("submit", async (event) => {
   });
 });
 
-byID("form-promotion-get").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  await busy(event.submitter, async () => {
+// openPromotion reads one decision into the panel under the history. Its own
+// surface, so opening a second row while the first is in flight shows the
+// second, never whichever answered last.
+const promotionDetail = byID("promotion-detail");
+const promotionDetailSurface = createSurface("promotion.detail");
+
+async function openPromotion(promotionID, submitter) {
+  const ticket = promotionDetailSurface.begin(promotionID);
+  promotionDetail.hidden = false;
+  render.clear(promotionDetail);
+  promotionDetail.append(render.element("p", "empty", `Reading promotion ${promotionID}…`));
+  await busy(submitter, async () => {
     try {
-      const response = await api.getPromotion(value("promotion-open-id"));
-      render.renderPromotion(promotionResult, response);
+      const response = await api.getPromotion(promotionID);
+      if (!promotionDetailSurface.owns(ticket)) {
+        return;
+      }
+      render.renderPromotion(promotionDetail, response);
       clearProblem();
     } catch (error) {
-      report(promotionResult, error);
+      if (!promotionDetailSurface.owns(ticket)) {
+        return;
+      }
+      report(promotionDetail, error);
     }
   });
+}
+
+byID("form-promotion-get").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  await openPromotion(value("promotion-open-id"), event.submitter);
 });
 
 // Promotion history is navigated a page at a time.
@@ -2806,6 +2924,7 @@ async function loadPromotionPage(projectID, after, pageNumber, submitter) {
         // null, not an omitted argument: busy() distinguishes "no button to
         // disable" by identity, and an undefined submitter would throw.
         onOpenRun: (runID) => { void loadRun(runID, null); },
+        onOpenPromotion: (promotionID) => { void openPromotion(promotionID, null); },
       });
 
       // A continuation that cannot advance is a server fault, and following it
@@ -2858,6 +2977,9 @@ function syncPromotionNav() {
 
 byID("form-promotion-list").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!requireField("promotion-list-project", "Choose a project.")) {
+    return;
+  }
   resetPromotionHistory();
   await loadPromotionPage(value("promotion-list-project"), "", 1, event.submitter);
 });
@@ -2882,6 +3004,468 @@ byID("promotion-restart").addEventListener("click", async (event) => {
     return;
   }
   await loadPromotionPage(projectScope.project, "", 1, event.currentTarget);
+});
+
+
+// ---------------------------------------------------------------------
+// Selection context and selectors (task 098)
+// ---------------------------------------------------------------------
+//
+// Every field that used to ask for a project, agent, candidate, run or
+// environment identifier now offers a searchable selector over the context's
+// pages, and keeps its identifier field as the paste path. The field is still
+// what a form sends, so no request changed shape.
+
+// The shared selection context (task 098): which project, agent, candidate
+// and run the console is about, and one page of options for each. Every
+// selector reads it; choosing in one destination is the preselection in all
+// of them. See views/context.js for the rule that a selection belongs to its
+// parent.
+const selection = createSelectionContext({
+  listProjects: (after) => api.listProjects(after),
+  listProjectAgents: (projectID, after) => api.listProjectAgents(projectID, after),
+  listAgentCandidates: (agentID, after) => api.listAgentCandidates(agentID, after),
+  listCandidateRuns: (candidateID, after) => api.listCandidateRuns(candidateID, after),
+  listAllEnvironments: (projectID) => api.listAllEnvironments(projectID),
+  getRun: (id) => api.getRun(id),
+  getCandidate: (id) => api.getCandidate(id),
+  getAgent: (id) => api.getAgent(id),
+  getProject: (id) => api.getProject(id),
+});
+
+// The four selectors that show a comparison's two runs elsewhere. Assigned
+// once the bindings below exist; renderCompareSides runs before that.
+let sideSelectors = null;
+
+// syncFromContext keeps the console's older per-destination state in step
+// with the context, whichever destination made the choice.
+//
+// The Runs destination keeps its own bounded browser (ADR 0050); when the
+// agent or candidate moves somewhere else, the rows it holds were listed
+// under the previous one, so they are dropped rather than shown under the
+// new name — and re-read the next time Runs is open.
+let runsNeedSync = false;
+
+function syncFromContext() {
+  const chosen = selection.selection;
+  const projectID = chosen.project === null ? "" : chosen.project.id;
+  if (projectID !== openedProject) {
+    setProjectScope(projectID, chosen.project === null ? "" : chosen.project.label);
+    openedAgent = "";
+    openedAgentName = "";
+    openedCandidate = "";
+    hierarchy.truncate("agents");
+    runsNeedSync = true;
+  }
+  const agentID = chosen.agent === null ? "" : chosen.agent.id;
+  if (agentID !== openedAgent) {
+    openedAgent = agentID;
+    openedAgentName = chosen.agent === null ? "" : chosen.agent.label;
+    openedCandidate = "";
+    hierarchy.truncate("candidates");
+    runsNeedSync = true;
+    if (agentID !== "") {
+      labels.remember("agent", agentID, openedAgentName);
+    }
+  } else if (chosen.agent !== null && chosen.agent.label !== openedAgentName) {
+    openedAgentName = chosen.agent.label;
+  }
+  const candidateID = chosen.candidate === null ? "" : chosen.candidate.id;
+  if (candidateID !== openedCandidate) {
+    openedCandidate = candidateID;
+    hierarchy.truncate("runs");
+    runsNeedSync = true;
+  }
+  if (runsNeedSync && currentView === "view-runs") {
+    void syncRunsHierarchy();
+  } else if (runsNeedSync) {
+    renderProjectsLevel();
+  }
+  drawCrumbs();
+}
+
+// syncRunsHierarchy reads, one level at a time, what the Runs destination
+// needs to show the context's selection. Sequential, because the levels
+// share one ownership surface and each read supersedes the one before.
+async function syncRunsHierarchy() {
+  runsNeedSync = false;
+  if (openedProject !== "" && hierarchy.parents.agents !== openedProject) {
+    await openLevel("agents", () => hierarchy.loadAgents(openedProject, ""));
+  }
+  if (openedAgent !== "" && hierarchy.parents.candidates !== openedAgent) {
+    await openLevel("candidates", () => hierarchy.loadCandidates(openedAgent, ""));
+  }
+  if (openedCandidate !== "" && hierarchy.parents.runs !== openedCandidate) {
+    runsScopeOpen = false;
+    await openLevel("runs", () => hierarchy.loadRuns(openedCandidate, ""));
+  }
+  renderProjectsLevel();
+}
+
+selection.subscribe(syncFromContext);
+
+const reportPaste = (error) => {
+  showProblem(error.operational
+    ? "The control plane could not answer."
+    : error.message);
+};
+
+// requireField refuses an empty identifier with a sentence rather than a
+// request, now that the field is usually filled by a selector and may sit in
+// a closed disclosure where a browser's own "required" bubble cannot point.
+function requireField(id, message) {
+  if (value(id) !== "") {
+    return true;
+  }
+  showProblem(message);
+  return false;
+}
+
+// Live: watch one run.
+bindSelector(byID("watch-run-select"), selection, {
+  level: "run",
+  label: "Evaluation run",
+  hint: "Runs of the chosen candidate. Choose a project, agent and candidate in any destination.",
+  input: byID("watch-run-id"),
+  paste: false,
+});
+
+// Evidence: run history and provenance.
+bindSelector(byID("evidence-run-select"), selection, {
+  level: "run",
+  label: "Evaluation run",
+  input: byID("evidence-run-id"),
+});
+
+sideSelectors = {
+  provenanceReference: bindSelector(byID("evidence-provenance-reference-select"), selection, {
+    level: "run", label: "Reference run", local: true,
+    onChosen: (option) => { byID("evidence-provenance-reference").value = option === null ? "" : option.id; },
+  }),
+  provenanceCandidate: bindSelector(byID("evidence-provenance-candidate-select"), selection, {
+    level: "run", label: "Candidate run", local: true,
+    onChosen: (option) => { byID("evidence-provenance-candidate").value = option === null ? "" : option.id; },
+  }),
+  promotionReference: bindSelector(byID("promotion-reference-pick"), selection, {
+    level: "run", label: "Reference run", local: true,
+    onChosen: (option) => { byID("promotion-reference").value = option === null ? "" : option.id; },
+  }),
+  promotionCandidate: bindSelector(byID("promotion-candidate-pick"), selection, {
+    level: "run", label: "Candidate run", local: true,
+    onChosen: (option) => { byID("promotion-candidate").value = option === null ? "" : option.id; },
+  }),
+};
+renderCompareSides();
+
+// Promotions: the project whose history is listed. Choosing one lists it.
+bindSelector(byID("promotion-project-select"), selection, {
+  level: "project",
+  label: "Project",
+  input: byID("promotion-list-project"),
+  paste: true,
+  onError: reportPaste,
+  onChosen: (option) => {
+    if (option !== null && currentView === "view-promotion") {
+      resetPromotionHistory();
+      void loadPromotionPage(option.id, "", 1, null);
+    }
+  },
+});
+
+// Manage: the parent each creation form needs, and the run lifecycle acts on.
+bindSelector(byID("agent-project-select"), selection, {
+  level: "project",
+  label: "Project",
+  hint: "The project the new agent belongs to.",
+  input: byID("agent-project-id"),
+});
+bindSelector(byID("candidate-agent-select"), selection, {
+  level: "agent",
+  label: "Agent",
+  hint: "The agent this candidate is a version of.",
+  input: byID("candidate-agent-id"),
+});
+bindSelector(byID("run-candidate-select"), selection, {
+  level: "candidate",
+  label: "Candidate",
+  hint: "The candidate version this run executes.",
+  input: byID("run-candidate-id"),
+});
+bindSelector(byID("run-environment-select"), selection, {
+  level: "environment",
+  label: "Environment",
+  hint: "An environment the project owns. Its reference is what the run records.",
+  onChosen: (option) => { byID("run-environment").value = option === null ? "" : option.id; },
+});
+bindSelector(byID("lifecycle-run-select"), selection, {
+  level: "run",
+  label: "Run",
+  hint: "The run the lifecycle controls below act on.",
+  onChosen: (option) => {
+    if (option !== null) {
+      void loadRun(option.id, null);
+    }
+  },
+});
+
+
+// Overview (task 099).
+bindSelector(byID("overview-project-select"), selection, {
+  level: "project", label: "Project", paste: true, onError: reportPaste,
+});
+bindSelector(byID("overview-agent-select"), selection, {
+  level: "agent", label: "Agent", paste: true, onError: reportPaste,
+});
+bindSelector(byID("overview-candidate-select"), selection, {
+  level: "candidate", label: "Candidate", paste: true, onError: reportPaste,
+});
+
+overview = createOverview({
+  selection,
+  hosts: {
+    scope: byID("overview-scope"),
+    live: byID("overview-live"),
+    runs: byID("overview-runs"),
+    evidence: byID("overview-evidence"),
+    verdicts: byID("overview-verdicts"),
+    environments: byID("overview-environments"),
+  },
+  getProgress: (runID) => api.getProgress(runID),
+  runBehaviors: (runID, after) => api.runBehaviors(runID, after),
+  listPromotions: (projectID, after) => api.listPromotions(projectID, after),
+  liveCards: () => liveModel.cards.ordered(),
+  labelForScope,
+  compareSides: () => projectScope.sides,
+  nav: {
+    openRun: (runID) => { void openRunDetail(runID); },
+    openLiveScope: (key) => {
+      liveModel.select(key);
+      inspectedEdgeID = "";
+      void refreshAuthoritative();
+      openView("view-live");
+      drawAll();
+    },
+    useInCompare: (side, run) => { assignSide(side, run); },
+    openCompare: () => { openView("view-compare"); onEnterView("view-compare"); },
+    openTraces: (runID) => { openTracesFor(runID, ""); },
+    watchRun: (runID) => {
+      byID("watch-run-id").value = runID;
+      openView("view-live");
+      byID("watch-start").focus();
+    },
+    openPromotion: (promotionID) => {
+      openView("view-promotion");
+      onEnterView("view-promotion");
+      showPromotionSection("promotion-history-section");
+      void openPromotion(promotionID, null);
+    },
+  },
+});
+byID("overview-refresh").addEventListener("click", () => overview.refresh());
+
+
+// Traces (task 100).
+bindSelector(byID("traces-run-select"), selection, {
+  level: "run",
+  label: "Evaluation run",
+  hint: "Runs of the chosen candidate. Paste a run ID to reach any run.",
+  paste: true,
+  onError: reportPaste,
+});
+
+const narrowQuery = window.matchMedia("(max-width: 1180px)");
+traces = createTraces({
+  selection,
+  hosts: {
+    layout: byID("traces-layout"),
+    list: byID("traces-list"),
+    waterfall: byID("traces-waterfall"),
+    panel: byID("traces-detail"),
+    panelTitle: byID("traces-detail-title"),
+    panelBody: byID("traces-detail-body"),
+    panelClose: byID("traces-detail-close"),
+  },
+  runTraces: (runID, after) => api.runTraces(runID, after),
+  runObservations: (runID, scope, after) => api.runObservations(runID, scope, after),
+  isNarrow: () => narrowQuery.matches,
+  nav: {
+    openSession: (runID, sessionID) => { void openRunView(runID, "session", sessionID); },
+    openBehavior: (runID, fingerprintID) => { void openRunView(runID, "behavior", fingerprintID); },
+  },
+});
+
+// openTracesFor opens the Traces destination on one run, and optionally one
+// trace in it. The run becomes the context's run first — adopted with its
+// parents when it is not under the current candidate — so the selector, the
+// list and the waterfall all describe the same run.
+function openTracesFor(runID, traceID) {
+  const current = selection.selection.run;
+  const enter = () => {
+    openView("view-traces");
+    traces.enter(traceID);
+  };
+  if (current !== null && current.id === runID) {
+    enter();
+    return;
+  }
+  void selection.adopt("run", runID).then((result) => {
+    // Only a run that is now the context's run is opened: a failed adopt has
+    // no run to show, and a stale one was overtaken by a newer choice, so
+    // opening the trace would put it under a run nobody asked for.
+    if (!result.ok) {
+      if (result.error) {
+        reportPaste(result.error);
+      }
+      return;
+    }
+    if (selection.selection.run === null || selection.selection.run.id !== runID) {
+      return;
+    }
+    enter();
+  });
+}
+
+
+// Evidence → Run history: the trace or behavior a view narrows to, chosen
+// from the run's own collection rather than typed (task 098, with task 100's
+// trace route). Sessions have no collection; their field stays the paste path
+// and is filled from an observation's row.
+const evidenceIdentifierSurface = createSurface("evidence.identifier");
+let evidenceIdentifier = { key: "", rows: [], nextAfter: "", loading: false, error: null, loaded: false, chosen: null };
+
+function evidenceIdentifierKey() {
+  return `${value("evidence-run-id")}\u0000${evidenceViewSelect.value}`;
+}
+
+function evidenceIdentifierOption(view, row) {
+  if (view === "trace") {
+    return { id: row.trace_id, name: row.trace_id, detail: `${row.observations} action(s) · from #${row.first_sequence}` };
+  }
+  const behavior = row.behavior || {};
+  const name = [behavior.operation_name, behavior.target_name]
+    .filter((part) => typeof part === "string" && part !== "").join(" → ") || row.fingerprint_id;
+  const detail = [behavior.operation_category, `${row.observations} observation(s)`]
+    .filter((part) => typeof part === "string" && part !== "").join(" · ");
+  return { id: row.fingerprint_id, name, detail };
+}
+
+const evidenceIdentifierSelector = createSelector(byID("evidence-identifier-select"), {
+  label: "Choose from the run",
+  kind: "identifier",
+  placeholder: "Search by ID or name",
+  onOpen: () => { void loadEvidenceIdentifiers(""); },
+  onMore: () => { void loadEvidenceIdentifiers(evidenceIdentifier.nextAfter); },
+  onChoose: (option) => {
+    evidenceIdentifier = { ...evidenceIdentifier, chosen: option };
+    byID("evidence-identifier").value = option.id;
+    drawEvidenceIdentifierSelector();
+  },
+});
+
+function drawEvidenceIdentifierSelector() {
+  const view = evidenceViewSelect.value;
+  const runID = value("evidence-run-id");
+  const listed = view === "trace" || view === "behavior";
+  const current = evidenceIdentifier.key === evidenceIdentifierKey();
+  evidenceIdentifierSelector.update({
+    options: current ? evidenceIdentifier.rows.map((row) => evidenceIdentifierOption(view, row)) : [],
+    loading: current && evidenceIdentifier.loading,
+    error: current && evidenceIdentifier.error ? (evidenceIdentifier.error.message || String(evidenceIdentifier.error)) : "",
+    whole: current && evidenceIdentifier.loaded && evidenceIdentifier.nextAfter === "",
+    hasMore: current && evidenceIdentifier.nextAfter !== "",
+    capped: current && evidenceIdentifier.rows.length >= 512,
+    disabled: !listed || runID === "",
+    disabledText: !listed
+      ? "Sessions have no list. Open one from an observation row, or paste its ID."
+      : "Choose a run first.",
+    selected: current ? evidenceIdentifier.chosen : null,
+  });
+}
+
+async function loadEvidenceIdentifiers(after) {
+  const view = evidenceViewSelect.value;
+  const runID = value("evidence-run-id");
+  if (runID === "" || (view !== "trace" && view !== "behavior")) {
+    return;
+  }
+  const key = evidenceIdentifierKey();
+  if (after === "" && evidenceIdentifier.key === key && (evidenceIdentifier.loaded || evidenceIdentifier.loading)) {
+    return;
+  }
+  const ticket = evidenceIdentifierSurface.begin(key);
+  evidenceIdentifier = after === ""
+    ? { key, rows: [], nextAfter: "", loading: true, error: null, loaded: false, chosen: null }
+    : { ...evidenceIdentifier, loading: true, error: null };
+  drawEvidenceIdentifierSelector();
+  try {
+    const response = view === "trace"
+      ? await api.runTraces(runID, after)
+      : await api.runBehaviors(runID, after);
+    if (!evidenceIdentifierSurface.owns(ticket)) {
+      return;
+    }
+    const rows = Array.isArray(view === "trace" ? response.traces : response.behaviors)
+      ? (view === "trace" ? response.traces : response.behaviors)
+      : [];
+    evidenceIdentifier = {
+      ...evidenceIdentifier,
+      rows: evidenceIdentifier.rows.concat(rows),
+      nextAfter: typeof response.next_after === "string" ? response.next_after : "",
+      loading: false,
+      loaded: true,
+    };
+  } catch (error) {
+    if (!evidenceIdentifierSurface.owns(ticket)) {
+      return;
+    }
+    evidenceIdentifier = { ...evidenceIdentifier, loading: false, error };
+  }
+  drawEvidenceIdentifierSelector();
+}
+
+// A different run or view makes the held list describe something else: it is
+// dropped, and its read abandoned, before anything can show it.
+function resetEvidenceIdentifiers() {
+  if (evidenceIdentifier.key !== evidenceIdentifierKey()) {
+    // An identifier chosen from the previous run's or view's list is not one
+    // of this run's: sending it would ask a question nobody is asking now. A
+    // value pasted or filled from an observation row was not chosen here and
+    // is left alone.
+    const chosen = evidenceIdentifier.chosen;
+    if (chosen !== null && byID("evidence-identifier").value === chosen.id) {
+      byID("evidence-identifier").value = "";
+    }
+    evidenceIdentifierSurface.retarget(evidenceIdentifierKey());
+    evidenceIdentifier = { key: "", rows: [], nextAfter: "", loading: false, error: null, loaded: false, chosen: null };
+  }
+  drawEvidenceIdentifierSelector();
+}
+evidenceViewSelect.addEventListener("change", resetEvidenceIdentifiers);
+byID("evidence-run-id").addEventListener("input", resetEvidenceIdentifiers);
+selection.subscribe((what) => {
+  if (what === "run" || what === "candidate") {
+    resetEvidenceIdentifiers();
+  }
+});
+resetEvidenceIdentifiers();
+
+// The promotion target is still a native select: every environment the
+// project has, from the context's whole collection, with nothing filtered.
+selection.subscribe((what) => {
+  if (what !== "environments" && what !== "project") {
+    return;
+  }
+  const page = selection.pages.environments;
+  if (selection.selection.project === null) {
+    render.clear(promotionTarget);
+    const placeholder = render.element("option", null, "Choose a project to list its environments");
+    placeholder.value = "";
+    promotionTarget.append(placeholder);
+    return;
+  }
+  if (page.loaded) {
+    render.renderEnvironmentOptions(promotionTarget, { environments: page.rows });
+  }
 });
 
 // ---------------------------------------------------------------------
