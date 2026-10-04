@@ -377,7 +377,9 @@ is the question a developer preview has to answer.
 
 ## v0.11.0 — WebUI Experience
 
-**PLANNED.** The release after the developer preview, and a WebUI-only one: the
+**PLANNED.** Tasks 097–100 are implemented, pending review and merge, and not in a
+release; task 101 remains planned. The release after the developer preview,
+and a WebUI-only one: the
 platform, the API contract and the engine change by exactly one bounded,
 run-scoped collection route (task 100). Everything else is presentation over
 data `/v1` already serves.
@@ -472,6 +474,19 @@ code, and the milestone ships without it.
   from a bounded page as if it were the run.
 - **No authentication or remote access** (task 070), and no change to gate,
   promotion or realtime semantics.
+
+### Known limitations after implementation
+
+- Overview's run summaries are per candidate until task 101 decides a
+  recency-ordered run collection.
+- The Runs destination keeps its own bounded browser, kept in step with the
+  shared selection context by hand in `app.js`; deriving it from the context
+  is a follow-up refactor, not a behavior gap.
+- A trace's `next_after` probe and its page are two reads, as on every other
+  collection route, so the cursor and the history state can describe adjacent
+  instants.
+- Live's authoritative header counts are still read once per selection, as
+  before this milestone.
 
 ### Retained-data limitations
 

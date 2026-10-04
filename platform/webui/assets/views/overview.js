@@ -357,6 +357,14 @@ export function createOverview(deps) {
     panelHead(host, target !== null && target.chosen ? "Chosen run" : "Newest run", scope,
       evidence.runID !== "" ? evidence.readAt : undefined);
     if (run === null) {
+      // Still reading the runs is a different answer from having none.
+      const runsPage = selection.pages.runs;
+      if (candidateID() !== "" && runsPage.loading && !runsPage.loaded) {
+        const box = element("div");
+        skeleton(box, 3, 3);
+        host.append(box);
+        return;
+      }
       host.append(inlineEmpty(candidateID() === "" ? "Choose a candidate." : "No run to summarise yet."));
       return;
     }

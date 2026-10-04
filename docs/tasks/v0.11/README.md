@@ -11,6 +11,9 @@ Numbering continues the global sequence; 096 was the last task number in use.
 | [100 — Trace investigation over retained evidence](100-trace-investigation.md) | Implemented |
 | [101 — Recency-ordered run discovery](101-recency-ordered-run-discovery.md) | Planned — a capability gap the milestone records and does not close |
 
+097–100 are implemented and each records what shipped; 101 is the open
+capability gap.
+
 The build order is the one the milestone states: **097 → 098 → 099 → 100.**
 Each later task reads the context and the selectors 098 introduces, and every
 surface they add is drawn with 097's tokens. 101 is not part of the build: it

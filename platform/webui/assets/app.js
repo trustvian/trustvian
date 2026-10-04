@@ -3309,8 +3309,17 @@ function openTracesFor(runID, traceID) {
     return;
   }
   void selection.adopt("run", runID).then((result) => {
-    if (!result.ok && result.error) {
-      reportPaste(result.error);
+    // Only a run that is now the context's run is opened: a failed adopt has
+    // no run to show, and a stale one was overtaken by a newer choice, so
+    // opening the trace would put it under a run nobody asked for.
+    if (!result.ok) {
+      if (result.error) {
+        reportPaste(result.error);
+      }
+      return;
+    }
+    if (selection.selection.run === null || selection.selection.run.id !== runID) {
+      return;
     }
     enter();
   });
@@ -3418,6 +3427,14 @@ async function loadEvidenceIdentifiers(after) {
 // dropped, and its read abandoned, before anything can show it.
 function resetEvidenceIdentifiers() {
   if (evidenceIdentifier.key !== evidenceIdentifierKey()) {
+    // An identifier chosen from the previous run's or view's list is not one
+    // of this run's: sending it would ask a question nobody is asking now. A
+    // value pasted or filled from an observation row was not chosen here and
+    // is left alone.
+    const chosen = evidenceIdentifier.chosen;
+    if (chosen !== null && byID("evidence-identifier").value === chosen.id) {
+      byID("evidence-identifier").value = "";
+    }
     evidenceIdentifierSurface.retarget(evidenceIdentifierKey());
     evidenceIdentifier = { key: "", rows: [], nextAfter: "", loading: false, error: null, loaded: false, chosen: null };
   }

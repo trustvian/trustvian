@@ -111,6 +111,11 @@ export function bindSelector(host, context, options) {
   const level = options.level;
   const pageName = PAGE_FOR[level];
   let localChoice = null;
+  // The identifier this binding last wrote into the form's field. The field is
+  // only written when the context's choice changes, so a value pasted there —
+  // or prefilled from the URL — survives every unrelated notification (a page
+  // arriving, a different level changing).
+  let lastPushed = null;
 
   const selector = createSelector(host, {
     label: options.label,
@@ -181,10 +186,15 @@ export function bindSelector(host, context, options) {
       disabledText: NEEDS[level] || "",
       selected: chosen,
     });
-    if (options.input) {
+    if (options.input && !options.local) {
       const value = chosen === null ? "" : chosen.id;
-      if (options.input.value !== value && (chosen !== null || !options.local)) {
-        options.input.value = value;
+      // Written on a change of choice only: to the new identifier, or cleared
+      // when a choice this binding had written was itself cleared.
+      if (value !== lastPushed) {
+        if (value !== "" || lastPushed !== null) {
+          options.input.value = value;
+        }
+        lastPushed = value === "" ? null : value;
       }
     }
   }

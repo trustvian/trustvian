@@ -214,3 +214,17 @@ func TestSelectorDrawsAndDoesNotFetch(t *testing.T) {
 		}
 	}
 }
+
+// TestSelectorWritesItsFieldOnlyWhenTheChoiceChanges is the regression for a
+// review finding: render() ran on every context notification and wrote ""
+// into the form's field whenever its level had no selection, so a pasted
+// identifier — or the #run= prefill — was wiped by an unrelated page load.
+func TestSelectorWritesItsFieldOnlyWhenTheChoiceChanges(t *testing.T) {
+	body := wholeFunctionBodyForTest(t, "views/selectors.js", "function render()")
+	if !strings.Contains(body, "value !== lastPushed") {
+		t.Error("render() writes the form field without checking the choice changed")
+	}
+	if strings.Count(body, "options.input.value =") != 1 {
+		t.Error("render() should write the form field in exactly one guarded place")
+	}
+}

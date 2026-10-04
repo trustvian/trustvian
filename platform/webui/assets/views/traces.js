@@ -41,14 +41,26 @@ function behaviorText(behavior, key) {
   return render.displayValue(behavior[key]);
 }
 
+// field reads one retained observation field through the allowlist, so a
+// field /v1 adds later cannot reach this view by being named here by mistake.
+function field(observation, key) {
+  if (observation === null || observation === undefined || !render.EVIDENCE_OBSERVATION_FIELDS.includes(key)) {
+    return undefined;
+  }
+  return observation[key];
+}
+
 function actionName(observation) {
-  const behavior = observation.behavior || {};
-  const operation = typeof behavior.operation_name === "string" ? behavior.operation_name : "";
-  const target = typeof behavior.target_name === "string" ? behavior.target_name : "";
-  if (operation !== "" && target !== "") {
+  const operation = behaviorText(observation.behavior, "operation_name");
+  const target = behaviorText(observation.behavior, "target_name");
+  const absent = render.displayValue(undefined);
+  if (operation !== absent && target !== absent) {
     return `${operation} → ${target}`;
   }
-  return operation || target || "operation not recorded";
+  if (operation !== absent) {
+    return operation;
+  }
+  return target !== absent ? target : "operation not recorded";
 }
 
 async function copy(text, what) {
@@ -293,6 +305,8 @@ export function createTraces(deps) {
 
   function drawTrace() {
     const host = hosts.waterfall;
+    // The panel describes a row of the waterfall being replaced.
+    closePanel(false);
     clear(host);
     rows = [];
     rowNodes = [];
@@ -387,26 +401,26 @@ export function createTraces(deps) {
     const observation = row.observation;
     // Severity is the edge rule and the word; the action's name stays ink, so
     // a red name never reads as a verdict on its own.
-    const edge = decisionEdge(observation.decision);
+    const edge = decisionEdge(field(observation, "decision"));
     const node = element("div", edge === "" ? "waterfall-row" : `waterfall-row edge-${edge}`);
     node.setAttribute("role", "option");
     node.setAttribute("aria-selected", "false");
     node.tabIndex = -1;
     const name = actionName(observation);
     node.setAttribute("aria-label",
-      `${name}, decision ${observation.decision || "not recorded"}, ${row.durationText}, status ${spanStatusLabel(observation)}`);
+      `${name}, decision ${field(observation, "decision") || "not recorded"}, ${row.durationText}, status ${spanStatusLabel(observation)}`);
 
     const label = element("div", "waterfall-label");
     // Indentation is the recorded depth, already bounded by TRACE_MAX_DEPTH.
     label.style.paddingLeft = `${row.depth * 0.85}rem`;
     label.append(element("span", "waterfall-name", name));
     const tags = element("span", "waterfall-tags");
-    tags.append(verdict(render.displayValue(observation.decision), decisionEdge(observation.decision),
-      decisionClass(observation.decision)));
-    if (riskIsSevere(observation.risk_level)) {
-      tags.append(verdict(render.displayValue(observation.risk_level), "flag", riskClass(observation.risk_level)));
+    tags.append(verdict(render.displayValue(field(observation, "decision")), decisionEdge(field(observation, "decision")),
+      decisionClass(field(observation, "decision"))));
+    if (riskIsSevere(field(observation, "risk_level"))) {
+      tags.append(verdict(render.displayValue(field(observation, "risk_level")), "flag", riskClass(field(observation, "risk_level"))));
     }
-    if (observation.span_status === "error") {
+    if (field(observation, "span_status") === "error") {
       tags.append(element("span", "waterfall-status status-error", "error"));
     }
     if (row.state !== "root" && row.state !== "child") {
@@ -490,7 +504,10 @@ export function createTraces(deps) {
     if (selected >= 0 && rowNodes[selected]) {
       rowNodes[selected].setAttribute("aria-selected", "false");
       rowNodes[selected].classList.remove("is-selected");
-      rowNodes[selected].tabIndex = -1;
+    }
+    // One tab stop in the waterfall: the selected row (roving tabindex).
+    for (const other of rowNodes) {
+      other.tabIndex = -1;
     }
     selected = index;
     const node = rowNodes[index];
@@ -613,6 +630,8 @@ export function createTraces(deps) {
       return false;
     }
     runID = nextRunID;
+    // A trace asked for under the previous run is not a trace of this one.
+    pendingTraceID = "";
     listSurface.retarget(runID);
     traceSurface.retarget(runID);
     list = emptyList();
@@ -652,7 +671,7 @@ export function createTraces(deps) {
     enter(traceID) {
       visible = true;
       const changed = retarget(contextRunID());
-      if (typeof traceID === "string" && traceID !== "") {
+      if (typeof traceID === "string" && traceID !== "" && runID !== "") {
         pendingTraceID = traceID;
       }
       drawAll();
