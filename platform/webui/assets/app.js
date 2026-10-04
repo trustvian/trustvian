@@ -31,6 +31,7 @@ import * as evidence from "./views/evidence.js";
 import * as theme from "./core/theme.js";
 import { createSelectionContext } from "./views/context.js";
 import { bindSelector } from "./views/selectors.js";
+import { createOverview } from "./views/overview.js";
 
 const byID = (id) => document.getElementById(id);
 
@@ -125,6 +126,7 @@ drawThemeSwitch();
 // has room for.
 const PAGE_TITLES = Object.freeze([
   Object.freeze({ view: "view-live", title: "Live" }),
+  Object.freeze({ view: "view-overview", title: "Overview" }),
   Object.freeze({ view: "view-projects", title: "Projects" }),
   Object.freeze({ view: "view-runs", title: "Evaluation runs" }),
   Object.freeze({ view: "view-run", title: "Run" }),
@@ -177,11 +179,17 @@ for (const host of document.querySelectorAll("[data-icon]")) {
 byID("brand-mark").append(icon("evidence"));
 
 const navItems = Array.from(document.querySelectorAll(".nav-item"));
+// The Overview controller, created once the selection context exists. Null
+// until then; the two places that reach it before that check.
+let overview = null;
 const views = Array.from(document.querySelectorAll(".view"));
 let currentView = "view-live";
 
 // openView reveals one destination and marks the sidebar entry it belongs to.
 function openView(viewID) {
+  if (currentView === "view-overview" && viewID !== "view-overview" && overview !== null) {
+    overview.leave();
+  }
   currentView = viewID;
   const target = byID(viewID);
   const owner = target === null ? viewID : target.dataset.nav;
@@ -644,6 +652,9 @@ labels.onChange = () => {
 };
 
 function drawRail() {
+  if (overview !== null) {
+    overview.drawLive();
+  }
   renderRail(railHost, liveModel.cards, {
     selectedKey: liveModel.selectedKey,
     following: liveModel.following,
@@ -1906,6 +1917,9 @@ for (const tab of byID("run-tabs").querySelectorAll(".subtab")) {
 // a destination already holding a page is left alone so returning to it does
 // not re-fetch what is on screen.
 function onEnterView(viewID) {
+  if (viewID === "view-overview" && overview !== null) {
+    overview.enter();
+  }
   if (viewID === "view-projects" && !hierarchy.levels.projects.loaded) {
     void openLevel("projects", () => hierarchy.loadProjects(""));
   }
@@ -3172,6 +3186,61 @@ bindSelector(byID("lifecycle-run-select"), selection, {
     }
   },
 });
+
+
+// Overview (task 099).
+bindSelector(byID("overview-project-select"), selection, {
+  level: "project", label: "Project", paste: true, onError: reportPaste,
+});
+bindSelector(byID("overview-agent-select"), selection, {
+  level: "agent", label: "Agent", paste: true, onError: reportPaste,
+});
+bindSelector(byID("overview-candidate-select"), selection, {
+  level: "candidate", label: "Candidate", paste: true, onError: reportPaste,
+});
+
+overview = createOverview({
+  selection,
+  hosts: {
+    scope: byID("overview-scope"),
+    live: byID("overview-live"),
+    runs: byID("overview-runs"),
+    evidence: byID("overview-evidence"),
+    verdicts: byID("overview-verdicts"),
+    environments: byID("overview-environments"),
+  },
+  getProgress: (runID) => api.getProgress(runID),
+  runBehaviors: (runID, after) => api.runBehaviors(runID, after),
+  listPromotions: (projectID, after) => api.listPromotions(projectID, after),
+  liveCards: () => liveModel.cards.ordered(),
+  labelForScope,
+  compareSides: () => projectScope.sides,
+  nav: {
+    openRun: (runID) => { void openRunDetail(runID); },
+    openLiveScope: (key) => {
+      liveModel.select(key);
+      inspectedEdgeID = "";
+      void refreshAuthoritative();
+      openView("view-live");
+      drawAll();
+    },
+    useInCompare: (side, run) => { assignSide(side, run); },
+    openCompare: () => { openView("view-compare"); onEnterView("view-compare"); },
+    openTraces: (runID) => { void openRunView(runID, "trace", ""); },
+    watchRun: (runID) => {
+      byID("watch-run-id").value = runID;
+      openView("view-live");
+      byID("watch-start").focus();
+    },
+    openPromotion: (promotionID) => {
+      openView("view-promotion");
+      onEnterView("view-promotion");
+      showPromotionSection("promotion-history-section");
+      void openPromotion(promotionID, null);
+    },
+  },
+});
+byID("overview-refresh").addEventListener("click", () => overview.refresh());
 
 // The promotion target is still a native select: every environment the
 // project has, from the context's whole collection, with nothing filtered.

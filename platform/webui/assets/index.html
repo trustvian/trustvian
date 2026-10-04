@@ -54,6 +54,7 @@
     <p class="nav-group-label" id="nav-group-observe">Observe</p>
     <ul class="nav-list" aria-labelledby="nav-group-observe">
       <li><button type="button" class="nav-item" id="nav-live" data-view="view-live" data-icon="live" aria-current="page">Live</button></li>
+      <li><button type="button" class="nav-item" id="nav-overview" data-view="view-overview" data-icon="overview">Overview</button></li>
     </ul>
   </div>
   <div class="nav-group">
@@ -196,6 +197,40 @@
       <p class="empty">No snapshot.</p>
     </div>
   </section>
+</section>
+
+<!-- ============================ Overview ============================
+     Where to look first (task 099). Summaries of records /v1 already
+     serves, each saying what it covers and when it was read. Read when
+     opened, when the context changes, and on Refresh — never on a timer.
+-->
+<section class="view" id="view-overview" data-nav="nav-overview" hidden>
+  <div class="overview-context">
+    <div class="selector-row">
+      <div id="overview-project-select"></div>
+      <div id="overview-agent-select"></div>
+      <div id="overview-candidate-select"></div>
+      <div class="selector-actions">
+        <button type="button" class="btn-quiet" id="overview-refresh">Refresh</button>
+      </div>
+    </div>
+    <p class="region-note" id="overview-scope" aria-live="polite"></p>
+  </div>
+
+  <div class="overview-grid">
+    <section class="panel panel-live" id="overview-live" aria-label="Live now"></section>
+    <section class="panel panel-runs" id="overview-runs" aria-label="Runs"></section>
+    <section class="panel panel-evidence" id="overview-evidence" aria-label="Newest run"></section>
+    <section class="panel panel-verdicts" id="overview-verdicts" aria-label="Gate verdicts"></section>
+    <section class="panel panel-envs" id="overview-environments" aria-label="Environments"></section>
+  </div>
+
+  <p class="region-note">
+    Not shown, because /v1 cannot support it honestly: a project-wide list of
+    recent runs (runs are listed per candidate), a decision or risk
+    distribution across a whole run (only a bounded page of retained history
+    exists), trends over time, and any combined health score.
+  </p>
 </section>
 
 <!-- ============================ Projects ============================

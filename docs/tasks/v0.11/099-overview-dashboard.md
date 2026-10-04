@@ -1,6 +1,6 @@
 # 099 — Overview Dashboard
 
-Status: Planned
+Status: Implemented
 Milestone: [`v0.11.0`](../../ROADMAP.md#v0110--webui-experience)
 Depends on: [097](097-theme-preference.md), [098](098-selection-based-context-workflows.md)
 
@@ -64,3 +64,14 @@ aggregate "health" score.
    counted from a page claims to describe more than that page.
 4. Each panel has distinct loading, empty and error states.
 5. The layout works at desktop and narrow widths in both themes.
+
+## What shipped
+
+- `views/overview-model.js` (pure reductions: status breakdown, newest-first,
+  decimal comparison and bar ratio without numeric coercion, top behaviors,
+  verdict tally, read clock) and `views/overview.js` (panels, per-panel
+  ownership surfaces).
+- The evidence panel follows the run the reader chose when it belongs to the
+  chosen candidate, and otherwise the newest on the page; its title says which.
+- Freshness is an absolute read time: with no timer on the page, a relative
+  "5s ago" would be wrong a second later.

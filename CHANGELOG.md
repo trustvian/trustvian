@@ -30,6 +30,15 @@ actually depend on.
   field remains as an "Advanced: paste an ID" path, and a pasted record is
   resolved up its parent chain. Promotion history rows open their decision.
 
+- **WebUI Overview** (task 099). A new destination under *Observe* — Live stays
+  the landing view — summarising live activity for the project, the chosen
+  candidate's runs by status, one run's authoritative progress and top
+  behaviors, the project's recorded gate verdicts and its environments. Each
+  panel states its scope and read time, has its own loading, empty and error
+  state, and links to the record behind it; runs can be assigned to Compare
+  from it. No timer, no polling, no aggregate score, and an absent figure reads
+  "not available".
+
 ### Changed
 
 - **The browser keeps one presentation preference.** ADR 0036 § 10 is amended:

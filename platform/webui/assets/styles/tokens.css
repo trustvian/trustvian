@@ -60,6 +60,10 @@
   --accent-soft: #e8eff7;
   --accent-line: #b6cde4;
 
+  /* Chart fill for a neutral quantity — a count with no verdict in it. The
+     accent family, so a bar never reads as a pass, a fail or a warning. */
+  --chart-1: #4f7fb8;
+
   /* ---- verdict and risk ---------------------------------------------- */
   /* Load-bearing, and never the only carrier of their meaning. */
   --pass:       #1d5c34;
@@ -188,6 +192,7 @@
   --accent-ink:  #0f1519;
   --accent-soft: #1b2833;
   --accent-line: #2f4a63;
+  --chart-1: #6a9fd4;
 
   --pass:       #79c496;
   --pass-soft:  #16251c;
@@ -249,6 +254,7 @@
     --accent-ink:  #0f1519;
     --accent-soft: #1b2833;
     --accent-line: #2f4a63;
+    --chart-1: #6a9fd4;
 
     --pass:       #79c496;
     --pass-soft:  #16251c;

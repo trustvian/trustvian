@@ -60,6 +60,7 @@ function emptyPage() {
     error: null,
     whole: false,
     capped: false,
+    readAt: 0,
   };
 }
 
@@ -207,6 +208,9 @@ export function createSelectionContext(deps) {
         error: null,
         whole: nextAfter === "",
         capped: nextAfter !== "" && previous.length + rows.length >= MAX_OPTION_ROWS,
+        // When this page was read, so a summary built on it can say how old
+        // it is. Wall-clock, from the injected clock where a test supplies one.
+        readAt: typeof deps.now === "function" ? deps.now() : Date.now(),
       };
       notify(pageName);
       return true;
@@ -389,6 +393,7 @@ export function createSelectionContext(deps) {
         error: null,
         whole: level.nextAfter === "",
         capped: false,
+        readAt: typeof deps.now === "function" ? deps.now() : Date.now(),
       };
       notify("projects");
     },

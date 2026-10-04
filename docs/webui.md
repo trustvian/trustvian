@@ -53,6 +53,7 @@ one URL and needs no second field.
 | Destination | Purpose |
 |---|---|
 | **Live** *(default)* | Watch. Active agents appear by themselves, one run's behavior flow animates as calls arrive, and an inspector shows what Trustvian decided |
+| **Overview** | Orient. Live activity, a candidate's runs by status, one run's authoritative evidence, recent gate verdicts and the project's environments — each saying what it covers and when it was read |
 | **Projects** | Choose. A searchable table of what exists; picking a row scopes the whole console and the sidebar says which project that is |
 | **Runs** | Explore. A visible list of the project's agents and their candidates, then the run table itself. Clicking a run opens its workspace |
 | **Compare** | Measure. Assign two runs from a table as reference and candidate, then read the server's gate, diff and scorecard |
@@ -67,6 +68,45 @@ product is thinner than it is.
 What it deliberately cannot do: ingest decision records (that is the job of the
 application under evaluation, through the CLI or the API), or manage
 environments (task 065).
+
+## The Overview
+
+**Overview** answers *where should I look first?* from records `/v1` already
+serves. Choose a project, agent and candidate at the top — or arrive with them
+already chosen from any other destination — and five panels summarise them:
+
+| Panel | Reads | Says it covers |
+|---|---|---|
+| Live now | the Live connection's scope cards, for the project | this connection since it last synchronized |
+| Runs | one page of the candidate's runs | every run, or the first page when more exist |
+| Newest run / Chosen run | that run's progress and first page of behaviors | one run; the newest by creation time unless you chose one |
+| Gate verdicts | the first page of the project's promotion decisions | identifier order, not newest first |
+| Environments | the project's whole environment collection | every environment |
+
+Every panel prints when it was **read** as a clock time, has its own loading,
+empty and failed state, and fails alone: an unreachable control plane shows in
+the panels that needed it and leaves the rest standing. Nothing is re-read on a
+timer. **Refresh** reads every panel again; changing the context re-reads what
+the change affects.
+
+Everything links to the record behind it. A run's chip chooses it for the
+evidence panel and **Open** goes to its workspace; **Reference** and
+**Candidate** assign it as a side in Compare, which is then ready with both
+runs chosen; a verdict's **Open** opens its decision; a live card's **Watch**
+selects it in Live.
+
+**Charts are a second rendering of printed numbers.** The status bar counts the
+rows on the runs page and says so. The behavior bars are each behavior's
+authoritative observation count, ordered within the first page. Counters stay
+decimal strings: a bar's length is drawn from the leading digits, never by
+converting the counter to a number, and the exact figure is printed beside it.
+A figure the server did not return reads *not available*, never `0`.
+
+What the Overview does not show, and says so on the page: a project-wide list of
+recent runs (`/v1` lists runs per candidate —
+[task 101](tasks/v0.11/101-recency-ordered-run-discovery.md)), a decision or
+risk distribution across a run (only a bounded page of retained history
+exists), trends, and any combined health score.
 
 ## The Live Observatory
 

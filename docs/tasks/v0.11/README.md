@@ -7,7 +7,7 @@ Numbering continues the global sequence; 096 was the last task number in use.
 |---|---|
 | [097 — Theme preference: Light, Dark and System](097-theme-preference.md) | Implemented |
 | [098 — Selection-based context workflows](098-selection-based-context-workflows.md) | Implemented |
-| [099 — Overview dashboard](099-overview-dashboard.md) | Planned |
+| [099 — Overview dashboard](099-overview-dashboard.md) | Implemented |
 | [100 — Trace investigation over retained evidence](100-trace-investigation.md) | Planned |
 | [101 — Recency-ordered run discovery](101-recency-ordered-run-discovery.md) | Planned — a capability gap the milestone records and does not close |
 
