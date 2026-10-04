@@ -35,8 +35,11 @@ export function shellQuote(value) {
 // referenceCommand is the CLI invocation that reuses an execution as the
 // reference side. The scenario file is the developer's and is left as a
 // placeholder: the platform records a scenario's name, not its file.
+//
+// `--reference=<id>` rather than `--reference <id>`: an identifier that begins
+// with a dash is then a value, never a flag.
 export function referenceCommand(executionID) {
-  return `trustvian eval run --scenario <scenario.yaml> --reference ${shellQuote(executionID)}`;
+  return `trustvian eval run --scenario <scenario.yaml> --reference=${shellQuote(executionID)}`;
 }
 
 // executionMatches is the search box: over the loaded rows only.
@@ -66,6 +69,7 @@ export function createScenarios(deps) {
 
   let visible = false;
   let key = "";
+  let filterProject = "";
   let environment = "";
   let query = "";
   let list = emptyList();
@@ -390,7 +394,7 @@ export function createScenarios(deps) {
     refGroup.append(element("p", "detail-group-title", "Reuse as a reference"));
     if (check.id !== e.id || (!check.loading && check.answer === null && check.error === null)) {
       refGroup.append(element("p", "note",
-        "Asks the control plane whether `eval run --reference` would accept this execution, using its own validation."));
+        "Asks the control plane whether eval run --reference would accept this execution, using its own validation."));
       const ask = element("button", "btn-quiet", "Check eligibility");
       ask.type = "button";
       ask.addEventListener("click", () => { void runCheck(e.id); });
@@ -463,8 +467,11 @@ export function createScenarios(deps) {
     if (what !== "project" && what !== "agent" && what !== "environments") {
       return;
     }
-    if (what === "project") {
+    // An environment belongs to its project: cleared when the project
+    // changes, kept when the same project is announced again.
+    if (what === "project" && projectID() !== filterProject) {
       environment = "";
+      filterProject = projectID();
     }
     if (!visible) {
       return;

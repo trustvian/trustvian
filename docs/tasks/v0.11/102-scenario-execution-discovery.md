@@ -26,7 +26,8 @@ CI log or a previous terminal. The WebUI cannot show them at all.
 - A **Scenarios** section under Evidence: a selector scoped by the context's
   project and agent plus environment and scenario filters, a details panel,
   the reference check, and a **Copy CLI command** control for
-  `trustvian eval run --scenario <file> --reference <id>`.
+  `trustvian eval run --scenario <file> --reference=<id>` (the `=` form, so an
+  identifier beginning with a dash is a value, never a flag).
 
 ## Explicit exclusions
 

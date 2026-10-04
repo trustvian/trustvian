@@ -494,7 +494,7 @@ workspace. **Check eligibility** asks the control plane whether
 CLI runs, unchanged — and shows its answer: usable, or not with the server's
 own reason, and the conditions the answer holds under (the execution's `runs`,
 project and environment). Only a usable execution offers **Copy CLI command**,
-`trustvian eval run --scenario <scenario.yaml> --reference <id>`, with the
+`trustvian eval run --scenario <scenario.yaml> --reference=<id>`, with the
 identifier shell-quoted.
 
 Nothing runs from the browser. A scenario executes a developer's command, and

@@ -387,7 +387,10 @@ export function createSelectionContext(deps) {
       if ((page.loading || page.loaded) && page.parentID === parentID) {
         return false;
       }
-      if (pageName === "runs" && settling > 0) {
+      // While a choice settles, the choice itself reads what it opens up;
+      // a view asking from its subscriber waits, and is served once the
+      // choice settles if the page is still not held.
+      if (settling > 0) {
         deferred.add(pageName);
         return false;
       }

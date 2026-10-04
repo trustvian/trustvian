@@ -31,8 +31,10 @@ of UTC Unix nanoseconds. Byte order is time order on both backends, as
   row already stores — at every insert, and once by the migration's backfill —
   and `created_at` remains the time. A row whose key is empty or malformed is
   refused as corrupt rather than sorted somewhere.
-- **No time before the epoch**, which no run has; such a time is refused rather
-  than given a key that sorts wrongly.
+- **No time outside 1970 to 2262-04-11**, the range an int64 of nanoseconds
+  holds. Outside it `UnixNano` wraps to a plausible-looking key, so such a time
+  is refused — at write, and by the migration, which then fails closed rather
+  than backfill a key that sorts in the wrong place.
 - **Columns and indexes only.** v9 and v10 hold the same tables, so the stamp
   alone routes the migration, exactly as it did for v5, v6 and v8.
 
@@ -79,10 +81,16 @@ a selector both need to read further than the first N. Rejected for the
 paginated keyset.
 
 **Denormalize project and agent onto each run** to index every scope directly.
-Faster for a very large project, at the cost of two more columns kept in step
-with immutable parents. Deferred: the joined scopes are bounded by `limit` and
-walk `(created_order, id)`, and the denormalization is the next step if a
-measured workload needs it.
+Deferred, with its cost stated rather than hidden: the candidate scope is an
+index range, but the project and agent scopes join through candidates and
+agents, and a planner that walks `(created_order, id)` backwards filters
+every newer run in the database until it has `limit` rows of the scope. The
+*page* is bounded; the rows examined are bounded by the database's newer runs,
+not the project's. That is acceptable for the local, single-team databases
+this platform serves today, and two immutable columns — `project_id` and
+`agent_id` on each run, with `(project_id, created_order, id)` and `(agent_id,
+created_order, id)` indexes — are the change when a measured workload needs
+it.
 
 ## Consequences
 

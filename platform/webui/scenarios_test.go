@@ -43,7 +43,7 @@ func TestScenarioCommandIsQuotedForAShell(t *testing.T) {
 			t.Errorf("shellQuote case %d = %s, want %s", i, got.Quote[i], want[i])
 		}
 	}
-	if got.Command != "trustvian eval run --scenario <scenario.yaml> --reference 'exec 1'" {
+	if got.Command != "trustvian eval run --scenario <scenario.yaml> --reference='exec 1'" {
 		t.Errorf("referenceCommand = %q", got.Command)
 	}
 	if !got.Match[0] || got.Match[1] || !got.Match[2] {
@@ -100,5 +100,27 @@ func TestScenariosDecidesNoEligibilityAndRunsNothing(t *testing.T) {
 	}
 	if !strings.Contains(raw, "nothing executes here") {
 		t.Error("scenarios.js no longer states that nothing executes from the page")
+	}
+}
+
+// TestScenariosFollowEveryWayTheSectionIsShown is the regression for a review
+// finding: Scenarios was entered only on a subtab click, so arrowing onto it
+// showed an empty section, and returning to Evidence showed the previous
+// project's executions. Its visibility is now tied to the subtab switcher's
+// own show() — every path — and to entering Evidence.
+func TestScenariosFollowEveryWayTheSectionIsShown(t *testing.T) {
+	app := stripJSComments(readAsset(t, "app.js"))
+	if !strings.Contains(app, `setupSubtabs("view-evidence", "evidence-finding", syncScenariosSection)`) {
+		t.Error("the Evidence subtabs do not report every section change to Scenarios")
+	}
+	body := wholeFunctionBodyForTest(t, "app.js", "function setupSubtabs(")
+	if !strings.Contains(body, "onShow(id)") {
+		t.Error("setupSubtabs' show() does not call onShow; an arrow key would bypass it")
+	}
+	if !strings.Contains(app, "queueMicrotask(syncScenariosSection)") {
+		t.Error("returning to Evidence does not re-sync Scenarios")
+	}
+	if strings.Contains(app, `tab.dataset.section === "evidence-scenarios"`) {
+		t.Error("Scenarios is still wired to a click handler of its own")
 	}
 }

@@ -202,6 +202,12 @@ function openView(viewID) {
   if (currentView === "view-evidence" && viewID !== "view-evidence" && scenarios !== null) {
     scenarios.leave();
   }
+  if (viewID === "view-evidence" && currentView !== "view-evidence") {
+    // Returning to Evidence with Scenarios still the open section re-reads
+    // it for the context chosen meanwhile. Deferred one step, after
+    // currentView below has moved.
+    queueMicrotask(syncScenariosSection);
+  }
   currentView = viewID;
   const target = byID(viewID);
   const owner = target === null ? viewID : target.dataset.nav;
@@ -243,7 +249,10 @@ for (const item of navItems) {
 // Scoped to a view, because several have sub-sections now: a document-wide
 // `.subtab` query would wire every button to every switcher and hide one
 // view's sections whenever another's were shown.
-function setupSubtabs(viewID, defaultSection) {
+// `onShow`, when given, hears every change of section — by click, by arrow
+// key or by navigation — so a section that reads on being shown cannot be
+// revealed by one path and missed by another.
+function setupSubtabs(viewID, defaultSection, onShow) {
   const view = byID(viewID);
   const subtabs = Array.from(view.querySelectorAll(".subtab"));
   const show = (id) => {
@@ -254,6 +263,9 @@ function setupSubtabs(viewID, defaultSection) {
       if (section !== null) {
         section.hidden = !active;
       }
+    }
+    if (typeof onShow === "function") {
+      onShow(id);
     }
   };
   for (const tab of subtabs) {
@@ -276,7 +288,23 @@ function setupSubtabs(viewID, defaultSection) {
 }
 
 const showManageSection = setupSubtabs("view-manage", "manage-project");
-const showEvidenceSection = setupSubtabs("view-evidence", "evidence-finding");
+// Evidence → Scenarios reads its list when shown and stops listening when
+// hidden (task 102). Wired here, on every way a section is shown, rather
+// than on a click: an arrow key or a return to Evidence revealed a list that
+// had not followed the context.
+const showEvidenceSection = setupSubtabs("view-evidence", "evidence-finding", syncScenariosSection);
+
+function syncScenariosSection() {
+  if (scenarios === null) {
+    return;
+  }
+  const shown = currentView === "view-evidence" && !byID("evidence-scenarios").hidden;
+  if (shown) {
+    scenarios.enter();
+  } else {
+    scenarios.leave();
+  }
+}
 const showPromotionSection = setupSubtabs("view-promotion", "promotion-history-section");
 const showRunSection = setupSubtabs("view-run", "run-overview");
 
@@ -3321,15 +3349,6 @@ scenarios = createScenarios({
     openRun: (runID) => { void openRunDetail(runID); },
   },
 });
-for (const tab of byID("view-evidence").querySelectorAll(".subtab")) {
-  tab.addEventListener("click", () => {
-    if (tab.dataset.section === "evidence-scenarios") {
-      scenarios.enter();
-    } else {
-      scenarios.leave();
-    }
-  });
-}
 
 // openTracesFor opens the Traces destination on one run, and optionally one
 // trace in it. The run becomes the context's run first — adopted with its

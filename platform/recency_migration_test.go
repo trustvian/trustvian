@@ -62,7 +62,14 @@ func TestRecencyKeyIsFixedWidthAndOrdered(t *testing.T) {
 		}
 		previous = key
 	}
-	for _, bad := range []time.Time{{}, time.Date(1969, 12, 31, 23, 59, 59, 0, time.UTC)} {
+	for _, bad := range []time.Time{
+		{},
+		time.Date(1969, 12, 31, 23, 59, 59, 0, time.UTC),
+		time.Date(1, 1, 1, 0, 0, 0, 1, time.UTC),
+		// Past the int64-nanosecond range, where UnixNano wraps rather than fails.
+		time.Date(2262, 4, 12, 0, 0, 0, 0, time.UTC),
+		time.Date(3000, 1, 1, 0, 0, 0, 0, time.UTC),
+	} {
 		if _, err := recencyKey(bad); !errors.Is(err, ErrInvalidID) {
 			t.Errorf("recencyKey(%v) error = %v, want ErrInvalidID", bad, err)
 		}

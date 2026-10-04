@@ -25,6 +25,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -42,10 +43,17 @@ const recencyKeyDigits = 20
 // recencyKey renders a time as its sortable storage key.
 //
 // A time before the Unix epoch has no key: no run or execution is created
-// then, and a negative count would sort as text in the wrong place.
+// then, and a negative count would sort as text in the wrong place. Nor does a
+// time past what an int64 of nanoseconds holds (2262-04-11): UnixNano is
+// undefined there and would wrap to a key that sorts somewhere plausible.
+var recencyKeyLimit = time.Unix(0, math.MaxInt64).UTC()
+
 func recencyKey(t time.Time) (string, error) {
+	if t.IsZero() || t.Before(time.Unix(0, 0)) || !t.Before(recencyKeyLimit) {
+		return "", fmt.Errorf("%w: time %s has no recency key", ErrInvalidID, t.UTC().Format(time.RFC3339Nano))
+	}
 	nanos := t.UTC().UnixNano()
-	if t.IsZero() || nanos < 0 {
+	if nanos < 0 {
 		return "", fmt.Errorf("%w: time %s has no recency key", ErrInvalidID, t.UTC().Format(time.RFC3339Nano))
 	}
 	return fmt.Sprintf("%0*d", recencyKeyDigits, nanos), nil
