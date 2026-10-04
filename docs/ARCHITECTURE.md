@@ -733,6 +733,14 @@ evaluation runs, and neither `ControlStore` nor `EvaluationStore` owns that.
 - It assigns a per-project completion sequence under the project-row lock.
 - It answers "the latest completed execution in this scope".
 
+Schema 10 (task 101, [ADR 0063](adr/0063-recency-is-a-stored-sort-key-and-a-composite-cursor.md))
+adds a stored, fixed-width recency key to runs and executions — UTC Unix
+nanoseconds, zero-padded to 20 digits, so byte order is time order on both
+backends — and `RecentRunStore`, which lists a project's, an agent's or a
+candidate's runs newest first with a `(key, id)` keyset cursor. The key is
+derived from the stored time at every write and once by the migration's
+backfill; `created_at` remains the time.
+
 Whether that execution is a usable reference, and the verdict itself, stay in
 `ControlPlane`, which reuses `CompareRepeatedEvaluations` unchanged
 ([ADR 0054](adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)).

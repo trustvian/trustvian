@@ -144,13 +144,17 @@ func insertScenarioExecution(ctx context.Context, w scenarioExecutionWriter, e S
 	if e.reference != "" {
 		reference = string(e.reference)
 	}
-	_, err := w.exec(ctx, w.rebind(
+	key, err := recencyKey(e.startedAt)
+	if err != nil {
+		return err
+	}
+	_, err = w.exec(ctx, w.rebind(
 		`INSERT INTO `+tableScenarioExecutions+` (
 		   id, scenario_name, project_id, agent_id, environment, runs,
-		   reference_execution_id, status, started_at
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		   reference_execution_id, status, started_at, started_order
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		string(e.id), e.scenarioName, string(e.scope.ProjectID), string(e.scope.AgentID),
-		string(e.scope.Environment), int64(e.runs), reference, string(e.status), timeText(e.startedAt))
+		string(e.scope.Environment), int64(e.runs), reference, string(e.status), timeText(e.startedAt), key)
 	if err != nil {
 		return w.writeError("scenario execution", string(e.id), err)
 	}

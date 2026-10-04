@@ -18,6 +18,7 @@ import (
 // execution tables gone, version 8 stamped. exec runs one statement.
 func downgradeToV8(t testing.TB, exec func(string) error) {
 	t.Helper()
+	downgradeToV9(t, exec)
 	for _, table := range []string{tableScenarioRepetitions, tableScenarioExecutions} {
 		if err := exec(`DROP TABLE ` + table); err != nil {
 			t.Fatalf("drop v9 table %s: %v", table, err)
@@ -120,8 +121,9 @@ func TestSQLiteSchemaV8MigratesToV9PreservingData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLiteStore() on a v8 database error = %v", err)
 	}
-	if version, _ := migrated.storedSchemaVersion(t.Context()); version != schemaVersionV9 {
-		t.Fatalf("version after migration = %d, want %d", version, schemaVersionV9)
+	// A v8 database now migrates through v9 to the current version.
+	if version, _ := migrated.storedSchemaVersion(t.Context()); version != SchemaVersion {
+		t.Fatalf("version after migration = %d, want %d", version, SchemaVersion)
 	}
 	if err := migrated.requireTables(t.Context(), SchemaVersion, schemaTables); err != nil {
 		t.Fatalf("migrated database is missing tables: %v", err)
@@ -144,7 +146,7 @@ func TestSQLiteSchemaV8MigratesToV9PreservingData(t *testing.T) {
 // build cannot read. Both are refused, never repaired or adopted.
 func TestSQLiteSchemaV9DamageAndNewerAreRefused(t *testing.T) {
 	for name, damage := range map[string]func(exec func(string) error) error{
-		"v9 stamp, v8 tables": func(exec func(string) error) error {
+		"current stamp, v8 tables": func(exec func(string) error) error {
 			for _, table := range []string{tableScenarioRepetitions, tableScenarioExecutions} {
 				if err := exec(`DROP TABLE ` + table); err != nil {
 					return err
@@ -152,8 +154,8 @@ func TestSQLiteSchemaV9DamageAndNewerAreRefused(t *testing.T) {
 			}
 			return nil
 		},
-		"v10 stamp": func(exec func(string) error) error {
-			return exec(`UPDATE ` + tableSchemaVersion + ` SET version = 10 WHERE id = 1`)
+		"newer stamp": func(exec func(string) error) error {
+			return exec(`UPDATE ` + tableSchemaVersion + ` SET version = 11 WHERE id = 1`)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -246,13 +248,13 @@ func TestPostgresSchemaV8FixtureMigratesAndDamageIsRefused(t *testing.T) {
 			t.Fatalf("OpenPostgresStore() on a replayed v8 schema error = %v", err)
 		}
 		defer store.Close()
-		if got := storedVersion(t, pool); got != schemaVersionV9 {
-			t.Fatalf("version after migration = %d, want %d", got, schemaVersionV9)
+		if got := storedVersion(t, pool); got != SchemaVersion {
+			t.Fatalf("version after migration = %d, want %d", got, SchemaVersion)
 		}
 	})
 
 	for name, damage := range map[string]func(*pgxpool.Pool) error{
-		"v9 stamp, v8 tables": func(pool *pgxpool.Pool) error {
+		"current stamp, v8 tables": func(pool *pgxpool.Pool) error {
 			for _, table := range []string{tableScenarioRepetitions, tableScenarioExecutions} {
 				if _, err := pool.Exec(ctx, `DROP TABLE `+table); err != nil {
 					return err
@@ -260,8 +262,8 @@ func TestPostgresSchemaV8FixtureMigratesAndDamageIsRefused(t *testing.T) {
 			}
 			return nil
 		},
-		"v10 stamp": func(pool *pgxpool.Pool) error {
-			_, err := pool.Exec(ctx, `UPDATE `+tableSchemaVersion+` SET version = 10 WHERE id = 1`)
+		"newer stamp": func(pool *pgxpool.Pool) error {
+			_, err := pool.Exec(ctx, `UPDATE `+tableSchemaVersion+` SET version = 11 WHERE id = 1`)
 			return err
 		},
 	} {

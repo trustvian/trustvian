@@ -163,6 +163,9 @@ func TestStoreConformance(t *testing.T) {
 			t.Run("trace-summaries", func(t *testing.T) {
 				conformTraceSummaries(t, backend.open)
 			})
+			t.Run("recent-runs", func(t *testing.T) {
+				conformRecentRuns(t, backend.open)
+			})
 			t.Run("timestamps", func(t *testing.T) { conformTimestamps(t, backend.open) })
 			t.Run("cancellation", func(t *testing.T) { conformCancellation(t, backend.open) })
 		})

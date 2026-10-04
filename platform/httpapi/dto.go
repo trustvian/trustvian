@@ -861,6 +861,42 @@ func newEvaluationRunListResponse(
 	}
 }
 
+// recentRunListResponse is one newest-first page of runs (task 101).
+//
+// Order is stated in the payload as well as by the route, so a stored
+// response cannot be mistaken for an identifier-ordered page. The scope echoes
+// what was asked: a narrowing the reader did not send is absent, never empty.
+type recentRunListResponse struct {
+	Version     string                  `json:"version"`
+	ProjectID   string                  `json:"project_id"`
+	AgentID     string                  `json:"agent_id,omitempty"`
+	CandidateID string                  `json:"candidate_id,omitempty"`
+	Order       string                  `json:"order"`
+	Runs        []evaluationRunResponse `json:"evaluation_runs"`
+	NextAfter   string                  `json:"next_after,omitempty"`
+}
+
+// recentRunOrder names the order this collection returns.
+const recentRunOrder = "created_at_desc"
+
+func newRecentRunListResponse(
+	scope platform.RunScope, runs []platform.RecentRun, nextAfter string,
+) recentRunListResponse {
+	page := make([]evaluationRunResponse, 0, len(runs))
+	for _, run := range runs {
+		page = append(page, newEvaluationRunResponse(run.Run))
+	}
+	return recentRunListResponse{
+		Version:     WireVersion,
+		ProjectID:   string(scope.ProjectID),
+		AgentID:     string(scope.AgentID),
+		CandidateID: string(scope.CandidateID),
+		Order:       recentRunOrder,
+		Runs:        page,
+		NextAfter:   nextAfter,
+	}
+}
+
 // ---------------------------------------------------------------------
 // Run-scoped behaviors (task 078)
 // ---------------------------------------------------------------------

@@ -175,6 +175,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /v1/projects", h.listProjects)
 	h.mux.HandleFunc("GET /v1/projects/{project_id}", h.getProject)
 	h.mux.HandleFunc("GET /v1/projects/{project_id}/agents", h.listProjectAgents)
+	h.mux.HandleFunc("GET /v1/projects/{project_id}/evaluation-runs/recent", h.listRecentRuns)
 
 	h.mux.HandleFunc("POST /v1/agents", h.createAgent)
 	h.mux.HandleFunc("GET /v1/agents/{agent_id}", h.getAgent)
@@ -417,7 +418,10 @@ func classify(err error) (int, string, string) {
 		errors.Is(err, platform.ErrInvalidRepeatedRequest),
 		errors.Is(err, platform.ErrRepeatedIsolation),
 		// A run submitted to a scenario execution it does not belong to.
-		errors.Is(err, platform.ErrScenarioScope):
+		errors.Is(err, platform.ErrScenarioScope),
+		// A recency read narrowed to an agent or candidate outside the scope
+		// above it (task 101). Refused rather than widened.
+		errors.Is(err, platform.ErrRunScope):
 		return http.StatusBadRequest, codeInvalidRequest, err.Error()
 
 	default:
@@ -1287,6 +1291,51 @@ func (h *Handler) listCandidateRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK,
 		newEvaluationRunListResponse(string(candidateID), page, nextAfter))
+}
+
+// listRecentRuns serves GET /v1/projects/{project_id}/evaluation-runs/recent
+// (task 101, ADR 0063): runs newest first within the project, optionally
+// narrowed to an agent and a candidate.
+//
+// The one collection on this API not ordered by identifier, which is why it
+// has a path of its own rather than a sort parameter on an existing one: a
+// route's order is part of its contract, and a parameter that changed it would
+// make the same cursor mean two things.
+func (h *Handler) listRecentRuns(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	scope := platform.RunScope{
+		ProjectID:   platform.ProjectID(r.PathValue("project_id")),
+		AgentID:     platform.AgentID(query.Get("agent_id")),
+		CandidateID: platform.CandidateID(query.Get("candidate_id")),
+	}
+	limit, err := listLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	after := query.Get("after")
+
+	page, err := h.controlPlane.RecentEvaluationRuns(r.Context(), scope, after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	nextAfter := ""
+	if len(page) == limit {
+		last := platform.FormatRecencyCursor(platform.RecencyCursor{
+			Key: page[len(page)-1].Key, ID: string(page[len(page)-1].Run.ID()),
+		})
+		probe, err := h.controlPlane.RecentEvaluationRuns(r.Context(), scope, last, 1)
+		if err != nil {
+			h.writeError(w, err)
+			return
+		}
+		if len(probe) > 0 {
+			nextAfter = last
+		}
+	}
+	writeJSON(w, http.StatusOK, newRecentRunListResponse(scope, page, nextAfter))
 }
 
 // runBehaviors serves GET /v1/evaluation-runs/{run_id}/behaviors.

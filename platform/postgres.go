@@ -754,15 +754,19 @@ func (s *PostgresStore) ProjectPromotions(
 // ---------------------------------------------------------------------
 
 func (s *PostgresStore) CreateEvaluationRun(ctx context.Context, run EvaluationRun) error {
-	_, err := s.pool.Exec(ctx,
+	key, err := recencyKey(run.CreatedAt())
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx,
 		`INSERT INTO `+tableRuns+`
 		 (id, candidate_id, environment, behavioral_profile, status,
-		  created_at, started_at, finished_at, failure_reason)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		  created_at, started_at, finished_at, failure_reason, created_order)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		string(run.ID()), string(run.CandidateID()), string(run.Environment()),
 		string(run.BehavioralProfile()), string(run.Status()),
 		timeText(run.CreatedAt()), nullTimeText(run.StartedAt()),
-		nullTimeText(run.FinishedAt()), run.FailureReason())
+		nullTimeText(run.FinishedAt()), run.FailureReason(), key)
 	return mapPostgresError("evaluation run", string(run.ID()), err)
 }
 
@@ -1088,6 +1092,13 @@ func (s *PostgresStore) FindObservations(
 		return ObservationPage{}, err
 	}
 	return page, nil
+}
+
+// RecentEvaluationRuns lists runs newest first within one scope (task 101).
+func (s *PostgresStore) RecentEvaluationRuns(
+	ctx context.Context, scope RunScope, after RecencyCursor, limit int,
+) ([]RecentRun, error) {
+	return queryRecentRuns(ctx, s.querier(), scope, after, limit)
 }
 
 // RunTraces returns one bounded page of the traces in a run's retained

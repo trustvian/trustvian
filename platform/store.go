@@ -76,6 +76,11 @@ type Store interface {
 	// the conformance suite would have no way to assert the two are equivalent.
 	ObservationStore
 
+	// RecentRunStore lists runs newest first within a scope (task 101, schema
+	// v10). Part of the full contract: it reads the recency key every write
+	// path now stores.
+	RecentRunStore
+
 	// TraceSummaryStore lists the traces in that history (task 100). Part of
 	// the full contract for the same reason: it reads the rows ObservationStore
 	// reads, in the same snapshot discipline.

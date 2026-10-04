@@ -103,6 +103,10 @@ func statementVersion(stmt string) (int, bool) {
 		{tableScenarioExecutions, schemaVersionV9},
 		{tableScenarioRepetitions, schemaVersionV9},
 		{indexScenarioExecutionsLatest, schemaVersionV9},
+		// v10: task 101's recency indexes.
+		{indexRunsRecentByCandidate, schemaVersionV10},
+		{indexRunsRecent, schemaVersionV10},
+		{indexScenarioRecent, schemaVersionV10},
 	}
 
 	trimmed := strings.TrimSpace(stmt)
@@ -112,6 +116,11 @@ func statementVersion(stmt string) (int, bool) {
 	// other object.
 	if strings.HasPrefix(trimmed, `ALTER TABLE `+tablePromotions+` ADD COLUMN `) {
 		return schemaVersionV8, true
+	}
+	// v10: task 101's recency keys, ALTER statements on a fresh database too.
+	if strings.HasPrefix(trimmed, `ALTER TABLE `+tableRuns+` ADD COLUMN `) ||
+		strings.HasPrefix(trimmed, `ALTER TABLE `+tableScenarioExecutions+` ADD COLUMN `) {
+		return schemaVersionV10, true
 	}
 	for _, entry := range introduced {
 		if strings.HasPrefix(trimmed, `CREATE TABLE `+entry.object+` (`) ||
@@ -742,6 +751,8 @@ func TestPostgresMigratesV4ForwardAddingIndexesAndOperationalColumns(t *testing.
 		// completion-sequence uniqueness.
 		indexScenarioExecutionsLatest, constraintScenarioSequence,
 		tableScenarioExecutions + "_pkey", tableScenarioRepetitions + "_pkey",
+		// v10, task 101: the recency indexes.
+		indexRunsRecentByCandidate, indexRunsRecent, indexScenarioRecent,
 	}
 	slices.Sort(want)
 	slices.Sort(added)
@@ -804,6 +815,9 @@ func TestPostgresMigratesV4ForwardAddingIndexesAndOperationalColumns(t *testing.
 		case tablePromotions:
 			// v8, issue 131: the optional counted-change check.
 			wantColumns = promotionChangeGateColumnNames()
+		case tableRuns:
+			// v10, task 101: the recency key.
+			wantColumns = []string{"created_order"}
 		}
 		if !slices.Equal(addedColumns, wantColumns) {
 			t.Errorf("%s gained columns %v, want exactly %v", table, addedColumns, wantColumns)
