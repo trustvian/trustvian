@@ -3505,6 +3505,13 @@ func (s *SQLiteStore) FindObservations(
 	return page, nil
 }
 
+// RecentScenarioExecutions lists a project's executions newest first (task 102).
+func (s *SQLiteStore) RecentScenarioExecutions(
+	ctx context.Context, filter ScenarioExecutionFilter, after RecencyCursor, limit int,
+) ([]RecentScenarioExecution, error) {
+	return queryRecentScenarioExecutions(ctx, sqlQuerier{s.db}, filter, after, limit)
+}
+
 // RecentEvaluationRuns lists runs newest first within one scope (task 101).
 func (s *SQLiteStore) RecentEvaluationRuns(
 	ctx context.Context, scope RunScope, after RecencyCursor, limit int,

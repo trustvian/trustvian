@@ -26,6 +26,14 @@ actually depend on.
   narrowing is now a selector over it, with the retention limit stated and
   the paste path kept.
 
+- **Scenario execution discovery** (task 102). `GET
+  /v1/projects/{project_id}/scenario-executions` lists recorded executions
+  newest first with agent, environment and scenario filters, and `GET
+  /v1/scenario-executions/{id}/reference-check` runs the control plane's own
+  reference validation, unchanged, and reports usable or the reason. Evidence
+  → Scenarios lists, inspects and checks them and copies the shell-quoted
+  `eval run --reference` command; nothing executes from the browser.
+
 ### Changed
 
 - **Platform schema v10**, on SQLite and PostgreSQL: a fixed-width recency key

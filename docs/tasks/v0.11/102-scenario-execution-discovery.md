@@ -1,6 +1,6 @@
 # 102 — Scenario Execution Discovery and Reference Selection
 
-Status: Planned
+Status: Implemented
 Milestone: [`v0.11.0`](../../ROADMAP.md#v0110--webui-experience)
 Depends on: [078](../v1.0/078-behavioral-scenario-suites.md) (persisted
 executions, ADR 0054), [101](101-recency-ordered-run-discovery.md) (the
@@ -51,3 +51,13 @@ security boundary. Out of scope.
    says it is usable, with the conditions (repetition count, project,
    environment) stated.
 4. The CLI command is copyable; nothing executes from the browser.
+
+## What shipped
+
+- `platform/scenario_execution_list.go`: the list query over schema v10's
+  start key, filter validation, and `CheckScenarioReference`, which calls
+  `usableReference` with the execution's own `runs` and scope and maps its
+  refusals to an answer rather than an error.
+- `views/scenarios.js`: the table, details panel, reference check and copy;
+  three ownership surfaces (list, detail, check), cleared when the filter
+  changes.

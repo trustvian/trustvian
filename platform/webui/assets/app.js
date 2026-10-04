@@ -33,6 +33,7 @@ import { createSelectionContext } from "./views/context.js";
 import { bindSelector } from "./views/selectors.js";
 import { createOverview } from "./views/overview.js";
 import { createTraces } from "./views/traces.js";
+import { createScenarios } from "./views/scenarios.js";
 import { createSelector } from "./ui/selector.js";
 
 const byID = (id) => document.getElementById(id);
@@ -186,6 +187,7 @@ const navItems = Array.from(document.querySelectorAll(".nav-item"));
 // until then; the two places that reach it before that check.
 let overview = null;
 let traces = null;
+let scenarios = null;
 const views = Array.from(document.querySelectorAll(".view"));
 let currentView = "view-live";
 
@@ -196,6 +198,9 @@ function openView(viewID) {
   }
   if (currentView === "view-traces" && viewID !== "view-traces" && traces !== null) {
     traces.leave();
+  }
+  if (currentView === "view-evidence" && viewID !== "view-evidence" && scenarios !== null) {
+    scenarios.leave();
   }
   currentView = viewID;
   const target = byID(viewID);
@@ -3294,6 +3299,37 @@ traces = createTraces({
     openBehavior: (runID, fingerprintID) => { void openRunView(runID, "behavior", fingerprintID); },
   },
 });
+
+// Evidence → Scenarios (task 102).
+scenarios = createScenarios({
+  selection,
+  hosts: {
+    filters: byID("scenarios-filters"),
+    layout: byID("scenarios-layout"),
+    table: byID("scenarios-table"),
+    pager: byID("scenarios-pager"),
+    panel: byID("scenarios-detail"),
+    panelTitle: byID("scenarios-detail-title"),
+    panelBody: byID("scenarios-detail-body"),
+    panelClose: byID("scenarios-detail-close"),
+  },
+  listExecutions: (projectID, filter, after) => api.listScenarioExecutions(projectID, filter, after),
+  getExecution: (id) => api.getScenarioExecution(id),
+  checkReference: (id) => api.checkScenarioReference(id),
+  now: () => Date.now(),
+  nav: {
+    openRun: (runID) => { void openRunDetail(runID); },
+  },
+});
+for (const tab of byID("view-evidence").querySelectorAll(".subtab")) {
+  tab.addEventListener("click", () => {
+    if (tab.dataset.section === "evidence-scenarios") {
+      scenarios.enter();
+    } else {
+      scenarios.leave();
+    }
+  });
+}
 
 // openTracesFor opens the Traces destination on one run, and optionally one
 // trace in it. The run becomes the context's run first — adopted with its

@@ -654,6 +654,35 @@ export const listRecentRuns = (projectID, narrowing, after) => {
   return request("GET", `/v1/projects/${segment(projectID)}/evaluation-runs/recent${query}`);
 };
 
+// listScenarioExecutions reads one page of a project's recorded scenario
+// executions newest first (task 102), filtered by equality on agent,
+// environment and scenario name. The cursor is the server's `next_after`.
+export const listScenarioExecutions = (projectID, filter, after) => {
+  const params = new URLSearchParams();
+  const f = filter === undefined || filter === null ? {} : filter;
+  if (f.agentID) {
+    params.set("agent_id", f.agentID);
+  }
+  if (f.environment) {
+    params.set("environment", f.environment);
+  }
+  if (f.scenario) {
+    params.set("scenario", f.scenario);
+  }
+  const query = pageQuery(params, after, null);
+  return request("GET", `/v1/projects/${segment(projectID)}/scenario-executions${query}`);
+};
+
+// getScenarioExecution reads one execution with its run associations.
+export const getScenarioExecution = (id) =>
+  request("GET", `/v1/scenario-executions/${segment(id)}`);
+
+// checkScenarioReference asks the control plane whether an execution would
+// be accepted as a reference. A read: the server runs its own validation and
+// records nothing. The browser never decides this.
+export const checkScenarioReference = (id) =>
+  request("GET", `/v1/scenario-executions/${segment(id)}/reference-check`);
+
 // runSessions reads one bounded page of the sessions in a run's retained
 // history (task 103): the trace list's shape over the session column.
 export const runSessions = (runID, after) => {

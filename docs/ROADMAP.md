@@ -419,7 +419,7 @@ follow the evidence — without typing an identifier at any step
 | 099 | **Implemented** | [Overview dashboard](tasks/v0.11/099-overview-dashboard.md) |
 | 100 | **Implemented** | [Trace investigation over retained evidence](tasks/v0.11/100-trace-investigation.md) |
 | 101 | **Implemented** | [Recency-ordered run discovery](tasks/v0.11/101-recency-ordered-run-discovery.md) |
-| 102 | Planned | [Scenario execution discovery and reference selection](tasks/v0.11/102-scenario-execution-discovery.md) |
+| 102 | **Implemented** | [Scenario execution discovery and reference selection](tasks/v0.11/102-scenario-execution-discovery.md) |
 | 103 | **Implemented** | [Session selection over retained observations](tasks/v0.11/103-session-selection.md) |
 | 104 | Planned | [The Runs destination reads the shared context](tasks/v0.11/104-runs-destination-from-shared-context.md) |
 

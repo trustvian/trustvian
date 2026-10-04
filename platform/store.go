@@ -86,6 +86,10 @@ type Store interface {
 	// reads, in the same snapshot discipline.
 	TraceSummaryStore
 
+	// ScenarioExecutionListStore lists executions newest first (task 102), by
+	// schema v10's start key.
+	ScenarioExecutionListStore
+
 	// SessionSummaryStore lists that history's sessions (task 103), by the
 	// same query over the session column.
 	SessionSummaryStore

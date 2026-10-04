@@ -475,6 +475,27 @@ candidate to its own. The selector's footer names the scope. Choosing a run
 from a wider list brings its candidate and agent with it — resolved from the
 run's record — so the context never holds a run under the wrong candidate.
 
+## Recorded scenario executions
+
+Evidence → **Scenarios** lists the project's recorded scenario executions —
+every `trustvian eval run` — newest first by start time (task 102), filtered by
+the agent chosen in the context and an environment, with a search over what is
+loaded. Each row shows the scenario name, status, verdict, repetition count,
+environment, agent, start time and the execution it reused.
+
+Opening one shows its scope, times and repetitions, each run a link to its
+workspace. **Check eligibility** asks the control plane whether
+`trustvian eval run --reference <id>` would accept it — the same validation the
+CLI runs, unchanged — and shows its answer: usable, or not with the server's
+own reason, and the conditions the answer holds under (the execution's `runs`,
+project and environment). Only a usable execution offers **Copy CLI command**,
+`trustvian eval run --scenario <scenario.yaml> --reference <id>`, with the
+identifier shell-quoted.
+
+Nothing runs from the browser. A scenario executes a developer's command, and
+starting one from a page would make the local control plane an executor; that
+stays in the CLI.
+
 ## Watching one run
 
 Both subscriptions — the global Live one and the single-run watch — follow the

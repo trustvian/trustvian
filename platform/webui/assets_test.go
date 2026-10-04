@@ -929,6 +929,9 @@ func TestOnlyDesignedCollectionRoutesAreCalled(t *testing.T) {
 		"/v1/projects/${segment(projectID)}/evaluation-runs/recent${query}",
 		// Task 103: the sessions in one run's retained history.
 		"/v1/evaluation-runs/${segment(runID)}/sessions${query}",
+		// Task 102: a project's recorded scenario executions, and the
+		// server's reference check for one of them.
+		"/v1/projects/${segment(projectID)}/scenario-executions${query}",
 	}
 	for _, route := range allowed {
 		if !strings.Contains(raw, route) {

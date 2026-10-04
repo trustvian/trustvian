@@ -237,3 +237,124 @@ func newScenarioExecutionDTO(e platform.ScenarioExecution) scenarioExecutionDTO 
 		Repetitions:          repetitions,
 	}
 }
+
+// ---------------------------------------------------------------------
+// Discovery and reference check (task 102)
+// ---------------------------------------------------------------------
+
+// scenarioExecutionSummaryDTO is one listed execution: the by-id shape without
+// its run associations, which a list does not need and the by-id route keeps.
+type scenarioExecutionSummaryDTO struct {
+	ID                   string `json:"id"`
+	ScenarioName         string `json:"scenario_name"`
+	ProjectID            string `json:"project_id"`
+	AgentID              string `json:"agent_id"`
+	Environment          string `json:"environment"`
+	Runs                 int    `json:"runs"`
+	ReferenceExecutionID string `json:"reference_execution_id,omitempty"`
+	Status               string `json:"status"`
+	StartedAt            string `json:"started_at"`
+	FinishedAt           string `json:"finished_at,omitempty"`
+	Verdict              string `json:"verdict,omitempty"`
+}
+
+type scenarioExecutionListResponse struct {
+	Version    string                        `json:"version"`
+	ProjectID  string                        `json:"project_id"`
+	Order      string                        `json:"order"`
+	Executions []scenarioExecutionSummaryDTO `json:"executions"`
+	NextAfter  string                        `json:"next_after,omitempty"`
+}
+
+func newScenarioExecutionSummaryDTO(e platform.ScenarioExecution) scenarioExecutionSummaryDTO {
+	scope := e.Scope()
+	return scenarioExecutionSummaryDTO{
+		ID: string(e.ID()), ScenarioName: e.ScenarioName(),
+		ProjectID: string(scope.ProjectID), AgentID: string(scope.AgentID),
+		Environment: string(scope.Environment), Runs: e.Runs(),
+		ReferenceExecutionID: string(e.ReferenceExecution()),
+		Status:               string(e.Status()),
+		StartedAt:            formatTime(e.StartedAt()),
+		FinishedAt:           formatTime(e.FinishedAt()),
+		Verdict:              string(e.Verdict()),
+	}
+}
+
+// listScenarioExecutions serves GET /v1/projects/{project_id}/scenario-executions:
+// newest first by start time (ADR 0063), filtered by equality on agent_id,
+// environment and scenario.
+func (h *Handler) listScenarioExecutions(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	filter := platform.ScenarioExecutionFilter{
+		ProjectID:    platform.ProjectID(r.PathValue("project_id")),
+		AgentID:      platform.AgentID(query.Get("agent_id")),
+		Environment:  platform.EnvironmentRef(query.Get("environment")),
+		ScenarioName: query.Get("scenario"),
+	}
+	limit, err := listLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	page, err := h.controlPlane.RecentScenarioExecutions(r.Context(), filter, query.Get("after"), limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	nextAfter := ""
+	if len(page) == limit {
+		last := platform.FormatRecencyCursor(platform.RecencyCursor{
+			Key: page[len(page)-1].Key, ID: string(page[len(page)-1].Execution.ID()),
+		})
+		probe, err := h.controlPlane.RecentScenarioExecutions(r.Context(), filter, last, 1)
+		if err != nil {
+			h.writeError(w, err)
+			return
+		}
+		if len(probe) > 0 {
+			nextAfter = last
+		}
+	}
+	executions := make([]scenarioExecutionSummaryDTO, 0, len(page))
+	for _, entry := range page {
+		executions = append(executions, newScenarioExecutionSummaryDTO(entry.Execution))
+	}
+	writeJSON(w, http.StatusOK, scenarioExecutionListResponse{
+		Version: WireVersion, ProjectID: string(filter.ProjectID), Order: "started_at_desc",
+		Executions: executions, NextAfter: nextAfter,
+	})
+}
+
+// referenceCheckResponse answers whether an execution would be accepted as a
+// reference — by the control plane's own validation — and states the
+// conditions that answer holds under.
+type referenceCheckResponse struct {
+	Version     string `json:"version"`
+	ExecutionID string `json:"execution_id"`
+	Usable      bool   `json:"usable"`
+	Reason      string `json:"reason,omitempty"`
+	// The conditions the check was made for: a scenario with this repetition
+	// count, run in this project and environment. A scenario that differs on
+	// any of them is refused by the same validation.
+	Runs        int    `json:"runs"`
+	ProjectID   string `json:"project_id"`
+	Environment string `json:"environment"`
+}
+
+// referenceCheck serves GET /v1/scenario-executions/{execution_id}/reference-check.
+// A read: it records nothing and runs nothing.
+func (h *Handler) referenceCheck(w http.ResponseWriter, r *http.Request) {
+	check, err := h.controlPlane.CheckScenarioReference(r.Context(),
+		platform.ScenarioExecutionID(r.PathValue("execution_id")))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	scope := check.Execution.Scope()
+	writeJSON(w, http.StatusOK, referenceCheckResponse{
+		Version: WireVersion, ExecutionID: string(check.Execution.ID()),
+		Usable: check.Usable, Reason: check.Reason,
+		Runs: check.Execution.Runs(), ProjectID: string(scope.ProjectID),
+		Environment: string(scope.Environment),
+	})
+}

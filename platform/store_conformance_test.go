@@ -169,6 +169,9 @@ func TestStoreConformance(t *testing.T) {
 			t.Run("session-summaries", func(t *testing.T) {
 				conformSessionSummaries(t, backend.open)
 			})
+			t.Run("scenario-execution-list", func(t *testing.T) {
+				conformScenarioExecutionList(t, backend.open)
+			})
 			t.Run("timestamps", func(t *testing.T) { conformTimestamps(t, backend.open) })
 			t.Run("cancellation", func(t *testing.T) { conformCancellation(t, backend.open) })
 		})
