@@ -813,3 +813,41 @@ fieldset > .hint { margin-bottom: 0.6rem; }
 .selector-row > .evidence-identifier { display: grid; flex: 1 1 16rem; gap: var(--s-2); max-width: 28rem; }
 .evidence-identifier[hidden] { display: none; }
 .evidence-identifier .inline-field input { flex: 1 1 auto; min-width: 0; }
+
+/* ------------------------------- scenarios -------------------------------- */
+/* Task 102. The traces layout's shape: a table, and an execution's details
+   beside it on a wide screen or over it on a narrow one. */
+.scenarios-layout { align-items: start; display: grid; gap: var(--s-4); grid-template-columns: minmax(0, 1fr); }
+.scenarios-layout.has-detail { grid-template-columns: minmax(0, 1fr) var(--detail-w); }
+.scenarios-main { min-width: 0; overflow-x: auto; }
+.exec-id { color: var(--muted); display: block; font-family: var(--mono); font-size: var(--t-micro); margin-top: 2px; }
+.table-note { margin: 0; padding: var(--s-2) var(--s-3); }
+.exec-status.status-completed { color: var(--state-calm); }
+.exec-status.status-failed { color: var(--state-stop); }
+.exec-status.status-running { color: var(--accent); }
+.reference-usable { color: var(--state-calm); font-weight: var(--w-semi); margin: 0 0 var(--s-2); }
+.reference-unusable { color: var(--state-stop); font-weight: var(--w-semi); margin: 0 0 var(--s-2); }
+.cli-command {
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  display: block;
+  font-family: var(--mono);
+  font-size: var(--t-small);
+  margin: var(--s-2) 0;
+  overflow-wrap: anywhere;
+  padding: var(--s-2) var(--s-3);
+}
+@media (max-width: 1180px) {
+  .scenarios-layout.has-detail { grid-template-columns: minmax(0, 1fr); }
+  .scenarios-detail {
+    bottom: 0;
+    box-shadow: var(--lift-2);
+    max-height: none;
+    position: fixed;
+    right: 0;
+    top: 0;
+    width: min(26rem, 100vw);
+    z-index: 30;
+  }
+}

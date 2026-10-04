@@ -1493,6 +1493,9 @@ func TestEvidenceCallsOnlyTheRoutesThisTaskDesigned(t *testing.T) {
 		"reference_run_id": true, "candidate_run_id": true,
 		"check": true, "behavior": true, "side": true,
 		"after": true, "limit": true, "run_id": true,
+		// Task 101's recency collection narrows a project by these two;
+		// task 102's execution collection filters by the other two.
+		"agent_id": true, "candidate_id": true, "environment": true, "scenario": true,
 	}
 	for _, match := range regexp.MustCompile(`params\.set\("([a-z_]+)"`).
 		FindAllStringSubmatch(stripped, -1) {

@@ -1253,8 +1253,11 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 	//
 	// v8 is the same kind of step: issue 131 adds six columns to the promotion
 	// table and no table.
+	//
+	// v10 too: task 101 adds two columns and three indexes.
 	indexOnly := map[int]bool{
 		schemaVersionV5: true, schemaVersionV6: true, schemaVersionV8: true,
+		schemaVersionV10: true,
 	}
 	for version := schemaVersionV1 + 1; version <= SchemaVersion; version++ {
 		previous := schemaTablesByVersion[version-1]
@@ -1278,7 +1281,8 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 	}
 }
 
-// schemaVersionV9 is task 078's scenario-execution schema, named for the
-// guards that attribute statements and fixtures by version rather than by
-// "whatever is newest".
-const schemaVersionV9 = 9
+// schemaVersionV9 is declared in recency.go now that v10 exists: production
+// migration code names it, not only these guards.
+
+// schemaVersionV10 is task 101's recency keys, named for the same guards.
+const schemaVersionV10 = 10

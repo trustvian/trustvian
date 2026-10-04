@@ -76,10 +76,23 @@ type Store interface {
 	// the conformance suite would have no way to assert the two are equivalent.
 	ObservationStore
 
+	// RecentRunStore lists runs newest first within a scope (task 101, schema
+	// v10). Part of the full contract: it reads the recency key every write
+	// path now stores.
+	RecentRunStore
+
 	// TraceSummaryStore lists the traces in that history (task 100). Part of
 	// the full contract for the same reason: it reads the rows ObservationStore
 	// reads, in the same snapshot discipline.
 	TraceSummaryStore
+
+	// ScenarioExecutionListStore lists executions newest first (task 102), by
+	// schema v10's start key.
+	ScenarioExecutionListStore
+
+	// SessionSummaryStore lists that history's sessions (task 103), by the
+	// same query over the session column.
+	SessionSummaryStore
 
 	// ScenarioExecutionStore persists task 078's scenario executions (schema
 	// v9). Part of the full-backend contract: `--reference` is meaningless on

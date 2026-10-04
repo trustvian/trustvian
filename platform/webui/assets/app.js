@@ -33,6 +33,7 @@ import { createSelectionContext } from "./views/context.js";
 import { bindSelector } from "./views/selectors.js";
 import { createOverview } from "./views/overview.js";
 import { createTraces } from "./views/traces.js";
+import { createScenarios } from "./views/scenarios.js";
 import { createSelector } from "./ui/selector.js";
 
 const byID = (id) => document.getElementById(id);
@@ -186,6 +187,7 @@ const navItems = Array.from(document.querySelectorAll(".nav-item"));
 // until then; the two places that reach it before that check.
 let overview = null;
 let traces = null;
+let scenarios = null;
 const views = Array.from(document.querySelectorAll(".view"));
 let currentView = "view-live";
 
@@ -196,6 +198,15 @@ function openView(viewID) {
   }
   if (currentView === "view-traces" && viewID !== "view-traces" && traces !== null) {
     traces.leave();
+  }
+  if (currentView === "view-evidence" && viewID !== "view-evidence" && scenarios !== null) {
+    scenarios.leave();
+  }
+  if (viewID === "view-evidence" && currentView !== "view-evidence") {
+    // Returning to Evidence with Scenarios still the open section re-reads
+    // it for the context chosen meanwhile. Deferred one step, after
+    // currentView below has moved.
+    queueMicrotask(syncScenariosSection);
   }
   currentView = viewID;
   const target = byID(viewID);
@@ -238,7 +249,10 @@ for (const item of navItems) {
 // Scoped to a view, because several have sub-sections now: a document-wide
 // `.subtab` query would wire every button to every switcher and hide one
 // view's sections whenever another's were shown.
-function setupSubtabs(viewID, defaultSection) {
+// `onShow`, when given, hears every change of section — by click, by arrow
+// key or by navigation — so a section that reads on being shown cannot be
+// revealed by one path and missed by another.
+function setupSubtabs(viewID, defaultSection, onShow) {
   const view = byID(viewID);
   const subtabs = Array.from(view.querySelectorAll(".subtab"));
   const show = (id) => {
@@ -249,6 +263,9 @@ function setupSubtabs(viewID, defaultSection) {
       if (section !== null) {
         section.hidden = !active;
       }
+    }
+    if (typeof onShow === "function") {
+      onShow(id);
     }
   };
   for (const tab of subtabs) {
@@ -271,7 +288,23 @@ function setupSubtabs(viewID, defaultSection) {
 }
 
 const showManageSection = setupSubtabs("view-manage", "manage-project");
-const showEvidenceSection = setupSubtabs("view-evidence", "evidence-finding");
+// Evidence → Scenarios reads its list when shown and stops listening when
+// hidden (task 102). Wired here, on every way a section is shown, rather
+// than on a click: an arrow key or a return to Evidence revealed a list that
+// had not followed the context.
+const showEvidenceSection = setupSubtabs("view-evidence", "evidence-finding", syncScenariosSection);
+
+function syncScenariosSection() {
+  if (scenarios === null) {
+    return;
+  }
+  const shown = currentView === "view-evidence" && !byID("evidence-scenarios").hidden;
+  if (shown) {
+    scenarios.enter();
+  } else {
+    scenarios.leave();
+  }
+}
 const showPromotionSection = setupSubtabs("view-promotion", "promotion-history-section");
 const showRunSection = setupSubtabs("view-run", "run-overview");
 
@@ -963,18 +996,16 @@ async function loadRootProjects(after) {
 // collection carries its own flag so a table that is fetching draws the shape
 // of the rows that are coming instead of an empty line that looks like "there
 // is nothing here".
-// The hierarchy's loading flags, one per level.
+// The Projects table's loading flag.
 //
-// The run workspace's and Compare's live in their state modules instead,
-// because clearing one is an ownership decision — only the request that
-// raised a flag may lower it — and a rule enforced by a module cannot be
-// forgotten at a call site. These four stay here because openLevel is the
-// only thing that touches them.
+// The Runs destination's agents, candidates and runs live in the shared
+// context's pages (task 104), and the run workspace's and Compare's in their
+// state modules, because clearing one is an ownership decision — only the
+// request that raised a flag may lower it — and a rule enforced by a module
+// cannot be forgotten at a call site. This one stays here because openLevel
+// is the only thing that touches it.
 const loading = {
   projects: false,
-  agents: false,
-  candidates: false,
-  runs: false,
 };
 
 // The run workspace's state, and the project-scoped state Compare and
@@ -986,9 +1017,17 @@ const projectScope = createProjectScope();
 
 let openedProject = "";
 let openedProjectName = "";
-let openedAgent = "";
-let openedAgentName = "";
-let openedCandidate = "";
+
+// The Runs destination reads the shared selection context (task 104): its
+// agent, candidate and runs are the context's, not a mirrored copy. These two
+// read it; `selection` is declared further down and only read at run time.
+function chosenID(level) {
+  return selection.selection[level] === null ? "" : selection.selection[level].id;
+}
+function chosenLabel(level) {
+  const entry = selection.selection[level];
+  return entry === null ? "" : (entry.label || entry.id);
+}
 
 // ------------------------------- location --------------------------------
 
@@ -1011,15 +1050,15 @@ function drawCrumbs() {
     });
   }
   if (currentView === "view-runs" || currentView === "view-run") {
-    if (openedAgent !== "") {
+    if (chosenID("agent") !== "") {
       trail.push({
-        label: openedAgentName || openedAgent,
+        label: chosenLabel("agent"),
         onOpen: () => { openView("view-runs"); },
       });
     }
-    if (openedCandidate !== "") {
+    if (chosenID("candidate") !== "") {
       trail.push({
-        label: openedCandidate,
+        label: chosenLabel("candidate"),
         onOpen: () => { openView("view-runs"); },
       });
     }
@@ -1144,12 +1183,12 @@ function renderProjectsView() {
 // fetched until a reader asks for it.
 function openProject(row) {
   setProjectScope(row.id, row.name);
-  openedAgent = "";
-  openedAgentName = "";
-  openedCandidate = "";
-  selection.assume("project", row);
+  runsScopeOpen = true;
+  // Choosing in the context reads the project's agents (and preselects an
+  // only one); the Runs destination draws what the context holds.
+  void selection.choose("project", row);
   openView("view-runs");
-  void openLevel("agents", () => hierarchy.loadAgents(row.id, ""));
+  ensureRunsPages();
 }
 
 byID("projects-search").addEventListener("input", (event) => {
@@ -1196,35 +1235,34 @@ function renderRunStatusChips() {
 }
 
 function renderAgentsList() {
+  const page = selection.pages.agents;
   dash.pickList(byID("agents-list"), byID("agents-more"), {
-    loading: loading.agents,
-    level: hierarchy.levels.agents,
-    selected: openedAgent,
+    loading: page.loading,
+    level: page,
+    selected: chosenID("agent"),
     pendingMessage: "Choose a project.",
     emptyMessage: "This project has no agents.",
     labelOf: (row) => row.name || row.id,
     detailOf: (row) => (row.name && row.name !== row.id ? row.id : ""),
     onOpen: (row) => {
-      openedAgent = row.id;
-      openedAgentName = row.name || "";
-      openedCandidate = "";
       runsScopeOpen = true;
-      labels.remember("agent", row.id, row.name);
-      byID("candidate-agent-id").value = row.id;
-      selection.assume("agent", row);
-      void openLevel("candidates", () => hierarchy.loadCandidates(row.id, ""));
+      void selection.choose("agent", row);
     },
   });
-  byID("agents-count").textContent = hierarchy.levels.agents.loaded
-    ? `${hierarchy.levels.agents.rows.length} on this page`
+  if (page.error) {
+    reportPage(byID("agents-list"), "agents", page.error);
+  }
+  byID("agents-count").textContent = page.loaded
+    ? (page.nextAfter === "" ? `${page.rows.length} in all` : `${page.rows.length} loaded`)
     : "";
 }
 
 function renderCandidatesList() {
+  const page = selection.pages.candidates;
   dash.pickList(byID("candidates-list"), byID("candidates-more"), {
-    loading: loading.candidates,
-    level: hierarchy.levels.candidates,
-    selected: openedCandidate,
+    loading: page.loading,
+    level: page,
+    selected: chosenID("candidate"),
     pendingMessage: "Choose an agent.",
     emptyMessage: "This agent has no candidates.",
     labelOf: (row) => (row.metadata && row.metadata.label ? row.metadata.label : row.id),
@@ -1232,16 +1270,41 @@ function renderCandidatesList() {
       ? row.id
       : ""),
     onOpen: (row) => {
-      openedCandidate = row.id;
-      byID("run-candidate-id").value = row.id;
       runsScopeOpen = false;
-      selection.assume("candidate", row);
-      void openLevel("runs", () => hierarchy.loadRuns(row.id, ""));
+      void selection.choose("candidate", row);
     },
   });
-  byID("candidates-count").textContent = hierarchy.levels.candidates.loaded
-    ? `${hierarchy.levels.candidates.rows.length} on this page`
+  if (page.error) {
+    reportPage(byID("candidates-list"), "candidates", page.error);
+  }
+  byID("candidates-count").textContent = page.loaded
+    ? (page.nextAfter === "" ? `${page.rows.length} in all` : `${page.rows.length} loaded`)
     : "";
+}
+
+// reportPage shows a context page's failure where its rows would be, with a
+// control to ask again. ensure() never retries a failed page by itself, so
+// this is the way back.
+function reportPage(host, pageName, error) {
+  report(host, error);
+  const retry = render.element("button", "btn-quiet", "Try again");
+  retry.type = "button";
+  retry.addEventListener("click", () => { void selection.refresh(pageName); });
+  host.append(retry);
+}
+
+// ensureRunsPages reads what the Runs destination shows for the current
+// context, and nothing it already holds: ensure() is a no-op for a page held
+// or in flight for the same scope.
+function ensureRunsPages() {
+  if (chosenID("project") === "") {
+    return;
+  }
+  void selection.ensure("agents");
+  if (chosenID("agent") !== "") {
+    void selection.ensure("candidates");
+  }
+  void selection.ensure("runs");
 }
 
 // runColumns are the columns a run table shows, in one place.
@@ -1270,7 +1333,13 @@ function renderRunsView() {
   renderCandidatesList();
   renderRunStatusChips();
 
-  const level = hierarchy.levels.runs;
+  // The context's run page — newest first at the deepest chosen level (task
+  // 101) — and only when it was read for the scope chosen now.
+  const held = selection.pages.runs;
+  const current = chosenID("project") !== "" && held.parentID === selection.runsKey;
+  const level = current ? held : { rows: [], nextAfter: "", loaded: false, loading: false, error: null };
+  const scope = selection.runScope;
+  const scopeText = scope.level === "" ? "" : `${scope.level} ${scope.label}`;
   const rows = level.rows.filter((row) => {
     if (runStatusFilter !== "" && row.status !== runStatusFilter) {
       return false;
@@ -1280,37 +1349,44 @@ function renderRunsView() {
 
   const narrowed = runStatusFilter !== "" || runFilter !== "";
   dash.summaryStrip(byID("runs-strip"), [
-    { key: "Agent", value: openedAgentName || openedAgent },
-    { key: "Candidate", value: openedCandidate },
-    { key: "Runs on this page", value: level.loaded ? String(level.rows.length) : "" },
+    { key: "Agent", value: chosenLabel("agent") },
+    { key: "Candidate", value: chosenLabel("candidate") },
+    { key: "Runs loaded", value: level.loaded ? String(level.rows.length) : "" },
     { key: "Shown", value: level.loaded && narrowed ? String(rows.length) : "" },
   ]);
 
-  dash.dataTable(byID("runs-table"), {
-    loading: loading.runs,
-    skeletonRows: 4,
-    emptyTitle: !level.loaded
-      ? "Choose an agent, then a candidate"
-      : (level.rows.length === 0 ? "This candidate has no runs" : "Nothing matches those filters"),
-    emptyHint: !level.loaded
-      ? "The two lists above are this project's agents and their versions."
-      : (level.rows.length === 0
-        ? "A run appears here once one is created for this candidate."
-        : "Clear the status chip or the filter to see the rest of this page."),
-    emptyIcon: "runs",
-    columns: runColumns((row) => { void openRunDetail(row.id); }),
-    rows,
-    keyOf: (row) => row.id,
-    selected: runState.runID,
-    onOpen: (row) => { void openRunDetail(row.id); },
-  });
+  if (current && level.error) {
+    reportPage(byID("runs-table"), "runs", level.error);
+  } else {
+    dash.dataTable(byID("runs-table"), {
+      loading: current && level.loading && !level.loaded,
+      skeletonRows: 4,
+      emptyTitle: chosenID("project") === ""
+        ? "Choose a project"
+        : (!level.loaded
+          ? "Reading runs"
+          : (level.rows.length === 0 ? `No runs in ${scopeText}` : "Nothing matches those filters")),
+      emptyHint: chosenID("project") === ""
+        ? "Pick one under Projects, or in any selector."
+        : (level.loaded && level.rows.length === 0
+          ? "A run appears here once one is created. Narrow or widen with the agent and candidate lists above."
+          : "Clear the status chip or the filter to see the rest of what is loaded."),
+      emptyIcon: "runs",
+      columns: runColumns((row) => { void openRunDetail(row.id); }),
+      rows,
+      keyOf: (row) => row.id,
+      selected: runState.runID,
+      onOpen: (row) => { void openRunDetail(row.id); },
+    });
+  }
 
   byID("runs-page-state").textContent = level.loaded
     ? (level.nextAfter === ""
-      ? `${level.rows.length} run(s); this is the whole collection.`
-      : `${level.rows.length} run(s) on this page; more exist.`)
+      ? `${level.rows.length} run(s) in ${scopeText}, newest first; this is every one.`
+      : `The newest ${level.rows.length} run(s) in ${scopeText}; more exist.`)
     : "";
-  byID("runs-pager").hidden = level.nextAfter === "";
+  byID("runs-pager").hidden = level.nextAfter === "" || level.capped === true;
+  byID("runs-more").disabled = level.loading;
   navCount("nav-runs", level.loaded ? String(level.rows.length) : "");
   syncRunsScope();
 }
@@ -1322,7 +1398,7 @@ function renderRunsView() {
 let runsScopeOpen = true;
 
 function syncRunsScope() {
-  const chosen = openedCandidate !== "";
+  const chosen = chosenID("candidate") !== "";
   const collapse = chosen && !runsScopeOpen;
   byID("runs-scope").hidden = collapse;
   const toggle = byID("runs-scope-toggle");
@@ -1340,17 +1416,16 @@ byID("runs-search").addEventListener("input", (event) => {
   runFilter = event.target.value.trim().toLowerCase();
   renderRunsView();
 });
+// Each continuation is one press and one bounded page, appended to what the
+// context holds for the current scope.
 byID("agents-more").addEventListener("click", () => {
-  void openLevel("agents",
-    () => hierarchy.loadAgents(hierarchy.parents.agents, hierarchy.levels.agents.nextAfter));
+  void selection.loadMore("agents");
 });
 byID("candidates-more").addEventListener("click", () => {
-  void openLevel("candidates",
-    () => hierarchy.loadCandidates(hierarchy.parents.candidates, hierarchy.levels.candidates.nextAfter));
+  void selection.loadMore("candidates");
 });
 byID("runs-more").addEventListener("click", () => {
-  void openLevel("runs",
-    () => hierarchy.loadRuns(hierarchy.parents.runs, hierarchy.levels.runs.nextAfter));
+  void selection.loadMore("runs");
 });
 
 // renderProjectsLevel redraws every level the browser holds.
@@ -1402,9 +1477,6 @@ async function openLevel(level, load) {
 
 const LEVEL_HOSTS = Object.freeze({
   projects: "projects-table",
-  agents: "agents-list",
-  candidates: "candidates-list",
-  runs: "runs-table",
 });
 
 // ------------------------------ run workspace -----------------------------
@@ -1962,8 +2034,11 @@ function onEnterView(viewID) {
     void selection.ensure("environments");
   }
   // Runs shows the context's agent and candidate, wherever they were chosen.
-  if (viewID === "view-runs" && runsNeedSync) {
-    void syncRunsHierarchy();
+  // Runs draws the context; entering it reads only what the context does not
+  // already hold for the chosen scope.
+  if (viewID === "view-runs") {
+    ensureRunsPages();
+    renderRunsView();
   }
 }
 
@@ -3025,7 +3100,7 @@ const selection = createSelectionContext({
   listProjects: (after) => api.listProjects(after),
   listProjectAgents: (projectID, after) => api.listProjectAgents(projectID, after),
   listAgentCandidates: (agentID, after) => api.listAgentCandidates(agentID, after),
-  listCandidateRuns: (candidateID, after) => api.listCandidateRuns(candidateID, after),
+  listRecentRuns: (projectID, narrowing, after) => api.listRecentRuns(projectID, narrowing, after),
   listAllEnvironments: (projectID) => api.listAllEnvironments(projectID),
   getRun: (id) => api.getRun(id),
   getCandidate: (id) => api.getCandidate(id),
@@ -3037,69 +3112,27 @@ const selection = createSelectionContext({
 // once the bindings below exist; renderCompareSides runs before that.
 let sideSelectors = null;
 
-// syncFromContext keeps the console's older per-destination state in step
-// with the context, whichever destination made the choice.
+// syncFromContext keeps the project-scoped destinations in step with the
+// context, whichever destination made the choice.
 //
-// The Runs destination keeps its own bounded browser (ADR 0050); when the
-// agent or candidate moves somewhere else, the rows it holds were listed
-// under the previous one, so they are dropped rather than shown under the
-// new name — and re-read the next time Runs is open.
-let runsNeedSync = false;
-
-function syncFromContext() {
+// The Runs destination no longer mirrors anything (task 104): it reads the
+// context's pages directly, so this only re-scopes what is still project-wide
+// state of its own — Compare and Promotions, through setProjectScope — and
+// redraws.
+function syncFromContext(what) {
   const chosen = selection.selection;
   const projectID = chosen.project === null ? "" : chosen.project.id;
   if (projectID !== openedProject) {
     setProjectScope(projectID, chosen.project === null ? "" : chosen.project.label);
-    openedAgent = "";
-    openedAgentName = "";
-    openedCandidate = "";
-    hierarchy.truncate("agents");
-    runsNeedSync = true;
   }
-  const agentID = chosen.agent === null ? "" : chosen.agent.id;
-  if (agentID !== openedAgent) {
-    openedAgent = agentID;
-    openedAgentName = chosen.agent === null ? "" : chosen.agent.label;
-    openedCandidate = "";
-    hierarchy.truncate("candidates");
-    runsNeedSync = true;
-    if (agentID !== "") {
-      labels.remember("agent", agentID, openedAgentName);
-    }
-  } else if (chosen.agent !== null && chosen.agent.label !== openedAgentName) {
-    openedAgentName = chosen.agent.label;
+  if (what === "agent" && chosen.agent !== null) {
+    labels.remember("agent", chosen.agent.id, chosen.agent.label);
   }
-  const candidateID = chosen.candidate === null ? "" : chosen.candidate.id;
-  if (candidateID !== openedCandidate) {
-    openedCandidate = candidateID;
-    hierarchy.truncate("runs");
-    runsNeedSync = true;
-  }
-  if (runsNeedSync && currentView === "view-runs") {
-    void syncRunsHierarchy();
-  } else if (runsNeedSync) {
-    renderProjectsLevel();
-  }
-  drawCrumbs();
-}
-
-// syncRunsHierarchy reads, one level at a time, what the Runs destination
-// needs to show the context's selection. Sequential, because the levels
-// share one ownership surface and each read supersedes the one before.
-async function syncRunsHierarchy() {
-  runsNeedSync = false;
-  if (openedProject !== "" && hierarchy.parents.agents !== openedProject) {
-    await openLevel("agents", () => hierarchy.loadAgents(openedProject, ""));
-  }
-  if (openedAgent !== "" && hierarchy.parents.candidates !== openedAgent) {
-    await openLevel("candidates", () => hierarchy.loadCandidates(openedAgent, ""));
-  }
-  if (openedCandidate !== "" && hierarchy.parents.runs !== openedCandidate) {
-    runsScopeOpen = false;
-    await openLevel("runs", () => hierarchy.loadRuns(openedCandidate, ""));
+  if (currentView === "view-runs" && (what === "project" || what === "agent" || what === "candidate")) {
+    ensureRunsPages();
   }
   renderProjectsLevel();
+  drawCrumbs();
 }
 
 selection.subscribe(syncFromContext);
@@ -3125,7 +3158,7 @@ function requireField(id, message) {
 bindSelector(byID("watch-run-select"), selection, {
   level: "run",
   label: "Evaluation run",
-  hint: "Runs of the chosen candidate. Choose a project, agent and candidate in any destination.",
+  hint: "Newest first across the deepest level chosen — a project, an agent or a candidate, in any destination.",
   input: byID("watch-run-id"),
   paste: false,
 });
@@ -3247,6 +3280,7 @@ overview = createOverview({
     },
     useInCompare: (side, run) => { assignSide(side, run); },
     openCompare: () => { openView("view-compare"); onEnterView("view-compare"); },
+    openRuns: () => { openView("view-runs"); onEnterView("view-runs"); },
     openTraces: (runID) => { openTracesFor(runID, ""); },
     watchRun: (runID) => {
       byID("watch-run-id").value = runID;
@@ -3268,7 +3302,7 @@ byID("overview-refresh").addEventListener("click", () => overview.refresh());
 bindSelector(byID("traces-run-select"), selection, {
   level: "run",
   label: "Evaluation run",
-  hint: "Runs of the chosen candidate. Paste a run ID to reach any run.",
+  hint: "Newest first across the deepest level chosen. Paste a run ID to reach any run.",
   paste: true,
   onError: reportPaste,
 });
@@ -3291,6 +3325,28 @@ traces = createTraces({
   nav: {
     openSession: (runID, sessionID) => { void openRunView(runID, "session", sessionID); },
     openBehavior: (runID, fingerprintID) => { void openRunView(runID, "behavior", fingerprintID); },
+  },
+});
+
+// Evidence → Scenarios (task 102).
+scenarios = createScenarios({
+  selection,
+  hosts: {
+    filters: byID("scenarios-filters"),
+    layout: byID("scenarios-layout"),
+    table: byID("scenarios-table"),
+    pager: byID("scenarios-pager"),
+    panel: byID("scenarios-detail"),
+    panelTitle: byID("scenarios-detail-title"),
+    panelBody: byID("scenarios-detail-body"),
+    panelClose: byID("scenarios-detail-close"),
+  },
+  listExecutions: (projectID, filter, after) => api.listScenarioExecutions(projectID, filter, after),
+  getExecution: (id) => api.getScenarioExecution(id),
+  checkReference: (id) => api.checkScenarioReference(id),
+  now: () => Date.now(),
+  nav: {
+    openRun: (runID) => { void openRunDetail(runID); },
   },
 });
 
@@ -3326,10 +3382,11 @@ function openTracesFor(runID, traceID) {
 }
 
 
-// Evidence → Run history: the trace or behavior a view narrows to, chosen
-// from the run's own collection rather than typed (task 098, with task 100's
-// trace route). Sessions have no collection; their field stays the paste path
-// and is filled from an observation's row.
+// Evidence → Run history: the session, trace or behavior a view narrows to,
+// chosen from the run's own collection rather than typed (task 098, with task
+// 100's traces and task 103's sessions). Each list holds only identifiers
+// carried by *retained* observations, and says so; the field below stays the
+// paste path for anything else.
 const evidenceIdentifierSurface = createSurface("evidence.identifier");
 let evidenceIdentifier = { key: "", rows: [], nextAfter: "", loading: false, error: null, loaded: false, chosen: null };
 
@@ -3337,9 +3394,15 @@ function evidenceIdentifierKey() {
   return `${value("evidence-run-id")}\u0000${evidenceViewSelect.value}`;
 }
 
+// The views whose identifier has a collection behind it.
+const LISTED_VIEWS = Object.freeze(["session", "trace", "behavior"]);
+
 function evidenceIdentifierOption(view, row) {
   if (view === "trace") {
     return { id: row.trace_id, name: row.trace_id, detail: `${row.observations} action(s) · from #${row.first_sequence}` };
+  }
+  if (view === "session") {
+    return { id: row.session_id, name: row.session_id, detail: `${row.observations} action(s) · from #${row.first_sequence}` };
   }
   const behavior = row.behavior || {};
   const name = [behavior.operation_name, behavior.target_name]
@@ -3365,7 +3428,7 @@ const evidenceIdentifierSelector = createSelector(byID("evidence-identifier-sele
 function drawEvidenceIdentifierSelector() {
   const view = evidenceViewSelect.value;
   const runID = value("evidence-run-id");
-  const listed = view === "trace" || view === "behavior";
+  const listed = LISTED_VIEWS.includes(view);
   const current = evidenceIdentifier.key === evidenceIdentifierKey();
   evidenceIdentifierSelector.update({
     options: current ? evidenceIdentifier.rows.map((row) => evidenceIdentifierOption(view, row)) : [],
@@ -3375,17 +3438,16 @@ function drawEvidenceIdentifierSelector() {
     hasMore: current && evidenceIdentifier.nextAfter !== "",
     capped: current && evidenceIdentifier.rows.length >= 512,
     disabled: !listed || runID === "",
-    disabledText: !listed
-      ? "Sessions have no list. Open one from an observation row, or paste its ID."
-      : "Choose a run first.",
+    disabledText: !listed ? "This view needs no identifier." : "Choose a run first.",
     selected: current ? evidenceIdentifier.chosen : null,
+    scopeText: listed && runID !== "" ? `Found in run ${runID}'s retained history` : "",
   });
 }
 
 async function loadEvidenceIdentifiers(after) {
   const view = evidenceViewSelect.value;
   const runID = value("evidence-run-id");
-  if (runID === "" || (view !== "trace" && view !== "behavior")) {
+  if (runID === "" || !LISTED_VIEWS.includes(view)) {
     return;
   }
   const key = evidenceIdentifierKey();
@@ -3398,15 +3460,13 @@ async function loadEvidenceIdentifiers(after) {
     : { ...evidenceIdentifier, loading: true, error: null };
   drawEvidenceIdentifierSelector();
   try {
-    const response = view === "trace"
-      ? await api.runTraces(runID, after)
-      : await api.runBehaviors(runID, after);
+    const read = { trace: api.runTraces, session: api.runSessions, behavior: api.runBehaviors }[view];
+    const response = await read(runID, after);
     if (!evidenceIdentifierSurface.owns(ticket)) {
       return;
     }
-    const rows = Array.isArray(view === "trace" ? response.traces : response.behaviors)
-      ? (view === "trace" ? response.traces : response.behaviors)
-      : [];
+    const field = { trace: "traces", session: "sessions", behavior: "behaviors" }[view];
+    const rows = Array.isArray(response[field]) ? response[field] : [];
     evidenceIdentifier = {
       ...evidenceIdentifier,
       rows: evidenceIdentifier.rows.concat(rows),

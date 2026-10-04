@@ -861,6 +861,42 @@ func newEvaluationRunListResponse(
 	}
 }
 
+// recentRunListResponse is one newest-first page of runs (task 101).
+//
+// Order is stated in the payload as well as by the route, so a stored
+// response cannot be mistaken for an identifier-ordered page. The scope echoes
+// what was asked: a narrowing the reader did not send is absent, never empty.
+type recentRunListResponse struct {
+	Version     string                  `json:"version"`
+	ProjectID   string                  `json:"project_id"`
+	AgentID     string                  `json:"agent_id,omitempty"`
+	CandidateID string                  `json:"candidate_id,omitempty"`
+	Order       string                  `json:"order"`
+	Runs        []evaluationRunResponse `json:"evaluation_runs"`
+	NextAfter   string                  `json:"next_after,omitempty"`
+}
+
+// recentRunOrder names the order this collection returns.
+const recentRunOrder = "created_at_desc"
+
+func newRecentRunListResponse(
+	scope platform.RunScope, runs []platform.RecentRun, nextAfter string,
+) recentRunListResponse {
+	page := make([]evaluationRunResponse, 0, len(runs))
+	for _, run := range runs {
+		page = append(page, newEvaluationRunResponse(run.Run))
+	}
+	return recentRunListResponse{
+		Version:     WireVersion,
+		ProjectID:   string(scope.ProjectID),
+		AgentID:     string(scope.AgentID),
+		CandidateID: string(scope.CandidateID),
+		Order:       recentRunOrder,
+		Runs:        page,
+		NextAfter:   nextAfter,
+	}
+}
+
 // ---------------------------------------------------------------------
 // Run-scoped behaviors (task 078)
 // ---------------------------------------------------------------------
@@ -1123,6 +1159,52 @@ func newTraceListResponse(runID string, page platform.TracePage, nextAfter strin
 		RetainedCount: u64(page.History.RetainedCount()),
 		Complete:      page.History.Complete(),
 		Traces:        traces,
+		NextAfter:     nextAfter,
+	}
+}
+
+// sessionListResponse is one bounded page of the sessions in a run's retained
+// history (task 103). The trace list's shape with the identifier named for
+// what it is.
+type sessionListResponse struct {
+	Version string `json:"version"`
+	RunID   string `json:"run_id"`
+
+	HistoryState  string `json:"history_state"`
+	RetainedCount string `json:"retained_count"`
+	Complete      bool   `json:"complete"`
+
+	Sessions []sessionSummaryDTO `json:"sessions"`
+
+	NextAfter string `json:"next_after,omitempty"`
+}
+
+type sessionSummaryDTO struct {
+	SessionID     string `json:"session_id"`
+	Observations  string `json:"observations"`
+	FirstSequence string `json:"first_sequence"`
+	LastSequence  string `json:"last_sequence"`
+	ErrorSpans    string `json:"error_spans"`
+}
+
+func newSessionListResponse(runID string, page platform.TracePage, nextAfter string) sessionListResponse {
+	sessions := make([]sessionSummaryDTO, 0, len(page.Traces))
+	for _, entry := range page.Traces {
+		sessions = append(sessions, sessionSummaryDTO{
+			SessionID:     entry.TraceID,
+			Observations:  u64(entry.Observations),
+			FirstSequence: u64(entry.FirstSequence),
+			LastSequence:  u64(entry.LastSequence),
+			ErrorSpans:    u64(entry.ErrorSpans),
+		})
+	}
+	return sessionListResponse{
+		Version:       WireVersion,
+		RunID:         runID,
+		HistoryState:  page.History.State().String(),
+		RetainedCount: u64(page.History.RetainedCount()),
+		Complete:      page.History.Complete(),
+		Sessions:      sessions,
 		NextAfter:     nextAfter,
 	}
 }

@@ -638,6 +638,58 @@ export const runBehaviors = (runID, after) => {
   return request("GET", `/v1/evaluation-runs/${segment(runID)}/behaviors${query}`);
 };
 
+// listRecentRuns reads one page of runs newest first within a project, and
+// optionally one agent and one candidate of it (task 101, ADR 0063). The
+// cursor is the server's opaque `next_after`, passed back unchanged.
+export const listRecentRuns = (projectID, narrowing, after) => {
+  const params = new URLSearchParams();
+  const scope = narrowing === undefined || narrowing === null ? {} : narrowing;
+  if (scope.agentID) {
+    params.set("agent_id", scope.agentID);
+  }
+  if (scope.candidateID) {
+    params.set("candidate_id", scope.candidateID);
+  }
+  const query = pageQuery(params, after, null);
+  return request("GET", `/v1/projects/${segment(projectID)}/evaluation-runs/recent${query}`);
+};
+
+// listScenarioExecutions reads one page of a project's recorded scenario
+// executions newest first (task 102), filtered by equality on agent,
+// environment and scenario name. The cursor is the server's `next_after`.
+export const listScenarioExecutions = (projectID, filter, after) => {
+  const params = new URLSearchParams();
+  const f = filter === undefined || filter === null ? {} : filter;
+  if (f.agentID) {
+    params.set("agent_id", f.agentID);
+  }
+  if (f.environment) {
+    params.set("environment", f.environment);
+  }
+  if (f.scenario) {
+    params.set("scenario", f.scenario);
+  }
+  const query = pageQuery(params, after, null);
+  return request("GET", `/v1/projects/${segment(projectID)}/scenario-executions${query}`);
+};
+
+// getScenarioExecution reads one execution with its run associations.
+export const getScenarioExecution = (id) =>
+  request("GET", `/v1/scenario-executions/${segment(id)}`);
+
+// checkScenarioReference asks the control plane whether an execution would
+// be accepted as a reference. A read: the server runs its own validation and
+// records nothing. The browser never decides this.
+export const checkScenarioReference = (id) =>
+  request("GET", `/v1/scenario-executions/${segment(id)}/reference-check`);
+
+// runSessions reads one bounded page of the sessions in a run's retained
+// history (task 103): the trace list's shape over the session column.
+export const runSessions = (runID, after) => {
+  const query = pageQuery(new URLSearchParams(), after, null);
+  return request("GET", `/v1/evaluation-runs/${segment(runID)}/sessions${query}`);
+};
+
 // runTraces reads one bounded page of the traces in a run's retained history
 // (task 100): each trace identifier with its retained-observation and
 // error-span counts. Ordered by each trace's first retained sequence, which is

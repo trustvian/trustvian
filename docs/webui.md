@@ -53,7 +53,7 @@ one URL and needs no second field.
 | Destination | Purpose |
 |---|---|
 | **Live** *(default)* | Watch. Active agents appear by themselves, one run's behavior flow animates as calls arrive, and an inspector shows what Trustvian decided |
-| **Overview** | Orient. Live activity, a candidate's runs by status, one run's authoritative evidence, recent gate verdicts and the project's environments — each saying what it covers and when it was read |
+| **Overview** | Orient. Live activity, the newest runs of a project, agent or candidate by status, one run's authoritative evidence, recent gate verdicts and the project's environments — each saying what it covers and when it was read |
 | **Projects** | Choose. A searchable table of what exists; picking a row scopes the whole console and the sidebar says which project that is |
 | **Runs** | Explore. A visible list of the project's agents and their candidates, then the run table itself. Clicking a run opens its workspace |
 | **Traces** | Investigate. A run's traces as a searchable list, one trace's evaluated actions as a waterfall, and one action's details beside it |
@@ -79,7 +79,7 @@ already chosen from any other destination — and five panels summarise them:
 | Panel | Reads | Says it covers |
 |---|---|---|
 | Live now | the Live connection's scope cards, for the project | this connection since it last synchronized |
-| Runs | one page of the candidate's runs | every run, or the first page when more exist |
+| Runs | the newest runs of the deepest level chosen — project, agent or candidate | every run newest first, or the newest page when more exist; **Load next page** reads on |
 | Newest run / Chosen run | that run's progress and first page of behaviors | one run; the newest by creation time unless you chose one |
 | Gate verdicts | the first page of the project's promotion decisions | identifier order, not newest first |
 | Environments | the project's whole environment collection | every environment |
@@ -103,11 +103,20 @@ decimal strings: a bar's length is drawn from the leading digits, never by
 converting the counter to a number, and the exact figure is printed beside it.
 A figure the server did not return reads *not available*, never `0`.
 
-What the Overview does not show, and says so on the page: a project-wide list of
-recent runs (`/v1` lists runs per candidate —
-[task 101](tasks/v0.11/101-recency-ordered-run-discovery.md)), a decision or
-risk distribution across a run (only a bounded page of retained history
-exists), trends, and any combined health score.
+**Runs are newest first across a scope** (task 101,
+[ADR 0063](adr/0063-recency-is-a-stored-sort-key-and-a-composite-cursor.md)).
+A project alone is enough: the panel reads
+`GET /v1/projects/{id}/evaluation-runs/recent`, narrowed to the agent and the
+candidate when they are chosen, and its heading names the scope. The order is
+the server's — by stored creation time, ties by identifier — so the first row
+is the newest in the whole scope, not the newest of an identifier-ordered page.
+A run created after the read is not on screen until **Refresh**; the read time
+says how old the list is. Pinning a run for the evidence panel is local to the
+Overview and does not narrow the page to that run's candidate.
+
+What the Overview does not show, and says so on the page: a decision or risk
+distribution across a run (only a bounded page of retained history exists),
+trends, and any combined health score.
 
 ## The Live Observatory
 
@@ -286,12 +295,17 @@ reads one page of its runs. Where more exists, **Load next page** says so and
 costs one request. There is no timer, no polling and no background prefetch
 anywhere in the page.
 
-That bound is also why **Runs** is reached through a visible list of agents and
-a visible list of candidates rather than one "all runs in this project" table.
-`/v1` publishes no such collection, and synthesising one in the browser would
-be exactly the crawl above. Two bounded lists are the honest shape of the data;
-being *visible*, rather than collapsed into menus, is what keeps them from
-being something to traverse.
+**Runs** reads the shared selection context (task 104): its agent list,
+candidate list and run table are the context's pages, so a choice made under
+Overview, Manage or any selector is already chosen here, and the reverse. The
+run table is the recency collection (task 101) at the deepest level chosen —
+a project's runs newest first before an agent is picked, an agent's once one
+is, a candidate's once that is — so it never needs the crawl above. Each list
+is one bounded page per press of **Load next page**; a page already held for
+the scope is not read again, and run reads wait until a choice has finished
+preselecting below itself, so choosing a project with one agent reads that
+agent's runs once and nothing wider. A failed page shows its error with
+**Try again** and is never retried by itself.
 
 The filter boxes on **Projects** and **Runs** narrow the rows already on
 screen. They never ask the server for a page it was not going to fetch, and the
@@ -404,6 +418,13 @@ why what remains is a console of tables rather than a set of forms.
 
 ## Choosing a record without typing it
 
+Evidence → Run history's session, trace and behavior narrowings are chosen
+from the run's own lists — `GET /v1/evaluation-runs/{id}/sessions` (task 103),
+`/traces` (task 100) and `/behaviors`. Each lists only identifiers carried by
+**retained** observations, at most 4096 per run, and the selector's footer
+says it was found in the run's retained history; anything else can still be
+pasted.
+
 Every field that asks for an existing project, agent, candidate, run or
 environment is a **searchable selector** (task 098): type to narrow, arrow keys
 to move, Enter to choose, Escape to close. Each option leads with the name a
@@ -445,17 +466,40 @@ metadata and a failure reason are inputs, not choices.
 
 | Where | Chosen from |
 |---|---|
-| Live → Watch one run | the candidate's runs |
-| Evidence → Run history | the candidate's runs |
-| Evidence → Provenance | Compare's two sides; the candidate's runs |
+| Live → Watch one run | the newest runs in scope |
+| Evidence → Run history | the newest runs in scope |
+| Evidence → Provenance | Compare's two sides; the newest runs in scope |
 | Promotions → History | projects; each row opens its decision |
-| Promotions → Record one | Compare's two sides; the candidate's runs; the project's environments |
+| Promotions → Record one | Compare's two sides; the newest runs in scope; the project's environments |
 | Manage → Agents / Candidates / Evaluations | projects / agents / candidates and environments |
-| Manage → Lifecycle | the candidate's runs |
+| Manage → Lifecycle | the newest runs in scope |
 
-Scenario executions are not reachable from the browser and `/v1` publishes no
-collection of them; recency-ordered run discovery across a project is
-[task 101](tasks/v0.11/101-recency-ordered-run-discovery.md).
+**Run selectors are newest first across the deepest level chosen** (task 101):
+a project alone lists the project's runs, an agent narrows to its runs, a
+candidate to its own. The selector's footer names the scope. Choosing a run
+from a wider list brings its candidate and agent with it — resolved from the
+run's record — so the context never holds a run under the wrong candidate.
+
+## Recorded scenario executions
+
+Evidence → **Scenarios** lists the project's recorded scenario executions —
+every `trustvian eval run` — newest first by start time (task 102), filtered by
+the agent chosen in the context and an environment, with a search over what is
+loaded. Each row shows the scenario name, status, verdict, repetition count,
+environment, agent, start time and the execution it reused.
+
+Opening one shows its scope, times and repetitions, each run a link to its
+workspace. **Check eligibility** asks the control plane whether
+`trustvian eval run --reference <id>` would accept it — the same validation the
+CLI runs, unchanged — and shows its answer: usable, or not with the server's
+own reason, and the conditions the answer holds under (the execution's `runs`,
+project and environment). Only a usable execution offers **Copy CLI command**,
+`trustvian eval run --scenario <scenario.yaml> --reference=<id>`, with the
+identifier shell-quoted.
+
+Nothing runs from the browser. A scenario executes a developer's command, and
+starting one from a page would make the local control plane an executor; that
+stays in the CLI.
 
 ## Watching one run
 

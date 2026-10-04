@@ -227,8 +227,7 @@
   </div>
 
   <p class="region-note">
-    Not shown, because /v1 cannot support it honestly: a project-wide list of
-    recent runs (runs are listed per candidate), a decision or risk
+    Not shown, because /v1 cannot support it honestly: a decision or risk
     distribution across a whole run (only a bounded page of retained history
     exists), trends over time, and any combined health score.
   </p>
@@ -511,6 +510,7 @@
     <button type="button" class="subtab" data-section="evidence-finding" aria-selected="true">Finding</button>
     <button type="button" class="subtab" data-section="evidence-run" aria-selected="false">Run history</button>
     <button type="button" class="subtab" data-section="evidence-provenance" aria-selected="false">Provenance</button>
+    <button type="button" class="subtab" data-section="evidence-scenarios" aria-selected="false">Scenarios</button>
   </nav>
 
   <div class="evidence-section" id="evidence-finding" hidden>
@@ -556,7 +556,9 @@
     </form>
     <p class="hint" id="evidence-view-blurb"></p>
     <p class="hint" id="evidence-identifier-hint">
-      Filled for you when you open a session, trace or behavior from a row.
+      Sessions, traces and behaviors are listed from the run's retained
+      observations only — at most 4096 per run — so one that was never retained
+      is not offered. Paste an identifier below for anything else.
     </p>
 
     <div class="result" id="evidence-run-result" aria-live="polite">
@@ -593,6 +595,30 @@
 
     <div class="result" id="evidence-provenance-result" aria-live="polite">
       <p class="empty">No provenance loaded.</p>
+    </div>
+  </div>
+  <!-- Recorded scenario executions (task 102). Discovery, inspection and a
+       server-side reference check; nothing runs from here. -->
+  <div class="evidence-section" id="evidence-scenarios" hidden>
+    <p class="region-note">
+      Every <code>trustvian eval run</code> is recorded as a scenario execution.
+      Find one here to inspect it or to reuse its reference side with
+      <code>--reference</code>; starting a scenario stays in the CLI, which runs
+      your command.
+    </p>
+    <div id="scenarios-filters"></div>
+    <div class="scenarios-layout" id="scenarios-layout">
+      <div class="scenarios-main">
+        <div class="table-host" id="scenarios-table"></div>
+        <div class="pager" id="scenarios-pager" hidden></div>
+      </div>
+      <aside class="detail scenarios-detail" id="scenarios-detail" aria-labelledby="scenarios-detail-title" hidden>
+        <div class="detail-head">
+          <h2 class="detail-title" id="scenarios-detail-title">Execution</h2>
+          <button type="button" class="detail-close" id="scenarios-detail-close" aria-label="Close details">Close</button>
+        </div>
+        <div class="detail-body" id="scenarios-detail-body"></div>
+      </aside>
     </div>
   </div>
 </section>

@@ -32,14 +32,14 @@ const PARENT_OF = Object.freeze({
   project: "",
   agent: "project",
   candidate: "agent",
-  run: "candidate",
+  run: "project",
   environment: "project",
 });
 
 const NEEDS = Object.freeze({
   agent: "Choose a project first.",
   candidate: "Choose an agent first.",
-  run: "Choose a candidate first.",
+  run: "Choose a project first.",
   environment: "Choose a project first.",
 });
 
@@ -47,7 +47,7 @@ const EMPTY = Object.freeze({
   project: "No projects yet.",
   agent: "This project has no agents.",
   candidate: "This agent has no candidates.",
-  run: "This candidate has no runs.",
+  run: "No runs in this scope yet.",
   environment: "This project has no environments.",
 });
 
@@ -81,6 +81,16 @@ export function describe(level, row) {
     default:
       return null;
   }
+}
+
+// runScopeText states the scope and order a run list was read in (task 101).
+// The list is newest first across the deepest chosen level, and saying which
+// level is what keeps a project-wide list from reading as one candidate's.
+export function runScopeText(scope) {
+  if (!scope || scope.level === "") {
+    return "";
+  }
+  return `Newest first in ${scope.level} ${scope.label}`;
 }
 
 function selectedFrom(level, entry) {
@@ -185,6 +195,7 @@ export function bindSelector(host, context, options) {
       disabled: missing,
       disabledText: NEEDS[level] || "",
       selected: chosen,
+      scopeText: level === "run" ? runScopeText(context.runScope) : "",
     });
     if (options.input && !options.local) {
       const value = chosen === null ? "" : chosen.id;

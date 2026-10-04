@@ -68,16 +68,35 @@ type TraceSummaryStore interface {
 	RunTraces(ctx context.Context, id EvaluationRunID, after uint64, limit int) (TracePage, error)
 }
 
-// runTracePage is the one query both backends run, inside their own read
-// snapshot.
+// correlationColumn is one correlation identifier a run's retained history can
+// be summarised by: the value column and the digest key column it is indexed
+// through (task 067). A closed set of two, so no caller can turn this into a
+// GROUP BY over an arbitrary column.
+type correlationColumn struct{ value, key, noun string }
+
+var (
+	correlationTrace   = correlationColumn{value: "trace_id", key: "trace_key", noun: "trace"}
+	correlationSession = correlationColumn{value: "session_id", key: "session_key", noun: "session"}
+)
+
+// runTracePage is task 100's trace list: the correlation summary over traces.
+func runTracePage(
+	ctx context.Context, q evidenceQuerier, id EvaluationRunID, after uint64, limit int,
+) (TracePage, error) {
+	return runCorrelationPage(ctx, q, correlationTrace, id, after, limit)
+}
+
+// runCorrelationPage is the one query both backends run, inside their own read
+// snapshot, for either correlation column.
 //
 // GROUP BY the digest key *and* the value: the key is what the index holds,
 // and grouping on the value beside it means a digest collision splits into two
 // entries rather than merging two traces into one. COUNT of a CASE rather than
 // SUM, because PostgreSQL's SUM of an integer is NUMERIC and COUNT is BIGINT on
 // both backends.
-func runTracePage(
-	ctx context.Context, q evidenceQuerier, id EvaluationRunID, after uint64, limit int,
+func runCorrelationPage(
+	ctx context.Context, q evidenceQuerier, column correlationColumn,
+	id EvaluationRunID, after uint64, limit int,
 ) (TracePage, error) {
 	if _, err := loadRun(ctx, q, id); err != nil {
 		return TracePage{}, err
@@ -88,20 +107,20 @@ func runTracePage(
 	}
 
 	rows, err := q.query(ctx, q.rebind(
-		`SELECT trace_id,
+		`SELECT `+column.value+`,
 		        COUNT(*),
 		        MIN(sequence) AS first_sequence,
 		        MAX(sequence),
 		        COUNT(CASE WHEN span_status = ? THEN 1 END)
 		   FROM `+tableObservations+`
-		  WHERE run_id = ? AND trace_key <> ''
-		  GROUP BY trace_key, trace_id
+		  WHERE run_id = ? AND `+column.key+` <> ''
+		  GROUP BY `+column.key+`, `+column.value+`
 		 HAVING MIN(sequence) > ?
 		  ORDER BY first_sequence
 		  LIMIT ?`),
 		string(event.StatusError), string(id), observationSequenceKey(after), limit)
 	if err != nil {
-		return TracePage{}, fmt.Errorf("platform: load traces: %w", err)
+		return TracePage{}, fmt.Errorf("platform: load %ss: %w", column.noun, err)
 	}
 	defer rows.Close()
 
@@ -113,7 +132,7 @@ func runTracePage(
 			firstKey, lastKey string
 		)
 		if err := rows.Scan(&traceID, &count, &firstKey, &lastKey, &errorSpans); err != nil {
-			return TracePage{}, fmt.Errorf("platform: scan trace: %w", err)
+			return TracePage{}, fmt.Errorf("platform: scan %s: %w", column.noun, err)
 		}
 		first, err := parseObservationSequenceKey("trace first sequence", firstKey)
 		if err != nil {
@@ -136,9 +155,42 @@ func runTracePage(
 		})
 	}
 	if err := rows.Err(); err != nil {
-		return TracePage{}, fmt.Errorf("platform: load traces: %w", err)
+		return TracePage{}, fmt.Errorf("platform: load %ss: %w", column.noun, err)
 	}
 	return TracePage{Traces: traces, History: history}, nil
+}
+
+// SessionSummaryStore lists the sessions in a run's retained history (task
+// 103): the same summary as TraceSummaryStore over the session column.
+// TraceSummary's TraceID carries the session identifier on these pages; the
+// HTTP layer names the field for what it is.
+type SessionSummaryStore interface {
+	RunSessions(ctx context.Context, id EvaluationRunID, after uint64, limit int) (TracePage, error)
+}
+
+// EvaluationRunSessions is EvaluationRunTraces over sessions, with the same
+// cursor, bounds and not-found answer.
+func (c *ControlPlane) EvaluationRunSessions(
+	ctx context.Context, runID EvaluationRunID, after string, limit int,
+) (TracePage, error) {
+	if err := validateID("evaluation run session run id", string(runID)); err != nil {
+		return TracePage{}, err
+	}
+	if err := validateObservationPage(after, limit); err != nil {
+		return TracePage{}, err
+	}
+	cursor, err := ParseObservationCursor(after)
+	if err != nil {
+		return TracePage{}, err
+	}
+	if _, err := c.evaluations.EvaluationRun(ctx, runID); err != nil {
+		return TracePage{}, err
+	}
+	store, ok := c.ingest.(SessionSummaryStore)
+	if !ok {
+		return TracePage{History: ObservationHistory{}}, nil
+	}
+	return store.RunSessions(ctx, runID, cursor, limit)
 }
 
 // EvaluationRunTraces returns one bounded page of the traces in a run's

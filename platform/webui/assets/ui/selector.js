@@ -71,12 +71,17 @@ export function statusText(state, shown) {
   const scope = state.whole
     ? `${state.total} in all`
     : `${state.total} loaded; more exist`;
+  // An optional sentence about where the options come from, ahead of the
+  // count, so "3 in all" is never read without its scope.
+  const lead = state.scopeText ? `${state.scopeText} · ` : "";
   if (shown === state.total) {
-    return state.capped ? `${scope}. Paste an ID to reach one further along.` : `${scope}.`;
+    return state.capped
+      ? `${lead}${scope}. Paste an ID to reach one further along.`
+      : `${lead}${scope}.`;
   }
   return state.whole
-    ? `${shown} of ${state.total} match.`
-    : `${shown} of ${state.total} loaded match; more exist.`;
+    ? `${lead}${shown} of ${state.total} match.`
+    : `${lead}${shown} of ${state.total} loaded match; more exist.`;
 }
 
 async function copyText(text, what) {
@@ -109,6 +114,7 @@ export function createSelector(host, spec) {
     capped: false,
     disabled: false,
     disabledText: "",
+    scopeText: "",
     emptyText: spec.emptyText || "",
     selected: null,
   };

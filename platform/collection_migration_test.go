@@ -175,6 +175,8 @@ func TestSchemaV4MigratesForwardAddingOnlyTheIntendedSchema(t *testing.T) {
 		indexObservationsByFingerprint, indexObservationsByTrace,
 		indexObservationsBySession,
 		indexScenarioExecutionsLatest,
+		// v10, task 101: the recency indexes.
+		indexRunsRecentByCandidate, indexRunsRecent, indexScenarioRecent,
 	}
 	slices.Sort(want)
 	slices.Sort(added)
@@ -233,6 +235,9 @@ func TestSchemaV4MigratesForwardAddingOnlyTheIntendedSchema(t *testing.T) {
 		case tablePromotions:
 			// v8, issue 131: the optional counted-change check.
 			wantColumns = promotionChangeGateColumnNames()
+		case tableRuns:
+			// v10, task 101: the recency key.
+			wantColumns = []string{"created_order"}
 		}
 		if !slices.Equal(addedColumns, wantColumns) {
 			t.Errorf("%s gained columns %v, want exactly %v", table, addedColumns, wantColumns)

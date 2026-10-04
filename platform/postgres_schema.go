@@ -190,7 +190,9 @@ func postgresSchemaStatements() []string {
 		append(promotionChangeGateColumnStatements(`TEXT COLLATE "C"`),
 			// v9: task 078's scenario executions, the statements the
 			// v8 -> v9 migration applies.
-			scenarioExecutionSchemaStatements(`TEXT COLLATE "C"`, "BIGINT")...)...)...)
+			append(scenarioExecutionSchemaStatements(`TEXT COLLATE "C"`, "BIGINT"),
+				// v10: task 101's recency keys and indexes.
+				recencySchemaStatements(`TEXT COLLATE "C"`)...)...)...)...)
 }
 
 // postgresPromotionsStatement is v4's only table, kept separate so the
@@ -357,7 +359,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 				if err := migratePostgresV7ToV8(ctx, tx); err != nil {
 					return err
 				}
-				return migratePostgresV8ToV9(ctx, tx)
+				return migratePostgresV8ToCurrent(ctx, tx)
 			case schemaVersionV5:
 				if err := migratePostgresV5ToV6(ctx, tx); err != nil {
 					return err
@@ -368,7 +370,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 				if err := migratePostgresV7ToV8(ctx, tx); err != nil {
 					return err
 				}
-				return migratePostgresV8ToV9(ctx, tx)
+				return migratePostgresV8ToCurrent(ctx, tx)
 			case schemaVersionV6:
 				if err := migratePostgresV6ToV7(ctx, tx); err != nil {
 					return err
@@ -376,7 +378,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 				if err := migratePostgresV7ToV8(ctx, tx); err != nil {
 					return err
 				}
-				return migratePostgresV8ToV9(ctx, tx)
+				return migratePostgresV8ToCurrent(ctx, tx)
 			}
 			// Not v4, v5 or v6 and holding exactly their tables: a v7 stamp
 			// without v7's tables is damage, and verifyPostgresVersion refuses
@@ -396,10 +398,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 				if err := migratePostgresV7ToV8(ctx, tx); err != nil {
 					return err
 				}
-				return migratePostgresV8ToV9(ctx, tx)
+				return migratePostgresV8ToCurrent(ctx, tx)
 			case schemaVersionV8:
-				return migratePostgresV8ToV9(ctx, tx)
-			case SchemaVersion:
+				return migratePostgresV8ToCurrent(ctx, tx)
+			case schemaVersionV9, SchemaVersion:
 				// The current stamp without the current tables is damage, and
 				// verifyPostgresVersion would accept the stamp alone. Refused
 				// rather than repaired: whatever removed two tables may have
@@ -411,9 +413,16 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			return verifyPostgresVersion(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTables()):
-			// The current table set. The stamp must be the current version;
-			// an older stamp beside newer tables, and a newer stamp, both
-			// fail closed.
+			// The current table set, which v9 shares: v10 added columns and
+			// indexes only. A v9 stamp migrates forward; otherwise the stamp
+			// must be the current version, and anything else fails closed.
+			version, err := postgresStoredVersion(ctx, tx)
+			if err != nil {
+				return err
+			}
+			if version == schemaVersionV9 {
+				return migratePostgresV9ToV10(ctx, tx)
+			}
 			return verifyPostgresVersion(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV1()):
@@ -440,7 +449,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV7ToV8(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV8ToV9(ctx, tx)
+			return migratePostgresV8ToCurrent(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV2()):
 			if err := migratePostgresV2ToV3(ctx, tx); err != nil {
@@ -461,7 +470,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV7ToV8(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV8ToV9(ctx, tx)
+			return migratePostgresV8ToCurrent(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTablesV3()):
 			if err := migratePostgresV3ToV4(ctx, tx); err != nil {
@@ -479,7 +488,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			if err := migratePostgresV7ToV8(ctx, tx); err != nil {
 				return err
 			}
-			return migratePostgresV8ToV9(ctx, tx)
+			return migratePostgresV8ToCurrent(ctx, tx)
 
 		default:
 			// A recognized subset that is neither version. Nothing here knows
@@ -678,6 +687,38 @@ func migratePostgresV8ToV9(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
 			return mapPostgresError("schema migration", "", err)
 		}
+	}
+	// Literal schemaVersionV9: v10 is its own step.
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
+		schemaVersionV9); err != nil {
+		return mapPostgresError("schema version", "", err)
+	}
+	return nil
+}
+
+// migratePostgresV8ToCurrent is every step from v8 forward.
+func migratePostgresV8ToCurrent(ctx context.Context, tx pgx.Tx) error {
+	if err := migratePostgresV8ToV9(ctx, tx); err != nil {
+		return err
+	}
+	return migratePostgresV9ToV10(ctx, tx)
+}
+
+// migratePostgresV9ToV10 mirrors SQLite's migrateV9ToV10 from the same
+// definitions: two columns, three indexes, and a backfill from stored times.
+func migratePostgresV9ToV10(ctx context.Context, tx pgx.Tx) error {
+	for _, stmt := range recencySchemaStatements(`TEXT COLLATE "C"`) {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return mapPostgresError("schema migration", "", err)
+		}
+	}
+	exec := func(ctx context.Context, query string, args ...any) error {
+		_, err := tx.Exec(ctx, query, args...)
+		return err
+	}
+	if err := recencyBackfill(ctx, pgxQuerier{q: tx}, exec); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,

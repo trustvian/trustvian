@@ -106,24 +106,42 @@ export function createOverview(deps) {
   let verdicts = { projectID: "", page: null, readAt: 0, loading: false, error: null };
 
   const projectID = () => (selection.selection.project === null ? "" : selection.selection.project.id);
-  const candidateID = () => (selection.selection.candidate === null ? "" : selection.selection.candidate.id);
+  // The run page describes the current scope only when its key matches it;
+  // a page read for a previous scope is never summarised under this one.
+  const runsReady = () => projectID() !== "" && selection.pages.runs.parentID === selection.runsKey;
+  const scopeWords = () => {
+    const scope = selection.runScope;
+    return scope.level === "" ? "" : `${scope.level} ${scope.label}`;
+  };
 
+  // newestRun is the first row of the recency page — newest by creation time
+  // across the whole scope, which the server ordered (task 101).
   function newestRun() {
     const page = selection.pages.runs;
-    if (!page.loaded || page.parentID !== candidateID() || candidateID() === "") {
+    if (!page.loaded || !runsReady() || page.rows.length === 0) {
       return null;
     }
-    const ordered = model.newestFirst(page.rows);
-    return ordered.length === 0 ? null : ordered[0];
+    return page.rows[0];
   }
 
-  // summarised is the run the evidence panel describes: the one the reader
-  // chose, when it belongs to the chosen candidate, and otherwise the newest
-  // on the page. The panel title says which of the two it is.
+  // The run the reader pinned for the summary on this page. Local, not the
+  // context's run: pinning a run from a project-wide list must not narrow
+  // the whole Overview to that run's candidate.
+  let pinnedRunID = "";
+
+  // summarised is the run the evidence panel describes: the one pinned here,
+  // or the context's run when it is in this scope's list, and otherwise the
+  // newest in the scope. The panel title says which.
   function summarised() {
+    const rows = runsReady() ? selection.pages.runs.rows : [];
+    const pinned = rows.find((row) => row.id === pinnedRunID);
+    if (pinned !== undefined) {
+      return { run: pinned, chosen: true };
+    }
     const chosen = selection.selection.run;
-    if (chosen !== null && chosen.row && chosen.row.candidate_id === candidateID()) {
-      return { run: chosen.row, chosen: true };
+    const inScope = chosen === null ? undefined : rows.find((row) => row.id === chosen.id);
+    if (inScope !== undefined) {
+      return { run: inScope, chosen: true };
     }
     const newest = newestRun();
     return newest === null ? null : { run: newest, chosen: false };
@@ -221,10 +239,8 @@ export function createOverview(deps) {
       parts.push(chosen.candidate.label);
     }
     host.append(document.createTextNode(`Scoped to ${parts.join(" › ")}. `));
-    if (chosen.candidate === null) {
-      host.append(document.createTextNode(
-        "Run summaries need a candidate: /v1 lists runs per candidate, and there is no project-wide run collection."));
-    }
+    host.append(document.createTextNode(
+      "Runs are read newest first across the deepest level chosen; narrow with an agent or a candidate."));
   }
 
   function drawLive() {
@@ -262,14 +278,16 @@ export function createOverview(deps) {
     const host = hosts.runs;
     clear(host);
     const page = selection.pages.runs;
-    const ready = candidateID() !== "" && page.parentID === candidateID();
+    const ready = runsReady();
     panelHead(host, "Runs",
       ready && page.loaded
-        ? (page.whole ? "Every run of this candidate" : "The first page of this candidate's runs; more exist")
-        : "Runs of the chosen candidate",
+        ? (page.whole
+          ? `Every run in ${scopeWords()}, newest first`
+          : `The newest ${page.rows.length} in ${scopeWords()}; more exist`)
+        : "Newest first in the chosen scope",
       ready ? page.readAt : undefined);
-    if (candidateID() === "") {
-      host.append(inlineEmpty("Choose a candidate."));
+    if (projectID() === "") {
+      host.append(inlineEmpty("Choose a project."));
       return;
     }
     if (page.loading && !page.loaded) {
@@ -287,7 +305,7 @@ export function createOverview(deps) {
       return;
     }
     if (page.rows.length === 0) {
-      host.append(emptyState("No runs yet", "A run appears here once one is created for this candidate.", "runs"));
+      host.append(emptyState("No runs yet", `A run appears here once one is created in ${scopeWords()}.`, "runs"));
       return;
     }
 
@@ -302,18 +320,26 @@ export function createOverview(deps) {
     })), "bars-status"));
 
     const sides = deps.compareSides();
-    host.append(element("h3", "panel-subtitle", page.whole ? "Newest first" : "Newest first, within this page"));
+    host.append(element("h3", "panel-subtitle", "Newest first"));
     const list = element("ul", "run-list");
-    for (const run of model.newestFirst(page.rows).slice(0, RECENT_RUNS)) {
+    // The server's order: newest by creation time across the whole scope,
+    // ties by identifier. Not re-sorted here.
+    for (const run of page.rows.slice(0, RECENT_RUNS)) {
       const item = element("li", "run-item");
       // The chip chooses the run for this page's summary; Open goes to its
       // workspace. Two different intents, so two controls.
       const summarise = element("button", "ident-chip", run.id);
       summarise.type = "button";
-      const isChosen = selection.selection.run !== null && selection.selection.run.id === run.id;
+      const target = summarised();
+      const isChosen = target !== null && target.chosen && target.run.id === run.id;
       summarise.setAttribute("aria-pressed", isChosen ? "true" : "false");
       summarise.setAttribute("aria-label", `Summarise run ${run.id}`);
-      summarise.addEventListener("click", () => { selection.assume("run", run); });
+      summarise.addEventListener("click", () => {
+        pinnedRunID = run.id;
+        void loadEvidence(run, false);
+        drawRuns();
+        drawEvidence();
+      });
       item.append(summarise);
       item.append(element("span", `run-status status-${String(run.status).replace(/[^a-z]/g, "")}`, run.status || NOT_AVAILABLE));
       item.append(element("span", "run-meta", `${run.environment || ""} · ${shortTime(run.created_at)}`));
@@ -336,6 +362,21 @@ export function createOverview(deps) {
       list.append(item);
     }
     host.append(list);
+    if (page.rows.length > RECENT_RUNS || page.nextAfter !== "") {
+      const more = element("p", "panel-note");
+      more.append(document.createTextNode(page.rows.length > RECENT_RUNS
+        ? `Showing the newest ${RECENT_RUNS} of ${page.rows.length} loaded. `
+        : ""));
+      if (page.nextAfter !== "" && !page.capped) {
+        const next = element("button", "btn-quiet", page.loading ? "Loading…" : "Load next page");
+        next.type = "button";
+        next.disabled = page.loading;
+        next.addEventListener("click", () => { void selection.loadMore("runs"); });
+        more.append(next);
+      }
+      more.append(link("All in Runs", () => nav.openRuns()));
+      host.append(more);
+    }
     const chosenCount = (sides.reference !== null ? 1 : 0) + (sides.candidate !== null ? 1 : 0);
     const foot = element("p", "panel-foot");
     foot.append(document.createTextNode(`${chosenCount} of 2 sides chosen for Compare. `));
@@ -352,20 +393,20 @@ export function createOverview(deps) {
     if (target !== null) {
       scope = target.chosen
         ? `${run.id} · the run you chose`
-        : `${run.id} · the newest by creation time ${selection.pages.runs.whole ? "of this candidate" : "on the runs page"}`;
+        : `${run.id} · the newest by creation time in ${scopeWords()}`;
     }
     panelHead(host, target !== null && target.chosen ? "Chosen run" : "Newest run", scope,
       evidence.runID !== "" ? evidence.readAt : undefined);
     if (run === null) {
       // Still reading the runs is a different answer from having none.
       const runsPage = selection.pages.runs;
-      if (candidateID() !== "" && runsPage.loading && !runsPage.loaded) {
+      if (projectID() !== "" && runsPage.loading && !runsPage.loaded) {
         const box = element("div");
         skeleton(box, 3, 3);
         host.append(box);
         return;
       }
-      host.append(inlineEmpty(candidateID() === "" ? "Choose a candidate." : "No run to summarise yet."));
+      host.append(inlineEmpty(projectID() === "" ? "Choose a project." : "No run to summarise yet."));
       return;
     }
     if (evidence.loading || evidence.runID !== run.id) {
@@ -529,7 +570,14 @@ export function createOverview(deps) {
       return;
     }
     if (what === "project" || what === "agent" || what === "candidate") {
+      // A pin belongs to the scope it was made in.
+      pinnedRunID = "";
       drawScope();
+      // The scope's runs are read on demand (task 101), and this page is
+      // what demands them. ensure() reads nothing it already holds for this
+      // scope, so the notification it raises does not read again.
+      void selection.ensure("runs");
+      void selection.ensure("environments");
     }
     if (what === "project") {
       void loadVerdicts(false);

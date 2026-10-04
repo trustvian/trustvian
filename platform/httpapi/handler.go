@@ -175,6 +175,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /v1/projects", h.listProjects)
 	h.mux.HandleFunc("GET /v1/projects/{project_id}", h.getProject)
 	h.mux.HandleFunc("GET /v1/projects/{project_id}/agents", h.listProjectAgents)
+	h.mux.HandleFunc("GET /v1/projects/{project_id}/evaluation-runs/recent", h.listRecentRuns)
 
 	h.mux.HandleFunc("POST /v1/agents", h.createAgent)
 	h.mux.HandleFunc("GET /v1/agents/{agent_id}", h.getAgent)
@@ -207,6 +208,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/behaviors", h.runBehaviors)
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/observations", h.runObservations)
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/traces", h.runTraces)
+	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/sessions", h.runSessions)
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/ingest-state", h.ingestState)
 	h.mux.HandleFunc("POST /v1/evaluation-runs/{run_id}/records", h.ingestRecord)
 
@@ -225,6 +227,8 @@ func (h *Handler) routes() {
 	// Task 078: persisted scenario executions and recorded-reference reuse.
 	h.mux.HandleFunc("POST /v1/scenario-executions", h.beginScenarioExecution)
 	h.mux.HandleFunc("GET /v1/scenario-executions/{execution_id}", h.getScenarioExecution)
+	h.mux.HandleFunc("GET /v1/scenario-executions/{execution_id}/reference-check", h.referenceCheck)
+	h.mux.HandleFunc("GET /v1/projects/{project_id}/scenario-executions", h.listScenarioExecutions)
 	h.mux.HandleFunc("POST /v1/scenario-executions/{execution_id}/complete", h.completeScenarioExecution)
 	h.mux.HandleFunc("POST /v1/scenario-executions/{execution_id}/fail", h.failScenarioExecution)
 
@@ -417,7 +421,10 @@ func classify(err error) (int, string, string) {
 		errors.Is(err, platform.ErrInvalidRepeatedRequest),
 		errors.Is(err, platform.ErrRepeatedIsolation),
 		// A run submitted to a scenario execution it does not belong to.
-		errors.Is(err, platform.ErrScenarioScope):
+		errors.Is(err, platform.ErrScenarioScope),
+		// A recency read narrowed to an agent or candidate outside the scope
+		// above it (task 101). Refused rather than widened.
+		errors.Is(err, platform.ErrRunScope):
 		return http.StatusBadRequest, codeInvalidRequest, err.Error()
 
 	default:
@@ -1289,6 +1296,51 @@ func (h *Handler) listCandidateRuns(w http.ResponseWriter, r *http.Request) {
 		newEvaluationRunListResponse(string(candidateID), page, nextAfter))
 }
 
+// listRecentRuns serves GET /v1/projects/{project_id}/evaluation-runs/recent
+// (task 101, ADR 0063): runs newest first within the project, optionally
+// narrowed to an agent and a candidate.
+//
+// The one collection on this API not ordered by identifier, which is why it
+// has a path of its own rather than a sort parameter on an existing one: a
+// route's order is part of its contract, and a parameter that changed it would
+// make the same cursor mean two things.
+func (h *Handler) listRecentRuns(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	scope := platform.RunScope{
+		ProjectID:   platform.ProjectID(r.PathValue("project_id")),
+		AgentID:     platform.AgentID(query.Get("agent_id")),
+		CandidateID: platform.CandidateID(query.Get("candidate_id")),
+	}
+	limit, err := listLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	after := query.Get("after")
+
+	page, err := h.controlPlane.RecentEvaluationRuns(r.Context(), scope, after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	nextAfter := ""
+	if len(page) == limit {
+		last := platform.FormatRecencyCursor(platform.RecencyCursor{
+			Key: page[len(page)-1].Key, ID: string(page[len(page)-1].Run.ID()),
+		})
+		probe, err := h.controlPlane.RecentEvaluationRuns(r.Context(), scope, last, 1)
+		if err != nil {
+			h.writeError(w, err)
+			return
+		}
+		if len(probe) > 0 {
+			nextAfter = last
+		}
+	}
+	writeJSON(w, http.StatusOK, newRecentRunListResponse(scope, page, nextAfter))
+}
+
 // runBehaviors serves GET /v1/evaluation-runs/{run_id}/behaviors.
 //
 // Paged exactly as task 065's collections are, reused rather than redesigned:
@@ -1397,25 +1449,56 @@ func (h *Handler) runTraces(w http.ResponseWriter, r *http.Request) {
 	}
 	after := r.URL.Query().Get("after")
 
-	page, err := h.controlPlane.EvaluationRunTraces(r.Context(), runID, after, limit)
+	page, nextAfter, err := correlationPage(r, h.controlPlane.EvaluationRunTraces, runID, after, limit)
 	if err != nil {
 		h.writeError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, newTraceListResponse(string(runID), page, nextAfter))
+}
 
+// runSessions lists the sessions in a run's retained history (task 103): the
+// trace list's contract over the session column, so a session is chosen from
+// a list rather than read off one observation.
+func (h *Handler) runSessions(w http.ResponseWriter, r *http.Request) {
+	runID := platform.EvaluationRunID(r.PathValue("run_id"))
+	limit, err := listLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	after := r.URL.Query().Get("after")
+	page, nextAfter, err := correlationPage(r, h.controlPlane.EvaluationRunSessions, runID, after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newSessionListResponse(string(runID), page, nextAfter))
+}
+
+// correlationPage reads one page of a correlation summary and decides its
+// continuation by the one-row probe every collection uses.
+func correlationPage(
+	r *http.Request,
+	read func(context.Context, platform.EvaluationRunID, string, int) (platform.TracePage, error),
+	runID platform.EvaluationRunID, after string, limit int,
+) (platform.TracePage, string, error) {
+	page, err := read(r.Context(), runID, after, limit)
+	if err != nil {
+		return platform.TracePage{}, "", err
+	}
 	nextAfter := ""
 	if len(page.Traces) == limit {
 		last := platform.FormatObservationCursor(page.Traces[len(page.Traces)-1].FirstSequence)
-		probe, err := h.controlPlane.EvaluationRunTraces(r.Context(), runID, last, 1)
+		probe, err := read(r.Context(), runID, last, 1)
 		if err != nil {
-			h.writeError(w, err)
-			return
+			return platform.TracePage{}, "", err
 		}
 		if len(probe.Traces) > 0 {
 			nextAfter = last
 		}
 	}
-	writeJSON(w, http.StatusOK, newTraceListResponse(string(runID), page, nextAfter))
+	return page, nextAfter, nil
 }
 
 // observationScopeParam reads the correlated view a history read is narrowed to

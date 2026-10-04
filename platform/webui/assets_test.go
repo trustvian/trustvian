@@ -925,6 +925,13 @@ func TestOnlyDesignedCollectionRoutesAreCalled(t *testing.T) {
 		// Task 100: the traces in one run's retained history. Run-scoped and
 		// paged like every other collection; not an unscoped listing.
 		"/v1/evaluation-runs/${segment(runID)}/traces${query}",
+		// Task 101: runs newest first inside an explicit project scope.
+		"/v1/projects/${segment(projectID)}/evaluation-runs/recent${query}",
+		// Task 103: the sessions in one run's retained history.
+		"/v1/evaluation-runs/${segment(runID)}/sessions${query}",
+		// Task 102: a project's recorded scenario executions, and the
+		// server's reference check for one of them.
+		"/v1/projects/${segment(projectID)}/scenario-executions${query}",
 	}
 	for _, route := range allowed {
 		if !strings.Contains(raw, route) {

@@ -35,7 +35,7 @@ import (
 // schema version. They change for different reasons, and coupling them would
 // force a migration on an unrelated release or hide a real one behind an
 // unchanged number.
-const SchemaVersion = 9
+const SchemaVersion = 10
 
 // Table names. Compile-time constants: these are the only identifiers that
 // ever appear in assembled SQL. Every caller-supplied value is a bound
@@ -123,7 +123,7 @@ const (
 // schemaTables is every table this schema owns, and the allowlist a test
 // asserts against so an event, scorecard, or gate-result table cannot appear
 // without something failing.
-var schemaTables = schemaTablesV9
+var schemaTables = schemaTablesV10
 
 // SQLiteStore is the local persistence adapter.
 //
@@ -261,13 +261,21 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 	case SchemaVersion:
 		return s.requireTables(ctx, SchemaVersion, schemaTables)
 
+	case schemaVersionV9:
+		// Task 078's schema, before task 101's recency keys. v10 adds
+		// columns and indexes only, so the table set is the current one.
+		if err := s.requireTables(ctx, schemaVersionV9, schemaTablesV9); err != nil {
+			return err
+		}
+		return s.migrateV9ToV10(ctx)
+
 	case schemaVersionV8:
 		// Issue 131's schema, before task 078's scenario executions: the
 		// last version without them.
 		if err := s.requireTables(ctx, schemaVersionV8, schemaTablesV8); err != nil {
 			return err
 		}
-		return s.migrateV8ToV9(ctx)
+		return s.migrateV8ToCurrent(ctx)
 
 	case schemaVersionV7:
 		// Task 067's tables, before issue 131's promotion columns. v8 adds
@@ -278,7 +286,7 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV7ToV8(ctx); err != nil {
 			return err
 		}
-		return s.migrateV8ToV9(ctx)
+		return s.migrateV8ToCurrent(ctx)
 
 	case schemaVersionV1:
 		// A task 057 database. Its own schema must be complete before it is
@@ -310,7 +318,7 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV7ToV8(ctx); err != nil {
 			return err
 		}
-		return s.migrateV8ToV9(ctx)
+		return s.migrateV8ToCurrent(ctx)
 
 	case schemaVersionV2:
 		if err := s.requireTables(ctx, schemaVersionV2, schemaTablesV2); err != nil {
@@ -334,7 +342,7 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV7ToV8(ctx); err != nil {
 			return err
 		}
-		return s.migrateV8ToV9(ctx)
+		return s.migrateV8ToCurrent(ctx)
 
 	case schemaVersionV3:
 		if err := s.requireTables(ctx, schemaVersionV3, schemaTablesV3); err != nil {
@@ -355,7 +363,7 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV7ToV8(ctx); err != nil {
 			return err
 		}
-		return s.migrateV8ToV9(ctx)
+		return s.migrateV8ToCurrent(ctx)
 
 	case schemaVersionV6:
 		// A task 084 database: v4's tables, v5's indexes and v6's columns, and
@@ -370,7 +378,7 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV7ToV8(ctx); err != nil {
 			return err
 		}
-		return s.migrateV8ToV9(ctx)
+		return s.migrateV8ToCurrent(ctx)
 
 	case schemaVersionV5:
 		// v5 and v6 hold the same tables — schema 6 adds columns, not tables —
@@ -388,7 +396,7 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV7ToV8(ctx); err != nil {
 			return err
 		}
-		return s.migrateV8ToV9(ctx)
+		return s.migrateV8ToCurrent(ctx)
 
 	case schemaVersionV4:
 		// v4 and v5 hold the same tables, so the table check cannot tell them
@@ -410,7 +418,7 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV7ToV8(ctx); err != nil {
 			return err
 		}
-		return s.migrateV8ToV9(ctx)
+		return s.migrateV8ToCurrent(ctx)
 
 	default:
 		// No path from anything else. Newer is refused too: this binary
@@ -807,9 +815,18 @@ func (s *SQLiteStore) migrateV7ToV8Once(ctx context.Context) error {
 // identifiers' shape would assert a scenario, an N and a reference side that
 // nobody recorded. Existing data is untouched. `--reference last` against a
 // migrated database finds nothing until an execution completes on it.
+// migrateV8ToCurrent is every step from v8 forward, so each older chain ends
+// in one call rather than repeating the tail.
+func (s *SQLiteStore) migrateV8ToCurrent(ctx context.Context) error {
+	if err := s.migrateV8ToV9(ctx); err != nil {
+		return err
+	}
+	return s.migrateV9ToV10(ctx)
+}
+
 func (s *SQLiteStore) migrateV8ToV9(ctx context.Context) error {
 	if err := s.migrateV8ToV9Once(ctx); err != nil {
-		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+		if s.migrationRaceRecovered(ctx, schemaVersionV9) {
 			return nil
 		}
 		return err
@@ -829,13 +846,57 @@ func (s *SQLiteStore) migrateV8ToV9Once(ctx context.Context) error {
 			return fmt.Errorf("platform: migrate schema v8 to v9: %w", err)
 		}
 	}
+	// Literal schemaVersionV9: v10's recency keys follow in their own step.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
-		SchemaVersion); err != nil {
+		schemaVersionV9); err != nil {
 		return fmt.Errorf("platform: migrate schema v8 to v9: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("platform: migrate schema v8 to v9: %w", err)
+	}
+	return nil
+}
+
+// migrateV9ToV10 adds task 101's recency keys: two columns, three indexes,
+// and a backfill of every existing run and execution from the time it already
+// stores. Nothing is invented — a key is a re-encoding of a stored timestamp.
+func (s *SQLiteStore) migrateV9ToV10(ctx context.Context) error {
+	if err := s.migrateV9ToV10Once(ctx); err != nil {
+		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateV9ToV10Once(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: migrate schema v9 to v10: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, statement := range recencySchemaStatements("TEXT") {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("platform: migrate schema v9 to v10: %w", err)
+		}
+	}
+	exec := func(ctx context.Context, query string, args ...any) error {
+		_, err := tx.ExecContext(ctx, query, args...)
+		return err
+	}
+	if err := recencyBackfill(ctx, sqlQuerier{tx}, exec); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
+		SchemaVersion); err != nil {
+		return fmt.Errorf("platform: migrate schema v9 to v10: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: migrate schema v9 to v10: %w", err)
 	}
 	return nil
 }
@@ -1065,6 +1126,10 @@ var schemaTablesV8 = schemaTablesV7
 var schemaTablesV9 = append(append([]string{}, schemaTablesV8...),
 	tableScenarioExecutions, tableScenarioRepetitions)
 
+// schemaTablesV10 is what a complete v10 database holds: v9's tables, because
+// v10 added columns and indexes only.
+var schemaTablesV10 = schemaTablesV9
+
 // schemaTablesByVersion maps every schema version this binary can recognize to
 // the tables a complete database at that version holds.
 //
@@ -1089,6 +1154,7 @@ var schemaTablesByVersion = map[int][]string{
 	schemaVersionV6: schemaTablesV6,
 	schemaVersionV7: schemaTablesV7,
 	schemaVersionV8: schemaTablesV8,
+	schemaVersionV9: schemaTablesV9,
 	SchemaVersion:   schemaTables,
 }
 
@@ -1309,7 +1375,10 @@ func schemaStatements() []string {
 		append(promotionChangeGateColumnStatements("TEXT"),
 			// v9: task 078's scenario executions, the statements the
 			// v8 -> v9 migration applies.
-			scenarioExecutionSchemaStatements("TEXT", "INTEGER")...)...)...)
+			append(scenarioExecutionSchemaStatements("TEXT", "INTEGER"),
+				// v10: task 101's recency keys and indexes, the statements
+				// the v9 -> v10 migration applies.
+				recencySchemaStatements("TEXT")...)...)...)...)
 }
 
 // observationSchemaStatements is schema v7's whole addition, written once so
@@ -1966,15 +2035,19 @@ func (s *SQLiteStore) CreateEvaluationRun(ctx context.Context, run EvaluationRun
 	if err := s.requireExists(ctx, tableCandidates, "candidate", string(run.CandidateID())); err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx,
+	key, err := recencyKey(run.CreatedAt())
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO `+tableRuns+`
 		 (id, candidate_id, environment, behavioral_profile, status,
-		  created_at, started_at, finished_at, failure_reason)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  created_at, started_at, finished_at, failure_reason, created_order)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(run.ID()), string(run.CandidateID()), string(run.Environment()),
 		string(run.BehavioralProfile()), string(run.Status()),
 		timeText(run.CreatedAt()), nullTimeText(run.StartedAt()),
-		nullTimeText(run.FinishedAt()), run.FailureReason())
+		nullTimeText(run.FinishedAt()), run.FailureReason(), key)
 	return s.writeError("evaluation run", string(run.ID()), err)
 }
 
@@ -3428,6 +3501,40 @@ func (s *SQLiteStore) FindObservations(
 	}
 	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
 		return ObservationPage{}, fmt.Errorf("platform: read observations: %w", err)
+	}
+	return page, nil
+}
+
+// RecentScenarioExecutions lists a project's executions newest first (task 102).
+func (s *SQLiteStore) RecentScenarioExecutions(
+	ctx context.Context, filter ScenarioExecutionFilter, after RecencyCursor, limit int,
+) ([]RecentScenarioExecution, error) {
+	return queryRecentScenarioExecutions(ctx, sqlQuerier{s.db}, filter, after, limit)
+}
+
+// RecentEvaluationRuns lists runs newest first within one scope (task 101).
+func (s *SQLiteStore) RecentEvaluationRuns(
+	ctx context.Context, scope RunScope, after RecencyCursor, limit int,
+) ([]RecentRun, error) {
+	return queryRecentRuns(ctx, sqlQuerier{s.db}, scope, after, limit)
+}
+
+// RunSessions is RunTraces over the session column (task 103).
+func (s *SQLiteStore) RunSessions(
+	ctx context.Context, id EvaluationRunID, after uint64, limit int,
+) (TracePage, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return TracePage{}, fmt.Errorf("platform: read sessions: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // read-only; nothing to lose on rollback
+
+	page, err := runCorrelationPage(ctx, sqlQuerier{tx}, correlationSession, id, after, limit)
+	if err != nil {
+		return TracePage{}, err
+	}
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return TracePage{}, fmt.Errorf("platform: read sessions: %w", err)
 	}
 	return page, nil
 }
