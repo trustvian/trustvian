@@ -1,6 +1,6 @@
 # 104 — The Runs Destination Reads the Shared Context
 
-Status: Planned
+Status: Implemented
 Milestone: [`v0.11.0`](../../ROADMAP.md#v0110--webui-experience)
 Depends on: [098](098-selection-based-context-workflows.md),
 [101](101-recency-ordered-run-discovery.md)
@@ -33,3 +33,15 @@ in `app.js`. Two sources of truth for one selection is where a desync starts.
 1. One source of truth for project, agent, candidate and run.
 2. Existing Runs behavior — filters, status chips, pagination, the run
    workspace and its details panel — is preserved.
+
+## What shipped
+
+- `app.js`: the Runs lists and table render `selection.pages.*` and choose
+  through `selection.choose`; the mirrored `openedAgent`/`openedCandidate`
+  state, `syncRunsHierarchy` and the hierarchy truncation are gone.
+  `syncFromContext` now only re-scopes Compare and Promotions and redraws.
+- `views/context.js`: preselection goes through `set()`; `ensure()` supersedes
+  a read in flight for another scope, never retries a failed page by itself,
+  and defers run reads while a choice settles.
+- Verified in the browser by counting requests: one run read per settled
+  scope, and none repeated.

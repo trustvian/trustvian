@@ -203,10 +203,21 @@ func TestLoadingIsNotTheSameAnswerAsEmpty(t *testing.T) {
 	// Compare's live in their state modules, because lowering one is an
 	// ownership decision rather than a step in a request.
 	app := stripJSComments(readAsset(t, "app.js"))
-	for _, collection := range []string{"projects", "runs", "agents", "candidates"} {
-		if !strings.Contains(app, "loading."+collection) {
-			t.Errorf("no loading state for %s; its table cannot tell a reader to wait",
-				collection)
+	if !strings.Contains(app, "loading.projects") {
+		t.Error("no loading state for projects; its table cannot tell a reader to wait")
+	}
+	// The Runs destination's three lists read the shared context's pages
+	// (task 104), whose loading flag only the owning read lowers
+	// (views/context.js). Each render must hand that flag to its list.
+	for _, collection := range []struct{ render, page string }{
+		{"function renderAgentsList(", "selection.pages.agents"},
+		{"function renderCandidatesList(", "selection.pages.candidates"},
+		{"function renderRunsView(", "selection.pages.runs"},
+	} {
+		body := wholeFunctionBodyForTest(t, "app.js", collection.render)
+		if !strings.Contains(body, collection.page) || !strings.Contains(body, ".loading") {
+			t.Errorf("%s does not draw %s's loading state; its list cannot tell a reader to wait",
+				collection.render, collection.page)
 		}
 	}
 	for _, surface := range []string{

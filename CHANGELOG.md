@@ -10,38 +10,6 @@ actually depend on.
 
 ### Added
 
-- **Recency-ordered run discovery** (task 101,
-  [ADR 0063](docs/adr/0063-recency-is-a-stored-sort-key-and-a-composite-cursor.md)).
-  `GET /v1/projects/{project_id}/evaluation-runs/recent` lists runs newest
-  first within a project, optionally narrowed by `agent_id` and
-  `candidate_id`; a narrowing outside its parent is `400`, a missing one
-  `404`. Ties break by identifier, and the cursor carries both, so equal
-  creation times neither repeat nor skip. The Overview's runs panel and every
-  run selector read it at the deepest level chosen and say which scope that
-  is; choosing a run from a wider list brings its candidate and agent.
-
-- **Session selection** (task 103). `GET /v1/evaluation-runs/{run_id}/sessions`
-  lists the sessions in a run's retained history — the trace list's query and
-  contract over the session column. Evidence → Run history's session
-  narrowing is now a selector over it, with the retention limit stated and
-  the paste path kept.
-
-- **Scenario execution discovery** (task 102). `GET
-  /v1/projects/{project_id}/scenario-executions` lists recorded executions
-  newest first with agent, environment and scenario filters, and `GET
-  /v1/scenario-executions/{id}/reference-check` runs the control plane's own
-  reference validation, unchanged, and reports usable or the reason. Evidence
-  → Scenarios lists, inspects and checks them and copies the shell-quoted
-  `eval run --reference` command; nothing executes from the browser.
-
-### Changed
-
-- **Platform schema v10**, on SQLite and PostgreSQL: a fixed-width recency key
-  on evaluation runs and scenario executions, backfilled from stored times,
-  and three indexes. Every earlier version migrates forward in place.
-
-### Added
-
 - **WebUI themes: Light, Dark and System** (task 097,
   [ADR 0061](docs/adr/0061-the-theme-preference-is-the-one-value-the-browser-stores.md)).
   A radio group at the foot of the sidebar. A first visit follows the operating
@@ -88,16 +56,56 @@ actually depend on.
   first retained sequence. One bounded query over existing rows on both SQLite
   and PostgreSQL; nothing new is retained.
 
+- **Recency-ordered run discovery** (task 101,
+  [ADR 0063](docs/adr/0063-recency-is-a-stored-sort-key-and-a-composite-cursor.md)).
+  `GET /v1/projects/{project_id}/evaluation-runs/recent` lists runs newest
+  first within a project, optionally narrowed by `agent_id` and
+  `candidate_id`; a narrowing outside its parent is `400`, a missing one
+  `404`. Ties break by identifier, and the cursor carries both, so equal
+  creation times neither repeat nor skip. The Overview's runs panel and every
+  run selector read it at the deepest level chosen and say which scope that
+  is; choosing a run from a wider list brings its candidate and agent.
+
+- **Session selection** (task 103). `GET /v1/evaluation-runs/{run_id}/sessions`
+  lists the sessions in a run's retained history — the trace list's query and
+  contract over the session column. Evidence → Run history's session
+  narrowing is now a selector over it, with the retention limit stated and
+  the paste path kept.
+
+- **Scenario execution discovery** (task 102). `GET
+  /v1/projects/{project_id}/scenario-executions` lists recorded executions
+  newest first with agent, environment and scenario filters, and `GET
+  /v1/scenario-executions/{id}/reference-check` runs the control plane's own
+  reference validation, unchanged, and reports usable or the reason. Evidence
+  → Scenarios lists, inspects and checks them and copies the shell-quoted
+  `eval run --reference` command; nothing executes from the browser.
+
 ### Changed
 
 - **The browser keeps one presentation preference.** ADR 0036 § 10 is amended:
   no platform state is stored in the browser, and the storage guard now allows
   `localStorage` in exactly the two theme files, for one key.
 
+- **Runs reads the shared selection context** (task 104). Its agent and
+  candidate lists and its run table are the context's pages — no mirrored
+  state or manual synchronization — and the table lists runs newest first at
+  the deepest level chosen. A page held for the scope is never read twice, run
+  reads wait for a choice's preselection to settle, and a failed page offers
+  Try again instead of retrying by itself.
+
+- **Platform schema v10**, on SQLite and PostgreSQL: a fixed-width recency key
+  on evaluation runs and scenario executions, backfilled from stored times,
+  and three indexes. Every earlier version migrates forward in place.
+
 ### Fixed
 
 - **Live no longer says "Resynchronizing…" after the stream is live** when no
   run is selected.
+
+- **A preselected agent no longer leaves a project-wide run page behind.**
+  Preselection now drops and abandons the wider scope's pages like any other
+  choice, and a read in flight for a previous scope no longer blocks one for
+  the current scope.
 
 ## v0.10.0 — Developer preview
 

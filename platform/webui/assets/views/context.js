@@ -281,15 +281,18 @@ export function createSelectionContext(deps) {
     }
     const only = unambiguousSingle(page);
     if (only !== null && page.parentID === parentIDOf(PAGE_FOR[childLevel])) {
-      selection[childLevel] = { id: only.id, label: labelFor(childLevel, only), row: only, preselected: true };
-      notify(childLevel);
+      // Through set(), like any choice: the pages listed under the previous
+      // scope — the run page above all — are dropped and their reads
+      // abandoned. Assigning the selection directly left a project-wide run
+      // read in flight to land as though it described the agent.
+      set(childLevel, only, true);
       await descend(childLevel);
     }
   }
 
   // set records a selection and clears what depended on the previous one.
   // Re-choosing the current value is not a change and clears nothing.
-  function set(level, row) {
+  function set(level, row, preselected) {
     const current = selection[level];
     const id = row === null || row === undefined ? "" : row.id;
     if ((current === null && id === "") || (current !== null && current.id === id)) {
@@ -304,9 +307,31 @@ export function createSelectionContext(deps) {
     clearBelow(level);
     selection[level] = id === ""
       ? null
-      : { id, label: labelFor(level, row), row, preselected: false };
+      : { id, label: labelFor(level, row), row, preselected: preselected === true };
     notify(level);
     return true;
+  }
+
+  // While a choice is still preselecting below itself, the run scope is not
+  // settled: a run read now would be for a scope the next preselection
+  // replaces. Such reads are deferred, and made once the choice settles if
+  // nothing has read them meanwhile.
+  let settling = 0;
+  const deferred = new Set();
+
+  async function settle(work) {
+    settling += 1;
+    try {
+      return await work();
+    } finally {
+      settling -= 1;
+      if (settling === 0) {
+        for (const pageName of Array.from(deferred)) {
+          deferred.delete(pageName);
+          void api.ensure(pageName);
+        }
+      }
+    }
   }
 
   const api = {
@@ -329,11 +354,16 @@ export function createSelectionContext(deps) {
         const result = await api.adopt("run", row.id);
         return result.ok;
       }
-      const changed = set(level, row);
-      if (changed && selection[level] !== null) {
-        await descend(level);
-      }
-      return changed;
+      // The whole choice settles, set() included: set() notifies, and a view
+      // that asks for runs from that notification must wait for the
+      // preselection below to finish rather than read a scope it replaces.
+      return settle(async () => {
+        const changed = set(level, row);
+        if (changed && selection[level] !== null) {
+          await descend(level);
+        }
+        return changed;
+      });
     },
 
     // assume records a selection the reader made somewhere that already
@@ -352,7 +382,19 @@ export function createSelectionContext(deps) {
     async ensure(pageName) {
       const page = pages[pageName];
       const parentID = parentIDOf(pageName);
-      if (page.loading || (page.loaded && page.parentID === parentID)) {
+      // Held or in flight *for this scope*. A read in flight for another
+      // scope does not count: this one supersedes it.
+      if ((page.loading || page.loaded) && page.parentID === parentID) {
+        return false;
+      }
+      if (pageName === "runs" && settling > 0) {
+        deferred.add(pageName);
+        return false;
+      }
+      // A page that failed for this parent stays failed until somebody asks
+      // again (refresh): views call ensure() from their subscribers, and an
+      // automatic retry there would turn a persistent error into a loop.
+      if (page.error !== null && page.parentID === parentID) {
         return false;
       }
       return load(pageName, "");

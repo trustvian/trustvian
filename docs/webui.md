@@ -295,12 +295,17 @@ reads one page of its runs. Where more exists, **Load next page** says so and
 costs one request. There is no timer, no polling and no background prefetch
 anywhere in the page.
 
-That bound is also why **Runs** is reached through a visible list of agents and
-a visible list of candidates rather than one "all runs in this project" table.
-`/v1` publishes no such collection, and synthesising one in the browser would
-be exactly the crawl above. Two bounded lists are the honest shape of the data;
-being *visible*, rather than collapsed into menus, is what keeps them from
-being something to traverse.
+**Runs** reads the shared selection context (task 104): its agent list,
+candidate list and run table are the context's pages, so a choice made under
+Overview, Manage or any selector is already chosen here, and the reverse. The
+run table is the recency collection (task 101) at the deepest level chosen —
+a project's runs newest first before an agent is picked, an agent's once one
+is, a candidate's once that is — so it never needs the crawl above. Each list
+is one bounded page per press of **Load next page**; a page already held for
+the scope is not read again, and run reads wait until a choice has finished
+preselecting below itself, so choosing a project with one agent reads that
+agent's runs once and nothing wider. A failed page shows its error with
+**Try again** and is never retried by itself.
 
 The filter boxes on **Projects** and **Runs** narrow the rows already on
 screen. They never ask the server for a page it was not going to fetch, and the

@@ -469,3 +469,143 @@ process.stdout.write(JSON.stringify(out));
 		t.Errorf("the candidate's run page was read %d times after adoption, want exactly 1", got.CandidateScopedReads)
 	}
 }
+
+// TestContextEnsureReadsOnceAndNeverRetriesByItself is task 104's guarantee
+// for views that call ensure() from their subscribers: a page held or in
+// flight for the scope is never read twice, and a failed one is not retried
+// until somebody asks — otherwise a persistent error would loop.
+func TestContextEnsureReadsOnceAndNeverRetriesByItself(t *testing.T) {
+	driver := contextHarness + `
+const api = deferredAPI();
+const ctx = createSelectionContext(api.deps);
+const out = {};
+ctx.assume("project", { id: "p1" });
+
+const reads = () => api.calls.filter((c) => c.name === "runs").length;
+ctx.ensure("runs");
+ctx.ensure("runs");
+await tick();
+out.whileInFlight = reads();
+await api.settle("runs", "p1", { evaluation_runs: [{ id: "r1" }] });
+await tick();
+ctx.ensure("runs");
+await tick();
+out.afterLoaded = reads();
+
+ctx.assume("agent", { id: "a1" });
+ctx.ensure("runs");
+await tick();
+await api.fail("runs", "p1", new Error("down"));
+await tick();
+for (let i = 0; i < 5; i++) { ctx.ensure("runs"); await tick(); }
+out.afterFailure = reads();
+out.error = String(ctx.pages.runs.error);
+ctx.refresh("runs");
+await tick();
+out.afterRefresh = reads();
+process.stdout.write(JSON.stringify(out));
+`
+	var got struct {
+		WhileInFlight, AfterLoaded, AfterFailure, AfterRefresh int
+		Error                                                  string
+	}
+	decodeDriver(t, runDriver(t, driver), &got)
+	if got.WhileInFlight != 1 || got.AfterLoaded != 1 {
+		t.Errorf("ensure read the same page %d times in flight and %d after; want 1 and 1",
+			got.WhileInFlight, got.AfterLoaded)
+	}
+	if got.AfterFailure != 2 || got.Error != "Error: down" {
+		t.Errorf("after a failure ensure read %d pages in total (%s); a failed page must wait for refresh",
+			got.AfterFailure, got.Error)
+	}
+	if got.AfterRefresh != 3 {
+		t.Errorf("refresh did not read again: %d reads", got.AfterRefresh)
+	}
+}
+
+// TestContextPreselectionNeverLeavesAWiderRunPageBehind is the regression for
+// a defect found in the browser: preselecting a project's only agent assigned
+// the selection directly, so a project-wide run read already in flight landed
+// as though it described the agent. Run reads asked for while a choice is
+// still preselecting now wait for it to settle, and are made once, for the
+// settled scope.
+func TestContextPreselectionNeverLeavesAWiderRunPageBehind(t *testing.T) {
+	driver := contextHarness + `
+const api = deferredAPI();
+const ctx = createSelectionContext(api.deps);
+const out = {};
+const choosing = ctx.choose("project", { id: "p1" });
+ctx.ensure("runs");               // asked for mid-choice, e.g. by a view
+await tick();
+out.runReadsWhileSettling = api.calls.filter((c) => c.name === "runs").length;
+await api.settle("agents", "p1", { agents: [{ id: "only" }] });
+await api.settle("environments", "p1", { environments: [] });
+await api.settle("candidates", "only", { candidates: [{ id: "c1" }, { id: "c2" }] });
+await choosing;
+await tick();
+const runCalls = api.calls.filter((c) => c.name === "runs");
+out.runReads = runCalls.length;
+out.scopeOfRead = runCalls.length ? runCalls[0].args[1] : null;
+out.agent = sel(ctx, "agent");
+out.preselected = ctx.selection.agent?.preselected;
+out.key = ctx.runsKey;
+await api.settle("runs", "p1", { evaluation_runs: [{ id: "r-agent" }] });
+await tick();
+out.rows = ids(ctx.pages.runs);
+out.pageKeyMatches = ctx.pages.runs.parentID === ctx.runsKey;
+process.stdout.write(JSON.stringify(out));
+`
+	var got struct {
+		RunReadsWhileSettling int
+		RunReads              int
+		ScopeOfRead           map[string]string
+		Agent                 string
+		Preselected           bool
+		Rows                  []string
+		PageKeyMatches        bool
+	}
+	decodeDriver(t, runDriver(t, driver), &got)
+	if got.RunReadsWhileSettling != 0 {
+		t.Errorf("a run page was read while the choice was still preselecting")
+	}
+	if got.Agent != "only" || !got.Preselected {
+		t.Fatalf("the only agent was not preselected: %+v", got)
+	}
+	if got.RunReads != 1 || got.ScopeOfRead["agentID"] != "only" {
+		t.Errorf("run reads after settling = %d, scope %v; want exactly one, at the agent", got.RunReads, got.ScopeOfRead)
+	}
+	if strings.Join(got.Rows, ",") != "r-agent" || !got.PageKeyMatches {
+		t.Errorf("run page = %v (key matches %v)", got.Rows, got.PageKeyMatches)
+	}
+}
+
+// TestContextChoiceWithASubscriberThatEnsuresReadsEachPageOnce models a view
+// that calls ensure("runs") from its subscriber — which is how Runs and the
+// Overview are written. Choosing a candidate must read its run page once, not
+// once for the subscriber and again for the choice's own preselection read.
+func TestContextChoiceWithASubscriberThatEnsuresReadsEachPageOnce(t *testing.T) {
+	driver := contextHarness + `
+const api = deferredAPI();
+const ctx = createSelectionContext(api.deps);
+ctx.subscribe(() => { void ctx.ensure("runs"); });
+ctx.assume("project", { id: "p1" });
+await api.settle("runs", "p1", { evaluation_runs: [] });
+ctx.assume("agent", { id: "a1" });
+await api.settle("runs", "p1", { evaluation_runs: [] });
+const before = api.calls.filter((c) => c.name === "runs").length;
+const choosing = ctx.choose("candidate", { id: "c1" });
+await api.settle("runs", "p1", { evaluation_runs: [{ id: "r1" }, { id: "r2" }] });
+await choosing;
+for (let i = 0; i < 5; i++) await tick();
+const after = api.calls.filter((c) => c.name === "runs").length;
+process.stdout.write(JSON.stringify({ reads: after - before, rows: ids(ctx.pages.runs) }));
+`
+	var got struct {
+		Reads int
+		Rows  []string
+	}
+	decodeDriver(t, runDriver(t, driver), &got)
+	if got.Reads != 1 || strings.Join(got.Rows, ",") != "r1,r2" {
+		t.Errorf("choosing a candidate read its run page %d times (rows %v); want once", got.Reads, got.Rows)
+	}
+}
