@@ -377,8 +377,8 @@ is the question a developer preview has to answer.
 
 ## v0.11.0 — WebUI Experience
 
-**PLANNED.** Tasks 097–100 are implemented on `main` and not in a release;
-101–104 complete the milestone's discovery and selection workflows. The
+**PLANNED.** Tasks 097–104 are implemented and not in a release: 097–100 on
+`main`, 101–104 pending review and merge. The
 release after the developer preview, and a WebUI-focused one: the engine is
 unchanged, and the platform gains bounded collection routes (tasks 100–103)
 and one schema step for recency ordering (task 101). Everything else is
@@ -481,14 +481,17 @@ destination onto the context once 101 gives it a scope-wide run list.
 
 ### Known limitations after implementation
 
-- Overview's run summaries are per candidate until task 101 decides a
-  recency-ordered run collection.
-- The Runs destination keeps its own bounded browser, kept in step with the
-  shared selection context by hand in `app.js`; deriving it from the context
-  is a follow-up refactor, not a behavior gap.
-- A trace's `next_after` probe and its page are two reads, as on every other
-  collection route, so the cursor and the history state can describe adjacent
-  instants.
+- Every collection's `next_after` probe and its page are two reads, so the
+  cursor and a history state can describe adjacent instants.
+- The project- and agent-scope recency reads join through candidates and
+  agents; their page is bounded but the rows examined grow with the database's
+  newer runs (ADR 0063 names the denormalization that removes this).
+- Run lists are newest first at the deepest level chosen, so with a candidate
+  chosen a promotion's or provenance's other side is picked from Compare or
+  pasted rather than listed.
+- A scenario execution's reference eligibility is checked for its own
+  repetition count, project and environment; a scenario that differs on any
+  of them is refused by the CLI's same validation, and the page says so.
 - Live's authoritative header counts are still read once per selection, as
   before this milestone.
 
