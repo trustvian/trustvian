@@ -287,7 +287,7 @@ trustvian_baseline          one row per {scope, actor_id, environment}
 trustvian_schema_version   exactly one row: the version this DB is at
 ```
 
-`scope` is the learning scope (`v1.0`, [ADR
+`scope` is the learning scope (`v0.10.0`, [ADR
 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md)): an opaque
 namespace letting one actor in one environment hold several independent
 learned histories. `''` is the default scope, and every baseline written
@@ -378,7 +378,7 @@ permission error — actionable, and carrying no credentials.
 
 ### The version 1 → 2 upgrade
 
-Schema version 2 (`v1.0`) added `scope` and made it part of the primary key.
+Schema version 2 (`v0.10.0`) added `scope` and made it part of the primary key.
 A version-1 database upgrades automatically on the next startup, inside the
 same transaction and advisory lock the initial migration already used, so it
 is atomic and safe against a racing process:
