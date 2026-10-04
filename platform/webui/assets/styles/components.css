@@ -555,6 +555,145 @@ legend { color: var(--muted); font-size: var(--t-small); padding: 0 0.3rem; }
 
 
 
+/* ------------------------------- selectors ------------------------------ */
+/* A searchable choice of record (task 098). Names lead; the identifier sits
+   beside each name in mono, because it is a record and is what Copy copies.
+   The popup floats over the content below it rather than pushing it down,
+   so opening a list never moves the button a reader was about to press. */
+
+.selector { display: grid; gap: var(--s-1); max-width: 34rem; min-width: 0; position: relative; }
+.selector-label { color: var(--muted); font-size: var(--t-small); }
+.selector-control { display: flex; min-width: 0; position: relative; }
+.selector-input {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md) 0 0 var(--r-md);
+  color: var(--ink);
+  flex: 1 1 auto;
+  font: inherit;
+  font-size: var(--t-body);
+  min-width: 0;
+  padding: var(--s-2) var(--s-3);
+}
+input.selector-input { min-width: 14rem; }
+.selector-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }
+.selector-input:disabled { background: var(--sunken); color: var(--muted); cursor: not-allowed; }
+.selector-input::placeholder { color: var(--muted); }
+.selector-toggle {
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-left: 0;
+  border-radius: 0 var(--r-md) var(--r-md) 0;
+  color: var(--ink-soft);
+  padding: 0 var(--s-3);
+}
+.selector-toggle:hover { background: var(--line-soft); }
+.is-disabled .selector-toggle { cursor: not-allowed; opacity: 0.6; }
+.selector-hint { margin: 0; }
+
+.selector-current {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--t-small);
+  gap: var(--s-2);
+  min-height: 0;
+}
+.selector-current:empty { display: none; }
+.selector-chosen { display: inline-flex; flex-wrap: wrap; gap: var(--s-2); min-width: 0; }
+.selector-chosen-name { color: var(--ink); font-weight: var(--w-medium); overflow-wrap: anywhere; }
+.selector-chosen-id,
+.selector-option-id {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: var(--t-micro);
+  overflow-wrap: anywhere;
+}
+.selector-current .link-button { font-size: var(--t-micro); padding: 0 var(--s-2); }
+.selector-note { color: var(--muted); font-style: italic; }
+
+.selector-popup {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  box-shadow: var(--lift-2);
+  left: 0;
+  margin-top: 2px;
+  min-width: 100%;
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 20;
+}
+.selector-list {
+  list-style: none;
+  margin: 0;
+  max-height: 18rem;
+  overflow-y: auto;
+  padding: var(--s-1) 0;
+}
+.selector-option {
+  cursor: pointer;
+  display: grid;
+  gap: 0 var(--s-3);
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: var(--s-2) var(--s-3);
+}
+.selector-option-name { color: var(--ink); font-size: var(--t-body); overflow-wrap: anywhere; }
+.selector-option-detail { color: var(--muted); font-size: var(--t-small); grid-column: 1; }
+.selector-option-id { grid-column: 2; grid-row: 1; justify-self: end; }
+.selector-option:hover { background: var(--sunken); }
+.selector-option.is-active { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+.selector-option[aria-selected="true"] .selector-option-name { font-weight: var(--w-semi); }
+.selector-option[aria-selected="true"] .selector-option-name::after { content: " ✓"; color: var(--accent); }
+.selector-foot {
+  align-items: center;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--t-small);
+  gap: var(--s-3);
+  justify-content: space-between;
+  padding: var(--s-2) var(--s-3);
+}
+.selector-more { font-size: var(--t-small); padding: var(--s-1) var(--s-3); }
+
+.selector-paste,
+.paste-path { font-size: var(--t-small); }
+.selector-paste summary,
+.paste-path summary {
+  color: var(--muted);
+  cursor: pointer;
+  padding: var(--s-1) 0;
+  width: fit-content;
+}
+.selector-paste summary:hover,
+.paste-path summary:hover { color: var(--ink); }
+.selector-paste summary:focus-visible,
+.paste-path summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.selector-paste[open],
+.paste-path[open] {
+  border-left: 2px solid var(--line);
+  padding-left: var(--s-3);
+}
+.paste-path .row { margin: var(--s-2) 0; }
+
+/* Selectors side by side with the action that uses them, wrapping on a
+   narrow screen rather than squeezing. */
+.selector-row {
+  align-items: start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+}
+.selector-row > .selector { flex: 1 1 16rem; max-width: 28rem; }
+.selector-row > .selector-actions,
+.selector-row > .field,
+.selector-row > .inline-field { align-self: start; margin-top: 1.25rem; }
+.stack > .selector { max-width: 34rem; }
+.selector-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); }
+
 /* -------------------------------- results -------------------------------- */
 
 .result {
@@ -632,6 +771,9 @@ td { font-family: var(--mono); overflow-wrap: break-word; }
 
 @media (max-width: 34rem) {
   .row label { min-width: 100%; }
+  input.selector-input { min-width: 0; }
+  .selector-row > .selector { flex-basis: 100%; max-width: none; }
+  .selector-row > .selector-actions { margin-top: 0; }
   input[type="text"] { min-width: 0; width: 100%; }
   .stack { max-width: none; }
 }

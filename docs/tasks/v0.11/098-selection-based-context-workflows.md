@@ -1,6 +1,6 @@
 # 098 — Selection-Based Context Workflows
 
-Status: Planned
+Status: Implemented
 Milestone: [`v0.11.0`](../../ROADMAP.md#v0110--webui-experience)
 Depends on: [074](../v1.0/074-zero-input-live-behavior-webui.md),
 [096](../v1.0/096-record-first-admin-console.md), [097](097-theme-preference.md)
@@ -85,3 +85,16 @@ a failure reason — are genuine inputs and stay text.
    when its parent changes.
 4. A selection made in one destination is preselected in the others.
 5. No view shows a previous selection's records under the current selection.
+
+## What shipped
+
+- `views/context.js` (shared context, ownership per page, preselection, paste
+  adoption), `ui/selector.js` (the combobox), `views/selectors.js` (bindings).
+- Every row of the audit with a collection is a selector, except the
+  run-history **behavior** and **trace** identifiers, which arrive with task
+  100's trace investigation (the trace collection is that task's route). The
+  **session** identifier has no collection and stays a paste field, filled from
+  an observation's row.
+- The Runs destination keeps its own bounded browser (ADR 0050) and is kept in
+  step with the context in both directions; rows listed under a previous agent
+  or candidate are dropped, not relabelled.

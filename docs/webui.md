@@ -335,9 +335,12 @@ A stable identifier for the version being evaluated.
 Example: git:43af19c
 ```
 
-There is still no search. Every collection is parent-scoped, ordered by an
-immutable identifier in byte order, and bounded per page; filtering by name is
-a capability with its own design and nothing in this journey needs it.
+Where a form needs an existing record rather than a new name, it offers a
+searchable selector instead of a text box — see
+[Choosing a record without typing it](#choosing-a-record-without-typing-it).
+The search is over the pages a selector has loaded; there is still no
+server-side search. Every collection is parent-scoped, ordered by an immutable
+identifier in byte order, and bounded per page.
 
 You open things by the ID you already know, which is the same ID the CLI
 uses:
@@ -357,6 +360,61 @@ for why the collection capability was added after two deliberate deferrals, and
 why discovery is bounded as a whole workflow rather than only per route, and
 [ADR 0050](adr/0050-the-browser-surface-is-a-record-first-admin-console.md) for
 why what remains is a console of tables rather than a set of forms.
+
+## Choosing a record without typing it
+
+Every field that asks for an existing project, agent, candidate, run or
+environment is a **searchable selector** (task 098): type to narrow, arrow keys
+to move, Enter to choose, Escape to close. Each option leads with the name a
+person recognises — a project's or agent's name, a candidate's label, a run's
+status, environment and creation time — and shows the identifier beside it.
+The chosen record's identifier stays visible with a **Copy ID** control, because
+telling two records with the same name apart is what an identifier is for.
+
+**One context, carried everywhere.** The console holds one project, agent,
+candidate and run. Choosing one in any destination — a row under Runs, a
+selector under Manage, a project under Promotions — is the preselection in all
+the others. A selection belongs to its parent: choosing a different project
+clears the agent, candidate, run and environments; choosing a different agent
+clears the candidate and run. Lists read for the previous parent are dropped,
+reads still in flight for it are abandoned, and a late answer for it is
+discarded — so a selector never shows one agent's candidates under another's
+name.
+
+**Preselected only when unambiguous.** When a whole collection — no
+continuation — holds exactly one record, it is chosen and the selector says
+*Chosen for you: the only one*. The only entry on a page that has more after it
+is never treated as the only one.
+
+**What a selector lists.** One bounded page of the existing collection route,
+read when the selector is first opened, with **Load next page** where more
+exist, up to 512 options. Filtering is over what is loaded, and the footer says
+whether that is the whole collection or one page of it. Nothing is prefetched.
+
+**Pasting is still there.** Each selector's field moved into an **Advanced:
+paste an ID** disclosure, and it is still what the form sends — so an
+identifier from a log, a CI job or the CLI works exactly as before. A pasted
+project, agent, candidate or run in a selector's own paste path is resolved
+upward through its record (a run's candidate, that candidate's agent, that
+agent's project), so the context is always a chain that exists.
+
+Fields that create something keep their text box: a new project, agent,
+candidate, run or promotion identifier, a name, a behavioral profile, candidate
+metadata and a failure reason are inputs, not choices.
+
+| Where | Chosen from |
+|---|---|
+| Live → Watch one run | the candidate's runs |
+| Evidence → Run history | the candidate's runs |
+| Evidence → Provenance | Compare's two sides; the candidate's runs |
+| Promotions → History | projects; each row opens its decision |
+| Promotions → Record one | Compare's two sides; the candidate's runs; the project's environments |
+| Manage → Agents / Candidates / Evaluations | projects / agents / candidates and environments |
+| Manage → Lifecycle | the candidate's runs |
+
+Scenario executions are not reachable from the browser and `/v1` publishes no
+collection of them; recency-ordered run discovery across a project is
+[task 101](tasks/v0.11/101-recency-ordered-run-discovery.md).
 
 ## Watching one run
 

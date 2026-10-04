@@ -149,6 +149,24 @@ export class HierarchyBrowser {
 
   // loadProjects reads one page of the root. This is the whole automatic
   // startup budget, and it is also what the reconnect snapshot performs.
+  // truncate drops one level and everything below it, and abandons reads in
+  // flight for them. Used when the shared selection context moves the agent
+  // or candidate from another destination: the rows held here were listed
+  // under the old one, and showing them under the new name would be the
+  // wrong answer rather than a stale one (task 098).
+  truncate(level) {
+    this.invalidate();
+    const order = ["agents", "candidates", "runs"];
+    const from = order.indexOf(level);
+    if (from < 0) {
+      return;
+    }
+    for (const name of order.slice(from)) {
+      this.levels[name] = emptyLevel();
+      this.parents[name] = "";
+    }
+  }
+
   async loadProjects(after) {
     const generation = this.generation;
     const response = await this.deps.listProjects(after);

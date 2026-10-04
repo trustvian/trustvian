@@ -173,12 +173,23 @@
     <p class="region-note">
       Narrows the subscription to one run and reads its authoritative snapshot.
     </p>
-    <form class="row" id="form-watch">
-      <label for="watch-run-id">Evaluation run</label>
-      <input type="text" id="watch-run-id" name="run_id" autocomplete="off" required>
-      <button type="submit" id="watch-start">Watch</button>
-      <button type="button" class="btn-quiet" id="watch-reconnect" disabled>Reconnect</button>
-      <button type="button" class="btn-quiet" id="watch-stop" disabled>Stop</button>
+    <form class="stack" id="form-watch">
+      <div class="selector-row">
+        <div id="watch-run-select"></div>
+        <div class="selector-actions">
+          <button type="submit" id="watch-start">Watch</button>
+          <button type="button" class="btn-quiet" id="watch-reconnect" disabled>Reconnect</button>
+          <button type="button" class="btn-quiet" id="watch-stop" disabled>Stop</button>
+        </div>
+      </div>
+      <details class="paste-path">
+        <summary>Advanced: paste an ID</summary>
+        <div class="row">
+          <label for="watch-run-id">Evaluation run ID</label>
+          <input type="text" id="watch-run-id" name="run_id" autocomplete="off">
+        </div>
+        <p class="hint">For an identifier from a log, a CI job or the CLI.</p>
+      </details>
     </form>
     <p class="state" id="watch-state" role="status" aria-live="polite">Not watching one run.</p>
     <div class="result" id="live-snapshot">
@@ -452,16 +463,27 @@
       <strong>Runs</strong> fills the run.
     </p>
 
-    <form class="row" id="form-evidence-run">
-      <label for="evidence-run-id">Evaluation run</label>
-      <input type="text" id="evidence-run-id" name="run_id" autocomplete="off" required>
-      <label for="evidence-view">View</label>
-      <select id="evidence-view"></select>
-      <span class="inline-field" id="evidence-identifier-field">
-        <label for="evidence-identifier" id="evidence-identifier-label">Identifier</label>
-        <input type="text" id="evidence-identifier" name="identifier" autocomplete="off">
-      </span>
-      <button type="submit">Load</button>
+    <form class="stack" id="form-evidence-run">
+      <div class="selector-row">
+        <div id="evidence-run-select"></div>
+        <div class="field">
+          <label for="evidence-view">View</label>
+          <select id="evidence-view"></select>
+        </div>
+        <span class="inline-field" id="evidence-identifier-field">
+          <label for="evidence-identifier" id="evidence-identifier-label">Identifier</label>
+          <input type="text" id="evidence-identifier" name="identifier" autocomplete="off">
+        </span>
+        <div class="selector-actions"><button type="submit">Load</button></div>
+      </div>
+      <details class="paste-path">
+        <summary>Advanced: paste a run ID</summary>
+        <div class="row">
+          <label for="evidence-run-id">Evaluation run ID</label>
+          <input type="text" id="evidence-run-id" name="run_id" autocomplete="off">
+        </div>
+        <p class="hint">For an identifier from a log, a CI job or the CLI.</p>
+      </details>
     </form>
     <p class="hint" id="evidence-view-blurb"></p>
     <p class="hint" id="evidence-identifier-hint">
@@ -481,14 +503,24 @@
       both sides shared.
     </p>
 
-    <form class="row" id="form-evidence-provenance">
-      <label for="evidence-provenance-reference">Reference run</label>
-      <input type="text" id="evidence-provenance-reference" autocomplete="off" required>
-      <label for="evidence-provenance-candidate">Candidate run</label>
-      <input type="text" id="evidence-provenance-candidate" autocomplete="off" required>
-      <button type="submit">Load provenance</button>
+    <form class="stack" id="form-evidence-provenance">
+      <div class="selector-row">
+        <div id="evidence-provenance-reference-select"></div>
+        <div id="evidence-provenance-candidate-select"></div>
+        <div class="selector-actions"><button type="submit">Load provenance</button></div>
+      </div>
+      <p class="hint">Filled from the runs chosen under Compare. The lists offer the current candidate's runs.</p>
+      <details class="paste-path">
+        <summary>Advanced: paste run IDs</summary>
+        <div class="row">
+          <label for="evidence-provenance-reference">Reference run ID</label>
+          <input type="text" id="evidence-provenance-reference" autocomplete="off">
+          <label for="evidence-provenance-candidate">Candidate run ID</label>
+          <input type="text" id="evidence-provenance-candidate" autocomplete="off">
+        </div>
+        <p class="hint">For an identifier from a log, a CI job or the CLI.</p>
+      </details>
     </form>
-    <p class="hint">Filled from the runs chosen under Compare.</p>
 
     <div class="result" id="evidence-provenance-result" aria-live="polite">
       <p class="empty">No provenance loaded.</p>
@@ -510,10 +542,18 @@
   </nav>
 
   <div class="promotion-section" id="promotion-history-section" hidden>
-    <form class="row" id="form-promotion-list">
-      <label for="promotion-list-project">Project</label>
-      <input type="text" id="promotion-list-project" autocomplete="off" required>
-      <button type="submit">List promotions</button>
+    <form class="stack" id="form-promotion-list">
+      <div class="selector-row">
+        <div id="promotion-project-select"></div>
+        <div class="selector-actions"><button type="submit">List promotions</button></div>
+      </div>
+      <details class="paste-path">
+        <summary>Advanced: paste a project ID</summary>
+        <div class="row">
+          <label for="promotion-list-project">Project ID</label>
+          <input type="text" id="promotion-list-project" autocomplete="off">
+        </div>
+      </details>
     </form>
     <div class="toolbar">
       <span class="toolbar-note" id="promotion-page-state" aria-live="polite"></span>
@@ -526,11 +566,17 @@
       <button type="button" id="promotion-restart">Start over</button>
     </div>
 
-    <form class="row" id="form-promotion-get">
-      <label for="promotion-open-id">Promotion</label>
-      <input type="text" id="promotion-open-id" autocomplete="off" required>
-      <button type="submit">Open promotion</button>
-    </form>
+    <div class="result" id="promotion-detail" aria-live="polite" hidden></div>
+
+    <details class="paste-path">
+      <summary>Advanced: open a promotion by ID</summary>
+      <form class="row" id="form-promotion-get">
+        <label for="promotion-open-id">Promotion ID</label>
+        <input type="text" id="promotion-open-id" autocomplete="off" required>
+        <button type="submit">Open promotion</button>
+      </form>
+      <p class="hint">Every promotion in the history above opens from its row.</p>
+    </details>
   </div>
 
   <div class="promotion-section" id="promotion-create-section" hidden>
@@ -544,40 +590,36 @@
           overwritten. Example: <code>promo-2026-03-01-a</code>
         </p>
       </div>
-      <div class="field">
-        <label for="promotion-reference-pick">Reference run</label>
-        <select id="promotion-reference-pick">
-          <option value="">Choose a run under Runs</option>
-        </select>
+      <div class="selector-row">
+        <div id="promotion-reference-pick"></div>
+        <div id="promotion-candidate-pick"></div>
       </div>
-      <div class="field">
-        <label for="promotion-reference">Reference run ID</label>
-        <input type="text" id="promotion-reference" name="reference_run_id" autocomplete="off" required>
-        <p class="hint">Filled from the runs chosen under Compare, or from the list above.</p>
-      </div>
-      <div class="field">
-        <label for="promotion-candidate-pick">Candidate run</label>
-        <select id="promotion-candidate-pick">
-          <option value="">Choose a run under Runs</option>
-        </select>
-      </div>
-      <div class="field">
-        <label for="promotion-candidate">Candidate run ID</label>
-        <input type="text" id="promotion-candidate" name="candidate_run_id" autocomplete="off" required>
-        <p class="hint">The run being evaluated.</p>
-      </div>
-      <div class="field">
-        <label for="promotion-project">Project</label>
-        <input type="text" id="promotion-project" autocomplete="off">
-        <p class="hint">Filled from the project chosen in the sidebar. Used to load its environments; it is not part of the decision.</p>
-      </div>
+      <p class="hint">Filled from the runs chosen under Compare. The lists offer the current candidate's runs.</p>
       <div class="field">
         <label for="promotion-target">Target environment</label>
         <select id="promotion-target" name="target_environment" required>
-          <option value="">Load a project to choose a target</option>
+          <option value="">Choose a project to list its environments</option>
         </select>
-        <button type="button" class="btn-quiet" id="promotion-load-environments">Load environments</button>
+        <p class="hint">Every environment of the project. Which are valid targets is the server's answer.</p>
       </div>
+      <details class="paste-path">
+        <summary>Advanced: paste run and project IDs</summary>
+        <div class="field">
+          <label for="promotion-reference">Reference run ID</label>
+          <input type="text" id="promotion-reference" name="reference_run_id" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="promotion-candidate">Candidate run ID</label>
+          <input type="text" id="promotion-candidate" name="candidate_run_id" autocomplete="off">
+          <p class="hint">The run being evaluated.</p>
+        </div>
+        <div class="field">
+          <label for="promotion-project">Project ID</label>
+          <input type="text" id="promotion-project" autocomplete="off">
+          <p class="hint">Used to load its environments; it is not part of the decision.</p>
+        </div>
+        <button type="button" class="btn-quiet" id="promotion-load-environments">Load environments</button>
+      </details>
       <fieldset>
         <legend>Gate limits</legend>
         <div class="limit-row">
@@ -647,11 +689,14 @@
         <input type="text" id="agent-id" name="id" autocomplete="off" required>
         <p class="hint">A stable identifier for the agent across every version of it &mdash; not a version, a commit or a deployment. Example: <code>support-agent</code></p>
       </div>
-      <div class="field">
-        <label for="agent-project-id">Project ID</label>
-        <input type="text" id="agent-project-id" name="project_id" autocomplete="off" required>
-        <p class="hint">Filled from the project chosen in the sidebar.</p>
-      </div>
+      <div id="agent-project-select"></div>
+      <details class="paste-path">
+        <summary>Advanced: paste a project ID</summary>
+        <div class="field">
+          <label for="agent-project-id">Project ID</label>
+          <input type="text" id="agent-project-id" name="project_id" autocomplete="off">
+        </div>
+      </details>
       <div class="field">
         <label for="agent-name">Name</label>
         <input type="text" id="agent-name" name="name" autocomplete="off" required>
@@ -670,11 +715,14 @@
         <input type="text" id="candidate-id" name="id" autocomplete="off" required>
         <p class="hint">A stable identifier for the <em>version</em> being evaluated. Example: <code>git:43af19c</code></p>
       </div>
-      <div class="field">
-        <label for="candidate-agent-id">Agent ID</label>
-        <input type="text" id="candidate-agent-id" name="agent_id" autocomplete="off" required>
-        <p class="hint">Filled from the agent chosen under Runs.</p>
-      </div>
+      <div id="candidate-agent-select"></div>
+      <details class="paste-path">
+        <summary>Advanced: paste an agent ID</summary>
+        <div class="field">
+          <label for="candidate-agent-id">Agent ID</label>
+          <input type="text" id="candidate-agent-id" name="agent_id" autocomplete="off">
+        </div>
+      </details>
       <fieldset>
         <legend>Metadata (all optional)</legend>
         <div class="field">
@@ -716,16 +764,21 @@
         <input type="text" id="run-id" name="id" autocomplete="off" required>
         <p class="hint">A stable identifier you choose for this execution. Example: <code>run-2026-03-01-reference</code></p>
       </div>
-      <div class="field">
-        <label for="run-candidate-id">Candidate ID</label>
-        <input type="text" id="run-candidate-id" name="candidate_id" autocomplete="off" required>
-        <p class="hint">The candidate version this run executes. Filled from the candidate chosen under Runs.</p>
-      </div>
-      <div class="field">
-        <label for="run-environment">Environment</label>
-        <input type="text" id="run-environment" name="environment" autocomplete="off" required>
-        <p class="hint">An environment reference the project already owns. A reference it has not registered is refused.</p>
-      </div>
+      <div id="run-candidate-select"></div>
+      <div id="run-environment-select"></div>
+      <details class="paste-path">
+        <summary>Advanced: paste a candidate ID or environment reference</summary>
+        <div class="field">
+          <label for="run-candidate-id">Candidate ID</label>
+          <input type="text" id="run-candidate-id" name="candidate_id" autocomplete="off">
+          <p class="hint">The candidate version this run executes.</p>
+        </div>
+        <div class="field">
+          <label for="run-environment">Environment</label>
+          <input type="text" id="run-environment" name="environment" autocomplete="off">
+          <p class="hint">An environment reference the project already owns. A reference it has not registered is refused.</p>
+        </div>
+      </details>
       <div class="field">
         <label for="run-profile">Behavioral profile</label>
         <input type="text" id="run-profile" name="behavioral_profile" autocomplete="off" required>
@@ -739,6 +792,7 @@
     </div>
 
     <h3 class="region-title">Lifecycle</h3>
+    <div id="lifecycle-run-select"></div>
     <p class="region-note">
       The server decides whether a transition is legal and rejects the rest.
       This page keeps no second copy of that rule, so every action stays

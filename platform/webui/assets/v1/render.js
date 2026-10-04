@@ -855,6 +855,18 @@ export function renderPromotion(target, promotion) {
 // decision. There is no href, no navigation and no external origin.
 //
 // An absent identifier yields plain text, not a control that would fail.
+// promotionLink renders a promotion identifier as the control that opens it.
+function promotionLink(promotionID, onOpen) {
+  if (typeof promotionID !== "string" || promotionID === "" || typeof onOpen !== "function") {
+    return display(promotionID);
+  }
+  const button = element("button", "ident-chip", promotionID);
+  button.type = "button";
+  button.setAttribute("aria-label", `Open promotion ${promotionID}`);
+  button.addEventListener("click", () => onOpen(promotionID));
+  return button;
+}
+
 function runLink(runID, onOpenRun) {
   if (typeof runID !== "string" || runID === "") {
     return display(runID);
@@ -895,6 +907,12 @@ export function renderPromotionList(target, response, options) {
   const onOpenRun = options && typeof options.onOpenRun === "function"
     ? options.onOpenRun
     : undefined;
+  // Optional, like onOpenRun: the promotion's own identifier opens the
+  // decision through GET /v1/promotions/{id}, so nobody copies it into a box
+  // to read a row they are looking at (task 098).
+  const onOpenPromotion = options && typeof options.onOpenPromotion === "function"
+    ? options.onOpenPromotion
+    : undefined;
   const rows = Array.isArray(response.promotions) ? response.promotions : [];
   if (rows.length === 0) {
     target.append(emptyState("No promotion decisions recorded for this project."));
@@ -904,7 +922,7 @@ export function renderPromotionList(target, response, options) {
   target.append(table(
     ["Promotion", "Outcome", "From", "To", "Gate", "Reference run", "Candidate run", "Decided at"],
     rows.map((row) => [
-      display(row.id),
+      promotionLink(row.id, onOpenPromotion),
       display(row.outcome),
       display(row.source_environment ? row.source_environment.ref : undefined),
       display(row.target_environment ? row.target_environment.ref : undefined),

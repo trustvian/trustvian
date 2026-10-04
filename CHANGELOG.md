@@ -21,6 +21,15 @@ actually depend on.
   storage renders the system scheme and says the choice will not survive a
   reload.
 
+- **WebUI selection-based workflows** (task 098). Every field that asked for an
+  existing project, agent, candidate, run or environment identifier is now a
+  searchable, keyboard-operable selector showing names with copyable
+  identifiers. One shared context carries the choice between destinations;
+  changing a parent clears its dependents and discards late responses for the
+  old one; a whole collection of exactly one is preselected. Each identifier
+  field remains as an "Advanced: paste an ID" path, and a pasted record is
+  resolved up its parent chain. Promotion history rows open their decision.
+
 ### Changed
 
 - **The browser keeps one presentation preference.** ADR 0036 § 10 is amended:
