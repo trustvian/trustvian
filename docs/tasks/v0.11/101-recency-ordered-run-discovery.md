@@ -1,9 +1,9 @@
 # 101 — Recency-Ordered Run Discovery
 
-Status: Planned — needs a decision before it needs code
-Milestone: [`v0.11.0`](../../ROADMAP.md#v0110--webui-experience) records it;
-it is not part of the milestone's build
+Status: Planned
+Milestone: [`v0.11.0`](../../ROADMAP.md#v0110--webui-experience)
 Depends on: [ADR 0041](../../adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md)
+Decision record: [ADR 0063](../../adr/0063-recency-is-a-stored-sort-key-and-a-composite-cursor.md)
 
 ## Problem
 
@@ -29,14 +29,39 @@ needs one of:
 
 Choosing between them is the decision this task exists to record.
 
-## Scope when picked up
+## Decision
 
-An ADR choosing the ordering key, then `GET /v1/projects/{id}/evaluation-runs`
-bounded and paginated like every other collection, then the Overview panel
-that reads it.
+The first option: a fixed-width creation key stored beside each run, added
+by schema v10 on both backends and backfilled from `created_at`. See ADR 0063.
+Scenario executions gain the same kind of key for their start time in the
+same migration (task 102 reads it).
+
+## Scope
+
+- Schema v10: `platform_evaluation_runs.created_order`, a 20-digit zero-padded
+  UTC Unix-nanosecond key, and indexes for each scope.
+- `GET /v1/projects/{project_id}/evaluation-runs/recent` with optional
+  `agent_id` and `candidate_id` narrowing (a candidate requires its agent),
+  ordered by `(created_order DESC, id DESC)`, keyset cursor
+  `<created_order>.<run id>`, `limit` 1..64, `next_after` exactly when more
+  exist.
+- A narrowing that does not belong to the project — an agent of another
+  project, a candidate of another agent — is refused, never silently widened.
+- Overview's runs panel and every run selector read it, labelled as newest
+  first within the stated scope.
+
+## Tests
+
+- Ordering newest first; equal creation times broken by identifier; the
+  cursor boundary exclusive on both components; a run created mid-traversal
+  does not appear behind the reader's position; invalid and mismatched
+  scopes; a malformed cursor.
+- Migration from v9 backfills every existing run; SQLite and PostgreSQL run
+  the same conformance cases.
 
 ## Acceptance criteria
 
 1. An ADR decides the ordering key and its migration.
 2. The route pages consistently under concurrent creation on both backends.
-3. Overview's "recent runs" spans the project rather than one candidate.
+3. Overview's runs panel can span the project, an agent or a candidate, and
+   says which, newest first, with its pagination and read time.

@@ -377,12 +377,12 @@ is the question a developer preview has to answer.
 
 ## v0.11.0 — WebUI Experience
 
-**PLANNED.** Tasks 097–100 are implemented, pending review and merge, and not in a
-release; task 101 remains planned. The release after the developer preview,
-and a WebUI-only one: the
-platform, the API contract and the engine change by exactly one bounded,
-run-scoped collection route (task 100). Everything else is presentation over
-data `/v1` already serves.
+**PLANNED.** Tasks 097–100 are implemented on `main` and not in a release;
+101–104 complete the milestone's discovery and selection workflows. The
+release after the developer preview, and a WebUI-focused one: the engine is
+unchanged, and the platform gains bounded collection routes (tasks 100–103)
+and one schema step for recency ordering (task 101). Everything else is
+presentation over data `/v1` serves.
 
 The preview proved a developer can watch an agent and gate a candidate without
 typing an identifier at the front door. What it left is the *investigation*
@@ -418,12 +418,15 @@ follow the evidence — without typing an identifier at any step
 | 098 | **Implemented** | [Selection-based context workflows](tasks/v0.11/098-selection-based-context-workflows.md) |
 | 099 | **Implemented** | [Overview dashboard](tasks/v0.11/099-overview-dashboard.md) |
 | 100 | **Implemented** | [Trace investigation over retained evidence](tasks/v0.11/100-trace-investigation.md) |
-| 101 | Planned — not part of this build | [Recency-ordered run discovery](tasks/v0.11/101-recency-ordered-run-discovery.md) |
+| 101 | Planned | [Recency-ordered run discovery](tasks/v0.11/101-recency-ordered-run-discovery.md) |
+| 102 | Planned | [Scenario execution discovery and reference selection](tasks/v0.11/102-scenario-execution-discovery.md) |
+| 103 | Planned | [Session selection over retained observations](tasks/v0.11/103-session-selection.md) |
+| 104 | Planned | [The Runs destination reads the shared context](tasks/v0.11/104-runs-destination-from-shared-context.md) |
 
-**Build order 097 → 098 → 099 → 100.** Every later surface is drawn with 097's
-tokens and reads 098's context. 101 records the one capability the Overview
-needs and `/v1` does not have; it needs an ordering decision before it needs
-code, and the milestone ships without it.
+**Build order 097 → 098 → 099 → 100, then 101 → 103 → 102 → 104.** Every
+later surface is drawn with 097's tokens and reads 098's context. 101's schema
+v10 key is what 102's execution ordering also uses, and 104 moves the Runs
+destination onto the context once 101 gives it a scope-wide run list.
 
 ### Dependencies and missing capabilities
 
@@ -433,9 +436,10 @@ code, and the milestone ships without it.
 - **Added by this milestone:** `GET /v1/evaluation-runs/{run_id}/traces` — the
   distinct trace identifiers in a run's retained history. Without it a trace is
   reachable only by an identifier read off one observation (task 100).
-- **Missing, and not added:** a project-wide recency-ordered run collection
-  (101) and any scenario-execution collection. The Overview is scoped to one
-  candidate's runs and says so.
+- **Planned to close the gap:** a recency-ordered run collection at project,
+  agent or candidate scope with schema v10's sort key (101), a scenario
+  execution collection and a reference check over the existing validation
+  (102), and a run's session list (103).
 
 ### Exit criterion
 
