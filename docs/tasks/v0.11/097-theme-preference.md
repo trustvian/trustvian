@@ -1,6 +1,6 @@
 # 097 — Theme Preference: Light, Dark and System
 
-Status: Planned
+Status: Implemented
 Milestone: [`v0.11.0`](../../ROADMAP.md#v0110--webui-experience)
 Depends on: [096](../v1.0/096-record-first-admin-console.md) (the token sheet
 this extends)

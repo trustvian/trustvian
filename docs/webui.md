@@ -732,8 +732,11 @@ What the browser side adds:
   without someone deciding to show it. Prompts, completions, tool arguments,
   event attributes, policy reasons and raw decision records are absent from the
   realtime contract and are not displayed.
-- **Nothing is stored in the browser.** No `localStorage`, `sessionStorage`,
-  `IndexedDB` or cookies.
+- **No platform state is stored in the browser.** No identifier, record, page
+  or cursor goes into `localStorage`, `sessionStorage`, `IndexedDB` or a
+  cookie. The one exception is the colour-scheme choice: one `localStorage`
+  key, `trustvian.theme`, holding `light` or `dark` and nothing else
+  ([ADR 0061](adr/0061-the-theme-preference-is-the-one-value-the-browser-stores.md)).
 
 CSP is browser hardening. It is not authentication, and it does not make the
 runtime safe to expose.
@@ -763,6 +766,26 @@ other sheet fails a test. That is what keeps light and dark from drifting
 apart, and it is why the accent is blue: green, amber and red carry verdict
 and risk, violet carries "new", and an accent sharing any of those hues would
 make *selected* read as *severe*.
+
+### Themes
+
+Light, Dark and System sit at the foot of the sidebar as one radio group, so
+arrow keys move the choice and a screen reader announces it. A first visit
+follows the operating system. An explicit choice is remembered; choosing
+System forgets it, and the page then follows the operating system again —
+including when it changes while the page is open. The note under the switcher
+says which scheme System currently means, and says so when the browser is not
+keeping the choice.
+
+A remembered Dark never flashes light: `core/theme-boot.js` is a classic
+script in `<head>`, ahead of the stylesheets, that applies the stored choice
+before the first paint. It is external, so the CSP is unchanged.
+
+The dark palette is declared twice in `tokens.css` — for an explicit choice
+(`data-theme="dark"`) and for a dark system with no choice — and a test keeps
+the two bodies identical. Each scheme declares `color-scheme`, so native
+controls and scrollbars follow it. Body text meets WCAG AA (4.5:1) on every
+surface it sits on, in both.
 
 There is no web font. `font-src 'none'` is an honest policy only because
 nothing asks for one, so the type system's distinction is prose versus

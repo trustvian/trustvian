@@ -772,6 +772,19 @@ func TestGenerationTokenGuardsEveryAsyncContinuation(t *testing.T) {
 	}
 }
 
+// themeStorageFiles are the only assets that may reach localStorage, and only
+// for the reader's colour-scheme choice (task 097, ADR 0061). Everything else
+// the console knows comes from /v1 and is forgotten on reload.
+var themeStorageFiles = map[string]bool{
+	"core/theme.js":      true,
+	"core/theme-boot.js": true,
+}
+
+// storageAllowed reports whether a file may use one storage API.
+func storageAllowed(name, api string) bool {
+	return api == "localStorage" && themeStorageFiles[name]
+}
+
 // TestNoBrowserPersistenceOfPlatformState keeps the database authoritative.
 func TestNoBrowserPersistenceOfPlatformState(t *testing.T) {
 	forbidden := []string{"localStorage", "sessionStorage", "indexedDB", "document.cookie"}
@@ -779,6 +792,9 @@ func TestNoBrowserPersistenceOfPlatformState(t *testing.T) {
 	for name, source := range scriptAssets(t) {
 		stripped := stripJSNoise(source)
 		for _, bad := range forbidden {
+			if storageAllowed(name, bad) {
+				continue
+			}
 			if strings.Contains(stripped, bad) {
 				t.Errorf("%s uses %s; browser state is presentation state only and "+
 					"the control-plane database stays authoritative", name, bad)
@@ -2164,10 +2180,50 @@ func TestLiveStoresNothingInTheBrowser(t *testing.T) {
 			"localStorage", "sessionStorage", "indexedDB", "document.cookie",
 			"caches.open", "navigator.storage",
 		} {
+			if storageAllowed(name, api) {
+				continue
+			}
 			if strings.Contains(stripped, api) {
 				t.Errorf("%s uses %s; the hierarchy comes from /v1, which is what makes "+
 					"browser storage unnecessary", name, api)
 			}
+		}
+	}
+}
+
+// TestThemeStorageHoldsOneKeyAndOnlyTheseValues bounds the one exception.
+//
+// The allowance above is per file; this is what keeps it from growing inside
+// those files. Exactly one key, written by the module and read by both, and
+// no value a reader could mistake for platform state.
+func TestThemeStorageHoldsOneKeyAndOnlyTheseValues(t *testing.T) {
+	module := stripJSComments(readAsset(t, "core/theme.js"))
+	boot := stripJSComments(readAsset(t, "core/theme-boot.js"))
+
+	if !strings.Contains(module, `THEME_STORAGE_KEY = "trustvian.theme"`) {
+		t.Error("core/theme.js does not declare the storage key as trustvian.theme")
+	}
+	if !strings.Contains(boot, `getItem("trustvian.theme")`) {
+		t.Error("core/theme-boot.js does not read the same key the module writes")
+	}
+	// The boot script only reads; a write there would be a second writer.
+	for _, write := range []string{"setItem", "removeItem", "clear("} {
+		if strings.Contains(boot, write) {
+			t.Errorf("core/theme-boot.js calls %s; it applies a stored choice and "+
+				"never records one", write)
+		}
+	}
+	// The module writes through the one constant, never a literal key.
+	for _, call := range regexp.MustCompile(`(setItem|getItem|removeItem)\(([^,)]*)`).
+		FindAllStringSubmatch(module, -1) {
+		if strings.TrimSpace(call[2]) != "THEME_STORAGE_KEY" {
+			t.Errorf("core/theme.js calls %s with %q; the only key is THEME_STORAGE_KEY",
+				call[1], call[2])
+		}
+	}
+	for _, other := range []string{"sessionStorage", "indexedDB", "document.cookie"} {
+		if strings.Contains(module+boot, other) {
+			t.Errorf("the theme files use %s; the exception is localStorage alone", other)
 		}
 	}
 }

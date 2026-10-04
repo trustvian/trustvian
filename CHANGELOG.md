@@ -8,6 +8,30 @@ actually depend on.
 
 ## Unreleased
 
+### Added
+
+- **WebUI themes: Light, Dark and System** (task 097,
+  [ADR 0061](docs/adr/0061-the-theme-preference-is-the-one-value-the-browser-stores.md)).
+  A radio group at the foot of the sidebar. A first visit follows the operating
+  system; an explicit choice is remembered in one `localStorage` key,
+  `trustvian.theme`, and applied before first paint by an external pre-paint
+  script, so a dark choice never flashes light. Choosing System removes the
+  key. Both schemes declare `color-scheme`, share one token sheet whose two
+  dark blocks a test keeps identical, and meet WCAG AA for text. Blocked
+  storage renders the system scheme and says the choice will not survive a
+  reload.
+
+### Changed
+
+- **The browser keeps one presentation preference.** ADR 0036 § 10 is amended:
+  no platform state is stored in the browser, and the storage guard now allows
+  `localStorage` in exactly the two theme files, for one key.
+
+### Fixed
+
+- **Live no longer says "Resynchronizing…" after the stream is live** when no
+  run is selected.
+
 ## v0.10.0 — Developer preview
 
 ### Added

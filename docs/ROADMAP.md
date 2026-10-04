@@ -412,7 +412,7 @@ follow the evidence — without typing an identifier at any step
 
 | Task | Status | Milestone |
 |---|---|---|
-| 097 | Planned | [Theme preference: Light, Dark and System](tasks/v0.11/097-theme-preference.md) |
+| 097 | **Implemented** | [Theme preference: Light, Dark and System](tasks/v0.11/097-theme-preference.md) |
 | 098 | Planned | [Selection-based context workflows](tasks/v0.11/098-selection-based-context-workflows.md) |
 | 099 | Planned | [Overview dashboard](tasks/v0.11/099-overview-dashboard.md) |
 | 100 | Planned | [Trace investigation over retained evidence](tasks/v0.11/100-trace-investigation.md) |

@@ -137,11 +137,69 @@
   overflow-wrap: anywhere;
 }
 .scope-block .link-button {
+  background: transparent;
   border-color: var(--chrome-line);
   color: var(--chrome-muted);
   font-size: var(--t-small);
 }
 .scope-block .link-button:hover { border-color: var(--chrome-faint); color: var(--chrome-ink); }
+
+/* The theme switcher: a segmented native radio group. The radio itself is
+   visually hidden but stays in the tab order, so arrow keys move the choice
+   and the focus ring is drawn on its label. */
+.theme-switch {
+  border: 0;
+  margin: var(--s-4) 0 0;
+  min-width: 0;
+  padding: 0 var(--s-4);
+}
+.theme-legend {
+  color: var(--chrome-faint);
+  font-size: var(--t-micro);
+  margin: 0 0 var(--s-1);
+  padding: 0;
+}
+.theme-options {
+  border: 1px solid var(--chrome-line);
+  border-radius: var(--r-md);
+  display: flex;
+  padding: 2px;
+}
+.theme-option {
+  border-radius: var(--r-sm);
+  color: var(--chrome-muted);
+  cursor: pointer;
+  flex: 1 1 0;
+  font-size: var(--t-small);
+  padding: var(--s-1) var(--s-2);
+  position: relative;
+  text-align: center;
+}
+.theme-option input {
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  overflow: hidden;
+  position: absolute;
+  width: 1px;
+}
+.theme-option:hover { color: var(--chrome-ink); }
+.theme-option:has(input:checked) {
+  background: var(--chrome-active);
+  color: var(--chrome-on);
+  font-weight: var(--w-medium);
+}
+.theme-option:has(input:focus-visible) {
+  outline: 2px solid var(--chrome-accent);
+  outline-offset: 1px;
+}
+.theme-note {
+  color: var(--chrome-faint);
+  font-size: var(--t-micro);
+  margin: var(--s-1) 0 0;
+  min-height: 1em;
+}
+.theme-note:empty { display: none; }
 
 /* ------------------------------- workspace -------------------------------- */
 
@@ -282,6 +340,15 @@
     padding: var(--s-3) var(--s-4);
   }
   .scope-value { margin: 0; }
+  .theme-switch {
+    align-items: center;
+    display: flex;
+    gap: var(--s-3);
+    margin: 0;
+    padding: 0 var(--s-4) var(--s-3);
+  }
+  .theme-legend { float: left; margin: 0; }
+  .theme-options { flex: 1 1 auto; max-width: 16rem; }
   .page-head { position: static; padding: var(--s-4); }
   .workspace { padding: var(--s-4) var(--s-4) var(--s-7); }
   .foot { padding: var(--s-4); }

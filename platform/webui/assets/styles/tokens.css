@@ -26,6 +26,9 @@
  */
 
 :root {
+  /* Native controls and scrollbars follow the scheme the tokens describe. */
+  color-scheme: light;
+
   /* ---- neutral ramp -------------------------------------------------- */
   /* Slightly cool. A warm grey under a blue accent reads as two greys. */
   --n-0:  #ffffff;
@@ -147,8 +150,79 @@
   --head-h: 3.75rem;
 }
 
+/*
+ * The dark scheme, declared twice with identical bodies (task 097).
+ *
+ * Once for an explicit choice — `data-theme="dark"` on the root, set by the
+ * pre-paint script or the switcher — and once for the operating system's
+ * preference when nobody chose Light. CSS has no way to say "this block under
+ * either condition" without a preprocessor this bundle does not have, so the
+ * two copies are kept equal by a test rather than by discipline.
+ */
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --n-0: #17181c;
+  --n-1: #121317;
+  --n-2: #1c1e23;
+  --n-3: #24262c;
+  --n-4: #2d3038;
+  --n-5: #3d414b;
+  --n-6: #70747f;
+  --n-7: #9a9ea8;
+  --n-8: #c8ccd4;
+  --n-9: #ecedf0;
+
+  --bg:        var(--n-1);
+  --panel:     var(--n-0);
+  --sunken:    var(--n-2);
+  --ink:       var(--n-9);
+  --ink-soft:  var(--n-8);
+  --muted:     var(--n-7);
+  --faint:     var(--n-6);
+  --line:      var(--n-4);
+  --line-soft: var(--n-3);
+
+  --accent:      #7fb3e3;
+  --accent-hot:  #9ac6ee;
+  --accent-ink:  #0f1519;
+  --accent-soft: #1b2833;
+  --accent-line: #2f4a63;
+
+  --pass:       #79c496;
+  --pass-soft:  #16251c;
+  --fail:       #ee9b8e;
+  --fail-soft:  #2a1a17;
+  --warn-bg:    #2a2318;
+  --err-bg:     #2c1c19;
+
+  --state-calm: #79c496;
+  --state-note: #d8bf68;
+  --state-warn: #e39d61;
+  --state-stop: #ee9b8e;
+  --state-new:  #bd9ff0;
+
+  --tint-warn: #241d14;
+  --tint-stop: #251815;
+
+  --chrome:        #0d0e11;
+  --chrome-ink:    #e3e4e8;
+  --chrome-muted:  #8b8f99;
+  --chrome-faint:  #666a73;
+  --chrome-line:   #1f2126;
+  --chrome-hover:  #15171b;
+  --chrome-active: #1c1f24;
+  --chrome-accent: #7fb3e3;
+  --chrome-edge:   #000000;
+  --chrome-on:     #ffffff;
+
+  --lift-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --lift-2: 0 10px 30px -10px rgba(0, 0, 0, 0.7), 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
     --n-0: #17181c;
     --n-1: #121317;
     --n-2: #1c1e23;

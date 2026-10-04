@@ -5,9 +5,11 @@
 // because all three belong to the control plane and a second copy in a browser
 // would be a rule that can disagree with the one that matters.
 //
-// It also stores nothing. There is no localStorage, sessionStorage, IndexedDB
-// or cookie: a reload legitimately forgets which IDs were open, and the
-// database stays the only source of truth. The watched run in the URL fragment
+// It also stores nothing about the platform. No identifier, record or page is
+// kept in browser storage: a reload legitimately forgets which IDs were open,
+// and the database stays the only source of truth. The one value the browser
+// keeps is the reader's colour-scheme choice, through core/theme.js and
+// nowhere else (ADR 0061). The watched run in the URL fragment
 // is navigation state, never read back as fact.
 
 import * as api from "./v1/api.js";
@@ -26,6 +28,7 @@ import { createRunState } from "./views/run-state.js";
 import { createProjectScope } from "./views/project-scope.js";
 import { createSurface } from "./core/ownership.js";
 import * as evidence from "./views/evidence.js";
+import * as theme from "./core/theme.js";
 
 const byID = (id) => document.getElementById(id);
 
@@ -57,6 +60,50 @@ function report(target, error) {
     ? "The control plane could not answer. This is not a gate result."
     : error.message);
 }
+
+// ---------------------------------------------------------------------
+// Theme (task 097)
+// ---------------------------------------------------------------------
+//
+// The pre-paint script has already applied a stored choice. This wires the
+// switcher to it and keeps the note beside it honest about two things a
+// reader cannot otherwise see: which scheme System currently resolves to,
+// and whether a choice will survive a reload.
+
+const themeStorage = theme.browserStorage(window);
+const systemDarkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+let themePreference = theme.readThemePreference(themeStorage);
+let themePersisted = themeStorage !== null;
+
+function drawThemeSwitch() {
+  for (const preference of theme.THEME_PREFERENCES) {
+    byID(`theme-${preference}`).checked = preference === themePreference;
+  }
+  const note = byID("theme-note");
+  if (!themePersisted) {
+    note.textContent = "This browser is not keeping the choice; it lasts until reload.";
+  } else if (themePreference === "system") {
+    note.textContent = `Following the system: ${
+      theme.resolveTheme("system", systemDarkQuery.matches) === "dark" ? "dark" : "light"}.`;
+  } else {
+    note.textContent = "";
+  }
+}
+
+for (const preference of theme.THEME_PREFERENCES) {
+  byID(`theme-${preference}`).addEventListener("change", (event) => {
+    if (!event.target.checked) {
+      return;
+    }
+    themePreference = preference;
+    theme.applyThemePreference(document.documentElement, preference);
+    themePersisted = theme.writeThemePreference(themeStorage, preference);
+    drawThemeSwitch();
+  });
+}
+systemDarkQuery.addEventListener("change", drawThemeSwitch);
+theme.applyThemePreference(document.documentElement, themePreference);
+drawThemeSwitch();
 
 // ---------------------------------------------------------------------
 // Navigation
@@ -767,6 +814,11 @@ const liveSession = new RealtimeSession(
         canvasScope.textContent = state === STATE.RECONNECTING
           ? "Disconnected. The graph below is paused and no longer live."
           : "Resynchronizing…";
+      }
+      // Back to the selection's own wording once live again; without this the
+      // canvas kept saying "Resynchronizing…" after the stream had settled.
+      if (state === STATE.LIVE) {
+        drawHeader();
       }
     },
     onRows: () => {

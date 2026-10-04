@@ -1143,8 +1143,12 @@ a second source of truth that disagrees with the database.
   and are not rendered. A fixture asserts the marker values
   `SECRET_PROMPT_DO_NOT_RENDER`, `SECRET_TOOL_ARGUMENT` and
   `SECRET_ADDITIVE_FIELD` are unreachable.
-- **Nothing is stored in the browser.** No `localStorage`, `sessionStorage`,
-  `IndexedDB` or cookies. A reload forgets which IDs were open, and the
+- **No platform state is stored in the browser.** No identifier, record, page
+  or cursor goes into `localStorage`, `sessionStorage`, `IndexedDB` or a
+  cookie. The one exception is the colour-scheme choice: one `localStorage`
+  key, `trustvian.theme`, holding `light` or `dark` and nothing else
+  ([ADR 0061](adr/0061-the-theme-preference-is-the-one-value-the-browser-stores.md)).
+  A reload forgets which IDs were open, and the
   control-plane database stays authoritative. A run ID in the URL fragment is
   navigation state and is never read back as fact.
 - **Realtime stays bounded and non-authoritative**, inheriting task 059's

@@ -5,7 +5,7 @@ Numbering continues the global sequence; 096 was the last task number in use.
 
 | Task | Status |
 |---|---|
-| [097 — Theme preference: Light, Dark and System](097-theme-preference.md) | Planned |
+| [097 — Theme preference: Light, Dark and System](097-theme-preference.md) | Implemented |
 | [098 — Selection-based context workflows](098-selection-based-context-workflows.md) | Planned |
 | [099 — Overview dashboard](099-overview-dashboard.md) | Planned |
 | [100 — Trace investigation over retained evidence](100-trace-investigation.md) | Planned |
