@@ -8,6 +8,8 @@ actually depend on.
 
 ## Unreleased
 
+## v0.11.0 — webui feature
+
 ### Added
 
 - **WebUI themes: Light, Dark and System** (task 097,

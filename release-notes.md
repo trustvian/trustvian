@@ -1,9 +1,9 @@
-# Trustvian v0.10.0 — Developer preview
+# Trustvian v0.11.0 — webui feature
 
 <!-- One paragraph: what this release is for, and who should upgrade. -->
 
 Every change is in
-[CHANGELOG.md](https://github.com/trustvian/trustvian/blob/v0.10.0/CHANGELOG.md#v0100--developer-preview).
+[CHANGELOG.md](https://github.com/trustvian/trustvian/blob/v0.11.0/CHANGELOG.md#v0110--webui-feature).
 
 ## What's new
 
@@ -49,7 +49,7 @@ Every change is in
 ## Verifying
 
 ```bash
-V=v0.10.0
+V=v0.11.0
 A=trustvian_${V}_linux_amd64.tar.gz
 SHA=$(git ls-remote https://github.com/trustvian/trustvian "refs/tags/$V^{}" | cut -f1)
 
@@ -69,4 +69,4 @@ cosign verify "$IMAGE@$DIGEST" \
   --certificate-github-workflow-sha "$SHA"
 ```
 
-What each flag pins: [supply-chain.md](https://github.com/trustvian/trustvian/blob/v0.10.0/docs/supply-chain.md#verifying-a-published-image).
+What each flag pins: [supply-chain.md](https://github.com/trustvian/trustvian/blob/v0.11.0/docs/supply-chain.md#verifying-a-published-image).
