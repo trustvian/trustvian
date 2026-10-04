@@ -8,6 +8,8 @@ actually depend on.
 
 ## Unreleased
 
+## v0.10.0 — Developer preview
+
 ### Added
 
 - **`docs/releasing-with-claude-code.md`: worked examples of releasing by

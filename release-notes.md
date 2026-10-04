@@ -1,81 +1,17 @@
-# Trustvian v0.10.0 — Developer Preview
+# Trustvian v0.10.0 — Developer preview
 
-The first release you can use for the thing Trustvian is for: run an agent you
-already have under Trustvian, watch what it does, and stop a pull request that
-changes its behavior.
+<!-- One paragraph: what this release is for, and who should upgrade. -->
 
-This is a **preview**. The platform described here ships for the first time,
-and its surfaces are not yet covered by a `v1` compatibility promise.
-Everything below is in
-[CHANGELOG.md](https://github.com/trustvian/trustvian/blob/v0.10.0/CHANGELOG.md#v0100--developer-preview),
-grouped by capability.
+Every change is in
+[CHANGELOG.md](https://github.com/trustvian/trustvian/blob/v0.10.0/CHANGELOG.md#v0100--developer-preview).
 
-## The developer journey
+## What's new
 
-The whole path, from this release's archive alone, is in
-[Getting Started § Developer preview](https://github.com/trustvian/trustvian/blob/v0.10.0/docs/getting-started.md#developer-preview).
+<!-- The user-facing changes, in the order a user meets them. -->
 
-1. **Install from the archive.** The macOS and Linux archives now hold three
-   binaries side by side: `trustvian` (the CLI), `trustvian-local` (the local
-   control plane) and `trustvian-collector` (the OTLP receiver with the
-   Trustvian processor). Keep them in one directory: `trustvian` finds the
-   other two next to itself. Verify against `checksums.txt`.
-2. **`trustvian dev -- <command>`** runs your agent unchanged. It starts a
-   control plane and an OTLP receiver, provisions the project, agent, candidate
-   and run from your git repository, and points your agent's existing
-   OpenTelemetry exporter at the receiver. It adds no SDK. It exits with your
-   command's status. Start `trustvian-local` first and pass `--api-url` to keep
-   the control plane, and the WebUI, running between commands.
-3. **The WebUI**, at the printed `Web:` URL, opens on **Live**. It shows every
-   run producing telemetry, with nothing to type. Select one to see the agent,
-   tool and service flow at the fidelity the telemetry carries, with the
-   decision, risk, trust and anomaly computed for each step. From there it
-   compares runs, follows a failed gate check to the observations behind it,
-   and manages projects, environments and promotions.
-4. **A scenario file** names a reference command, a candidate command, how many
-   times to run each (`runs: N`) and the gate's limits. Every field is
-   required; nothing has a default.
-5. **`trustvian eval run --scenario FILE`** runs each side N times, each run
-   under its own learning scope. The control plane counts in how many runs each
-   behavior appeared and gates the difference. Exit codes: `0` PASS, `1` gate
-   FAIL, `2` usage, `3` operational. `--reference last` reuses a recorded
-   reference side. **`--suite DIR --scenario-timeout D`** runs a directory of
-   scenarios with a deadline for each.
-6. **Calibrate `N`, `k` and `j`** before trusting a FAIL from a model-driven
-   agent: run an unchanged candidate against itself and choose limits where it
-   never fails ([guide](https://github.com/trustvian/trustvian/blob/v0.10.0/docs/platform-cli.md#calibrating-n-k-and-j)).
-7. **The two-job GitHub workflow**
-   ([example](https://github.com/trustvian/trustvian/blob/v0.10.0/examples/github-actions/behavioral-gate.yml),
-   [guide](https://github.com/trustvian/trustvian/blob/v0.10.0/docs/ci-github-action.md)).
-   - `trustvian-run` runs the scenario on the pull request's code, read-only.
-     Its exit code is the check.
-   - `trustvian-comment`, in a separate job holding the only write scope and
-     running no pull request code, posts the result as one comment, edited in
-     place on every push.
-   - Both build Trustvian from a commit you pin, rather than downloading a
-     release.
+## What this release does not include
 
-Also new: AI semantic telemetry. GenAI tool spans become behaviors named by
-tool, and Trustvian records which instrumentation layer each behavior came from.
-Each decision gets durable, bounded event history. Gate checks and behavioral
-deltas resolve to the evidence behind them. The platform also adds an
-environment model, recorded promotions and a PostgreSQL backend.
-
-## What this preview does not include
-
-The milestone is not gated on, and does not deliver:
-- multi-node and load validation (069), platform security hardening (070), or
-  platform backup and restore (071) — the local control plane is
-  **unauthenticated and binds loopback only**;
-- sandbox sharing;
-- multi-tenancy, access control, an MCP server surface, ML-based detection, or
-  prompt- and content-level analysis.
-
-Event history (067), the evidence explorer (076) and promotion did land in this
-release. They are not part of what the preview promises.
-
-`trustvian-platform` and `trustvian-processor` remain repository-internal Go
-modules. Only `github.com/trustvian/trustvian` is published.
+<!-- What a reader might expect here and will not find. -->
 
 ## Known limits
 
@@ -112,26 +48,19 @@ modules. Only `github.com/trustvian/trustvian` is published.
 
 ## Verifying
 
-This is the first release built by the dispatched, verify-before-publish
-pipeline: every archive below was already checked on Linux and macOS before
-this page existed. To check it yourself:
-
 ```bash
 V=v0.10.0
 A=trustvian_${V}_linux_amd64.tar.gz
 SHA=$(git ls-remote https://github.com/trustvian/trustvian "refs/tags/$V^{}" | cut -f1)
 
-# Archives: checksums, then SLSA build provenance (new in this release)
 sha256sum -c checksums.txt --ignore-missing
 gh attestation verify "$A" \
   --repo trustvian/trustvian \
   --signer-workflow trustvian/trustvian/.github/workflows/release.yml \
   --source-ref refs/heads/main --source-digest "$SHA"
-tar -xzf "$A" && ./trustvian_${V}_linux_amd64/trustvian version    # trustvian v0.10.0
 
-# Image: keyless Cosign signature by the release run, at the tagged commit
 IMAGE=ghcr.io/trustvian/trustvian-collector
-DIGEST=$(docker buildx imagetools inspect "$IMAGE:$V" --format '{{.Manifest.Digest}}')
+DIGEST=$(crane digest "$IMAGE:$V")
 cosign verify "$IMAGE@$DIGEST" \
   --certificate-identity https://github.com/trustvian/trustvian/.github/workflows/release.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
@@ -140,8 +69,4 @@ cosign verify "$IMAGE@$DIGEST" \
   --certificate-github-workflow-sha "$SHA"
 ```
 
-**The image's signing identity changed.** It is `release.yml@refs/heads/main`,
-triggered by `workflow_dispatch`, rather than `@refs/tags/<version>`, triggered
-by `push`. Verifying `v0.9.0` still uses the old identity. The image also
-carries SBOM and provenance attestations. What each flag pins is in
-[supply-chain.md](https://github.com/trustvian/trustvian/blob/v0.10.0/docs/supply-chain.md#verifying-a-published-image).
+What each flag pins: [supply-chain.md](https://github.com/trustvian/trustvian/blob/v0.10.0/docs/supply-chain.md#verifying-a-published-image).
