@@ -90,11 +90,10 @@ a failure reason — are genuine inputs and stay text.
 
 - `views/context.js` (shared context, ownership per page, preselection, paste
   adoption), `ui/selector.js` (the combobox), `views/selectors.js` (bindings).
-- Every row of the audit with a collection is a selector, except the
-  run-history **behavior** and **trace** identifiers, which arrive with task
-  100's trace investigation (the trace collection is that task's route). The
-  **session** identifier has no collection and stays a paste field, filled from
-  an observation's row.
+- Every row of the audit with a collection is a selector. The run-history
+  **behavior** and **trace** identifiers landed with task 100, whose trace
+  collection the trace selector reads. The **session** identifier has no
+  collection and stays a paste field, filled from an observation's row.
 - The Runs destination keeps its own bounded browser (ADR 0050) and is kept in
   step with the context in both directions; rows listed under a previous agent
   or candidate are dropped, not relabelled.

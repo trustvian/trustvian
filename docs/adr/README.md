@@ -85,6 +85,7 @@ as long as its own decision holds.
 | [0059](0059-releases-are-dispatched-verified-then-published.md) | Releases are dispatched, verified, then published | Accepted; amended by 0060 |
 | [0060](0060-agent-operated-releases-with-environment-approval.md) | Agent-operated releases, approved through a GitHub environment | Accepted |
 | [0061](0061-the-theme-preference-is-the-one-value-the-browser-stores.md) | The theme preference is the one value the browser stores | Accepted |
+| [0062](0062-trace-investigation-is-a-waterfall-over-retained-observations.md) | Trace investigation is a waterfall over retained observations | Accepted |
 
 **0046 is the first record here carried as Proposed.** Its reasoning is
 complete and no maintainer has ratified it, which is exactly what this status

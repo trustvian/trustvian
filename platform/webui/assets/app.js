@@ -32,6 +32,8 @@ import * as theme from "./core/theme.js";
 import { createSelectionContext } from "./views/context.js";
 import { bindSelector } from "./views/selectors.js";
 import { createOverview } from "./views/overview.js";
+import { createTraces } from "./views/traces.js";
+import { createSelector } from "./ui/selector.js";
 
 const byID = (id) => document.getElementById(id);
 
@@ -129,6 +131,7 @@ const PAGE_TITLES = Object.freeze([
   Object.freeze({ view: "view-overview", title: "Overview" }),
   Object.freeze({ view: "view-projects", title: "Projects" }),
   Object.freeze({ view: "view-runs", title: "Evaluation runs" }),
+  Object.freeze({ view: "view-traces", title: "Traces" }),
   Object.freeze({ view: "view-run", title: "Run" }),
   Object.freeze({ view: "view-compare", title: "Compare runs" }),
   Object.freeze({ view: "view-evidence", title: "Evidence" }),
@@ -182,6 +185,7 @@ const navItems = Array.from(document.querySelectorAll(".nav-item"));
 // The Overview controller, created once the selection context exists. Null
 // until then; the two places that reach it before that check.
 let overview = null;
+let traces = null;
 const views = Array.from(document.querySelectorAll(".view"));
 let currentView = "view-live";
 
@@ -189,6 +193,9 @@ let currentView = "view-live";
 function openView(viewID) {
   if (currentView === "view-overview" && viewID !== "view-overview" && overview !== null) {
     overview.leave();
+  }
+  if (currentView === "view-traces" && viewID !== "view-traces" && traces !== null) {
+    traces.leave();
   }
   currentView = viewID;
   const target = byID(viewID);
@@ -1520,6 +1527,11 @@ function renderRunActions() {
   });
   host.append(watch);
 
+  const traceView = render.element("button", "link-button", "Investigate traces");
+  traceView.type = "button";
+  traceView.addEventListener("click", () => openTracesFor(runState.runID, ""));
+  host.append(traceView);
+
   const history = render.element("button", "link-button", "Open in evidence");
   history.type = "button";
   history.addEventListener("click", () => {
@@ -1786,6 +1798,11 @@ function selectObservation(observation) {
       onOpen: (value) => narrowObservations("traceID", value),
     },
     {
+      key: "Trace timeline",
+      value: render.retainedValue(observation, "trace_id"),
+      onOpen: (value) => openTracesFor(runState.runID, value),
+    },
+    {
       key: "Behavior",
       value: render.retainedValue(observation, "fingerprint_id"),
       onOpen: (value) => narrowObservations("fingerprintID", value),
@@ -1919,6 +1936,9 @@ for (const tab of byID("run-tabs").querySelectorAll(".subtab")) {
 function onEnterView(viewID) {
   if (viewID === "view-overview" && overview !== null) {
     overview.enter();
+  }
+  if (viewID === "view-traces" && traces !== null) {
+    traces.enter("");
   }
   if (viewID === "view-projects" && !hierarchy.levels.projects.loaded) {
     void openLevel("projects", () => hierarchy.loadProjects(""));
@@ -2363,6 +2383,7 @@ async function openRunView(runID, viewKey, identifier) {
   evidenceViewSelect.value = viewKey;
   byID("evidence-identifier").value = identifier;
   syncEvidenceViewFields();
+  resetEvidenceIdentifiers();
   openEvidence("evidence-run");
   await evidenceSurface.openRunView(runID, viewKey, identifier);
 }
@@ -3226,7 +3247,7 @@ overview = createOverview({
     },
     useInCompare: (side, run) => { assignSide(side, run); },
     openCompare: () => { openView("view-compare"); onEnterView("view-compare"); },
-    openTraces: (runID) => { void openRunView(runID, "trace", ""); },
+    openTraces: (runID) => { openTracesFor(runID, ""); },
     watchRun: (runID) => {
       byID("watch-run-id").value = runID;
       openView("view-live");
@@ -3241,6 +3262,175 @@ overview = createOverview({
   },
 });
 byID("overview-refresh").addEventListener("click", () => overview.refresh());
+
+
+// Traces (task 100).
+bindSelector(byID("traces-run-select"), selection, {
+  level: "run",
+  label: "Evaluation run",
+  hint: "Runs of the chosen candidate. Paste a run ID to reach any run.",
+  paste: true,
+  onError: reportPaste,
+});
+
+const narrowQuery = window.matchMedia("(max-width: 1180px)");
+traces = createTraces({
+  selection,
+  hosts: {
+    layout: byID("traces-layout"),
+    list: byID("traces-list"),
+    waterfall: byID("traces-waterfall"),
+    panel: byID("traces-detail"),
+    panelTitle: byID("traces-detail-title"),
+    panelBody: byID("traces-detail-body"),
+    panelClose: byID("traces-detail-close"),
+  },
+  runTraces: (runID, after) => api.runTraces(runID, after),
+  runObservations: (runID, scope, after) => api.runObservations(runID, scope, after),
+  isNarrow: () => narrowQuery.matches,
+  nav: {
+    openSession: (runID, sessionID) => { void openRunView(runID, "session", sessionID); },
+    openBehavior: (runID, fingerprintID) => { void openRunView(runID, "behavior", fingerprintID); },
+  },
+});
+
+// openTracesFor opens the Traces destination on one run, and optionally one
+// trace in it. The run becomes the context's run first — adopted with its
+// parents when it is not under the current candidate — so the selector, the
+// list and the waterfall all describe the same run.
+function openTracesFor(runID, traceID) {
+  const current = selection.selection.run;
+  const enter = () => {
+    openView("view-traces");
+    traces.enter(traceID);
+  };
+  if (current !== null && current.id === runID) {
+    enter();
+    return;
+  }
+  void selection.adopt("run", runID).then((result) => {
+    if (!result.ok && result.error) {
+      reportPaste(result.error);
+    }
+    enter();
+  });
+}
+
+
+// Evidence → Run history: the trace or behavior a view narrows to, chosen
+// from the run's own collection rather than typed (task 098, with task 100's
+// trace route). Sessions have no collection; their field stays the paste path
+// and is filled from an observation's row.
+const evidenceIdentifierSurface = createSurface("evidence.identifier");
+let evidenceIdentifier = { key: "", rows: [], nextAfter: "", loading: false, error: null, loaded: false, chosen: null };
+
+function evidenceIdentifierKey() {
+  return `${value("evidence-run-id")}\u0000${evidenceViewSelect.value}`;
+}
+
+function evidenceIdentifierOption(view, row) {
+  if (view === "trace") {
+    return { id: row.trace_id, name: row.trace_id, detail: `${row.observations} action(s) · from #${row.first_sequence}` };
+  }
+  const behavior = row.behavior || {};
+  const name = [behavior.operation_name, behavior.target_name]
+    .filter((part) => typeof part === "string" && part !== "").join(" → ") || row.fingerprint_id;
+  const detail = [behavior.operation_category, `${row.observations} observation(s)`]
+    .filter((part) => typeof part === "string" && part !== "").join(" · ");
+  return { id: row.fingerprint_id, name, detail };
+}
+
+const evidenceIdentifierSelector = createSelector(byID("evidence-identifier-select"), {
+  label: "Choose from the run",
+  kind: "identifier",
+  placeholder: "Search by ID or name",
+  onOpen: () => { void loadEvidenceIdentifiers(""); },
+  onMore: () => { void loadEvidenceIdentifiers(evidenceIdentifier.nextAfter); },
+  onChoose: (option) => {
+    evidenceIdentifier = { ...evidenceIdentifier, chosen: option };
+    byID("evidence-identifier").value = option.id;
+    drawEvidenceIdentifierSelector();
+  },
+});
+
+function drawEvidenceIdentifierSelector() {
+  const view = evidenceViewSelect.value;
+  const runID = value("evidence-run-id");
+  const listed = view === "trace" || view === "behavior";
+  const current = evidenceIdentifier.key === evidenceIdentifierKey();
+  evidenceIdentifierSelector.update({
+    options: current ? evidenceIdentifier.rows.map((row) => evidenceIdentifierOption(view, row)) : [],
+    loading: current && evidenceIdentifier.loading,
+    error: current && evidenceIdentifier.error ? (evidenceIdentifier.error.message || String(evidenceIdentifier.error)) : "",
+    whole: current && evidenceIdentifier.loaded && evidenceIdentifier.nextAfter === "",
+    hasMore: current && evidenceIdentifier.nextAfter !== "",
+    capped: current && evidenceIdentifier.rows.length >= 512,
+    disabled: !listed || runID === "",
+    disabledText: !listed
+      ? "Sessions have no list. Open one from an observation row, or paste its ID."
+      : "Choose a run first.",
+    selected: current ? evidenceIdentifier.chosen : null,
+  });
+}
+
+async function loadEvidenceIdentifiers(after) {
+  const view = evidenceViewSelect.value;
+  const runID = value("evidence-run-id");
+  if (runID === "" || (view !== "trace" && view !== "behavior")) {
+    return;
+  }
+  const key = evidenceIdentifierKey();
+  if (after === "" && evidenceIdentifier.key === key && (evidenceIdentifier.loaded || evidenceIdentifier.loading)) {
+    return;
+  }
+  const ticket = evidenceIdentifierSurface.begin(key);
+  evidenceIdentifier = after === ""
+    ? { key, rows: [], nextAfter: "", loading: true, error: null, loaded: false, chosen: null }
+    : { ...evidenceIdentifier, loading: true, error: null };
+  drawEvidenceIdentifierSelector();
+  try {
+    const response = view === "trace"
+      ? await api.runTraces(runID, after)
+      : await api.runBehaviors(runID, after);
+    if (!evidenceIdentifierSurface.owns(ticket)) {
+      return;
+    }
+    const rows = Array.isArray(view === "trace" ? response.traces : response.behaviors)
+      ? (view === "trace" ? response.traces : response.behaviors)
+      : [];
+    evidenceIdentifier = {
+      ...evidenceIdentifier,
+      rows: evidenceIdentifier.rows.concat(rows),
+      nextAfter: typeof response.next_after === "string" ? response.next_after : "",
+      loading: false,
+      loaded: true,
+    };
+  } catch (error) {
+    if (!evidenceIdentifierSurface.owns(ticket)) {
+      return;
+    }
+    evidenceIdentifier = { ...evidenceIdentifier, loading: false, error };
+  }
+  drawEvidenceIdentifierSelector();
+}
+
+// A different run or view makes the held list describe something else: it is
+// dropped, and its read abandoned, before anything can show it.
+function resetEvidenceIdentifiers() {
+  if (evidenceIdentifier.key !== evidenceIdentifierKey()) {
+    evidenceIdentifierSurface.retarget(evidenceIdentifierKey());
+    evidenceIdentifier = { key: "", rows: [], nextAfter: "", loading: false, error: null, loaded: false, chosen: null };
+  }
+  drawEvidenceIdentifierSelector();
+}
+evidenceViewSelect.addEventListener("change", resetEvidenceIdentifiers);
+byID("evidence-run-id").addEventListener("input", resetEvidenceIdentifiers);
+selection.subscribe((what) => {
+  if (what === "run" || what === "candidate") {
+    resetEvidenceIdentifiers();
+  }
+});
+resetEvidenceIdentifiers();
 
 // The promotion target is still a native select: every environment the
 // project has, from the context's whole collection, with nothing filtered.

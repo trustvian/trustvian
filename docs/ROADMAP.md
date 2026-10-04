@@ -415,7 +415,7 @@ follow the evidence — without typing an identifier at any step
 | 097 | **Implemented** | [Theme preference: Light, Dark and System](tasks/v0.11/097-theme-preference.md) |
 | 098 | **Implemented** | [Selection-based context workflows](tasks/v0.11/098-selection-based-context-workflows.md) |
 | 099 | **Implemented** | [Overview dashboard](tasks/v0.11/099-overview-dashboard.md) |
-| 100 | Planned | [Trace investigation over retained evidence](tasks/v0.11/100-trace-investigation.md) |
+| 100 | **Implemented** | [Trace investigation over retained evidence](tasks/v0.11/100-trace-investigation.md) |
 | 101 | Planned — not part of this build | [Recency-ordered run discovery](tasks/v0.11/101-recency-ordered-run-discovery.md) |
 
 **Build order 097 → 098 → 099 → 100.** Every later surface is drawn with 097's

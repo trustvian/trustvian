@@ -922,6 +922,9 @@ func TestOnlyDesignedCollectionRoutesAreCalled(t *testing.T) {
 		"/v1/projects/${segment(projectID)}/agents${query}",
 		"/v1/agents/${segment(agentID)}/candidates${query}",
 		"/v1/candidates/${segment(candidateID)}/evaluation-runs${query}",
+		// Task 100: the traces in one run's retained history. Run-scoped and
+		// paged like every other collection; not an unscoped listing.
+		"/v1/evaluation-runs/${segment(runID)}/traces${query}",
 	}
 	for _, route := range allowed {
 		if !strings.Contains(raw, route) {

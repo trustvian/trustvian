@@ -1,6 +1,6 @@
 # 100 — Trace Investigation over Retained Evidence
 
-Status: Planned
+Status: Implemented
 Milestone: [`v0.11.0`](../../ROADMAP.md#v0110--webui-experience)
 Depends on: [067](../v1.0/067-event-history-capability-boundary.md),
 [076](../v1.0/076-behavioral-evidence-explorer.md),

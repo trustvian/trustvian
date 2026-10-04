@@ -39,6 +39,23 @@ actually depend on.
   from it. No timer, no polling, no aggregate score, and an absent figure reads
   "not available".
 
+- **Trace investigation in the WebUI** (task 100,
+  [ADR 0062](docs/adr/0062-trace-investigation-is-a-waterfall-over-retained-observations.md)).
+  A new **Traces** destination: a run's traces as a searchable list, one
+  trace's evaluated actions as a waterfall nested by recorded parent span with
+  bars from the producer's timestamp and measured duration, and a details panel
+  that opens on the right without redrawing the list or the waterfall. Keyboard
+  navigation, Escape to close with focus returned, and a drawer on narrow
+  screens. The view states that it is not a complete distributed trace and
+  what is not retained. Reachable from Overview, a run's workspace and an
+  observation's details; Evidence → Run history's trace and behavior
+  identifiers are now chosen from the run's lists.
+- **`GET /v1/evaluation-runs/{run_id}/traces`** (task 100). The distinct trace
+  identifiers in a run's retained history, with retained-observation and
+  error-status counts and the history state, ordered and paged by each trace's
+  first retained sequence. One bounded query over existing rows on both SQLite
+  and PostgreSQL; nothing new is retained.
+
 ### Changed
 
 - **The browser keeps one presentation preference.** ADR 0036 § 10 is amended:

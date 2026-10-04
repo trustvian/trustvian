@@ -62,6 +62,7 @@
     <ul class="nav-list" aria-labelledby="nav-group-investigate">
       <li><button type="button" class="nav-item" id="nav-projects" data-view="view-projects" data-icon="projects">Projects</button></li>
       <li><button type="button" class="nav-item" id="nav-runs" data-view="view-runs" data-icon="runs">Runs</button></li>
+      <li><button type="button" class="nav-item" id="nav-traces" data-view="view-traces" data-icon="trace">Traces</button></li>
       <li><button type="button" class="nav-item" id="nav-compare" data-view="view-compare" data-icon="compare">Compare</button></li>
       <li><button type="button" class="nav-item" id="nav-evidence" data-view="view-evidence" data-icon="evidence">Evidence</button></li>
     </ul>
@@ -365,6 +366,36 @@
   </aside>
 </section>
 
+<!-- ============================ Traces ============================
+     One run's traces, one trace's evaluated actions as a waterfall, and one
+     action's details beside it (task 100). What is retained is stated here
+     rather than implied by the shape of a trace viewer.
+-->
+<section class="view" id="view-traces" data-nav="nav-traces" hidden>
+  <div class="selector-row">
+    <div id="traces-run-select"></div>
+  </div>
+  <p class="region-note">
+    The evaluated actions of each trace: the operations Trustvian made a
+    decision about, nested by their recorded parent span. Spans it did not
+    evaluate, attributes, events, links, service names and content are not
+    retained, so this is not a complete distributed trace. At most 4096
+    actions per run are retained.
+  </p>
+
+  <div class="traces-layout" id="traces-layout">
+    <section class="traces-list" id="traces-list" aria-label="Traces in this run"></section>
+    <section class="traces-waterfall" id="traces-waterfall" aria-label="Trace timeline"></section>
+    <aside class="detail traces-detail" id="traces-detail" aria-labelledby="traces-detail-title" hidden>
+      <div class="detail-head">
+        <h2 class="detail-title" id="traces-detail-title">Action</h2>
+        <button type="button" class="detail-close" id="traces-detail-close" aria-label="Close details">Close</button>
+      </div>
+      <div class="detail-body" id="traces-detail-body"></div>
+    </aside>
+  </div>
+</section>
+
 <!-- ============================ Compare ============================
      Two runs, chosen from a visible table by assigning rows to a side. The
      two chosen runs are then shown in full, side by side, so the reader can
@@ -505,10 +536,13 @@
           <label for="evidence-view">View</label>
           <select id="evidence-view"></select>
         </div>
-        <span class="inline-field" id="evidence-identifier-field">
-          <label for="evidence-identifier" id="evidence-identifier-label">Identifier</label>
-          <input type="text" id="evidence-identifier" name="identifier" autocomplete="off">
-        </span>
+        <div class="evidence-identifier" id="evidence-identifier-field">
+          <div id="evidence-identifier-select"></div>
+          <span class="inline-field">
+            <label for="evidence-identifier" id="evidence-identifier-label">Identifier</label>
+            <input type="text" id="evidence-identifier" name="identifier" autocomplete="off">
+          </span>
+        </div>
         <div class="selector-actions"><button type="submit">Load</button></div>
       </div>
       <details class="paste-path">

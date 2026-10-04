@@ -638,6 +638,15 @@ export const runBehaviors = (runID, after) => {
   return request("GET", `/v1/evaluation-runs/${segment(runID)}/behaviors${query}`);
 };
 
+// runTraces reads one bounded page of the traces in a run's retained history
+// (task 100): each trace identifier with its retained-observation and
+// error-span counts. Ordered by each trace's first retained sequence, which is
+// also the cursor.
+export const runTraces = (runID, after) => {
+  const query = pageQuery(new URLSearchParams(), after, null);
+  return request("GET", `/v1/evaluation-runs/${segment(runID)}/traces${query}`);
+};
+
 // findingParams renders task 085's finding reference into the query string.
 //
 // The reference travels in the URL because that is what makes a resolution

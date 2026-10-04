@@ -56,6 +56,7 @@ one URL and needs no second field.
 | **Overview** | Orient. Live activity, a candidate's runs by status, one run's authoritative evidence, recent gate verdicts and the project's environments — each saying what it covers and when it was read |
 | **Projects** | Choose. A searchable table of what exists; picking a row scopes the whole console and the sidebar says which project that is |
 | **Runs** | Explore. A visible list of the project's agents and their candidates, then the run table itself. Clicking a run opens its workspace |
+| **Traces** | Investigate. A run's traces as a searchable list, one trace's evaluated actions as a waterfall, and one action's details beside it |
 | **Compare** | Measure. Assign two runs from a table as reference and candidate, then read the server's gate, diff and scorecard |
 | **Evidence** | Explain. Follow a gate check or a behavioral delta to the observations behind it, and read one run's retained session, trace, sequence and timeline |
 | **Promotions** | Decide. Record a promotion decision and page the scoped project's history |
@@ -514,6 +515,46 @@ database's.
 Heartbeat traffic keeps an *established* stream alive but does not make a
 connection ready. A connection that never completes the realtime handshake
 fails or reconnects; it does not sit there looking like it is working.
+
+## Investigating a trace
+
+**Traces** lays one run's traces out the way Grafana Tempo and Jaeger do — a
+searchable list on the left, a waterfall in the middle, an action's details on
+the right — over what Trustvian actually retains
+([ADR 0062](adr/0062-trace-investigation-is-a-waterfall-over-retained-observations.md)).
+
+```text
+Overview ─ Investigate traces ─┐
+Run ─ Investigate traces ──────┼─▶ Traces: run ▸ trace list ▸ waterfall ▸ details
+Observation ─ Trace timeline ──┘
+```
+
+**What a row is.** Each row is an *evaluated action*: an observation Trustvian
+made a decision about. Spans it did not evaluate were never retained, nor were
+attributes, events, links, service names or content — so this is the evaluated
+part of a trace, and the page says so above the list and above the waterfall.
+
+**The list** is `GET /v1/evaluation-runs/{run_id}/traces`: every trace
+identifier in the run's retained history, in the order the run first produced
+each, with how many actions carried it and how many recorded an `error` status.
+The filter is over the loaded list; **Load next page** reads more.
+
+**The waterfall** nests rows by the recorded parent span reference and nothing
+else, exactly like the Evidence tree, so a parent the page does not hold reads
+*unresolved* rather than becoming a root. A bar starts at the producer's
+timestamp — span start, for OTLP — relative to the earliest on the page, and is
+as long as the measured duration. A row with no measured duration is a dashed
+marker, never a zero-width bar; a row without a readable timestamp has no bar.
+Producers' clocks can disagree and nothing corrects for it. A trace longer than
+64 actions is paged.
+
+**Details.** Clicking a row, or pressing Enter on it, opens the action beside
+the waterfall: the decision, timing, recorded structure, behavior, scores and
+identifiers, with session and behavior as links into Evidence. Selecting
+redraws nothing, so the chosen trace, the filter and both scroll positions
+stay. Arrow keys, Page Up/Down, Home and End move the selection and the panel
+follows; Escape closes it and returns focus to the row. On a narrow screen the
+panel is a drawer over the waterfall and focus moves into it.
 
 ## Comparing two runs
 
