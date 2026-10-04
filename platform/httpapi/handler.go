@@ -208,6 +208,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/behaviors", h.runBehaviors)
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/observations", h.runObservations)
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/traces", h.runTraces)
+	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/sessions", h.runSessions)
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/ingest-state", h.ingestState)
 	h.mux.HandleFunc("POST /v1/evaluation-runs/{run_id}/records", h.ingestRecord)
 
@@ -1446,25 +1447,56 @@ func (h *Handler) runTraces(w http.ResponseWriter, r *http.Request) {
 	}
 	after := r.URL.Query().Get("after")
 
-	page, err := h.controlPlane.EvaluationRunTraces(r.Context(), runID, after, limit)
+	page, nextAfter, err := correlationPage(r, h.controlPlane.EvaluationRunTraces, runID, after, limit)
 	if err != nil {
 		h.writeError(w, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, newTraceListResponse(string(runID), page, nextAfter))
+}
 
+// runSessions lists the sessions in a run's retained history (task 103): the
+// trace list's contract over the session column, so a session is chosen from
+// a list rather than read off one observation.
+func (h *Handler) runSessions(w http.ResponseWriter, r *http.Request) {
+	runID := platform.EvaluationRunID(r.PathValue("run_id"))
+	limit, err := listLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	after := r.URL.Query().Get("after")
+	page, nextAfter, err := correlationPage(r, h.controlPlane.EvaluationRunSessions, runID, after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, newSessionListResponse(string(runID), page, nextAfter))
+}
+
+// correlationPage reads one page of a correlation summary and decides its
+// continuation by the one-row probe every collection uses.
+func correlationPage(
+	r *http.Request,
+	read func(context.Context, platform.EvaluationRunID, string, int) (platform.TracePage, error),
+	runID platform.EvaluationRunID, after string, limit int,
+) (platform.TracePage, string, error) {
+	page, err := read(r.Context(), runID, after, limit)
+	if err != nil {
+		return platform.TracePage{}, "", err
+	}
 	nextAfter := ""
 	if len(page.Traces) == limit {
 		last := platform.FormatObservationCursor(page.Traces[len(page.Traces)-1].FirstSequence)
-		probe, err := h.controlPlane.EvaluationRunTraces(r.Context(), runID, last, 1)
+		probe, err := read(r.Context(), runID, last, 1)
 		if err != nil {
-			h.writeError(w, err)
-			return
+			return platform.TracePage{}, "", err
 		}
 		if len(probe.Traces) > 0 {
 			nextAfter = last
 		}
 	}
-	writeJSON(w, http.StatusOK, newTraceListResponse(string(runID), page, nextAfter))
+	return page, nextAfter, nil
 }
 
 // observationScopeParam reads the correlated view a history read is narrowed to

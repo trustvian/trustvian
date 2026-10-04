@@ -927,6 +927,8 @@ func TestOnlyDesignedCollectionRoutesAreCalled(t *testing.T) {
 		"/v1/evaluation-runs/${segment(runID)}/traces${query}",
 		// Task 101: runs newest first inside an explicit project scope.
 		"/v1/projects/${segment(projectID)}/evaluation-runs/recent${query}",
+		// Task 103: the sessions in one run's retained history.
+		"/v1/evaluation-runs/${segment(runID)}/sessions${query}",
 	}
 	for _, route := range allowed {
 		if !strings.Contains(raw, route) {

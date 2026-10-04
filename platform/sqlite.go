@@ -3512,6 +3512,26 @@ func (s *SQLiteStore) RecentEvaluationRuns(
 	return queryRecentRuns(ctx, sqlQuerier{s.db}, scope, after, limit)
 }
 
+// RunSessions is RunTraces over the session column (task 103).
+func (s *SQLiteStore) RunSessions(
+	ctx context.Context, id EvaluationRunID, after uint64, limit int,
+) (TracePage, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return TracePage{}, fmt.Errorf("platform: read sessions: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // read-only; nothing to lose on rollback
+
+	page, err := runCorrelationPage(ctx, sqlQuerier{tx}, correlationSession, id, after, limit)
+	if err != nil {
+		return TracePage{}, err
+	}
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return TracePage{}, fmt.Errorf("platform: read sessions: %w", err)
+	}
+	return page, nil
+}
+
 // RunTraces returns one bounded page of the traces in a run's retained
 // history (task 100), under the same read transaction discipline as
 // FindObservations: the history state and the rows describe one instant.

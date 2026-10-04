@@ -654,6 +654,13 @@ export const listRecentRuns = (projectID, narrowing, after) => {
   return request("GET", `/v1/projects/${segment(projectID)}/evaluation-runs/recent${query}`);
 };
 
+// runSessions reads one bounded page of the sessions in a run's retained
+// history (task 103): the trace list's shape over the session column.
+export const runSessions = (runID, after) => {
+  const query = pageQuery(new URLSearchParams(), after, null);
+  return request("GET", `/v1/evaluation-runs/${segment(runID)}/sessions${query}`);
+};
+
 // runTraces reads one bounded page of the traces in a run's retained history
 // (task 100): each trace identifier with its retained-observation and
 // error-span counts. Ordered by each trace's first retained sequence, which is

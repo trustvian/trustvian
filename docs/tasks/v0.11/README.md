@@ -11,7 +11,7 @@ Numbering continues the global sequence; 096 was the last task number in use.
 | [100 — Trace investigation over retained evidence](100-trace-investigation.md) | Implemented |
 | [101 — Recency-ordered run discovery](101-recency-ordered-run-discovery.md) | Implemented |
 | [102 — Scenario execution discovery and reference selection](102-scenario-execution-discovery.md) | Planned |
-| [103 — Session selection over retained observations](103-session-selection.md) | Planned |
+| [103 — Session selection over retained observations](103-session-selection.md) | Implemented |
 | [104 — The Runs destination reads the shared context](104-runs-destination-from-shared-context.md) | Planned |
 
 097–100 are implemented and each records what shipped. 101–104 complete the

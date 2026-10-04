@@ -1,6 +1,6 @@
 # 103 — Session Selection over Retained Observations
 
-Status: Planned
+Status: Implemented
 Milestone: [`v0.11.0`](../../ROADMAP.md#v0110--webui-experience)
 Depends on: [100](100-trace-investigation.md) (the same correlation-summary
 shape)
@@ -30,3 +30,11 @@ no list behind it: the session ID has to be read off an observation row.
 1. A run's sessions are chosen from a list, never typed, with the retention
    limit stated: only sessions carried by retained observations are listed.
 2. "Advanced: paste an ID" remains.
+
+## What shipped
+
+- One query for both correlation summaries (`runCorrelationPage`, over a closed
+  set of two columns), `SessionSummaryStore` in the full contract, and the
+  route with the shared paging helper.
+- The evidence identifier selector lists sessions, traces or behaviors for the
+  chosen run and view, and drops a list read for a previous run or view.

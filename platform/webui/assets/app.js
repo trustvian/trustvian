@@ -3327,10 +3327,11 @@ function openTracesFor(runID, traceID) {
 }
 
 
-// Evidence → Run history: the trace or behavior a view narrows to, chosen
-// from the run's own collection rather than typed (task 098, with task 100's
-// trace route). Sessions have no collection; their field stays the paste path
-// and is filled from an observation's row.
+// Evidence → Run history: the session, trace or behavior a view narrows to,
+// chosen from the run's own collection rather than typed (task 098, with task
+// 100's traces and task 103's sessions). Each list holds only identifiers
+// carried by *retained* observations, and says so; the field below stays the
+// paste path for anything else.
 const evidenceIdentifierSurface = createSurface("evidence.identifier");
 let evidenceIdentifier = { key: "", rows: [], nextAfter: "", loading: false, error: null, loaded: false, chosen: null };
 
@@ -3338,9 +3339,15 @@ function evidenceIdentifierKey() {
   return `${value("evidence-run-id")}\u0000${evidenceViewSelect.value}`;
 }
 
+// The views whose identifier has a collection behind it.
+const LISTED_VIEWS = Object.freeze(["session", "trace", "behavior"]);
+
 function evidenceIdentifierOption(view, row) {
   if (view === "trace") {
     return { id: row.trace_id, name: row.trace_id, detail: `${row.observations} action(s) · from #${row.first_sequence}` };
+  }
+  if (view === "session") {
+    return { id: row.session_id, name: row.session_id, detail: `${row.observations} action(s) · from #${row.first_sequence}` };
   }
   const behavior = row.behavior || {};
   const name = [behavior.operation_name, behavior.target_name]
@@ -3366,7 +3373,7 @@ const evidenceIdentifierSelector = createSelector(byID("evidence-identifier-sele
 function drawEvidenceIdentifierSelector() {
   const view = evidenceViewSelect.value;
   const runID = value("evidence-run-id");
-  const listed = view === "trace" || view === "behavior";
+  const listed = LISTED_VIEWS.includes(view);
   const current = evidenceIdentifier.key === evidenceIdentifierKey();
   evidenceIdentifierSelector.update({
     options: current ? evidenceIdentifier.rows.map((row) => evidenceIdentifierOption(view, row)) : [],
@@ -3376,17 +3383,16 @@ function drawEvidenceIdentifierSelector() {
     hasMore: current && evidenceIdentifier.nextAfter !== "",
     capped: current && evidenceIdentifier.rows.length >= 512,
     disabled: !listed || runID === "",
-    disabledText: !listed
-      ? "Sessions have no list. Open one from an observation row, or paste its ID."
-      : "Choose a run first.",
+    disabledText: !listed ? "This view needs no identifier." : "Choose a run first.",
     selected: current ? evidenceIdentifier.chosen : null,
+    scopeText: listed && runID !== "" ? `Found in run ${runID}'s retained history` : "",
   });
 }
 
 async function loadEvidenceIdentifiers(after) {
   const view = evidenceViewSelect.value;
   const runID = value("evidence-run-id");
-  if (runID === "" || (view !== "trace" && view !== "behavior")) {
+  if (runID === "" || !LISTED_VIEWS.includes(view)) {
     return;
   }
   const key = evidenceIdentifierKey();
@@ -3399,15 +3405,13 @@ async function loadEvidenceIdentifiers(after) {
     : { ...evidenceIdentifier, loading: true, error: null };
   drawEvidenceIdentifierSelector();
   try {
-    const response = view === "trace"
-      ? await api.runTraces(runID, after)
-      : await api.runBehaviors(runID, after);
+    const read = { trace: api.runTraces, session: api.runSessions, behavior: api.runBehaviors }[view];
+    const response = await read(runID, after);
     if (!evidenceIdentifierSurface.owns(ticket)) {
       return;
     }
-    const rows = Array.isArray(view === "trace" ? response.traces : response.behaviors)
-      ? (view === "trace" ? response.traces : response.behaviors)
-      : [];
+    const field = { trace: "traces", session: "sessions", behavior: "behaviors" }[view];
+    const rows = Array.isArray(response[field]) ? response[field] : [];
     evidenceIdentifier = {
       ...evidenceIdentifier,
       rows: evidenceIdentifier.rows.concat(rows),

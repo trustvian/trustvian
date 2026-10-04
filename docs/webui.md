@@ -413,6 +413,13 @@ why what remains is a console of tables rather than a set of forms.
 
 ## Choosing a record without typing it
 
+Evidence → Run history's session, trace and behavior narrowings are chosen
+from the run's own lists — `GET /v1/evaluation-runs/{id}/sessions` (task 103),
+`/traces` (task 100) and `/behaviors`. Each lists only identifiers carried by
+**retained** observations, at most 4096 per run, and the selector's footer
+says it was found in the run's retained history; anything else can still be
+pasted.
+
 Every field that asks for an existing project, agent, candidate, run or
 environment is a **searchable selector** (task 098): type to narrow, arrow keys
 to move, Enter to choose, Escape to close. Each option leads with the name a

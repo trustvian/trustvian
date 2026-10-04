@@ -1163,6 +1163,52 @@ func newTraceListResponse(runID string, page platform.TracePage, nextAfter strin
 	}
 }
 
+// sessionListResponse is one bounded page of the sessions in a run's retained
+// history (task 103). The trace list's shape with the identifier named for
+// what it is.
+type sessionListResponse struct {
+	Version string `json:"version"`
+	RunID   string `json:"run_id"`
+
+	HistoryState  string `json:"history_state"`
+	RetainedCount string `json:"retained_count"`
+	Complete      bool   `json:"complete"`
+
+	Sessions []sessionSummaryDTO `json:"sessions"`
+
+	NextAfter string `json:"next_after,omitempty"`
+}
+
+type sessionSummaryDTO struct {
+	SessionID     string `json:"session_id"`
+	Observations  string `json:"observations"`
+	FirstSequence string `json:"first_sequence"`
+	LastSequence  string `json:"last_sequence"`
+	ErrorSpans    string `json:"error_spans"`
+}
+
+func newSessionListResponse(runID string, page platform.TracePage, nextAfter string) sessionListResponse {
+	sessions := make([]sessionSummaryDTO, 0, len(page.Traces))
+	for _, entry := range page.Traces {
+		sessions = append(sessions, sessionSummaryDTO{
+			SessionID:     entry.TraceID,
+			Observations:  u64(entry.Observations),
+			FirstSequence: u64(entry.FirstSequence),
+			LastSequence:  u64(entry.LastSequence),
+			ErrorSpans:    u64(entry.ErrorSpans),
+		})
+	}
+	return sessionListResponse{
+		Version:       WireVersion,
+		RunID:         runID,
+		HistoryState:  page.History.State().String(),
+		RetainedCount: u64(page.History.RetainedCount()),
+		Complete:      page.History.Complete(),
+		Sessions:      sessions,
+		NextAfter:     nextAfter,
+	}
+}
+
 // ---------------------------------------------------------------------
 // Evidence resolution — task 085
 // ---------------------------------------------------------------------

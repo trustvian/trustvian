@@ -177,3 +177,68 @@ func TestEvaluationRunTracesValidatesItsCursorAndLimit(t *testing.T) {
 		t.Errorf("a run with no ingest listed %d traces", len(page.Traces))
 	}
 }
+
+// conformSessionSummaries is task 103's list on every backend: the same
+// summary over the session column, run-scoped, untraced-session rows excluded,
+// and independent of the trace column on the same rows.
+func conformSessionSummaries(t *testing.T, open func(testing.TB) Store) {
+	store := open(t)
+	ctx := t.Context()
+	run := startedRun(t, store, "run-1")
+
+	plan := []struct {
+		session, trace string
+		status         event.SpanStatus
+	}{
+		{"s-b", "t-1", event.StatusOK}, {"s-a", "t-1", event.StatusError}, {"", "t-2", event.StatusOK},
+		{"s-b", "t-2", event.StatusError}, {"s-a", "", event.StatusOK},
+	}
+	for i, step := range plan {
+		aggregate, snapshot := conformanceEvidence(t, run, i+1)
+		observation := conformanceObservation(t, uint64(i+1))
+		observation.SessionID = step.session
+		observation.TraceID = step.trace
+		if step.trace == "" {
+			observation.SpanID, observation.ParentSpanID = "", ""
+			observation.SpanLineage = event.LineageUnspecified
+		}
+		observation.SpanStatus = step.status
+		if _, err := store.CommitEvaluationIngest(ctx, EvaluationIngestCommit{
+			Aggregate: aggregate, Snapshot: snapshot,
+			Sequence: uint64(i + 1), PreviousNextSequence: uint64(i + 1),
+			RecordDigest: strings.Repeat(fmt.Sprintf("%x", (i+1)%16), 64),
+			Observation:  observation,
+		}); err != nil {
+			t.Fatalf("commit %d: %v", i+1, err)
+		}
+	}
+
+	var got []TraceSummary
+	after := uint64(0)
+	for range 10 {
+		page, err := store.RunSessions(ctx, "run-1", after, 1)
+		if err != nil {
+			t.Fatalf("RunSessions() error = %v", err)
+		}
+		if len(page.Traces) == 0 {
+			break
+		}
+		got = append(got, page.Traces...)
+		after = page.Traces[len(page.Traces)-1].FirstSequence
+	}
+	want := []TraceSummary{
+		{TraceID: "s-b", Observations: 2, FirstSequence: 1, LastSequence: 4, ErrorSpans: 1},
+		{TraceID: "s-a", Observations: 2, FirstSequence: 2, LastSequence: 5, ErrorSpans: 1},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("sessions = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("session %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if _, err := store.RunSessions(ctx, "no-such-run", 0, MaxListPage); !errors.Is(err, ErrStoreNotFound) {
+		t.Errorf("RunSessions() on an unknown run = %v, want ErrStoreNotFound", err)
+	}
+}

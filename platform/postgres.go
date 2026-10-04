@@ -1101,6 +1101,22 @@ func (s *PostgresStore) RecentEvaluationRuns(
 	return queryRecentRuns(ctx, s.querier(), scope, after, limit)
 }
 
+// RunSessions is RunTraces over the session column (task 103).
+func (s *PostgresStore) RunSessions(
+	ctx context.Context, id EvaluationRunID, after uint64, limit int,
+) (TracePage, error) {
+	var page TracePage
+	err := s.withReadSnapshot(ctx, func(tx pgx.Tx) error {
+		var err error
+		page, err = runCorrelationPage(ctx, pgxQuerier{q: tx}, correlationSession, id, after, limit)
+		return err
+	})
+	if err != nil {
+		return TracePage{}, err
+	}
+	return page, nil
+}
+
 // RunTraces returns one bounded page of the traces in a run's retained
 // history (task 100), under the same snapshot as FindObservations.
 func (s *PostgresStore) RunTraces(

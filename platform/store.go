@@ -86,6 +86,10 @@ type Store interface {
 	// reads, in the same snapshot discipline.
 	TraceSummaryStore
 
+	// SessionSummaryStore lists that history's sessions (task 103), by the
+	// same query over the session column.
+	SessionSummaryStore
+
 	// ScenarioExecutionStore persists task 078's scenario executions (schema
 	// v9). Part of the full-backend contract: `--reference` is meaningless on
 	// a backend that cannot record what it would reuse.

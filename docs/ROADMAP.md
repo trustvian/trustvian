@@ -420,7 +420,7 @@ follow the evidence — without typing an identifier at any step
 | 100 | **Implemented** | [Trace investigation over retained evidence](tasks/v0.11/100-trace-investigation.md) |
 | 101 | **Implemented** | [Recency-ordered run discovery](tasks/v0.11/101-recency-ordered-run-discovery.md) |
 | 102 | Planned | [Scenario execution discovery and reference selection](tasks/v0.11/102-scenario-execution-discovery.md) |
-| 103 | Planned | [Session selection over retained observations](tasks/v0.11/103-session-selection.md) |
+| 103 | **Implemented** | [Session selection over retained observations](tasks/v0.11/103-session-selection.md) |
 | 104 | Planned | [The Runs destination reads the shared context](tasks/v0.11/104-runs-destination-from-shared-context.md) |
 
 **Build order 097 → 098 → 099 → 100, then 101 → 103 → 102 → 104.** Every

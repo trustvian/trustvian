@@ -20,6 +20,12 @@ actually depend on.
   run selector read it at the deepest level chosen and say which scope that
   is; choosing a run from a wider list brings its candidate and agent.
 
+- **Session selection** (task 103). `GET /v1/evaluation-runs/{run_id}/sessions`
+  lists the sessions in a run's retained history — the trace list's query and
+  contract over the session column. Evidence → Run history's session
+  narrowing is now a selector over it, with the retention limit stated and
+  the paste path kept.
+
 ### Changed
 
 - **Platform schema v10**, on SQLite and PostgreSQL: a fixed-width recency key
