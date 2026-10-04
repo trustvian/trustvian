@@ -33,9 +33,9 @@ today — item 089, optional quality evaluation, inside
 carries it because it contradicts
 [What Trustvian is not becoming](#what-trustvian-is-not-becoming) as written.
 
-`v0.10.0` — the [developer preview](#v0100--developer-preview) — is NEXT, and
-`v1.0` is the release gate beyond it. `v0.11.0` — the
-[WebUI experience](#v0110--webui-experience) — is PLANNED after the preview. Track B is **partly implemented**: the
+`v0.10.0` — the [developer preview](#v0100--developer-preview) — and `v0.11.0`
+— the [WebUI experience](#v0110--webui-experience) — have SHIPPED, and `v1.0`
+is the release gate beyond them. Track B is **partly implemented**: the
 evaluation foundation, local persistence, the local control-plane API and
 realtime, the developer CLI, the TUI, the WebUI, the PostgreSQL backend, the
 environment model and promotion (tasks 051–066, 073 and 074) exist; 067 and
@@ -46,7 +46,8 @@ and evaluation depth — and implements nothing.
 On `main`, a developer can run an instrumented agent under `trustvian dev`, watch
 it in the WebUI, gate a candidate over repeated scenarios with `trustvian eval
 run`, and post the verdict on a pull request with the CI action — see
-[Current State](#current-state). None of it is in a release yet. Everything under
+[Current State](#current-state). It shipped in `v0.10.0`, and the WebUI
+experience in `v0.11.0`. Everything under
 [Beyond v1.0](#beyond-v10) is FUTURE.
 
 ## Product Direction
@@ -158,7 +159,7 @@ laptop without an account.
 
 ## Current State
 
-**Current stable line: `v0.9.x`.** SHIPPED.
+**Current stable line: `v0.11.x`.** SHIPPED.
 
 The pre-`v1.0` core provides:
 
@@ -181,7 +182,7 @@ The pre-`v1.0` core provides:
 - signed container images with SBOM and provenance attestations, published by
   an automated release pipeline
 
-**The platform is implemented on `main` and not yet released.** It lives in
+**The platform first shipped in `v0.10.0`.** It lives in
 `platform/`, a separate Go module at `trustvian-platform`. What ships on `main`
 today, by task:
 
@@ -226,8 +227,8 @@ already holds. A repeated scenario's verdict is the control plane's;
 `trustvian eval run` counts nothing. The API binds no listener of its own:
 task 062's runtime composes one, on loopback by default.
 
-**No platform capability is in a release yet.** The next release, planned as
-`v0.10.0`, is the first that will carry one.
+**`v0.10.0` was the first release to carry the platform**, and `v0.11.0` the
+WebUI experience (097–104).
 
 **Not implemented:**
 - Multi-node and load validation, platform security hardening, platform backup
@@ -256,10 +257,12 @@ specifications behind each are in [`archive/tasks/`](archive/tasks/README.md).
 | `v0.7.0` | AI-agent behavioral security: session, delegation, and approval context, and approval-aware policy |
 | `v0.8.0` | Production runtime and storage: PostgreSQL persistence, reference deployment, durability hardening |
 | `v0.9.0` | Operational readiness: CI quality gates, release artifacts, supply-chain signing, health endpoints, self-observability, backup and restore |
+| `v0.10.0` | Developer preview: the platform ships — `trustvian dev`, the local control plane and WebUI, `eval run` with scenario suites and k-of-N gating, and the CI action with its pull request comment |
+| `v0.11.0` | WebUI experience: themes, searchable selectors, the Overview, trace investigation, recency-ordered run discovery, scenario execution and session selection (schema v10) |
 
 ## v0.10.0 — Developer Preview
 
-**NEXT.** The first release a developer outside this project can pick up and
+**SHIPPED** (2026-10-04). The first release a developer outside this project can pick up and
 use for the thing the product is for.
 
 It exists because of a sequencing problem, not a scope disagreement. The whole
@@ -377,9 +380,8 @@ is the question a developer preview has to answer.
 
 ## v0.11.0 — WebUI Experience
 
-**PLANNED.** Tasks 097–104 are implemented and not in a release: 097–100 on
-`main`, 101–104 pending review and merge. The
-release after the developer preview, and a WebUI-focused one: the engine is
+**SHIPPED** (2026-10-04): tasks 097–104 are in `v0.11.0`. The release after
+the developer preview, and a WebUI-focused one: the engine is
 unchanged, and the platform gains bounded collection routes (tasks 100–103)
 and one schema step for recency ordering (task 101). Everything else is
 presentation over data `/v1` serves.
