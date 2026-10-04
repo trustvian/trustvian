@@ -1076,6 +1076,57 @@ func newObservationDTO(o platform.Observation) observationDTO {
 	}
 }
 
+// traceListResponse is one bounded page of the traces in a run's retained
+// history (task 100).
+//
+// The history fields are the observation page's, for the same reason: a trace
+// list from a partial or unavailable history must say so, or an absent trace
+// reads as one that never ran.
+type traceListResponse struct {
+	Version string `json:"version"`
+	RunID   string `json:"run_id"`
+
+	HistoryState  string `json:"history_state"`
+	RetainedCount string `json:"retained_count"`
+	Complete      bool   `json:"complete"`
+
+	Traces []traceSummaryDTO `json:"traces"`
+
+	NextAfter string `json:"next_after,omitempty"`
+}
+
+// traceSummaryDTO is one trace. Counters and sequences are decimal strings,
+// like every uint64 on this API.
+type traceSummaryDTO struct {
+	TraceID       string `json:"trace_id"`
+	Observations  string `json:"observations"`
+	FirstSequence string `json:"first_sequence"`
+	LastSequence  string `json:"last_sequence"`
+	ErrorSpans    string `json:"error_spans"`
+}
+
+func newTraceListResponse(runID string, page platform.TracePage, nextAfter string) traceListResponse {
+	traces := make([]traceSummaryDTO, 0, len(page.Traces))
+	for _, trace := range page.Traces {
+		traces = append(traces, traceSummaryDTO{
+			TraceID:       trace.TraceID,
+			Observations:  u64(trace.Observations),
+			FirstSequence: u64(trace.FirstSequence),
+			LastSequence:  u64(trace.LastSequence),
+			ErrorSpans:    u64(trace.ErrorSpans),
+		})
+	}
+	return traceListResponse{
+		Version:       WireVersion,
+		RunID:         runID,
+		HistoryState:  page.History.State().String(),
+		RetainedCount: u64(page.History.RetainedCount()),
+		Complete:      page.History.Complete(),
+		Traces:        traces,
+		NextAfter:     nextAfter,
+	}
+}
+
 // ---------------------------------------------------------------------
 // Evidence resolution — task 085
 // ---------------------------------------------------------------------

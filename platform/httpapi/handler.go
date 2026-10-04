@@ -206,6 +206,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/progress", h.progress)
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/behaviors", h.runBehaviors)
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/observations", h.runObservations)
+	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/traces", h.runTraces)
 	h.mux.HandleFunc("GET /v1/evaluation-runs/{run_id}/ingest-state", h.ingestState)
 	h.mux.HandleFunc("POST /v1/evaluation-runs/{run_id}/records", h.ingestRecord)
 
@@ -1378,6 +1379,43 @@ func (h *Handler) runObservations(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK,
 		newObservationListResponse(string(runID), scope, page, nextAfter))
+}
+
+// runTraces lists the traces in a run's retained history (task 100).
+//
+// The collection contract every other route follows (ADR 0041): exclusive
+// `after`, `limit` 1..64, and `next_after` published exactly when another
+// trace follows — found by a one-row probe from the last cursor rather than by
+// assuming a full page means more.
+func (h *Handler) runTraces(w http.ResponseWriter, r *http.Request) {
+	runID := platform.EvaluationRunID(r.PathValue("run_id"))
+
+	limit, err := listLimitParam(r)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	after := r.URL.Query().Get("after")
+
+	page, err := h.controlPlane.EvaluationRunTraces(r.Context(), runID, after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	nextAfter := ""
+	if len(page.Traces) == limit {
+		last := platform.FormatObservationCursor(page.Traces[len(page.Traces)-1].FirstSequence)
+		probe, err := h.controlPlane.EvaluationRunTraces(r.Context(), runID, last, 1)
+		if err != nil {
+			h.writeError(w, err)
+			return
+		}
+		if len(probe.Traces) > 0 {
+			nextAfter = last
+		}
+	}
+	writeJSON(w, http.StatusOK, newTraceListResponse(string(runID), page, nextAfter))
 }
 
 // observationScopeParam reads the correlated view a history read is narrowed to
