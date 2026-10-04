@@ -35,6 +35,11 @@ cd "$(dirname "$0")"
 
 COMPOSE="docker compose"
 SPANS=60
+# The core baseline schema version a fresh database is created at:
+# internal/store/postgres.SchemaVersion (not the platform's own schema).
+# scripts/smoke_test_schema_test.go fails when the two disagree, so a schema
+# bump breaks a pull request's CI rather than the next Nightly.
+EXPECTED_SCHEMA_VERSION=2
 PSQL="$COMPOSE exec -T postgres psql -U ${TRUSTVIAN_POSTGRES_USER:-trustvian} -d ${TRUSTVIAN_POSTGRES_DB:-trustvian} -tAc"
 
 step()  { printf '\n=== %s\n' "$1"; }
@@ -94,7 +99,7 @@ ok "no credentials in logs"
 # ---------------------------------------------------------------------
 step "3/7 Schema auto-created at the expected version"
 version=$($PSQL "SELECT version FROM trustvian_schema_version" | tr -d '[:space:]')
-[ "$version" = "1" ] || fail "schema version is '${version}', want 1"
+[ "$version" = "$EXPECTED_SCHEMA_VERSION" ] || fail "schema version is '${version}', want ${EXPECTED_SCHEMA_VERSION}"
 tables=$($PSQL "SELECT count(*) FROM pg_tables WHERE schemaname='public' AND tablename LIKE 'trustvian_%'" | tr -d '[:space:]')
 [ "$tables" = "2" ] || fail "found ${tables} trustvian tables, want exactly 2 (no event warehouse)"
 ok "schema version ${version}, ${tables} tables"

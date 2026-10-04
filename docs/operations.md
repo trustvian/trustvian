@@ -389,9 +389,9 @@ downtime: an online backup is consistent, but observations committed between
 it and the stop would be lost by a rollback. If you cannot stop first, take
 the backup, then stop, and accept that window.
 
-### Upgrading into `v1.0`: the schema moves
+### Upgrading into `v0.10.0`: the schema moves
 
-`v1.0` is the first release that changes the PostgreSQL schema — version 1 to
+`v0.10.0` is the first release that changes the PostgreSQL schema — version 1 to
 version 2, adding the learning-scope column
 ([ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md)). The
 procedure above is unchanged, and `Migrate` performs the upgrade on first
@@ -530,9 +530,9 @@ safe **only when both releases share the same schema version**:
   mechanism — an older binary never mutates state whose layout it does not
   understand — and it means the backup is the only way back.
 
-**`v0.8.0` ↔ `v1.0` is now the second case.** Both releases sat on schema
-version 1 until `v1.0` moved it to 2 for learning scopes, so a binary-only
-downgrade from `v1.0` to `v0.8.0` is refused. `v0.8.0` cannot see the `scope`
+**`v0.8.0` ↔ `v0.10.0` is now the second case.** Both releases sat on schema
+version 1 until `v0.10.0` moved it to 2 for learning scopes, so a binary-only
+downgrade from `v0.10.0` to `v0.8.0` is refused. `v0.8.0` cannot see the `scope`
 column, and proceeding would mean reading a table whose row identity it does
 not understand. Restoring the pre-upgrade backup is the only rollback path
 across this upgrade — which is why that backup is mandatory above, not
@@ -560,7 +560,7 @@ silently resets or reinterprets learned state.
 | PostgreSQL major upgrade | Via dump/restore into the new server, or `pg_upgrade` | PostgreSQL's own mechanisms; tested only on 17 |
 
 The schema version today is `2`. It was `1` from `v0.8.0` through `v0.9.x`
-and moved once, in `v1.0`, to add the learning-scope column
+and moved once, in `v0.10.0`, to add the learning-scope column
 ([ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md)).
 
 ## Recovery drill

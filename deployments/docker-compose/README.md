@@ -87,7 +87,7 @@ docker compose exec postgres psql -U trustvian -d trustvian -tAc \
 ```
 
 ```text
-1|2026-09-15 18:36:04.982887+00
+2|2026-09-15 18:36:04.982887+00
 ```
 
 The schema is created automatically on first connection. A database
