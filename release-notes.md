@@ -1,17 +1,62 @@
 # Trustvian v0.11.0 — webui feature
 
-<!-- One paragraph: what this release is for, and who should upgrade. -->
+The release that makes the WebUI an investigation tool rather than a viewer.
+After `v0.10.0` showed you what your agent does, `v0.11.0` helps you find out
+why: an Overview of a project's newest runs, gate verdicts and evidence; a
+trace timeline over the actions Trustvian evaluated; and searchable selectors in
+place of every identifier you used to paste. Upgrade if you use the local WebUI
+or the control plane's `/v1` API. The engine, the CLI's commands and the gate
+are unchanged. The platform database moves to schema v10 on first start, and an
+older build then refuses it.
 
 Every change is in
 [CHANGELOG.md](https://github.com/trustvian/trustvian/blob/v0.11.0/CHANGELOG.md#v0110--webui-feature).
 
 ## What's new
 
-<!-- The user-facing changes, in the order a user meets them. -->
+- **Light, Dark and System themes.** A switch at the foot of the sidebar; a
+  first visit follows your operating system, and an explicit choice is
+  remembered without flashing light on load.
+- **Searchable selectors instead of pasted identifiers.** Every field that
+  asked for an existing project, agent, candidate, run, environment, session or
+  scenario execution is a keyboard-operable search showing names, with the
+  identifier beside it and a **Copy ID** control. A choice made in one
+  destination carries to the others; changing a parent clears what depended on
+  it. "Advanced: paste an ID" remains.
+- **The Overview.** A new destination: live activity, the newest runs of a
+  project, agent or candidate by status, one run's evidence and top behaviors,
+  recorded gate verdicts and environments. Every panel says what it covers and
+  when it was read; nothing refreshes on a timer and nothing missing reads as
+  `0`.
+- **Trace investigation.** A **Traces** destination lists a run's traces and
+  draws one as a waterfall of the actions Trustvian evaluated, nested by
+  recorded parent span, with a details panel beside it. It says plainly that
+  it is not a complete distributed trace.
+- **Runs newest first.** Runs, the Overview and every run selector list runs
+  newest first across a project, an agent or a candidate.
+- **Recorded scenario executions.** Evidence → **Scenarios** lists past
+  `trustvian eval run` executions, asks the control plane whether one can be
+  reused as a `--reference`, and copies the command. Nothing runs from the
+  browser.
+- **New `/v1` routes:** `GET /v1/projects/{id}/evaluation-runs/recent`,
+  `/v1/evaluation-runs/{id}/traces` and `/sessions`,
+  `/v1/projects/{id}/scenario-executions` and
+  `/v1/scenario-executions/{id}/reference-check`
+  ([compatibility](https://github.com/trustvian/trustvian/blob/v0.11.0/docs/compatibility.md)).
 
 ## What this release does not include
 
-<!-- What a reader might expect here and will not find. -->
+- **Complete distributed traces.** Trustvian retains the actions it evaluated
+  — at most 4096 per run — not every span, attribute, event or service name.
+  Keep your trace backend for the full picture.
+- **Starting a scenario from the browser.** The WebUI finds and checks recorded
+  executions; running one stays in the CLI, because it runs your command.
+- **Authentication or remote access** for the local runtime (task 070). It
+  still binds loopback only.
+- **Promotion sharing across a deployment** and the rest of the `v1.0` gate
+  (tasks 068–072), which the roadmap still lists as not specified.
+- **Measured detection numbers** for metadata-only detection (task 080, still
+  specified and not implemented).
 
 ## Known limits
 
@@ -45,6 +90,17 @@ Every change is in
 - **macOS binaries are not notarized.** Download with `curl` as documented. A
   browser download is quarantined by Gatekeeper; clear it with
   `xattr -d com.apple.quarantine` on the three binaries.
+- **Schema v10 is one-way.** The first start of `v0.11.0` migrates the platform
+  database in place; an older build then refuses it as newer. To keep a way
+  back, copy the stopped runtime's state directory first — `.trustvian/`, or
+  `~/.trustvian/dev/<hash>/` under `trustvian dev`
+  ([where state lives](https://github.com/trustvian/trustvian/blob/v0.11.0/docs/local-development.md)).
+  Platform backup tooling is task 071, not yet implemented.
+- **With a candidate chosen, run lists show only its runs.** Pick a
+  promotion's or provenance's other side under Compare, or paste its ID.
+- **A reference check holds for the execution's own repetition count, project
+  and environment.** A scenario that differs on any of them is refused by the
+  CLI's same validation.
 
 ## Verifying
 

@@ -399,10 +399,11 @@ twice. See [Local development](docs/local-development.md).
 Metadata only throughout: a diff, a scorecard, a gate result and a promotion
 record contain no prompt, completion, tool argument, tool result or body.
 
-**This layer lives on `main` and is not in a release yet.** The current stable
-line is `v0.9.x`, which ships the engine, `analyze`/`baseline`/`version`, and
-the Collector processor — so `go install ...@latest` does *not* include the
-platform commands. Build from a clone to use them.
+**This layer first shipped in `v0.10.0`.** The macOS and Linux release
+archives carry `trustvian-local` and `trustvian-collector` beside `trustvian`;
+use an archive, or build from a clone. The `trustvian-platform` and
+`trustvian-processor` modules are not published as Go modules
+([release guide](docs/release-guide.md#module-publication-model)).
 
 Three milestones are **specified and not implemented**, and the platform is not
 usable end to end without them. [docs/ROADMAP.md](docs/ROADMAP.md) is
