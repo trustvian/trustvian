@@ -51,8 +51,15 @@ func requireGitAndGo(t *testing.T) string {
 // inherited configuration.
 func gitCmd(t *testing.T, dir string, args ...string) string {
 	t.Helper()
+	// maintenance.auto and gc.auto are off because a commit otherwise
+	// detaches `git maintenance run --auto`, which briefly holds
+	// .git/objects/maintenance.lock after the commit returns. A snapshot
+	// taken in that window sees a file the code under test never wrote
+	// (issue 156). Passed with -c, so nothing is written into the
+	// repository's own config and the snapshot is unaffected.
 	cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@example.invalid",
-		"-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"}, args...)...)
+		"-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main",
+		"-c", "maintenance.auto=false", "-c", "gc.auto=0"}, args...)...)
 	cmd.Dir = dir
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(),
 		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
