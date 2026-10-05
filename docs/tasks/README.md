@@ -9,6 +9,7 @@ criteria, and is written before the work starts.
 | `docs/tasks/` | Specifications that are not yet implemented |
 | [`v1.0/`](v1.0/) | Tasks decomposed from the v1.0 release gate |
 | [`v0.11/`](v0.11/) | Tasks for the `v0.11.0` WebUI Experience milestone |
+| [`v0.12/`](v0.12/) | Tasks for the `v0.12.0` Change Impact milestone |
 | [`../archive/tasks/`](../archive/tasks/) | Completed tasks, grouped by the milestone that shipped them |
 
 Specifications sitting directly in this directory:
@@ -24,6 +25,8 @@ because they describe work that has not happened.
 
 The `v0.11.0` WebUI Experience tasks (097–101) are in
 [`v0.11/`](v0.11/README.md).
+The `v0.12.0` Change Impact tasks (081, 086, 087, 105–107) are in
+[`v0.12/`](v0.12/README.md).
 
 Milestone work lives under its milestone directory: the `v1.0` tasks,
 including [049](v1.0/049-platform-architecture-alignment.md), are in
