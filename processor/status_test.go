@@ -163,6 +163,71 @@ func TestStatusReportCarriesProducersAndSpanCounts(t *testing.T) {
 	}
 }
 
+// genAITraces is one producer's batch: model calls named by GenAI, and four
+// HTTP requests to one host that no convention named.
+func genAITraces() ptrace.Traces {
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr(string(semconv.ServiceNameKey), "support-agent")
+	ss := rs.ScopeSpans().AppendEmpty()
+	now := time.Now()
+	add := func(i int, name string, attrs map[string]string) {
+		span := ss.Spans().AppendEmpty()
+		span.SetName(name)
+		span.SetKind(ptrace.SpanKindClient)
+		span.SetTraceID(pcommon.TraceID{9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9})
+		span.SetSpanID(pcommon.SpanID{9, 9, 9, 9, 9, 9, 9, byte(i + 1)})
+		span.SetStartTimestamp(pcommon.NewTimestampFromTime(now))
+		span.SetEndTimestamp(pcommon.NewTimestampFromTime(now.Add(time.Millisecond)))
+		for k, v := range attrs {
+			span.Attributes().PutStr(k, v)
+		}
+	}
+	for i := range 2 {
+		add(i, "chat llama3.2", map[string]string{
+			"gen_ai.operation.name": "chat", "gen_ai.request.model": "llama3.2", "gen_ai.provider.name": "ollama",
+		})
+	}
+	for i, path := range []string{"/v1/chat", "/v1/embed", "/v1/rerank", "/v1/chat"} {
+		add(10+i, "POST "+path, map[string]string{"http.request.method": "POST", "server.address": "api.example.com"})
+	}
+	return td
+}
+
+func TestStatusReportCarriesModelsAndFidelity(t *testing.T) {
+	plane, url := newFakeStatusPlane(t)
+	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), &trustvianprocessor.Config{
+		Status: &trustvianprocessor.StatusConfig{APIURL: url, Interval: time.Second},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := proc.ConsumeTraces(context.Background(), genAITraces()); err != nil {
+		t.Fatal(err)
+	}
+	report, body := plane.waitFor(t, func(r map[string]any) bool {
+		return r["spans"].(map[string]any)["evaluated"] == "6"
+	})
+	if id, _ := report["collector_id"].(string); !strings.HasPrefix(id, "collector-") {
+		t.Fatalf("an unconfigured collector id was not generated: %q", id)
+	}
+	models, _ := json.Marshal(report["models"])
+	if want := `[{"calls":"2","model":"llama3.2","provider":"ollama"}]`; string(models) != want {
+		t.Fatalf("models %s, want %s", models, want)
+	}
+	fidelity, _ := json.Marshal(report["fidelity"])
+	if want := `{"semantic":"2","transport":"4"}`; string(fidelity) != want {
+		t.Fatalf("fidelity %s, want %s", fidelity, want)
+	}
+	targets, _ := json.Marshal(report["transport_targets"])
+	if want := `[{"distinct_operations":"3","operations_saturated":false,"spans":"4","target":"api.example.com"}]`; string(targets) != want {
+		t.Fatalf("transport targets %s, want %s", targets, want)
+	}
+	if strings.Contains(body, "/v1/embed") {
+		t.Fatalf("a transport operation name reached the report: %s", body)
+	}
+}
+
 func TestStatusConfigValidation(t *testing.T) {
 	tests := []struct {
 		name   string

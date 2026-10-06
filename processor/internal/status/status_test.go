@@ -279,3 +279,76 @@ func TestNewReporterRefusesIncompleteInput(t *testing.T) {
 		t.Fatalf("a complete reporter was refused: %v", err)
 	}
 }
+
+func TestTrackerEvaluatedSections(t *testing.T) {
+	tr := NewTracker()
+	for range 3 {
+		tr.ObserveEvaluated(Evaluated{Semantic: true, Model: true, Operation: "llama3.2", Target: "ollama"})
+	}
+	tr.ObserveEvaluated(Evaluated{Semantic: true, Model: true, Operation: "gpt-x", Target: ""})
+	tr.ObserveEvaluated(Evaluated{Semantic: true, Operation: "export_customer", Target: "export.localhost"})
+	for _, op := range []string{"POST /a", "POST /b", "GET /c", "POST /a"} {
+		tr.ObserveEvaluated(Evaluated{Operation: op, Target: "api.example.com"})
+	}
+	tr.ObserveEvaluated(Evaluated{Operation: "SELECT", Target: ""})
+
+	models, truncated := tr.Models()
+	gotModels, _ := json.Marshal(models)
+	if want := `[{"provider":"","model":"gpt-x","calls":"1"},{"provider":"ollama","model":"llama3.2","calls":"3"}]`; string(gotModels) != want || truncated {
+		t.Fatalf("models %s (truncated %v), want %s", gotModels, truncated, want)
+	}
+	if got := tr.Fidelity(); got.Semantic != "5" || got.Transport != "5" {
+		t.Fatalf("fidelity %+v", got)
+	}
+	targets, truncated := tr.TransportTargets()
+	gotTargets, _ := json.Marshal(targets)
+	want := `[{"target":"","spans":"1","distinct_operations":"1","operations_saturated":false},` +
+		`{"target":"api.example.com","spans":"4","distinct_operations":"3","operations_saturated":false}]`
+	if string(gotTargets) != want || truncated {
+		t.Fatalf("targets %s (truncated %v), want %s", gotTargets, truncated, want)
+	}
+	// Operation names are counted, never reported.
+	if strings.Contains(string(gotTargets), "POST") {
+		t.Fatal("an operation name reached the report")
+	}
+}
+
+func TestTrackerEvaluatedBounds(t *testing.T) {
+	tr := NewTracker()
+	for i := range MaxModels + 2 {
+		tr.ObserveEvaluated(Evaluated{Semantic: true, Model: true, Operation: strings.Repeat("m", i+1)})
+	}
+	for i := range MaxTransportTargets + 2 {
+		tr.ObserveEvaluated(Evaluated{Operation: "op", Target: strings.Repeat("t", i+1)})
+	}
+	for i := range MaxOperationsPerTarget + 5 {
+		tr.ObserveEvaluated(Evaluated{Operation: strings.Repeat("o", i+1), Target: "t"})
+	}
+	if models, truncated := tr.Models(); len(models) != MaxModels || !truncated {
+		t.Fatalf("models %d truncated=%v", len(models), truncated)
+	}
+	targets, truncated := tr.TransportTargets()
+	if len(targets) != MaxTransportTargets || !truncated {
+		t.Fatalf("targets %d truncated=%v", len(targets), truncated)
+	}
+	for _, target := range targets {
+		if target.Target == "t" {
+			if target.DistinctOperations != formatUint(MaxOperationsPerTarget) || !target.OperationsSaturated {
+				t.Fatalf("saturation: %+v", target)
+			}
+			// Spans keep counting past the operation bound: only the distinct
+			// count saturates.
+			if target.Spans != formatUint(MaxOperationsPerTarget+5+1) {
+				t.Fatalf("spans: %+v", target)
+			}
+		}
+	}
+	// A known model keeps counting at the bound.
+	tr.ObserveEvaluated(Evaluated{Semantic: true, Model: true, Operation: "m"})
+	models, _ := tr.Models()
+	for _, m := range models {
+		if m.Model == "m" && m.Calls != "2" {
+			t.Fatalf("a known model stopped counting at the bound: %+v", m)
+		}
+	}
+}

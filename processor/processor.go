@@ -23,6 +23,7 @@ import (
 
 	trustvian "github.com/trustvian/trustvian"
 	"github.com/trustvian/trustvian/config"
+	"github.com/trustvian/trustvian/event"
 
 	"trustvian-processor/internal/evaluation"
 	"trustvian-processor/internal/health"
@@ -578,6 +579,15 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 	p.analyzed.Add(1)
 	p.metrics.RecordAnalysis(ctx, metrics.OutcomeAnalyzed, analysisDuration)
 
+	if p.statusTracker != nil {
+		p.statusTracker.ObserveEvaluated(status.Evaluated{
+			Semantic:  fidelityOf(result) == event.FidelitySemantic,
+			Model:     layerOf(result) == event.LayerModel,
+			Operation: result.Event.Operation.Name,
+			Target:    result.Event.Target.Name,
+		})
+	}
+
 	SetAttributesFromResult(span.Attributes(), result)
 	p.recordDecision(string(result.Decision))
 	p.metrics.RecordDecision(ctx, string(result.Decision))
@@ -740,6 +750,8 @@ func (p *trustvianProcessor) Stats() Stats {
 // identity and the sequence.
 func (p *trustvianProcessor) statusSnapshot(started, now time.Time) status.Report {
 	producers, truncated := p.statusTracker.Producers(now)
+	models, modelsTruncated := p.statusTracker.Models()
+	targets, targetsTruncated := p.statusTracker.TransportTargets()
 	uptime := now.Sub(started)
 	if uptime < 0 {
 		uptime = 0
@@ -756,6 +768,12 @@ func (p *trustvianProcessor) statusSnapshot(started, now time.Time) status.Repor
 		},
 		Producers:          producers,
 		ProducersTruncated: truncated,
+
+		Models:                    models,
+		ModelsTruncated:           modelsTruncated,
+		Fidelity:                  p.statusTracker.Fidelity(),
+		TransportTargets:          targets,
+		TransportTargetsTruncated: targetsTruncated,
 	}
 }
 

@@ -48,6 +48,17 @@ const (
 	// MaxReceiverEndpoints bounds the configured receiver endpoints reported.
 	MaxReceiverEndpoints = 4
 
+	// MaxModels bounds the distinct (provider, model) pairs tracked.
+	MaxModels = 64
+
+	// MaxTransportTargets bounds the transport-fidelity targets tracked.
+	MaxTransportTargets = 64
+
+	// MaxOperationsPerTarget bounds the distinct operation names counted per
+	// transport target. Past it the count stops and says so: "at least 32"
+	// answers the question the count exists for as well as an exact figure.
+	MaxOperationsPerTarget = 32
+
 	// maxText is the longest string reported, in bytes. The control plane
 	// refuses longer values, so they are shortened here rather than turning
 	// one long service name into a rejected report.
@@ -84,6 +95,45 @@ type Report struct {
 
 	Producers          []Producer `json:"producers"`
 	ProducersTruncated bool       `json:"producers_truncated"`
+
+	// Models is every model-layer behavior evaluated: a span whose telemetry
+	// named a model call (gen_ai.request.model under GenAI, llm.model_name
+	// under OpenInference) and, where it named one, its provider
+	// (gen_ai.provider.name or gen_ai.system; llm.provider or llm.system).
+	// Display metadata, read from the Event the convention table already
+	// produced — nothing here reads an attribute of its own.
+	Models          []ModelCalls `json:"models"`
+	ModelsTruncated bool         `json:"models_truncated"`
+
+	// Fidelity counts evaluated spans by how their behavior was named.
+	Fidelity FidelityCounts `json:"fidelity"`
+
+	// TransportTargets is, per target, how many distinct operations reached it
+	// at transport fidelity — the count that shows several model or tool calls
+	// collapsing onto one HTTP destination.
+	TransportTargets          []TransportTarget `json:"transport_targets"`
+	TransportTargetsTruncated bool              `json:"transport_targets_truncated"`
+}
+
+// ModelCalls is one (provider, model) pair and how many calls named it.
+type ModelCalls struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Calls    string `json:"calls"`
+}
+
+// FidelityCounts is evaluated spans by fidelity.
+type FidelityCounts struct {
+	Semantic  string `json:"semantic"`
+	Transport string `json:"transport"`
+}
+
+// TransportTarget is one target seen at transport fidelity.
+type TransportTarget struct {
+	Target              string `json:"target"`
+	Spans               string `json:"spans"`
+	DistinctOperations  string `json:"distinct_operations"`
+	OperationsSaturated bool   `json:"operations_saturated"`
 }
 
 // SpanCounts is what became of every span this processor was handed.
@@ -135,6 +185,22 @@ type Tracker struct {
 	mu        sync.Mutex
 	producers map[string]*producerState
 	truncated bool
+
+	models          map[modelKey]uint64
+	modelsTruncated bool
+
+	semantic, transport uint64
+
+	targets          map[string]*targetState
+	targetsTruncated bool
+}
+
+type modelKey struct{ provider, model string }
+
+type targetState struct {
+	spans      uint64
+	operations map[string]struct{}
+	saturated  bool
 }
 
 type producerState struct {
@@ -148,7 +214,11 @@ type producerState struct {
 
 // NewTracker returns an empty tracker.
 func NewTracker() *Tracker {
-	return &Tracker{producers: make(map[string]*producerState)}
+	return &Tracker{
+		producers: make(map[string]*producerState),
+		models:    make(map[modelKey]uint64),
+		targets:   make(map[string]*targetState),
+	}
 }
 
 // ObserveScope records one scope batch of spans from one resource.
@@ -186,6 +256,117 @@ func (t *Tracker) ObserveScope(serviceName string, sdk SDK, scope Scope, spans i
 		return
 	}
 	p.scopes = append(p.scopes, Scope{Name: Sanitize(scope.Name), Version: Sanitize(scope.Version)})
+}
+
+// Evaluated is how one analyzed span's behavior was named. Every field comes
+// from the Event the convention table produced; the tracker reads no span.
+type Evaluated struct {
+	// Semantic is true when a convention named the operation.
+	Semantic bool
+	// Model is true when the convention classified it as a model call.
+	Model bool
+	// Operation and Target are the Event's operation and target names: for a
+	// model call, the model and its provider.
+	Operation string
+	Target    string
+}
+
+// ObserveEvaluated records one analyzed span.
+func (t *Tracker) ObserveEvaluated(e Evaluated) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if e.Semantic {
+		t.semantic++
+		if e.Model {
+			key := modelKey{provider: e.Target, model: e.Operation}
+			if _, ok := t.models[key]; ok || len(t.models) < MaxModels {
+				if !ok {
+					key = modelKey{provider: strings.Clone(e.Target), model: strings.Clone(e.Operation)}
+				}
+				t.models[key]++
+			} else {
+				t.modelsTruncated = true
+			}
+		}
+		return
+	}
+
+	t.transport++
+	target, ok := t.targets[e.Target]
+	if !ok {
+		if len(t.targets) >= MaxTransportTargets {
+			t.targetsTruncated = true
+			return
+		}
+		target = &targetState{operations: make(map[string]struct{})}
+		t.targets[strings.Clone(e.Target)] = target
+	}
+	target.spans++
+	if _, known := target.operations[e.Operation]; known {
+		return
+	}
+	if len(target.operations) >= MaxOperationsPerTarget {
+		target.saturated = true
+		return
+	}
+	target.operations[strings.Clone(e.Operation)] = struct{}{}
+}
+
+// Models returns the model section, ordered by provider then model.
+func (t *Tracker) Models() ([]ModelCalls, bool) {
+	if t == nil {
+		return []ModelCalls{}, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]ModelCalls, 0, len(t.models))
+	for key, calls := range t.models {
+		out = append(out, ModelCalls{Provider: Sanitize(key.provider), Model: Sanitize(key.model), Calls: formatUint(calls)})
+	}
+	slices.SortFunc(out, func(a, b ModelCalls) int {
+		if c := strings.Compare(a.Provider, b.Provider); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Model, b.Model)
+	})
+	return out, t.modelsTruncated
+}
+
+// Fidelity returns the fidelity counts.
+func (t *Tracker) Fidelity() FidelityCounts {
+	if t == nil {
+		return FidelityCounts{Semantic: "0", Transport: "0"}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return FidelityCounts{Semantic: formatUint(t.semantic), Transport: formatUint(t.transport)}
+}
+
+// TransportTargets returns the transport-target section, ordered by target.
+// Operation names are counted and never reported: at transport fidelity an
+// operation name is a span name, which is transport detail this surface does
+// not publish.
+func (t *Tracker) TransportTargets() ([]TransportTarget, bool) {
+	if t == nil {
+		return []TransportTarget{}, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]TransportTarget, 0, len(t.targets))
+	for name, target := range t.targets {
+		out = append(out, TransportTarget{
+			Target:              Sanitize(name),
+			Spans:               formatUint(target.spans),
+			DistinctOperations:  formatUint(uint64(len(target.operations))),
+			OperationsSaturated: target.saturated,
+		})
+	}
+	slices.SortFunc(out, func(a, b TransportTarget) int { return strings.Compare(a.Target, b.Target) })
+	return out, t.targetsTruncated
 }
 
 // Producers returns the producer section of a report, ordered by service name

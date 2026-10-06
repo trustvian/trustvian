@@ -39,6 +39,53 @@ type statusReportRequest struct {
 	Spans             statusSpanCountsDTO     `json:"spans"`
 	Producers         []statusProducerRequest `json:"producers"`
 	ProducersTrunc    bool                    `json:"producers_truncated"`
+
+	// Optional sections: nil means the Collector did not report them, which
+	// the document states rather than rendering as zero.
+	Models                    *[]statusModelDTO           `json:"models"`
+	ModelsTruncated           bool                        `json:"models_truncated"`
+	Fidelity                  *statusFidelityRequest      `json:"fidelity"`
+	TransportTargets          *[]statusTransportTargetDTO `json:"transport_targets"`
+	TransportTargetsTruncated bool                        `json:"transport_targets_truncated"`
+}
+
+type statusModelDTO struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Calls    string `json:"calls"`
+}
+
+type statusFidelityRequest struct {
+	Semantic  string `json:"semantic"`
+	Transport string `json:"transport"`
+}
+
+type statusTransportTargetDTO struct {
+	Target              string `json:"target"`
+	Spans               string `json:"spans"`
+	DistinctOperations  string `json:"distinct_operations"`
+	OperationsSaturated bool   `json:"operations_saturated"`
+}
+
+// The document's optional sections. Reported is false when the Collector sent
+// nothing for the section, and then no count is published at all.
+
+type statusModelsSection struct {
+	Reported  bool             `json:"reported"`
+	Calls     []statusModelDTO `json:"calls"`
+	Truncated bool             `json:"truncated"`
+}
+
+type statusFidelitySection struct {
+	Reported  bool   `json:"reported"`
+	Semantic  string `json:"semantic,omitempty"`
+	Transport string `json:"transport,omitempty"`
+}
+
+type statusTransportSection struct {
+	Reported  bool                       `json:"reported"`
+	Targets   []statusTransportTargetDTO `json:"targets"`
+	Truncated bool                       `json:"truncated"`
 }
 
 type statusSpanCountsDTO struct {
@@ -99,6 +146,9 @@ type statusCollectorDTO struct {
 	Spans              statusSpanCountsDTO    `json:"spans"`
 	Producers          []statusProducerOutDTO `json:"producers"`
 	ProducersTruncated bool                   `json:"producers_truncated"`
+	Models             statusModelsSection    `json:"models"`
+	Fidelity           statusFidelitySection  `json:"fidelity"`
+	TransportTargets   statusTransportSection `json:"transport_targets"`
 }
 
 type statusProducerOutDTO struct {
@@ -122,6 +172,9 @@ type statusBoundsDTO struct {
 	ProducersPerReport  string `json:"producers_per_collector"`
 	ScopesPerProducer   string `json:"scopes_per_producer"`
 	ReceiverEndpoints   string `json:"receiver_endpoints_per_collector"`
+	ModelsPerCollector  string `json:"models_per_collector"`
+	TargetsPerCollector string `json:"transport_targets_per_collector"`
+	OperationsPerTarget string `json:"operations_per_target"`
 	FreshWindowSeconds  string `json:"fresh_window_seconds"`
 	ExpiryWindowSeconds string `json:"expiry_window_seconds"`
 }
@@ -227,6 +280,41 @@ func (q statusReportRequest) toDomain() (platform.CollectorStatusReport, error) 
 		}
 		report.Producers = append(report.Producers, producer)
 	}
+	if q.Models != nil {
+		if len(*q.Models) > platform.MaxStatusModels {
+			return platform.CollectorStatusReport{}, fmt.Errorf(
+				"%w: at most %d models may be reported", platform.ErrInvalidStatusReport, platform.MaxStatusModels)
+		}
+		report.ModelsReported = true
+		report.ModelsTruncated = q.ModelsTruncated
+		for _, m := range *q.Models {
+			report.Models = append(report.Models, platform.ModelCalls{
+				Provider: m.Provider, Model: m.Model, Calls: field("model calls", m.Calls)})
+		}
+	}
+	if q.Fidelity != nil {
+		report.FidelityReported = true
+		report.Fidelity = platform.FidelityCounts{
+			Semantic:  field("fidelity.semantic", q.Fidelity.Semantic),
+			Transport: field("fidelity.transport", q.Fidelity.Transport),
+		}
+	}
+	if q.TransportTargets != nil {
+		if len(*q.TransportTargets) > platform.MaxStatusTransportTargets {
+			return platform.CollectorStatusReport{}, fmt.Errorf("%w: at most %d transport targets may be reported",
+				platform.ErrInvalidStatusReport, platform.MaxStatusTransportTargets)
+		}
+		report.TransportTargetsReported = true
+		report.TransportTargetsTruncated = q.TransportTargetsTruncated
+		for _, target := range *q.TransportTargets {
+			report.TransportTargets = append(report.TransportTargets, platform.TransportTargetStatus{
+				Target:              target.Target,
+				Spans:               field("transport target spans", target.Spans),
+				DistinctOperations:  field("transport target distinct_operations", target.DistinctOperations),
+				OperationsSaturated: target.OperationsSaturated,
+			})
+		}
+	}
 	if err != nil {
 		return platform.CollectorStatusReport{}, err
 	}
@@ -292,6 +380,9 @@ func (h *Handler) newStatusDocument(s platform.PipelineStatus) statusDocument {
 			Spans:              newStatusSpanCountsDTO(c.Report.Spans),
 			Producers:          producers,
 			ProducersTruncated: c.Report.ProducersTruncated,
+			Models:             newStatusModelsSection(c.Report),
+			Fidelity:           newStatusFidelitySection(c.Report),
+			TransportTargets:   newStatusTransportSection(c.Report),
 		})
 	}
 	return statusDocument{
@@ -305,8 +396,42 @@ func (h *Handler) newStatusDocument(s platform.PipelineStatus) statusDocument {
 			ProducersPerReport:  strconv.Itoa(platform.MaxStatusProducers),
 			ScopesPerProducer:   strconv.Itoa(platform.MaxStatusScopes),
 			ReceiverEndpoints:   strconv.Itoa(platform.MaxStatusReceiverEndpoints),
+			ModelsPerCollector:  strconv.Itoa(platform.MaxStatusModels),
+			TargetsPerCollector: strconv.Itoa(platform.MaxStatusTransportTargets),
+			OperationsPerTarget: strconv.Itoa(platform.MaxStatusOperationsPerTarget),
 			FreshWindowSeconds:  strconv.Itoa(int(platform.StatusFreshWindow / time.Second)),
 			ExpiryWindowSeconds: strconv.Itoa(int(platform.StatusExpiry / time.Second)),
 		},
 	}
+}
+
+func newStatusModelsSection(r platform.CollectorStatusReport) statusModelsSection {
+	section := statusModelsSection{Reported: r.ModelsReported, Calls: []statusModelDTO{}, Truncated: r.ModelsTruncated}
+	for _, m := range r.Models {
+		section.Calls = append(section.Calls, statusModelDTO{Provider: m.Provider, Model: m.Model, Calls: u64(m.Calls)})
+	}
+	return section
+}
+
+func newStatusFidelitySection(r platform.CollectorStatusReport) statusFidelitySection {
+	if !r.FidelityReported {
+		return statusFidelitySection{}
+	}
+	return statusFidelitySection{
+		Reported: true, Semantic: u64(r.Fidelity.Semantic), Transport: u64(r.Fidelity.Transport),
+	}
+}
+
+func newStatusTransportSection(r platform.CollectorStatusReport) statusTransportSection {
+	section := statusTransportSection{
+		Reported: r.TransportTargetsReported, Targets: []statusTransportTargetDTO{},
+		Truncated: r.TransportTargetsTruncated,
+	}
+	for _, t := range r.TransportTargets {
+		section.Targets = append(section.Targets, statusTransportTargetDTO{
+			Target: t.Target, Spans: u64(t.Spans), DistinctOperations: u64(t.DistinctOperations),
+			OperationsSaturated: t.OperationsSaturated,
+		})
+	}
+	return section
 }

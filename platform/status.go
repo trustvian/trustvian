@@ -48,6 +48,17 @@ const (
 	// name.
 	MaxStatusReceiverEndpoints = 4
 
+	// MaxStatusModels bounds the (provider, model) pairs one report may carry.
+	MaxStatusModels = 64
+
+	// MaxStatusTransportTargets bounds the transport-fidelity targets one
+	// report may carry.
+	MaxStatusTransportTargets = 64
+
+	// MaxStatusOperationsPerTarget is the most distinct operations a Collector
+	// counts per transport target before it reports the count as saturated.
+	MaxStatusOperationsPerTarget = 32
+
 	// StatusFreshWindow is how recently a Collector must have reported, and a
 	// producer have sent spans, to count as active. Three default report
 	// intervals: one lost report does not make a healthy pipeline look idle.
@@ -92,6 +103,51 @@ type CollectorStatusReport struct {
 
 	Producers          []ProducerStatus
 	ProducersTruncated bool
+
+	// The sections below are optional on the wire: a Collector built before
+	// they existed sends none of them, and "not reported" must never read as
+	// zero. Each carries its own Reported flag for that reason.
+
+	// Models is every model call the Collector evaluated, by provider and
+	// model, as display metadata.
+	ModelsReported  bool
+	Models          []ModelCalls
+	ModelsTruncated bool
+
+	// Fidelity is evaluated spans by how their behavior was named.
+	FidelityReported bool
+	Fidelity         FidelityCounts
+
+	// TransportTargets is, per target, the distinct operations seen at
+	// transport fidelity.
+	TransportTargetsReported  bool
+	TransportTargets          []TransportTargetStatus
+	TransportTargetsTruncated bool
+}
+
+// ModelCalls is one (provider, model) pair and how many calls named it.
+// Provider is empty when the telemetry named a model and no provider.
+type ModelCalls struct {
+	Provider string
+	Model    string
+	Calls    uint64
+}
+
+// FidelityCounts is evaluated spans by fidelity.
+type FidelityCounts struct {
+	Semantic  uint64
+	Transport uint64
+}
+
+// TransportTargetStatus is one target seen at transport fidelity: how many
+// spans reached it and how many distinct operations those spans named.
+// Target is empty when the spans named none. Operation names are counted by
+// the Collector and never reported.
+type TransportTargetStatus struct {
+	Target              string
+	Spans               uint64
+	DistinctOperations  uint64
+	OperationsSaturated bool
 }
 
 // CollectorSpanCounts is what became of every span a Collector was handed.
@@ -197,6 +253,45 @@ func (r CollectorStatusReport) validate() error {
 			}
 		}
 	}
+	if len(r.Models) > MaxStatusModels {
+		return invalid("at most %d models may be reported", MaxStatusModels)
+	}
+	models := make(map[[2]string]struct{}, len(r.Models))
+	for _, m := range r.Models {
+		key := [2]string{m.Provider, m.Model}
+		if _, dup := models[key]; dup {
+			return invalid("model %q from %q is reported twice", m.Model, m.Provider)
+		}
+		models[key] = struct{}{}
+		if err := validateText(ErrInvalidStatusReport, "model", m.Model); err != nil {
+			return err
+		}
+		if m.Model == "" {
+			return invalid("a model call names no model")
+		}
+		if err := validateOptionalText("provider", m.Provider); err != nil {
+			return err
+		}
+	}
+	if len(r.TransportTargets) > MaxStatusTransportTargets {
+		return invalid("at most %d transport targets may be reported", MaxStatusTransportTargets)
+	}
+	targets := make(map[string]struct{}, len(r.TransportTargets))
+	for _, target := range r.TransportTargets {
+		if _, dup := targets[target.Target]; dup {
+			return invalid("transport target %q is reported twice", target.Target)
+		}
+		targets[target.Target] = struct{}{}
+		if err := validateOptionalText("transport target", target.Target); err != nil {
+			return err
+		}
+		if target.DistinctOperations > MaxStatusOperationsPerTarget {
+			return invalid("a transport target reports more than %d distinct operations", MaxStatusOperationsPerTarget)
+		}
+		if target.DistinctOperations > target.Spans {
+			return invalid("transport target %q reports more operations than spans", target.Target)
+		}
+	}
 	return nil
 }
 
@@ -211,6 +306,8 @@ func validateOptionalText(field, value string) error {
 func (r CollectorStatusReport) clone() CollectorStatusReport {
 	out := r
 	out.ReceiverEndpoints = slices.Clone(r.ReceiverEndpoints)
+	out.Models = slices.Clone(r.Models)
+	out.TransportTargets = slices.Clone(r.TransportTargets)
 	out.Producers = make([]ProducerStatus, len(r.Producers))
 	for i, p := range r.Producers {
 		p.Scopes = slices.Clone(p.Scopes)
