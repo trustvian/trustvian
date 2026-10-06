@@ -121,5 +121,16 @@ reports the engine as unavailable and states why. The processor reports what
   "service names stay unretained" still holds of retention.
 - The 256 KiB request bound applies to reports. The processor shortens an
   oversized report, scope lists first, and marks what it shortened.
+- **The surface is advisory and, on loopback, spoofable.** The report route is
+  unauthenticated, like ingest, until task 070. A local caller can post a report
+  under a known `collector_id` with a fresh `instance` and replace the real
+  Collector's entry, or hold the 16 slots with invented Collectors. That can
+  mislead a reader of the Status view. It cannot reach a decision, a baseline, a
+  gate or a promotion, because nothing reads status but the status document
+  itself, and the `landing` field only chooses a view.
+- A producer controls the names it reports. The Collector keys every reported
+  name by its sanitized form, so names that differ only in control bytes or past
+  the 256-byte bound collapse into one entry rather than producing a duplicate
+  that would make the control plane refuse every later report.
 - A future engine accessor would fill the engine section and let suggestion
   rule `status.admission_near_bound` fire. It is a separately reviewed change.

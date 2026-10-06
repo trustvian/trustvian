@@ -125,7 +125,7 @@ component's configuration, so whoever writes the Collector configuration states
 it, as `trustvian dev` does. `status` is independent of `evaluation`: a Collector
 can report status without feeding a run, which is what `trustvian dev --check`
 starts. Omitting the block starts no goroutine and tracks nothing; with it, the
-span path costs about 140 ns more per span and allocates nothing more.
+span path costs about 160 ns more per span and allocates nothing more.
 
 `health` (added by core task 042) enables the runtime's operational
 endpoints:

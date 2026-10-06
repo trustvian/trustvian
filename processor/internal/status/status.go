@@ -279,23 +279,32 @@ func (t *Tracker) ObserveScope(serviceName string, sdk SDK, scope Scope, spans i
 	if t == nil || spans <= 0 {
 		return
 	}
+	// Keyed by the sanitized value, never the raw one. Two raw names that
+	// sanitize alike — differing only in control bytes, or past the length
+	// bound — would otherwise be two entries reported under one name, and the
+	// control plane refuses a report naming a producer twice: one hostile span
+	// could make every later report fail. Sanitize returns a clean value
+	// unchanged and without allocating, so the common case costs one scan.
+	name := Sanitize(serviceName)
+	scope = Scope{Name: Sanitize(scope.Name), Version: Sanitize(scope.Version)}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	p, ok := t.producers[serviceName]
+	p, ok := t.producers[name]
 	if !ok {
 		if len(t.producers) >= MaxProducers {
 			t.truncated = true
 			return
 		}
-		p = &producerState{display: Sanitize(serviceName), sdk: sanitizeSDK(sdk)}
-		t.producers[strings.Clone(serviceName)] = p
+		p = &producerState{display: strings.Clone(name), sdk: sanitizeSDK(sdk)}
+		t.producers[p.display] = p
 	}
 	p.spans += uint64(spans)
 	p.lastSeen = now
 
 	for _, known := range p.scopes {
-		if known.Name == scope.Name && known.Version == scope.Version {
+		if known == scope {
 			return
 		}
 	}
@@ -303,7 +312,7 @@ func (t *Tracker) ObserveScope(serviceName string, sdk SDK, scope Scope, spans i
 		p.scopesTruncated = true
 		return
 	}
-	p.scopes = append(p.scopes, Scope{Name: Sanitize(scope.Name), Version: Sanitize(scope.Version)})
+	p.scopes = append(p.scopes, Scope{Name: strings.Clone(scope.Name), Version: strings.Clone(scope.Version)})
 }
 
 // Evaluated is how one analyzed span's behavior was named. Every field comes
@@ -324,16 +333,21 @@ func (t *Tracker) ObserveEvaluated(e Evaluated) {
 	if t == nil {
 		return
 	}
+	// Reported names are keyed sanitized, for the reason ObserveScope gives.
+	// Operation names are never reported, so they stay raw: a collision there
+	// only merges two counts.
+	targetName := Sanitize(e.Target)
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if e.Semantic {
 		t.semantic++
 		if e.Model {
-			key := modelKey{provider: e.Target, model: e.Operation}
+			key := modelKey{provider: targetName, model: Sanitize(e.Operation)}
 			if _, ok := t.models[key]; ok || len(t.models) < MaxModels {
 				if !ok {
-					key = modelKey{provider: strings.Clone(e.Target), model: strings.Clone(e.Operation)}
+					key = modelKey{provider: strings.Clone(key.provider), model: strings.Clone(key.model)}
 				}
 				t.models[key]++
 			} else {
@@ -344,14 +358,14 @@ func (t *Tracker) ObserveEvaluated(e Evaluated) {
 	}
 
 	t.transport++
-	target, ok := t.targets[e.Target]
+	target, ok := t.targets[targetName]
 	if !ok {
 		if len(t.targets) >= MaxTransportTargets {
 			t.targetsTruncated = true
 			return
 		}
 		target = &targetState{operations: make(map[string]struct{})}
-		t.targets[strings.Clone(e.Target)] = target
+		t.targets[strings.Clone(targetName)] = target
 	}
 	target.spans++
 	if _, known := target.operations[e.Operation]; known {
@@ -378,6 +392,7 @@ func (t *Tracker) ObserveLearning(learned bool, decision string, failed bool) {
 	case learned:
 		t.learned++
 	default:
+		decision = Sanitize(decision)
 		if _, ok := t.notLearned[decision]; ok || len(t.notLearned) < MaxDecisions {
 			t.notLearned[decision]++
 		}
@@ -395,7 +410,7 @@ func (t *Tracker) Learning() LearningCounts {
 	byDecision := make([]DecisionCount, 0, len(t.notLearned))
 	for decision, count := range t.notLearned {
 		total += count
-		byDecision = append(byDecision, DecisionCount{Decision: Sanitize(decision), Count: formatUint(count)})
+		byDecision = append(byDecision, DecisionCount{Decision: decision, Count: formatUint(count)})
 	}
 	slices.SortFunc(byDecision, func(a, b DecisionCount) int { return strings.Compare(a.Decision, b.Decision) })
 	return LearningCounts{
@@ -415,7 +430,7 @@ func (t *Tracker) Models() ([]ModelCalls, bool) {
 	defer t.mu.Unlock()
 	out := make([]ModelCalls, 0, len(t.models))
 	for key, calls := range t.models {
-		out = append(out, ModelCalls{Provider: Sanitize(key.provider), Model: Sanitize(key.model), Calls: formatUint(calls)})
+		out = append(out, ModelCalls{Provider: key.provider, Model: key.model, Calls: formatUint(calls)})
 	}
 	slices.SortFunc(out, func(a, b ModelCalls) int {
 		if c := strings.Compare(a.Provider, b.Provider); c != 0 {
@@ -449,7 +464,7 @@ func (t *Tracker) TransportTargets() ([]TransportTarget, bool) {
 	out := make([]TransportTarget, 0, len(t.targets))
 	for name, target := range t.targets {
 		out = append(out, TransportTarget{
-			Target:              Sanitize(name),
+			Target:              name,
 			Spans:               formatUint(target.spans),
 			DistinctOperations:  formatUint(uint64(len(target.operations))),
 			OperationsSaturated: target.saturated,

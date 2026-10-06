@@ -438,3 +438,59 @@ func TestFitReportStatesWhatItShortened(t *testing.T) {
 		t.Fatal("a report within the limit was altered")
 	}
 }
+
+// TestSanitizedCollisionsMergeRatherThanDuplicate is the security review's
+// case: raw names that sanitize to one string must be one entry, because the
+// control plane refuses a report naming a producer, model or target twice — a
+// single hostile span would otherwise make every later report fail.
+func TestSanitizedCollisionsMergeRatherThanDuplicate(t *testing.T) {
+	tr := NewTracker()
+	prefix := strings.Repeat("p", maxText)
+	for _, name := range []string{"svc\x01", "svc\x02", "svc\xff", prefix + "a", prefix + "b"} {
+		tr.ObserveScope(name, SDK{}, Scope{Name: "s\x01"}, 1, t0)
+		tr.ObserveScope(name, SDK{}, Scope{Name: "s\x02"}, 1, t0)
+		tr.ObserveEvaluated(Evaluated{Semantic: true, Model: true, Operation: name, Target: name})
+		tr.ObserveEvaluated(Evaluated{Operation: "op", Target: name})
+		tr.ObserveLearning(false, name, false)
+	}
+	producers, _ := tr.Producers(t0)
+	models, _ := tr.Models()
+	targets, _ := tr.TransportTargets()
+	learning := tr.Learning()
+	unique := func(names []string) bool {
+		seen := map[string]bool{}
+		for _, n := range names {
+			if seen[n] {
+				return false
+			}
+			seen[n] = true
+		}
+		return true
+	}
+	var p, m, tg, d []string
+	for _, x := range producers {
+		p = append(p, x.ServiceName)
+		if len(x.Scopes) != 1 {
+			t.Fatalf("scopes that sanitize alike were listed twice: %+v", x.Scopes)
+		}
+	}
+	for _, x := range models {
+		m = append(m, x.Provider+"\x00"+x.Model)
+	}
+	for _, x := range targets {
+		tg = append(tg, x.Target)
+	}
+	for _, x := range learning.NotLearnedByDecision {
+		d = append(d, x.Decision)
+	}
+	if len(p) != 2 || !unique(p) || len(m) != 2 || !unique(m) || len(tg) != 2 || !unique(tg) || !unique(d) {
+		t.Fatalf("collisions were not merged:\nproducers %q\nmodels %q\ntargets %q\ndecisions %q", p, m, tg, d)
+	}
+	// Three raw "svc" variants of two spans each, and two long names.
+	want := map[string]string{"svc\uFFFD": "6", prefix: "4"}
+	for _, x := range producers {
+		if want[x.ServiceName] != x.Spans {
+			t.Fatalf("a merged producer has %s spans, want %s", x.Spans, want[x.ServiceName])
+		}
+	}
+}

@@ -1204,8 +1204,8 @@ plane to accept, and what `GET /v1/status` costs to serve.
 
 | Benchmark | ns/op | B/op | allocs/op | Size |
 |---|---|---|---|---|
-| `ConsumeTraces` (no `status:` block) | 1,717 | 2,432 | 46 | — |
-| `ConsumeTracesWithStatus` | 1,855 | 2,432 | 46 | — |
+| `ConsumeTraces` (no `status:` block) | 1,743 | 2,432 | 46 | — |
+| `ConsumeTracesWithStatus` | 1,904 | 2,432 | 46 | — |
 | `StatusReportTypical` (one producer, one model, two targets) | 12,437 | 17,172 | 96 | 1.3 KB report |
 | `StatusReportWorst` (every bound, maximal strings) | 777,349 | 1,330,000 | 5,359 | 131 KB report |
 | `PipelineStatusEmpty` | 3,380 | 8,317 | 33 | 981 B document |
@@ -1216,11 +1216,13 @@ Medians of five or six runs, darwin/arm64, Apple M3 Pro, Go 1.27. As everywhere
 here, `ns/op` is a machine- and session-specific measurement — see
 [reading the numbers](#reading-the-numbers).
 
-**The span path pays about 140 ns per span and no allocation** (+8 % on
+**The span path pays about 160 ns per span and no allocation** (+9 % on
 `ConsumeTraces`). That is one lock per scope batch for the producer tally, one
 per span for fidelity, model and target counts, one per learning outcome, and
-three atomic adds for actor binding. Every map key is a string the Event
-already holds, and a key is copied only the first time it is seen, so the
+three atomic adds for actor binding. Every reported name is keyed by its
+sanitized form, so two raw names that sanitize alike are one entry rather than a
+duplicate the control plane would refuse. Sanitizing a clean name is one scan
+with no allocation, and a key is copied only the first time it is seen, so the
 steady state allocates nothing. A Collector with no `status:` block takes none
 of those locks.
 

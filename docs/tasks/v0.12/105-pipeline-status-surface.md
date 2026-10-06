@@ -317,7 +317,7 @@ building, and recorded here rather than left for a reader to find in the code.
 | `status_changed` published on every report | Published only when a report changes what a reader would see, ignoring sequence, uptime and ages | An idle Collector would otherwise wake every open Status view every 10 s |
 
 Measured costs are in [PERFORMANCE.md](../../PERFORMANCE.md#v012-task-105-pipeline-status-surface).
-The span path costs about 140 ns per span with no new allocation. A typical report
+The span path costs about 160 ns per span with no new allocation. A typical report
 costs the control plane 12 µs, and a typical read 8 µs.
 
 Verified beyond the test suites:
