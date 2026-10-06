@@ -243,3 +243,132 @@ func TestPipelineStatusIsACopy(t *testing.T) {
 		t.Fatalf("held state was reachable from outside: %+v", p)
 	}
 }
+
+func TestLandingIsLiveOnlyWhileSomethingIsActive(t *testing.T) {
+	tests := []struct {
+		name    string
+		report  func() platform.CollectorStatusReport
+		readAt  time.Duration
+		landing platform.Landing
+	}{
+		{"nothing has reported", nil, 0, platform.LandingStatus},
+		{"a reporting collector with a fresh producer", func() platform.CollectorStatusReport {
+			return validReport("dev", instanceA, 1)
+		}, 0, platform.LandingLive},
+		{"a reporting collector with no producer", func() platform.CollectorStatusReport {
+			r := validReport("dev-check", instanceA, 1)
+			r.Producers = nil
+			return r
+		}, 0, platform.LandingStatus},
+		{"a reporting collector whose producer went quiet", func() platform.CollectorStatusReport {
+			r := validReport("dev", instanceA, 1)
+			r.Producers[0].LastSeenAge = platform.StatusFreshWindow + time.Second
+			return r
+		}, 0, platform.LandingStatus},
+		{"a stale collector, whatever its producers said", func() platform.CollectorStatusReport {
+			return validReport("dev", instanceA, 1)
+		}, platform.StatusFreshWindow + time.Second, platform.LandingStatus},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plane := newStatusPlane(t)
+			if tt.report != nil {
+				if _, err := plane.ReportCollectorStatus(t.Context(), tt.report(), statusEpoch); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := plane.PipelineStatus(t.Context(), statusEpoch.Add(tt.readAt)).Landing; got != tt.landing {
+				t.Fatalf("landing %q, want %q", got, tt.landing)
+			}
+		})
+	}
+}
+
+// TestStatusChangesAreNotifiedOnlyWhenTheFactsMove: an idle Collector reports
+// every interval, and only its sequence, uptime and ages move — none of which
+// is a change a reader would see, so none wakes an open view.
+func TestStatusChangesAreNotifiedOnlyWhenTheFactsMove(t *testing.T) {
+	store, err := platform.OpenSQLiteStore(t.Context(), filepath.Join(t.TempDir(), "platform.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { store.Close() })
+	publisher := &recordingPublisher{}
+	plane, err := platform.NewControlPlane(store, store, store, platform.WithRealtimePublisher(publisher))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	step := func(report platform.CollectorStatusReport) {
+		t.Helper()
+		if _, err := plane.ReportCollectorStatus(t.Context(), report, statusEpoch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := validReport("dev", instanceA, 1)
+	step(first) // a new collector: a change
+
+	idle := validReport("dev", instanceA, 2)
+	idle.Uptime += 10 * time.Second
+	idle.Producers[0].LastSeenAge += 10 * time.Second
+	step(idle) // only the volatile fields moved: no change
+
+	busier := validReport("dev", instanceA, 3)
+	busier.Spans.Received, busier.Spans.Evaluated = 20, 18
+	step(busier) // a count moved: a change
+
+	step(validReport("dev", instanceA, 2)) // late and ignored: no change
+
+	restarted := validReport("dev", instanceB, 1)
+	restarted.Spans = busier.Spans
+	step(restarted) // a new process: a change, because the instance moved
+
+	var kinds []string
+	for _, e := range publisher.captured() {
+		if e.Kind != platform.RealtimeStatusChanged || e.Status.CollectorID != "dev" {
+			t.Fatalf("unexpected event %+v", e)
+		}
+		if e.Scope != (platform.RealtimeScope{}) {
+			t.Fatalf("a status event carries a scope, so a filtered stream could match it: %+v", e.Scope)
+		}
+		kinds = append(kinds, string(e.Kind))
+	}
+	if len(kinds) != 3 {
+		t.Fatalf("published %d status events, want 3 (new collector, moved count, new process)", len(kinds))
+	}
+}
+
+// TestStatusEventsReachOnlyUnfilteredStreams: the TUI and the single-run watch
+// subscribe narrowed to a run, and a status notification is not about any run.
+func TestStatusEventsReachOnlyUnfilteredStreams(t *testing.T) {
+	bus := platform.NewInMemoryRealtimeBus()
+	t.Cleanup(func() { _ = bus.Close() })
+	unfiltered, err := bus.Subscribe(t.Context(), platform.RealtimeFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byRun, err := bus.Subscribe(t.Context(), platform.RealtimeFilter{RunID: "run-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byProject, err := bus.Subscribe(t.Context(), platform.RealtimeFilter{ProjectID: "proj-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result := bus.Publish(platform.RealtimeEvent{
+		Kind: platform.RealtimeStatusChanged, Status: platform.RealtimeStatusChange{CollectorID: "dev"}})
+	if result.Delivered != 1 {
+		t.Fatalf("delivered to %d subscriptions, want only the unfiltered one", result.Delivered)
+	}
+	if e := <-unfiltered.Events(); e.Kind != platform.RealtimeStatusChanged {
+		t.Fatalf("unfiltered stream got %v", e.Kind)
+	}
+	for name, sub := range map[string]platform.RealtimeSubscription{"run": byRun, "project": byProject} {
+		select {
+		case e := <-sub.Events():
+			t.Fatalf("the %s-filtered stream received %v", name, e.Kind)
+		default:
+		}
+	}
+}

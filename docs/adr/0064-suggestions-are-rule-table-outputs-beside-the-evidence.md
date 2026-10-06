@@ -50,7 +50,7 @@ row. A row has:
 | `rule` | a stable identifier, such as `status.no_producer` or `compare.added_in_all_runs` |
 | `rule_version` | an integer, incremented whenever the condition or the text changes |
 | condition | a predicate over integer or categorical evidence already present in the same response, with no other input |
-| `evidence` | the names and values of the fields the condition read, copied from the same response |
+| `evidence` | the names and values of the fields the condition read, copied from the same response, as an ordered list (a renderer iterates it; it never enumerates a server object's keys — ADR 0036 § 7) |
 | `text` | a fixed sentence template; the only substitutions are values from `evidence` |
 
 A suggestion on the wire is exactly those fields:
@@ -59,7 +59,11 @@ A suggestion on the wire is exactly those fields:
 {
   "rule": "compare.added_in_all_runs",
   "rule_version": 1,
-  "evidence": {"behavior": "tool · export_customer", "candidate_runs_present": "10", "runs": "10"},
+  "evidence": [
+    {"name": "behavior", "value": "tool · export_customer"},
+    {"name": "candidate_runs_present", "value": "10"},
+    {"name": "runs", "value": "10"}
+  ],
   "text": "export_customer was added in 10/10 candidate runs. If this was expected, add it to the scenario; otherwise investigate before promoting."
 }
 ```

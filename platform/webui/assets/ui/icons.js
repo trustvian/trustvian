@@ -39,6 +39,7 @@ const ICONS = Object.freeze([
   Object.freeze({ name: "runs", paths: ["M2 4h12", "M2 8h12", "M2 12h7"] }),
   Object.freeze({ name: "compare", paths: ["M5.5 2v12", "M10.5 2v12", "M2 5.5h3.5", "M10.5 10.5H14"] }),
   Object.freeze({ name: "evidence", paths: ["M8 1.8 2.8 4v4c0 3.2 2.2 5.5 5.2 6.2 3-0.7 5.2-3 5.2-6.2V4Z", "M6 8l1.6 1.6L10.4 6.8"] }),
+  Object.freeze({ name: "status", paths: ["M1.5 8h3l1.5-4 3 8 1.5-4h4"] }),
   Object.freeze({ name: "overview", paths: ["M2 2.5h5v5H2Z", "M9 2.5h5v3H9Z", "M9 7.5h5v6H9Z", "M2 9.5h5v4H2Z"] }),
   Object.freeze({ name: "trace", paths: ["M2 3.5h7", "M4 7h8", "M6 10.5h6", "M2 3.5v3.5h2", "M4 7v3.5h2"] }),
   Object.freeze({ name: "promotion", paths: ["M8 13.5V3", "M4.2 6.8 8 3l3.8 3.8"] }),

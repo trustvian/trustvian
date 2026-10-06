@@ -660,6 +660,13 @@ type realtimeEventPayload struct {
 
 	Evaluation  *realtimeEvaluationDTO  `json:"evaluation,omitempty"`
 	Observation *realtimeObservationDTO `json:"observation,omitempty"`
+	Status      *realtimeStatusDTO      `json:"status,omitempty"`
+}
+
+// realtimeStatusDTO is a status_changed event's payload: which Collector's
+// report changed the document. A reader re-reads GET /v1/status for the rest.
+type realtimeStatusDTO struct {
+	CollectorID string `json:"collector_id"`
 }
 
 // ---------------------------------------------------------------------

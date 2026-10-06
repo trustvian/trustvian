@@ -165,6 +165,10 @@ type statusDocument struct {
 	// document needs to know how long "nothing" has covered.
 	HeldSince string `json:"held_since"`
 
+	// Landing is the view an interface opens on: "live" when something is
+	// active, "status" otherwise. The control plane decides; a browser reads.
+	Landing string `json:"landing"`
+
 	Collectors []statusCollectorDTO `json:"collectors"`
 	Engine     statusEngineDTO      `json:"engine"`
 	Bounds     statusBoundsDTO      `json:"bounds"`
@@ -175,13 +179,19 @@ type statusDocument struct {
 	SuggestionsTruncated bool            `json:"suggestions_truncated"`
 }
 
-// suggestionDTO is one rule's output. Evidence is an object keyed by field
-// name; encoding/json writes its keys sorted, so the bytes are deterministic.
+// suggestionDTO is one rule's output. Evidence is an ordered list rather than
+// an object, in the order the rule read it, so a renderer iterates what it was
+// given instead of enumerating a server object's keys (ADR 0036 § 7).
 type suggestionDTO struct {
-	Rule        string            `json:"rule"`
-	RuleVersion int               `json:"rule_version"`
-	Evidence    map[string]string `json:"evidence"`
-	Text        string            `json:"text"`
+	Rule        string                  `json:"rule"`
+	RuleVersion int                     `json:"rule_version"`
+	Evidence    []suggestionEvidenceDTO `json:"evidence"`
+	Text        string                  `json:"text"`
+}
+
+type suggestionEvidenceDTO struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 type statusCollectorDTO struct {
@@ -467,6 +477,7 @@ func (h *Handler) newStatusDocument(s platform.PipelineStatus) statusDocument {
 		Version:    WireVersion,
 		ReadAt:     formatTime(s.ReadAt),
 		HeldSince:  formatTime(h.statusSince),
+		Landing:    string(s.Landing),
 		Collectors: collectors,
 		Engine:     statusEngineDTO{State: string(s.Engine.State), Reason: s.Engine.Reason},
 		Bounds: statusBoundsDTO{
@@ -489,9 +500,9 @@ func (h *Handler) newStatusDocument(s platform.PipelineStatus) statusDocument {
 func newSuggestionDTOs(suggestions []platform.Suggestion) []suggestionDTO {
 	out := make([]suggestionDTO, 0, len(suggestions))
 	for _, s := range suggestions {
-		evidence := make(map[string]string, len(s.Evidence))
+		evidence := make([]suggestionEvidenceDTO, 0, len(s.Evidence))
 		for _, e := range s.Evidence {
-			evidence[e.Name] = e.Value
+			evidence = append(evidence, suggestionEvidenceDTO{Name: e.Name, Value: e.Value})
 		}
 		out = append(out, suggestionDTO{Rule: s.Rule, RuleVersion: s.RuleVersion, Evidence: evidence, Text: s.Text})
 	}

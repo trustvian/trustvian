@@ -69,6 +69,10 @@ export const TERMINAL_KINDS = Object.freeze([
   "evaluation_cancelled",
 ]);
 
+// STATUS_CHANGED_KIND is the pipeline status hint, outside KNOWN_KINDS on
+// purpose: those are domain events with a run scope, and this is neither.
+export const STATUS_CHANGED_KIND = "status_changed";
+
 export const isKnownKind = (kind) => KNOWN_KINDS.includes(kind);
 export const isTerminalKind = (kind) => TERMINAL_KINDS.includes(kind);
 
@@ -368,6 +372,24 @@ export class RealtimeSession {
       this.synchronized = true;
       this.resync(generation, { final: false });
     });
+
+    // The status hint (task 105) is not a domain event: it describes no run,
+    // carries no state and is never buffered or replayed. It says only that
+    // GET /v1/status changed, so a view showing it re-reads. A malformed hint is
+    // ignored rather than failing the stream — it is advisory, and tearing down
+    // the Live stream over it would cost far more than a missed re-read.
+    if (typeof this.callbacks.onStatusChanged === "function") {
+      source.addEventListener(STATUS_CHANGED_KIND, (event) => {
+        if (generation !== this.generation || !this.synchronized) {
+          return;
+        }
+        const payload = parseFrame(event.data);
+        if (payload === null || payload.version !== "1" || payload.kind !== STATUS_CHANGED_KIND) {
+          return;
+        }
+        this.callbacks.onStatusChanged();
+      });
+    }
 
     for (const kind of KNOWN_KINDS) {
       source.addEventListener(kind, (event) => {

@@ -18,7 +18,7 @@ func statusWith(t *testing.T, at time.Time, reports ...heldStatus) PipelineStatu
 		if err := h.report.validate(); err != nil {
 			t.Fatalf("fixture report is invalid: %v", err)
 		}
-		if _, err := plane.status.record(h.report, h.receivedAt); err != nil {
+		if _, _, err := plane.status.record(h.report, h.receivedAt); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -99,7 +99,7 @@ const (
 		`"transport_targets_per_collector":"64","operations_per_target":"32",` +
 		`"fresh_window_seconds":"30","expiry_window_seconds":"300","suggestions":"64"}`
 	goldenNoCollector = `"suggestions":[{"rule":"status.no_collector","rule_version":1,` +
-		`"evidence":{"collectors_reporting":"0","fresh_window_seconds":"30"},` +
+		`"evidence":[{"name":"collectors_reporting","value":"0"},{"name":"fresh_window_seconds","value":"30"}],` +
 		`"text":"No Collector has reported in 30 s. Is 'trustvian dev' running, and is trustvian-collector on its path?"}],` +
 		`"suggestions_truncated":false`
 	goldenCollectorHead = `{"collector_id":"dev","instance":"00000000000000aa","state":"reporting",` +
@@ -163,11 +163,13 @@ func TestStatusDocumentGolden(t *testing.T) {
 			// Rule 3 on the 14 unbound spans, rule 4 on api.example.com's four
 			// operations; the unnamed target's single operation fires nothing.
 			suggestions: `"suggestions":[{"rule":"status.spans_without_service_name","rule_version":1,` +
-				`"evidence":{"collector_id":"dev","unbound":"14"},"text":"14 spans reached Collector dev ` +
+				`"evidence":[{"name":"collector_id","value":"dev"},{"name":"unbound","value":"14"}],` +
+				`"text":"14 spans reached Collector dev ` +
 				`with no service.name and no trustvian.actor.id, and were not evaluated. Set the service.name ` +
 				`resource attribute (OTEL_SERVICE_NAME)."},{"rule":"status.collapsed_http_operations",` +
-				`"rule_version":1,"evidence":{"collector_id":"dev","distinct_operations":"4",` +
-				`"target":"api.example.com","threshold":"3"},"text":"4 distinct operations reached ` +
+				`"rule_version":1,"evidence":[{"name":"collector_id","value":"dev"},` +
+				`{"name":"target","value":"api.example.com"},{"name":"distinct_operations","value":"4"},` +
+				`{"name":"threshold","value":"3"}],"text":"4 distinct operations reached ` +
 				`api.example.com and are visible only as HTTP. Add OpenInference or OpenTelemetry GenAI ` +
 				`instrumentation to see them as model or tool calls."}],"suggestions_truncated":false`,
 		},
@@ -178,7 +180,7 @@ func TestStatusDocumentGolden(t *testing.T) {
 
 			empty := strings.TrimSpace(s.get("/v1/status").Body.String())
 			wantEmpty := `{"version":"1","read_at":"2026-10-06T09:00:00Z","held_since":"2026-10-06T09:00:00Z",` +
-				`"collectors":[],` + goldenEngine + `,` + goldenBounds + `,` + goldenNoCollector + `}`
+				`"landing":"status","collectors":[],` + goldenEngine + `,` + goldenBounds + `,` + goldenNoCollector + `}`
 			if empty != wantEmpty {
 				t.Fatalf("empty document:\n got %s\nwant %s", empty, wantEmpty)
 			}
@@ -192,8 +194,10 @@ func TestStatusDocumentGolden(t *testing.T) {
 
 			s.advance(5 * time.Second)
 			got := strings.TrimSpace(s.get("/v1/status").Body.String())
+			// The producer was last seen 6.5 s before this read: something is
+			// active, so the landing view is Live.
 			want := `{"version":"1","read_at":"2026-10-06T09:00:15Z","held_since":"2026-10-06T09:00:00Z",` +
-				`"collectors":[` + goldenCollectorHead + tt.sections + `],` + goldenEngine + `,` + goldenBounds +
+				`"landing":"live","collectors":[` + goldenCollectorHead + tt.sections + `],` + goldenEngine + `,` + goldenBounds +
 				`,` + tt.suggestions + `}`
 			if got != want {
 				t.Fatalf("document:\n got %s\nwant %s", got, want)

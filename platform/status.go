@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -415,7 +416,14 @@ func newStatusRegistry() *statusRegistry {
 }
 
 // record holds report as its Collector's latest, received at receivedAt.
-func (s *statusRegistry) record(report CollectorStatusReport, receivedAt time.Time) (StatusReportDisposition, error) {
+//
+// changed reports whether the held facts moved in a way a reader would see:
+// a new Collector, a new process, or any count, section or name other than the
+// sequence, the uptime and the producers' ages, which advance on every report
+// and would otherwise make every report a change.
+func (s *statusRegistry) record(
+	report CollectorStatusReport, receivedAt time.Time,
+) (disposition StatusReportDisposition, changed bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -429,13 +437,28 @@ func (s *statusRegistry) record(report CollectorStatusReport, receivedAt time.Ti
 
 	held, known := s.collectors[report.CollectorID]
 	if known && held.report.Instance == report.Instance && report.Sequence <= held.report.Sequence {
-		return StatusReportIgnored, nil
+		return StatusReportIgnored, false, nil
 	}
 	if !known && len(s.collectors) >= MaxStatusCollectors {
-		return "", fmt.Errorf("%w: %d collectors", ErrStatusCollectorLimit, MaxStatusCollectors)
+		return "", false, fmt.Errorf("%w: %d collectors", ErrStatusCollectorLimit, MaxStatusCollectors)
 	}
+	changed = !known || !sameFacts(held.report, report)
 	s.collectors[report.CollectorID] = heldStatus{report: report.clone(), receivedAt: receivedAt}
-	return StatusReportAccepted, nil
+	return StatusReportAccepted, changed, nil
+}
+
+// sameFacts compares two reports ignoring the fields that advance on every
+// report regardless of what happened: sequence, uptime and producer ages.
+func sameFacts(a, b CollectorStatusReport) bool {
+	strip := func(r CollectorStatusReport) CollectorStatusReport {
+		r = r.clone()
+		r.Sequence, r.Uptime = 0, 0
+		for i := range r.Producers {
+			r.Producers[i].LastSeenAge = 0
+		}
+		return r
+	}
+	return reflect.DeepEqual(strip(a), strip(b))
 }
 
 // snapshot returns every unexpired entry, ordered by Collector identifier.
@@ -475,6 +498,12 @@ type PipelineStatus struct {
 	Collectors []CollectorStatus
 	Engine     EngineStatus
 
+	// Landing is which view an interface opens on: Live when something is
+	// active — a Collector reporting and a producer seen within the fresh
+	// window — and Status otherwise. Decided here so no interface holds its
+	// own copy of the rule.
+	Landing Landing
+
 	// Suggestions are the rule table's outputs over the fields above, in table
 	// order (status_rules.go, ADR 0064). Nothing reads them.
 	Suggestions          []Suggestion
@@ -492,6 +521,35 @@ type CollectorStatus struct {
 	// ProducerLastSeen holds each producer's last span time, index-aligned
 	// with Report.Producers.
 	ProducerLastSeen []time.Time
+}
+
+// Landing is the view an interface opens on.
+type Landing string
+
+const (
+	// LandingLive means something is active, so the live view has something
+	// to show.
+	LandingLive Landing = "live"
+
+	// LandingStatus means nothing is active, so the status view — which says
+	// why — is the more useful first screen.
+	LandingStatus Landing = "status"
+)
+
+// landingFor applies the rule: active means a reporting Collector that has
+// seen a producer within the fresh window.
+func landingFor(now time.Time, collectors []CollectorStatus) Landing {
+	for _, c := range collectors {
+		if c.State != CollectorReporting {
+			continue
+		}
+		for _, seen := range c.ProducerLastSeen {
+			if now.Sub(seen) <= StatusFreshWindow {
+				return LandingLive
+			}
+		}
+	}
+	return LandingStatus
 }
 
 // EngineState says whether engine facts are available.
@@ -524,7 +582,20 @@ func (c *ControlPlane) ReportCollectorStatus(
 	if err := report.validate(); err != nil {
 		return "", err
 	}
-	return c.status.record(report, receivedAt)
+	disposition, changed, err := c.status.record(report, receivedAt)
+	if err != nil {
+		return "", err
+	}
+	// Notification, after the state is held, and only when a reader would see
+	// something different: a Collector reporting every ten seconds about an
+	// idle pipeline must not wake every open view every ten seconds.
+	if changed && c.realtime != nil {
+		c.realtime.Publish(RealtimeEvent{
+			Kind:   RealtimeStatusChanged,
+			Status: RealtimeStatusChange{CollectorID: report.CollectorID},
+		})
+	}
+	return disposition, nil
 }
 
 // PipelineStatus reads the status document as of now.
@@ -556,6 +627,7 @@ func (c *ControlPlane) PipelineStatus(_ context.Context, now time.Time) Pipeline
 		ReadAt:     now,
 		Collectors: collectors,
 		Engine:     EngineStatus{State: EngineUnavailable, Reason: engineUnavailableReason},
+		Landing:    landingFor(now, collectors),
 	}
 	status.Suggestions, status.SuggestionsTruncated = evaluateStatusRules(status)
 	return status
