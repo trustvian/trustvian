@@ -1,9 +1,9 @@
 # 0064 — Suggestions are rule-table outputs beside the evidence, never verdicts
 
-**Status:** Proposed (task [105](../tasks/v0.12/105-pipeline-status-surface.md),
-[106](../tasks/v0.12/106-frequency-evidence.md) and
-[107](../tasks/v0.12/107-change-impact-view-and-report.md); accepted when the
-first of them lands). Builds on
+**Status:** Accepted with task [105](../tasks/v0.12/105-pipeline-status-surface.md)'s
+status rule table; [106](../tasks/v0.12/106-frequency-evidence.md) and
+[107](../tasks/v0.12/107-change-impact-view-and-report.md) bring their own tables
+under it. Builds on
 [ADR 0028](0028-scorecards-are-fixed-shape-comparative-evidence.md),
 [ADR 0029](0029-hard-gates-use-explicit-integer-evidence.md) and
 [ADR 0036](0036-webui-is-a-same-origin-adapter-over-v1.md), and changes none of

@@ -8,7 +8,7 @@ Their specifications live here because this is the milestone that builds them.
 
 | Task | Status |
 |---|---|
-| [105 — Pipeline status surface](105-pipeline-status-surface.md) | Specified |
+| [105 — Pipeline status surface](105-pipeline-status-surface.md) | Implemented |
 | [087 — Performance and cost evidence](087-performance-and-cost-evidence.md) | Specified |
 | [106 — Frequency evidence](106-frequency-evidence.md) | Specified |
 | [086 — Scenario and input versioning](086-scenario-and-input-versioning.md) | Specified |

@@ -323,6 +323,28 @@ A tool *name* is what the agent did; a tool *argument* is what it said. See
 [Privacy](SECURITY.md) for where that boundary binds and what it does **not**
 claim.
 
+### Read for the status surface only
+
+The Collector processor's optional `status:` block
+([task 105](tasks/v0.12/105-pipeline-status-surface.md)) reads three more things,
+for the developer-facing pipeline status and nowhere else:
+
+| Read from | Used for |
+|---|---|
+| resource `service.name` | naming a producer on the status surface — it is already the actor fallback |
+| resource `telemetry.sdk.name`, `.language`, `.version` | showing which SDK a producer runs |
+| the instrumentation scope's name and version | showing which instrumentation library emitted the spans |
+
+None of them reaches an `Event`, a `DecisionRecord`, a fingerprint, a baseline,
+the ingest envelope or anything persisted. They travel in the status report,
+which the control plane holds in memory only.
+
+The model calls and fidelity counts on the same surface read nothing new. A
+model call is a span whose behavioral layer is `model`, its model is the
+`Operation.Name` the table above produced and its provider is the `Target.Name`.
+The per-target count of distinct operations at transport fidelity counts
+`Operation.Name` values without reporting them.
+
 ### Behavioral layer
 
 Beside fidelity, and answering a different question. Fidelity says *whether*

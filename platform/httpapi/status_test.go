@@ -18,13 +18,13 @@ import (
 // statusAPI is a handler over a fresh control plane with a clock the test
 // moves, because status is entirely about elapsed time.
 type statusAPI struct {
-	t       *testing.T
+	t       testing.TB
 	handler http.Handler
 	mu      sync.Mutex
 	now     time.Time
 }
 
-func newStatusAPI(t *testing.T) *statusAPI {
+func newStatusAPI(t testing.TB) *statusAPI {
 	t.Helper()
 	store, err := platform.OpenSQLiteStore(t.Context(), filepath.Join(t.TempDir(), "platform.db"))
 	if err != nil {

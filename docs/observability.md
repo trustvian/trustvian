@@ -324,6 +324,30 @@ where sampling applies.
 | Per-actor or per-fingerprint metrics | Unbounded by construction. This is the whole cardinality argument above. |
 | A vendor client (Prometheus, StatsD, Datadog) | The Collector's exporters already reach every backend, vendor-neutrally. Adding a client would put a second telemetry path in a security component. |
 
+## Pipeline status reports
+
+A Collector with a `status:` block also reports to a control plane, for the
+developer-facing [Status view](webui.md#the-status-view) and `trustvian status`
+([task 105](tasks/v0.12/105-pipeline-status-surface.md)). This is not a metric
+stream and does not replace one:
+
+| | Operational metrics (above) | Status report |
+|---|---|---|
+| Audience | an operator's monitoring | a developer asking why Live is empty |
+| Transport | the Collector's OTel metrics pipeline | `POST /v1/collectors/{id}/status`, every 10 s by default |
+| Holds | fixed-cardinality counters and histograms | cumulative counts, plus bounded producer, model and target lists |
+| Retention | whatever the metrics backend keeps | the control plane's memory; a restart forgets it; a silent Collector is forgotten after 5 minutes |
+
+It counts spans received — the one figure the table above refuses to emit as a
+metric — because the status surface has to explain spans that never became a
+record, and the Collector's own span counters are not on that surface. The two
+are not reconciled and must not be: the status report is a developer's view
+of one Collector since it started, not a monitoring series.
+
+A failed report is logged once per failure streak, at WARN, as `status report
+not delivered; retrying each interval`, and is otherwise harmless: nothing waits
+on it, nothing retries it, and the span path never blocks on it.
+
 ## Telemetry cannot affect a decision
 
 Instrumentation is a side effect, never a dependency:

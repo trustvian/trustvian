@@ -39,10 +39,12 @@ State: .trustvian/platform.db
 Open the `Web:` URL. No browser is launched for you, and there is no `--open`
 flag — a security tool that opens windows by itself is a surprise.
 
-**Nothing needs to be typed.** The page opens on **Live**, subscribes to all
-local activity, and shows every run that is producing telemetry as it arrives.
-If your agent is running, it is already on the screen; if nothing is running,
-the hierarchy browser below the graph shows what exists.
+**Nothing needs to be typed.** The page subscribes to all local activity and
+reads the pipeline status once. If your agent is running, it opens on **Live**
+and the agent is already on the screen. If nothing is arriving, it opens on
+**Status**, which says why and what to check (see
+[the Status view](#the-status-view)). The control plane decides which: the
+browser reads the answer and holds no rule of its own.
 
 The API and the WebUI are the **same endpoint**. The UI is served from the same
 loopback listener that answers `/v1`, which is why `runtime.json` still carries
@@ -52,7 +54,8 @@ one URL and needs no second field.
 
 | Destination | Purpose |
 |---|---|
-| **Live** *(default)* | Watch. Active agents appear by themselves, one run's behavior flow animates as calls arrive, and an inspector shows what Trustvian decided |
+| **Live** *(landing view when something is active)* | Watch. Active agents appear by themselves, one run's behavior flow animates as calls arrive, and an inspector shows what Trustvian decided |
+| **Status** *(landing view when nothing is)* | Diagnose. Which Collectors are reporting, which producers they have seen and how, which model calls the telemetry named, how many spans arrived only as HTTP, how each span's actor was bound, and named suggestions for what to check |
 | **Overview** | Orient. Live activity, the newest runs of a project, agent or candidate by status, one run's authoritative evidence, recent gate verdicts and the project's environments — each saying what it covers and when it was read |
 | **Projects** | Choose. A searchable table of what exists; picking a row scopes the whole console and the sidebar says which project that is |
 | **Runs** | Explore. A visible list of the project's agents and their candidates, then the run table itself. Clicking a run opens its workspace |
@@ -69,6 +72,51 @@ product is thinner than it is.
 What it deliberately cannot do: ingest decision records (that is the job of the
 application under evaluation, through the CLI or the API), or manage
 environments (task 065).
+
+## The Status view
+
+**Status** answers *why is Live empty?* — or, when it isn't, *what is the
+pipeline actually receiving?* It renders `GET /v1/status`
+([task 105](tasks/v0.12/105-pipeline-status-surface.md)) and nothing else, the
+same document `trustvian status` and `trustvian dev --check` print.
+
+| Section | What it shows |
+|---|---|
+| Suggestions | The outputs of a named rule table over the evidence on the page, each with its rule, rule version and the evidence it read ([ADR 0064](adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md)) |
+| Collector | Reporting or stale, last report, start time, OTLP receivers, the evaluation run it feeds, and what became of every span it was handed |
+| Producers | Each `service.name` it has seen, its instrumentation scopes, its `telemetry.sdk.*` values, its span count and its last span |
+| Model calls | Each model and provider the telemetry named, with a call count — display metadata, never identity |
+| Fidelity | How many evaluated spans a convention named, how many were transport only, and per transport target how many distinct operations reached it |
+| Actors and learning | Which link of the actor chain bound each span — or neither, in which case it was never evaluated — and what the engine's `Observe` reported, by the decision it followed |
+| Engine | *Unavailable*, with the reason: the engine exposes no statistics accessor, so baseline count, maturity and fingerprint admission are not shown |
+
+**It is the landing view only when nothing is active.** The page makes one
+status read at startup; the document's `landing` field — `live` when a
+Collector is reporting and has seen a producer within 30 seconds, `status`
+otherwise — decides where it opens. A page whose reader has already moved is
+left where it is. When spans start arriving while Status is open, a line at the
+top says so and offers **Open Live**; the page does not move by itself.
+
+**It stays current without polling.** The control plane publishes a
+`status_changed` event on the realtime stream when a Collector's report changes
+what a reader would see; an idle Collector reporting every ten seconds publishes
+nothing. Status re-reads when it is on screen and otherwise re-reads on the next
+visit. **Refresh** reads again; a reconnect of the stream reads again. A
+Collector that stops reporting becomes *stale* on the next read — the page
+prints when it was read.
+
+**It computes nothing and claims nothing.** Every figure is a field of the
+document. A section a Collector did not report says *not reported by this
+Collector*, never `0`. Status is held in memory by the control plane, so a
+restart forgets it, and the page says how long its view covers. There is no
+health score, no traffic light and no history. Operation names at transport
+fidelity are counted and never shown, because a span name can carry a URL path
+or a query.
+
+Every bound is named at the foot of the page: 16 Collectors; per Collector 64
+producers, 64 models and 64 transport targets; 16 scopes per producer; 32
+distinct operations counted per target; 64 suggestions; reporting within 30 s;
+forgotten after 300 s.
 
 ## The Overview
 
