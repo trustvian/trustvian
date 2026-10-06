@@ -600,6 +600,7 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 		p.statusTracker.ObserveEvaluated(status.Evaluated{
 			Semantic:  fidelityOf(result) == event.FidelitySemantic,
 			Model:     layerOf(result) == event.LayerModel,
+			HTTP:      result.Event.Operation.Category == event.OperationCategoryHTTP,
 			Operation: result.Event.Operation.Name,
 			Target:    result.Event.Target.Name,
 		})

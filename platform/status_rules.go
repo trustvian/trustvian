@@ -173,7 +173,9 @@ func ruleSpansWithoutServiceName(status PipelineStatus) []Suggestion {
 }
 
 // Rule 4 — status.collapsed_http_operations: CollapsedOperationsThreshold or
-// more distinct operations reached one target, all at transport fidelity.
+// more distinct operations reached one named HTTP target, all at transport
+// fidelity. The Collector counts only HTTP spans with a target; an unnamed
+// target is skipped here as a second guard.
 func ruleCollapsedHTTPOperations(status PipelineStatus) []Suggestion {
 	var out []Suggestion
 	for _, c := range status.Collectors {
@@ -181,13 +183,13 @@ func ruleCollapsedHTTPOperations(status PipelineStatus) []Suggestion {
 			continue
 		}
 		for _, t := range c.Report.TransportTargets {
-			if t.DistinctOperations < CollapsedOperationsThreshold {
+			// Never for an unnamed target, whatever a Collector reports: spans
+			// with no target are not HTTP calls to one destination, and naming
+			// "(no target)" in a sentence about HTTP would describe nothing.
+			if t.Target == "" || t.DistinctOperations < CollapsedOperationsThreshold {
 				continue
 			}
 			target := t.Target
-			if target == "" {
-				target = "(no target)"
-			}
 			distinct := strconv.FormatUint(t.DistinctOperations, 10)
 			if t.OperationsSaturated {
 				distinct = "at least " + distinct

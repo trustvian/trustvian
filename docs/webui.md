@@ -86,7 +86,7 @@ same document `trustvian status` and `trustvian dev --check` print.
 | Collector | Reporting or stale, last report, start time, OTLP receivers, the evaluation run it feeds, and what became of every span it was handed |
 | Producers | Each `service.name` it has seen, its instrumentation scopes, its `telemetry.sdk.*` values, its span count and its last span |
 | Model calls | Each model and provider the telemetry named, with a call count — display metadata, never identity |
-| Fidelity | How many evaluated spans a convention named, how many were transport only, and per transport target how many distinct operations reached it |
+| Fidelity | How many evaluated spans a convention named, how many were transport only, and per named HTTP target how many distinct operations reached it at transport fidelity |
 | Actors and learning | Which link of the actor chain bound each span — or neither, in which case it was never evaluated — and what the engine's `Observe` reported, by the decision it followed |
 | Engine | *Unavailable*, with the reason: the engine exposes no statistics accessor, so baseline count, maturity and fingerprint admission are not shown |
 
@@ -115,7 +115,7 @@ or a query.
 
 Every bound is named at the foot of the page: 16 Collectors; per Collector 64
 producers, 64 models and 64 transport targets; 16 scopes per producer; 32
-distinct operations counted per target; 64 suggestions; reporting within 30 s;
+distinct operations counted per HTTP target; 64 suggestions; reporting within 30 s;
 forgotten after 300 s.
 
 ## The Overview

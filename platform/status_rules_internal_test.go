@@ -118,10 +118,17 @@ func TestStatusRuleTable(t *testing.T) {
 			reports: []CollectorStatusReport{func() CollectorStatusReport {
 				r := ruleReport("dev")
 				r.TransportTargets = []TransportTargetStatus{
-					{Target: "", Spans: 99, DistinctOperations: 32, OperationsSaturated: true}}
+					{Target: "api.example.com", Spans: 99, DistinctOperations: 32, OperationsSaturated: true}}
 				return r
 			}()},
-			want: []string{"status.collapsed_http_operations"}, text: "at least 32 distinct operations reached (no target)"},
+			want: []string{"status.collapsed_http_operations"}, text: "at least 32 distinct operations reached api.example.com"},
+		{name: "an unnamed target never fires rule 4, whatever its count",
+			reports: []CollectorStatusReport{func() CollectorStatusReport {
+				r := ruleReport("dev")
+				r.TransportTargets = []TransportTargetStatus{
+					{Target: "", Spans: 99, DistinctOperations: 32, OperationsSaturated: true}}
+				return r
+			}()}, want: nil},
 		{name: "two operations: no rule 4",
 			reports: []CollectorStatusReport{func() CollectorStatusReport {
 				r := ruleReport("dev")

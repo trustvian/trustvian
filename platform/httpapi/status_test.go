@@ -118,7 +118,7 @@ const slice2Sections = `,
   "fidelity": {"semantic": "201", "transport": "197"},
   "transport_targets": [
     {"target": "api.example.com", "spans": "120", "distinct_operations": "4", "operations_saturated": false},
-    {"target": "", "spans": "77", "distinct_operations": "1", "operations_saturated": false}
+    {"target": "kb.internal", "spans": "77", "distinct_operations": "1", "operations_saturated": false}
   ],
   "transport_targets_truncated": false,
   "actors": {"bound_by_override": "0", "bound_by_service_name": "398", "unbound": "14"},
@@ -156,12 +156,12 @@ func TestStatusDocumentGolden(t *testing.T) {
 				`"truncated":false},"fidelity":{"reported":true,"semantic":"201","transport":"197"},` +
 				`"transport_targets":{"reported":true,"targets":[` +
 				`{"target":"api.example.com","spans":"120","distinct_operations":"4","operations_saturated":false},` +
-				`{"target":"","spans":"77","distinct_operations":"1","operations_saturated":false}],"truncated":false},` +
+				`{"target":"kb.internal","spans":"77","distinct_operations":"1","operations_saturated":false}],"truncated":false},` +
 				`"actors":{"reported":true,"bound_by_override":"0","bound_by_service_name":"398","unbound":"14"},` +
 				`"learning":{"reported":true,"learned":"350","not_learned":"48","observe_errors":"0",` +
 				`"not_learned_by_decision":[{"decision":"allow","count":"8"},{"decision":"block","count":"40"}]}}`,
 			// Rule 3 on the 14 unbound spans, rule 4 on api.example.com's four
-			// operations; the unnamed target's single operation fires nothing.
+			// operations; kb.internal's single operation fires nothing.
 			suggestions: `"suggestions":[{"rule":"status.spans_without_service_name","rule_version":1,` +
 				`"evidence":[{"name":"collector_id","value":"dev"},{"name":"unbound","value":"14"}],` +
 				`"text":"14 spans reached Collector dev ` +

@@ -19,8 +19,8 @@ actually depend on.
   - the producers seen, with their instrumentation scopes and
     `telemetry.sdk.*`;
   - the model calls the telemetry named;
-  - fidelity counts, and the distinct operations reaching each transport
-    target;
+  - fidelity counts, and the distinct operations reaching each named HTTP
+    target at transport fidelity;
   - how each span's actor was bound;
   - what the engine's `Observe` returned.
 

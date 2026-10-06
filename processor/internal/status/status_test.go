@@ -288,22 +288,27 @@ func TestTrackerEvaluatedSections(t *testing.T) {
 	tr.ObserveEvaluated(Evaluated{Semantic: true, Model: true, Operation: "gpt-x", Target: ""})
 	tr.ObserveEvaluated(Evaluated{Semantic: true, Operation: "export_customer", Target: "export.localhost"})
 	for _, op := range []string{"POST /a", "POST /b", "GET /c", "POST /a"} {
-		tr.ObserveEvaluated(Evaluated{Operation: op, Target: "api.example.com"})
+		tr.ObserveEvaluated(Evaluated{HTTP: true, Operation: op, Target: "api.example.com"})
 	}
-	tr.ObserveEvaluated(Evaluated{Operation: "SELECT", Target: ""})
+	// Transport fidelity that is not an HTTP call to a named destination: a DB
+	// span (its operation is a span name), an RPC-fallback span with no target
+	// (an unmapped OpenInference CHAIN, an internal span), and an HTTP span whose
+	// target is unknown. Each counts as transport, and none is a target.
+	tr.ObserveEvaluated(Evaluated{Operation: "SELECT orders", Target: "shop"})
+	tr.ObserveEvaluated(Evaluated{Operation: "RetrievalQA", Target: ""})
+	tr.ObserveEvaluated(Evaluated{HTTP: true, Operation: "POST", Target: ""})
 
 	models, truncated := tr.Models()
 	gotModels, _ := json.Marshal(models)
 	if want := `[{"provider":"","model":"gpt-x","calls":"1"},{"provider":"ollama","model":"llama3.2","calls":"3"}]`; string(gotModels) != want || truncated {
 		t.Fatalf("models %s (truncated %v), want %s", gotModels, truncated, want)
 	}
-	if got := tr.Fidelity(); got.Semantic != "5" || got.Transport != "5" {
+	if got := tr.Fidelity(); got.Semantic != "5" || got.Transport != "7" {
 		t.Fatalf("fidelity %+v", got)
 	}
 	targets, truncated := tr.TransportTargets()
 	gotTargets, _ := json.Marshal(targets)
-	want := `[{"target":"","spans":"1","distinct_operations":"1","operations_saturated":false},` +
-		`{"target":"api.example.com","spans":"4","distinct_operations":"3","operations_saturated":false}]`
+	want := `[{"target":"api.example.com","spans":"4","distinct_operations":"3","operations_saturated":false}]`
 	if string(gotTargets) != want || truncated {
 		t.Fatalf("targets %s (truncated %v), want %s", gotTargets, truncated, want)
 	}
@@ -319,10 +324,10 @@ func TestTrackerEvaluatedBounds(t *testing.T) {
 		tr.ObserveEvaluated(Evaluated{Semantic: true, Model: true, Operation: strings.Repeat("m", i+1)})
 	}
 	for i := range MaxTransportTargets + 2 {
-		tr.ObserveEvaluated(Evaluated{Operation: "op", Target: strings.Repeat("t", i+1)})
+		tr.ObserveEvaluated(Evaluated{HTTP: true, Operation: "op", Target: strings.Repeat("t", i+1)})
 	}
 	for i := range MaxOperationsPerTarget + 5 {
-		tr.ObserveEvaluated(Evaluated{Operation: strings.Repeat("o", i+1), Target: "t"})
+		tr.ObserveEvaluated(Evaluated{HTTP: true, Operation: strings.Repeat("o", i+1), Target: "t"})
 	}
 	if models, truncated := tr.Models(); len(models) != MaxModels || !truncated {
 		t.Fatalf("models %d truncated=%v", len(models), truncated)
@@ -450,7 +455,7 @@ func TestSanitizedCollisionsMergeRatherThanDuplicate(t *testing.T) {
 		tr.ObserveScope(name, SDK{}, Scope{Name: "s\x01"}, 1, t0)
 		tr.ObserveScope(name, SDK{}, Scope{Name: "s\x02"}, 1, t0)
 		tr.ObserveEvaluated(Evaluated{Semantic: true, Model: true, Operation: name, Target: name})
-		tr.ObserveEvaluated(Evaluated{Operation: "op", Target: name})
+		tr.ObserveEvaluated(Evaluated{HTTP: true, Operation: "op", Target: name})
 		tr.ObserveLearning(false, name, false)
 	}
 	producers, _ := tr.Producers(t0)

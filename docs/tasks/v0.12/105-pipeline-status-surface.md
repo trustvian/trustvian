@@ -145,7 +145,7 @@ order:
 | 1 | `status.no_collector` | no collector report received in the last 30 s | "No Collector has reported in 30 s. Is `trustvian dev` running, and is `trustvian-collector` on its path?" |
 | 2 | `status.no_producer` | a collector reported, and `producers` is empty or every producer's `last_seen_at` is older than 30 s | "No producer has sent spans in 30 s. Check `OTEL_EXPORTER_OTLP_ENDPOINT` points at `{receiver.endpoint}`." |
 | 3 | `status.spans_without_service_name` | `dropped_without_actor` > 0 | "{dropped_without_actor} spans had no `service.name` and no `trustvian.actor.id`, and were not evaluated. Set the `service.name` resource attribute." |
-| 4 | `status.collapsed_http_operations` | any target with `fidelity = transport` and `distinct_operations` ≥ 3 | "{distinct_operations} operations on {target} are visible only as HTTP. Add OpenInference or OpenTelemetry GenAI instrumentation to see them as model or tool calls." |
+| 4 | `status.collapsed_http_operations` | a **named HTTP target** (category `http`, non-empty target) with `fidelity = transport` and `distinct_operations` ≥ 3 — *amended from "any target"; see [What shipped](#what-shipped)* | "{distinct_operations} operations on {target} are visible only as HTTP. Add OpenInference or OpenTelemetry GenAI instrumentation to see them as model or tool calls." |
 | 5 | `status.admission_near_bound` | engine admission available, and `admitted * 10 ≥ bound * 9` (integer form of ≥ 90 %) | "{admitted} of {bound} behaviors are admitted for {actor}. At {bound} the evaluation stops learning new behavior." |
 
 Rule 5 cannot fire while `engine.state` is `unavailable`. That is ADR 0064 § 3:
@@ -314,7 +314,28 @@ building, and recorded here rather than left for a reader to find in the code.
 | Rule texts and thresholds as specified | Same rules and thresholds. Rule 2 names the first reporting Collector's first receiver endpoint, with a second fixed sentence when none was reported. Rule 4 says "at least N" when the per-target count saturated | The template substitutes only evidence values (ADR 0064) |
 | Suggestion `evidence` as a JSON object | An ordered list of `{name, value}` | The WebUI may not enumerate a server object's keys (ADR 0036 § 7). The order is the rule's own |
 | Report body bounded at 64 KiB | 256 KiB, the API's request bound. The processor fits an oversized report, scope lists first, and marks what it shortened | A report at every bound with maximal strings measured 681 KB. It fits at 131 KB with all 64 producers once scope lists are dropped |
+| Rule 4 over "any target with `fidelity = transport`" | Only a span whose category is `http` and whose target is named is counted per target. The platform also never fires rule 4 for an empty target, as a second guard | Transport fidelity also holds DB spans, whose operation is a span name, and the RPC fallback. The fallback includes OpenInference `CHAIN`, `GUARDRAIL`, `EVALUATOR` and `PROMPT` spans and internal spans with no target. An OpenInference-instrumented CrewAI or LangChain agent filled the empty target with three or more span names within seconds, so rule 4 told an OpenInference user to add OpenInference. Found in review |
 | `status_changed` published on every report | Published only when a report changes what a reader would see, ignoring sequence, uptime and ages | An idle Collector would otherwise wake every open Status view every 10 s |
+
+**Rule 4 rarely fires for plain HTTP clients, measured.** Current
+`opentelemetry-instrumentation-requests` and `-httpx` (0.66b1, SDK 1.45.1;
+requests 2.34.2, httpx 0.28.1) were measured sending POSTs to one host on three
+paths (`/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`). Both name every
+client span after its method alone (`POST`), so three paths are one distinct
+operation:
+
+```text
+OTEL_SEMCONV_STABILITY_OPT_IN=''      requests  POST  http.method, http.url — no server.address
+                                      httpx     POST  http.method, http.url — no server.address
+OTEL_SEMCONV_STABILITY_OPT_IN=http    requests  POST  http.request.method, server.address, url.full
+                                      httpx     POST  http.request.method, server.address, url.full
+```
+
+Without the opt-in there is no `server.address` either, so the target is empty.
+`trustvian dev` sets the opt-in. Rule 4 is kept as fixed above. Whether a
+different signal, such as distinct `url.path` values (which Trustvian does not
+read today) or HTTP spans whose parent is unnamed, should replace it is left
+open for the maintainer.
 
 Measured costs are in [PERFORMANCE.md](../../PERFORMANCE.md#v012-task-105-pipeline-status-surface).
 The span path costs about 160 ns per span with no new allocation. A typical report

@@ -290,6 +290,70 @@ func TestStatusReportCountsActorBindingAndLearning(t *testing.T) {
 	}
 }
 
+// TestStatusTransportTargetsAreNamedHTTPOnly is the review's case for rule 4:
+// transport fidelity also holds DB spans and the RPC fallback — unmapped
+// OpenInference kinds such as CHAIN, internal spans — and none of those is an
+// HTTP call to a destination. Each must count as transport and never become a
+// transport target, or an OpenInference producer would be told to add
+// OpenInference.
+func TestStatusTransportTargetsAreNamedHTTPOnly(t *testing.T) {
+	plane, url := newFakeStatusPlane(t)
+	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), &trustvianprocessor.Config{
+		Status: &trustvianprocessor.StatusConfig{APIURL: url, Interval: time.Second},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	td := ptrace.NewTraces()
+	rs := td.ResourceSpans().AppendEmpty()
+	rs.Resource().Attributes().PutStr(string(semconv.ServiceNameKey), "crew")
+	ss := rs.ScopeSpans().AppendEmpty()
+	now := time.Now()
+	n := 0
+	add := func(name string, kind ptrace.SpanKind, attrs map[string]string) {
+		n++
+		span := ss.Spans().AppendEmpty()
+		span.SetName(name)
+		span.SetKind(kind)
+		span.SetTraceID(pcommon.TraceID{5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5})
+		span.SetSpanID(pcommon.SpanID{5, 5, 5, 5, 5, 5, 5, byte(n)})
+		span.SetStartTimestamp(pcommon.NewTimestampFromTime(now))
+		span.SetEndTimestamp(pcommon.NewTimestampFromTime(now.Add(time.Millisecond)))
+		for k, v := range attrs {
+			span.Attributes().PutStr(k, v)
+		}
+	}
+	// Unmapped OpenInference CHAIN spans: RPC fallback, no target, a new span
+	// name each time — exactly the shape that filled the "" target.
+	for _, name := range []string{"RetrievalQA", "StuffDocumentsChain", "LLMChain", "Crew.kickoff"} {
+		add(name, ptrace.SpanKindInternal, map[string]string{"openinference.span.kind": "CHAIN"})
+	}
+	// DB spans: target is db.namespace, operation is the span name.
+	for _, name := range []string{"SELECT orders", "INSERT orders", "UPDATE orders"} {
+		add(name, ptrace.SpanKindClient, map[string]string{"db.system.name": "postgresql", "db.namespace": "shop"})
+	}
+	// HTTP spans that named no destination: no server.address, no peer.service.
+	for _, path := range []string{"/a", "/b", "/c"} {
+		add("POST "+path, ptrace.SpanKindClient, map[string]string{"http.request.method": "POST"})
+	}
+
+	if err := proc.ConsumeTraces(context.Background(), td); err != nil {
+		t.Fatal(err)
+	}
+	report, _ := plane.waitFor(t, func(r map[string]any) bool {
+		return r["spans"].(map[string]any)["evaluated"] == "10"
+	})
+	targets, _ := json.Marshal(report["transport_targets"])
+	if string(targets) != "[]" {
+		t.Fatalf("non-HTTP or unnamed spans became transport targets: %s", targets)
+	}
+	fidelity, _ := json.Marshal(report["fidelity"])
+	if want := `{"semantic":"0","transport":"10"}`; string(fidelity) != want {
+		t.Fatalf("fidelity %s, want %s: every one of them is still transport", fidelity, want)
+	}
+}
+
 func TestStatusConfigValidation(t *testing.T) {
 	tests := []struct {
 		name   string

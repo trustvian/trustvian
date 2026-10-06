@@ -171,7 +171,7 @@ function renderFidelity(host, collector, bounds) {
   }
 
   const targets = collector.transport_targets || {};
-  panel.append(element("h4", "panel-subtitle", "Operations per target at transport fidelity"));
+  panel.append(element("h4", "panel-subtitle", "Operations per HTTP target at transport fidelity"));
   if (targets.reported !== true) {
     panel.append(element("p", "panel-note", NOT_REPORTED));
     host.append(panel);
@@ -182,9 +182,10 @@ function renderFidelity(host, collector, bounds) {
   dataTable(table, {
     rows: targets.targets,
     keyOf: (row) => row.target,
-    emptyTitle: "Every evaluated span was named by a convention.",
+    emptyTitle: "No HTTP call to a named target arrived at transport fidelity.",
+    emptyHint: "DB spans, convention spans this table does not map, and HTTP spans with no server.address are counted as transport above, never here.",
     emptyIcon: "empty",
-    caption: `Transport targets seen by ${collector.collector_id}`,
+    caption: `HTTP targets seen by ${collector.collector_id} at transport fidelity`,
     columns: [
       { key: "target", label: "Target", cell: (row) => text(row.target, "(no target)") },
       { key: "spans", label: "Spans", align: "right", cell: (row) => row.spans },

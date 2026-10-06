@@ -115,7 +115,8 @@ Every `interval`, one goroutine posts one report to
 `POST /v1/collectors/{collector_id}/status`: cumulative span counts, the
 producers seen (resource `service.name`, instrumentation scope, `telemetry.sdk.*`),
 the model calls and fidelity the convention table established, the distinct
-operations per transport-fidelity target (counted, never named), how each span's
+operations per named HTTP target at transport fidelity (counted, never named; DB
+and RPC-fallback spans count as transport but are never a target), how each span's
 actor was bound, and what `Engine.Observe` returned. No queue and no retry: a
 failed report is superseded by the next. Every section is bounded and says when
 it was truncated, and a report over the 256 KiB request bound is shortened —

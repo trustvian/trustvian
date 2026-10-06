@@ -152,7 +152,7 @@ over the same document
 | `status.no_collector` | no Collector has reported in 30 s |
 | `status.no_producer` | a Collector is reporting, and none of the reporting Collectors has seen a span in 30 s; names the receiver endpoint when one is reported |
 | `status.spans_without_service_name` | spans reached a Collector with neither `service.name` nor `trustvian.actor.id`, and were never evaluated |
-| `status.collapsed_http_operations` | 3 or more distinct operations reached one target at transport fidelity |
+| `status.collapsed_http_operations` | 3 or more distinct operations reached one named HTTP target at transport fidelity. DB spans, unmapped convention spans and HTTP spans with no `server.address` or `peer.service` are never counted. Common HTTP client instrumentation names every span after its method alone, so this rule rarely fires for it — see [task 105](tasks/v0.12/105-pipeline-status-surface.md#what-shipped) |
 | `status.admission_near_bound` | cannot fire: the engine reports no fingerprint admission count |
 
 A suggestion changes nothing else: no exit code, no verdict, no stored record.

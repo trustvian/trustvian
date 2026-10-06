@@ -108,9 +108,14 @@ type Report struct {
 	// Fidelity counts evaluated spans by how their behavior was named.
 	Fidelity FidelityCounts `json:"fidelity"`
 
-	// TransportTargets is, per target, how many distinct operations reached it
-	// at transport fidelity — the count that shows several model or tool calls
-	// collapsing onto one HTTP destination.
+	// TransportTargets is, per named HTTP target, how many distinct operations
+	// reached it at transport fidelity — the count that shows several model or
+	// tool calls collapsing onto one HTTP destination. Only HTTP spans with a
+	// target are counted: a DB span's "operation" is its span name, and the RPC
+	// fallback also holds convention spans this table does not map (OpenInference
+	// CHAIN, GUARDRAIL, EVALUATOR, PROMPT) and internal spans with no target.
+	// Counting those would report an instrumented agent as "visible only as
+	// HTTP". Transport-fidelity spans of any category still count in Fidelity.
 	TransportTargets          []TransportTarget `json:"transport_targets"`
 	TransportTargetsTruncated bool              `json:"transport_targets_truncated"`
 
@@ -322,6 +327,9 @@ type Evaluated struct {
 	Semantic bool
 	// Model is true when the convention classified it as a model call.
 	Model bool
+	// HTTP is true when the Event's operation category is http. Only such a
+	// span, with a target, is counted per transport target.
+	HTTP bool
 	// Operation and Target are the Event's operation and target names: for a
 	// model call, the model and its provider.
 	Operation string
@@ -358,6 +366,10 @@ func (t *Tracker) ObserveEvaluated(e Evaluated) {
 	}
 
 	t.transport++
+	// Per-target operations are an HTTP question only: see Report.TransportTargets.
+	if !e.HTTP || targetName == "" {
+		return
+	}
 	target, ok := t.targets[targetName]
 	if !ok {
 		if len(t.targets) >= MaxTransportTargets {

@@ -343,7 +343,13 @@ The model calls and fidelity counts on the same surface read nothing new. A
 model call is a span whose behavioral layer is `model`, its model is the
 `Operation.Name` the table above produced and its provider is the `Target.Name`.
 The per-target count of distinct operations at transport fidelity counts
-`Operation.Name` values without reporting them.
+`Operation.Name` values without reporting them, and only for spans whose category
+is `http` and whose target is named (`peer.service` or `server.address`). A DB
+span's operation is its span name, and the RPC fallback also holds the
+OpenInference kinds this table leaves unmapped (`CHAIN`, `GUARDRAIL`,
+`EVALUATOR`, `PROMPT`) and internal spans with no target. Counting those would
+describe an instrumented agent as "visible only as HTTP". They still count as
+transport in the fidelity totals.
 
 ### Behavioral layer
 
