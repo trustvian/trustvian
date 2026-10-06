@@ -87,6 +87,7 @@ as long as its own decision holds.
 | [0061](0061-the-theme-preference-is-the-one-value-the-browser-stores.md) | The theme preference is the one value the browser stores | Accepted |
 | [0062](0062-trace-investigation-is-a-waterfall-over-retained-observations.md) | Trace investigation is a waterfall over retained observations | Accepted |
 | [0063](0063-recency-is-a-stored-sort-key-and-a-composite-cursor.md) | Recency is a stored sort key and a composite cursor | Accepted |
+| [0064](0064-suggestions-are-rule-table-outputs-beside-the-evidence.md) | Suggestions are rule-table outputs beside the evidence, never verdicts | Proposed |
 
 **0046 is the first record here carried as Proposed.** Its reasoning is
 complete and no maintainer has ratified it, which is exactly what this status

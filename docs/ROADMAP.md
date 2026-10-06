@@ -34,7 +34,8 @@ carries it because it contradicts
 [What Trustvian is not becoming](#what-trustvian-is-not-becoming) as written.
 
 `v0.10.0` — the [developer preview](#v0100--developer-preview) — and `v0.11.0`
-— the [WebUI experience](#v0110--webui-experience) — have SHIPPED, and `v1.0`
+— the [WebUI experience](#v0110--webui-experience) — have SHIPPED.
+`v0.12.0` — [Change Impact](#v0120--change-impact) — is PLANNED, and `v1.0`
 is the release gate beyond them. Track B is **partly implemented**: the
 evaluation foundation, local persistence, the local control-plane API and
 realtime, the developer CLI, the TUI, the WebUI, the PostgreSQL backend, the
@@ -234,8 +235,14 @@ WebUI experience (097–104).
 - Multi-node and load validation, platform security hardening, platform backup
   and restore, and the rest of 068–072. They are planned, with no
   specification.
-- Metadata-only detection evaluation (080), which is specified.
-- Inspection depth 086–090, which is scoped by
+- Metadata-only detection evaluation (080), which is specified and runs as a
+  parallel measurement in [`v0.12.0`](#v0120--change-impact).
+- The [`v0.12.0` Change Impact](#v0120--change-impact) tasks — persisted
+  fidelity (081), scenario and input versioning (086), performance and cost
+  evidence (087), the pipeline status surface (105), frequency evidence (106)
+  and the Change Impact view and report (107). They are specified in
+  [`tasks/v0.12/`](tasks/v0.12/README.md).
+- Inspection depth 088–090, which is scoped by
   [task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md). 089 is
   PROPOSED, not approved.
 - Multi-tenancy, access control, an MCP server surface, a machine-learning
@@ -504,6 +511,146 @@ run, the first ones admitted; one page of 64 per read; trace structure only as
 recorded; timestamps from the producer's clock, so bars from different
 producers can be skewed; and no fidelity, layer or sequence-deviation evidence
 per observation (076). Each is stated on screen where it applies.
+
+## v0.12.0 — Change Impact
+
+**PLANNED.** Tasks 081, 086, 087 and 105–107 are specified in
+[`tasks/v0.12/`](tasks/v0.12/README.md), and none is implemented. The engine is
+unchanged. The platform gains:
+
+- one ephemeral status surface (105);
+- integer frequency and operational evidence on a comparison (106, 087);
+- provenance digests on a scenario execution (086);
+- persisted per-behavior fidelity (081);
+- one view and one report that put all of it in a single table (107).
+
+`v0.11.0` made the WebUI navigable without typing an identifier. What it
+leaves open is the question a developer asks right after changing a model, a
+prompt or a tool: *what did that do?* A comparison already says which
+behaviors were added or removed. It does not say:
+
+- how often behavior changed;
+- where the load went;
+- what happened to latency, errors and tokens;
+- whether both sides ran the same scenario on the same inputs.
+
+And when nothing arrives at all, the Live view is blank and says nothing about
+why.
+
+Nothing in this milestone adds a verdict, a score or content. Every figure is
+integer or categorical metadata the control plane computes and every interface
+renders. Advice appears only as named rule-table outputs beside the evidence
+([ADR 0064](adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md)).
+
+### User journey
+
+```text
+start trustvian dev and open the WebUI
+    ↓
+nothing is arriving yet — the Status view says why, and what to check
+    ↓
+the agent's spans arrive — Live, as today
+    ↓
+change the model, run the scenario N times per side
+    ↓
+open Change Impact: same scenario? same inputs? same model?
+    ↓
+read behaviors as k/N and calls per run, targets as load ratio,
+latency buckets, errors and 429s, tokens and — if priced — cost
+    ↓
+follow any row to the observations behind it
+    ↓
+post the same report on the pull request, byte for byte
+```
+
+### Contents
+
+| Task | Status | Milestone |
+|---|---|---|
+| 105 | Specified | [Pipeline status surface](tasks/v0.12/105-pipeline-status-surface.md): `GET /v1/status`, `trustvian status`, `trustvian dev --check`, a Status view that is the landing view when nothing is active, and a tested suggestion table |
+| 087 | Specified | [Performance and cost evidence](tasks/v0.12/087-performance-and-cost-evidence.md): per-behavior duration buckets, status classes and 429s, token counts from `gen_ai.usage.*` / `llm.token_count.*`, and an optional versioned pricing table with provenance on every cost figure. No cost gate |
+| 106 | Specified | [Frequency evidence](tasks/v0.12/106-frequency-evidence.md): calls per run, per-target call ratio in integer permille, a `lost` classification, four optional named gate limits, and a comparison rule table |
+| 086 | Specified | [Scenario and input versioning](tasks/v0.12/086-scenario-and-input-versioning.md): scenario and input digests on each execution, `prompt_ref` beside `Model`, and sameness on the comparison with a warning outside the gate |
+| 081 | Specified | [Persisted per-behavior fidelity](tasks/v0.12/081-persisted-behavior-fidelity.md): fidelity (and, proposed, layer) counts per behavior on both backends, reported as the lowest level seen; `TestFidelityIsNotPersistedYet` inverted |
+| 107 | Specified | [Change Impact view and Model Change Report](tasks/v0.12/107-change-impact-view-and-report.md): Compare becomes Change Impact, the result document goes to version 2, `trustvian eval report`, one shared renderer for the CLI and the PR comment, and an Overview panel |
+| 080 | Specified — **parallel measurement, gates nothing** | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md), run and published under `docs/results/`. It changes no code outside `examples/` and `docs/` |
+
+**Proposed build order: 105, then 087 → 106, then 086, then 081 in a pull
+request of its own, then 107.** 080 runs in parallel from 087 onward.
+
+### Dependencies and missing capabilities
+
+- **Available:**
+  - 084's recorded duration and status;
+  - 078's per-behavior presence, `reference_runs_present` /
+    `candidate_runs_present`, which 106 renders as k/N and does not duplicate;
+  - per-run `BehaviorEntry.Observations`;
+  - 085's resolution keyed by run pair;
+  - persisted scenario executions (ADR 0054);
+  - fidelity and layer on the ingest envelope;
+  - the realtime bus.
+- **Added by this milestone:**
+  - a collector status report pushed to the control plane (105);
+  - HTTP status code and token counts on the ingest envelope, not on
+    `DecisionRecord` (087);
+  - per-behavior operational and fidelity counters (087, 081);
+  - execution digests (086);
+  - a gate-result snapshot on each execution, which gives the report something
+    durable to be keyed by (107).
+- **Missing and not added:**
+  - lost *transitions* — nothing records transitions per execution, so 106
+    reports them as not recorded;
+  - engine statistics — baseline count, maturity distribution and admission
+    against the 512 bound need a core accessor that does not exist, so 105
+    reports them as unavailable until a separately reviewed change adds one.
+
+### Exit criterion
+
+1. **Status.** With nothing running, the WebUI opens on Status and names the
+   next step. With an agent running, it opens on Live as before.
+   `trustvian status`, `dev --check` and the view show the same facts.
+2. **Sameness.** A comparison states whether both sides ran the same scenario,
+   inputs, model and prompt reference, shows the digests, and warns, outside the
+   gate, when they differ.
+3. **Frequency.** Every behavior shows k/N and calls per run per side. Every
+   target shows a permille call ratio or *not available*.
+4. **Operational.** Latency buckets, status classes, 429s and tokens appear per
+   target and per run when the telemetry carried them, and *not available*
+   otherwise, with no delta.
+5. **Fidelity.** Every behavior on a comparison says whether telemetry named it
+   or it was inferred from transport, with counts.
+6. **One report.** `trustvian eval report`, the CI comment and Change Impact
+   show the same evidence, and the Markdown is byte-identical between the CLI
+   and the comment.
+7. **Traceable.** Every number on every screen is a field of a `/v1` response,
+   and every behavior row resolves through 085 to its observations.
+
+### Exclusions
+
+- **088 and 092**, deferred to `v0.13.0`. Review decisions need a decided
+  answer to 082's open decision 5 (whether they wait for 070's authorship).
+  Analytics needs durable comparison contexts, and 107's execution gate snapshot
+  starts providing them.
+- **089**, which stays PROPOSED. It needs a product-boundary decision by a
+  human, and nothing here depends on it. 087's token counts and cost are
+  [explicitly not part of that proposal](#the-proposal-that-is-not-approved).
+- **090**, which is optional and independent. Nothing here waits for it.
+- **No cost gate, no rate gate, no percentile, no health or impact score**, and
+  no new content capability of any kind.
+
+### Known limitations after implementation
+
+- Status codes and token counts arrive only through the Collector. A run
+  ingested in-process through the SDK path reports them as unavailable.
+- Engine facts on the Status view are unavailable until a reviewed engine
+  accessor exists, so the fingerprint-admission
+  [open conflict](#open-conflicts-to-resolve-before-implementation) stays open.
+- The scenario and input digests are computed by the CLI. The control plane
+  validates their format and cannot recompute them.
+- Latency is descriptive. Through a model-driven agent the model dominates it,
+  and no rendering attributes a latency change to the change under test.
+- Records ingested before each schema step read *not recorded* for that step's
+  evidence. They do not read zero.
 
 ## v1.0 — Local-First Behavioral Security Platform
 
@@ -1114,6 +1261,10 @@ end — an instrumented agent, a browser, and a developer who has not read the
 source. 079 and 080 close two gaps of a different kind. 082 is a planning task
 and 083–090 are what it reserves — see
 [inspection and evaluation depth](#agent-inspection-and-evaluation-depth) below.
+105–107 are the new tasks in [`v0.12.0`](#v0120--change-impact). Two of them,
+the pipeline status surface and frequency evidence, came from the empty Live
+view and the presence-only comparison. 107 puts that milestone's evidence into
+one view. None of the three is a `v1.0` gate.
 The **Gate** column says which rows the release actually depends on.
 
 | Task | Milestone | Status | Gate |
@@ -1126,13 +1277,13 @@ The **Gate** column says which rows the release actually depends on.
 | 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) — run the same scenario N times per side, diff the behavior, gate the difference over k-of-N evidence | **Implemented** — repeated evaluation, recorded references and suites; criteria 9 and 11 amended to what the evidence supports, and met | `v1.0` |
 | 079 | [CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md) — the 078 verdict rendered on the pull request, exit codes passed through, no `pull_request_target` with an untrusted checkout | **Implemented** — the run action, the offline renderer and the comment action in a separate job | preview only |
 | 080 | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md) — precision, recall and false-positive rate for the existing signals against a public agent prompt-injection benchmark | Specified | neither |
-| 081 | Persist behavior fidelity, so a comparison delta reports whether a behavior was named by telemetry or inferred from transport — a forward-only schema step in both backends, deferred from 075 | Not specified | neither |
+| 081 | [Persist behavior fidelity](tasks/v0.12/081-persisted-behavior-fidelity.md), so a comparison delta reports whether a behavior was named by telemetry or inferred from transport — a forward-only schema step in both backends, deferred from 075 | Specified (`v0.12.0`) | neither |
 | 082 | [Agent inspection and evaluation depth](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md) — the planning task for the six-step developer workflow: what is implemented, what is missing, and what a decision would cost. Documentation only | Specified | neither |
 | 083 | [Behavioral layer identity and display classification](tasks/v1.0/083-behavioral-layer-classification.md) — an explicit rule for when a tool span and the HTTP request beneath it are one behavior, and a non-identity label so a model call, a tool call and an outbound request are distinguishable without changing what a fingerprint is | **Implemented.** Classification and rendering shipped first; the counting correction folds on 084's parent identity ([ADR 0047](adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md), [ADR 0052](adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)). The optional gate limit over the new unit, `max_added_behavior_changes`, is built too (issue 131): omitted, it is not evaluated; schema 8 persists its promotion evidence without rewriting historical decisions | `v1.0` |
 | 084 | [Correlation and operational evidence on the record boundary](tasks/v1.0/084-correlation-operational-evidence.md) — parent span identity, duration and error status promoted from volatile feature inputs to recorded evidence, additively | **Implemented** — carried, aggregated per run and persisted at schema 6; per-observation history is 067's and is now implemented | `v1.0` |
 | 085 | [Evidence resolution](tasks/v1.0/085-evidence-resolution.md) — from a gate check or a behavioral delta to the behaviors and observations behind it, as a resolution query rather than a payload inside a fixed-shape verdict. Authoritative at the control plane, exercised over `/v1` and the CLI, and **delivered before 076 consumes it** | **Implemented** — two `GET` routes and a CLI family, no schema change; three checks resolve and the two evidence checks are aggregate-only by construction | `v1.0` (via 17) |
-| 086 | Scenario and input versioning — a scenario-definition digest and an input digest on the evidence, and a prompt *reference* beside `Model`, so a comparison can state whether both sides ran the same thing | Not specified | neither |
-| 087 | Performance and cost evidence — latency and error comparison from 084, token counts from the conventions, and cost only with an explicit pricing version and provenance | Not specified | neither |
+| 086 | [Scenario and input versioning](tasks/v0.12/086-scenario-and-input-versioning.md) — a scenario-definition digest and an input digest on the evidence, and a prompt *reference* beside `Model`, so a comparison can state whether both sides ran the same thing | Specified (`v0.12.0`) | neither |
+| 087 | [Performance and cost evidence](tasks/v0.12/087-performance-and-cost-evidence.md) — latency and error comparison from 084, token counts from the conventions, and cost only with an explicit pricing version and provenance | Specified (`v0.12.0`) | neither |
 | 088 | Review decisions and annotations — an append-only note on a resolved finding, and an acknowledgement recorded **beside** the computed verdict rather than replacing it | Not specified | neither |
 | 089 | **PROPOSED** — optional quality evaluation and prompt experimentation. Contradicts [What Trustvian is not becoming](#what-trustvian-is-not-becoming) as written; needs a product-boundary decision, and closing it is a legitimate outcome | Not specified | none |
 | 090 | Trace-backend interoperability — a documented OTLP fan-out to a trace backend beside Trustvian, with no runtime dependency in either direction. **Off by default; enabling it names the destination and whether content-bearing attributes may be transmitted.** Optional integration ([ADR 0046](adr/0046-trace-backends-are-interoperability-targets-not-dependencies.md)) | Not specified | none |
@@ -1142,6 +1293,9 @@ The **Gate** column says which rows the release actually depends on.
 | 094 | Public control-plane API contract and typed clients — an OpenAPI description of `/v1`, machine-validated, with generated or contract-tested clients | Not specified | none |
 | 095 | Saved investigations — a bounded durable metadata and reference surface holding investigation context that references authoritative evidence rather than copying it. Depends on 085 only | Not specified | none |
 | 096 | [Record-first admin console](tasks/v1.0/096-record-first-admin-console.md) — the browser surface reorganized around tables of records and clickable identifiers, so no journey through it requires typing one. Presentation and information architecture only; no route, capability or bound changes | Specified | none |
+| 105 | [Pipeline status surface](tasks/v0.12/105-pipeline-status-surface.md) — `GET /v1/status`, `trustvian status`, `dev --check`, a Status view that is the landing view when nothing is active, and a suggestion rule table ([ADR 0064](adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md)) | Specified (`v0.12.0`) | none |
+| 106 | [Frequency evidence](tasks/v0.12/106-frequency-evidence.md) — calls per run, per-target permille ratio, `lost` behaviors, and four optional named integer gate limits over them | Specified (`v0.12.0`) | none |
+| 107 | [Change Impact view and Model Change Report](tasks/v0.12/107-change-impact-view-and-report.md) — 081/086/087/106 evidence in one table, the result document version 2, and one renderer for the CLI and the PR comment | Specified (`v0.12.0`) | none |
 
 **Production history and scale:**
 
@@ -1330,17 +1484,32 @@ Conceptually:
        │                         078  behavioral scenario suites
        │                                  ↓
        │                         079  CI integration (GitHub Action)
-       │                                  ↓
-       │                         086  scenario and input versioning
-       │
+       │                                  │
+       │                                  │
        └──────────▶ 080  detection evaluation
-                             │        (measurement; gates nothing)
+                             │        (measurement; gates nothing;
+                             │         runs beside v0.12.0)
 
 084  correlation and operational evidence   [additive, no migration, anytime]
        │      parent span · duration · error status
      ═══════════ v0.10.0 developer preview ships here ═══════════
+     ═══════════ v0.11.0 WebUI experience ships here  ═══════════
        │
-       └──▶ 087  performance and cost evidence
+       │   v0.12.0 — Change Impact
+       │
+       │   105  pipeline status surface        [no schema; independent]
+       │
+       └──▶ 087  performance and cost evidence  [schema step]
+                   │  status classes · 429s · tokens · per-target latency
+                   └──▶ 106  frequency evidence  [no schema]
+                                (max_llm_calls_per_run waits for 081's layer counts)
+       078 ──▶ 086  scenario and input versioning  [schema step]
+       075 ──▶ 081  persisted behavior fidelity    [schema step; alone]
+
+                   086 · 087 · 106 · 081 ──▶ 107  Change Impact view and report
+                                                  [gate snapshot schema step;
+                                                   presentation; renders 085 links]
+     ═══════════ v0.12.0 ships here ═══════════
 
 067  event history   [implemented, schema 7]
        │   085's retention needs were specified alongside it, not after it
@@ -1377,6 +1546,14 @@ telemetry exists while 075 decides how richly it is read. That is still true for
 Two pieces of 078 were not blocked by it and landed first: a run-scoped behavior
 route that 079 and 080 both need, and an additive `--behavioral-profile` flag on
 `trustvian dev`. 078 is now implemented.
+
+**The `v0.12.0` block is a release grouping, and its edges are argued in each
+task.** 105 depends on nothing in the block. 106's 429 rule needs 087's status
+classes. Its `max_llm_calls_per_run` needs the layer counts 081 proposes to
+persist, and stays `deferred` until then. 107 renders the other four and
+computes nothing. 081 lands in a pull request of its own because it carries
+the block's migration risk. The four schema steps (087, 086, 081, 107) are
+numbered in the order they land, never in advance.
 
 Twelve things this diagram says, and one it does not:
 
@@ -1747,6 +1924,10 @@ The information architecture the interface builds toward, at roadmap level.
 Labels will be refined during implementation; the ordering is the point.
 
 ```text
+Status        collectors · producers · models · fidelity · actor binding
+              the landing view only when nothing is active;
+              named suggestions beside the facts                       (105)
+
 Live          active actors · animated behavior topology · new behavior
               trust · anomaly · risk · decision                        (074)
 
@@ -1759,6 +1940,9 @@ Evaluations   runs · reference and candidate · diff · scorecard · gate
                                                                     shipped)
               which prompt, model, toolset, config and inputs          (086)
               latency · errors · tokens · cost, where telemetry says   (087)
+              Change Impact: k/N · calls per run · load ratio ·
+              fidelity · sameness · suggestions, one table, one
+              report shared with the PR comment               (106, 081, 107)
 
 Review        annotations on findings · acknowledgements
               recorded beside the verdict, never replacing it          (088)
@@ -1774,6 +1958,7 @@ Manage        projects · agents · candidates · environments
 
 ```text
 Manage is not the landing page. Live behavioral understanding is.
+When nothing is live yet, Status explains why.                 (105)
 ```
 
 Today the shipped WebUI opens on Manage, in effect — a form asking for an
