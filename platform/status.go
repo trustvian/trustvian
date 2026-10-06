@@ -123,6 +123,42 @@ type CollectorStatusReport struct {
 	TransportTargetsReported  bool
 	TransportTargets          []TransportTargetStatus
 	TransportTargetsTruncated bool
+
+	// Actors is which link of the actor chain bound each span.
+	ActorsReported bool
+	Actors         ActorBinding
+
+	// Learning is what the engine's Observe reported, as the Collector saw it.
+	LearningReported bool
+	Learning         LearningOutcomes
+}
+
+// ActorBinding counts spans by how their actor was bound: the explicit
+// trustvian.actor.id override, the resource's service.name, or neither. An
+// unbound span was never evaluated.
+type ActorBinding struct {
+	BoundByOverride    uint64
+	BoundByServiceName uint64
+	Unbound            uint64
+}
+
+// LearningOutcomes counts what Observe reported.
+//
+// NotLearned is not split into causes, because Observe does not say which
+// applied — an ineligible decision, a declined write, or a baseline at its
+// fingerprint admission bound. NotLearnedByDecision groups the same count by
+// the decision each observation followed; it sums to NotLearned.
+type LearningOutcomes struct {
+	Learned              uint64
+	NotLearned           uint64
+	ObserveErrors        uint64
+	NotLearnedByDecision []DecisionTally
+}
+
+// DecisionTally is one engine decision and a count.
+type DecisionTally struct {
+	Decision string
+	Count    uint64
 }
 
 // ModelCalls is one (provider, model) pair and how many calls named it.
@@ -292,7 +328,35 @@ func (r CollectorStatusReport) validate() error {
 			return invalid("transport target %q reports more operations than spans", target.Target)
 		}
 	}
+	if len(r.Learning.NotLearnedByDecision) > len(knownDecisions) {
+		return invalid("at most %d decisions may be reported", len(knownDecisions))
+	}
+	var notLearned uint64
+	decisions := make(map[string]struct{}, len(r.Learning.NotLearnedByDecision))
+	for _, tally := range r.Learning.NotLearnedByDecision {
+		if _, known := knownDecisions[tally.Decision]; !known {
+			return invalid("%q is not an engine decision", tally.Decision)
+		}
+		if _, dup := decisions[tally.Decision]; dup {
+			return invalid("decision %q is reported twice", tally.Decision)
+		}
+		decisions[tally.Decision] = struct{}{}
+		if notLearned+tally.Count < notLearned {
+			return invalid("the not-learned counts overflow")
+		}
+		notLearned += tally.Count
+	}
+	if notLearned != r.Learning.NotLearned {
+		return invalid("the not-learned counts by decision do not sum to the not-learned total")
+	}
 	return nil
+}
+
+// knownDecisions is the engine's decision vocabulary, restated for the reason
+// aggregate.go gives.
+var knownDecisions = map[string]struct{}{
+	decisionAllow: {}, decisionObserveOnly: {}, decisionAlert: {},
+	decisionChallenge: {}, decisionRequireApproval: {}, decisionBlock: {},
 }
 
 func validateOptionalText(field, value string) error {
@@ -308,6 +372,7 @@ func (r CollectorStatusReport) clone() CollectorStatusReport {
 	out.ReceiverEndpoints = slices.Clone(r.ReceiverEndpoints)
 	out.Models = slices.Clone(r.Models)
 	out.TransportTargets = slices.Clone(r.TransportTargets)
+	out.Learning.NotLearnedByDecision = slices.Clone(r.Learning.NotLearnedByDecision)
 	out.Producers = make([]ProducerStatus, len(r.Producers))
 	for i, p := range r.Producers {
 		p.Scopes = slices.Clone(p.Scopes)
@@ -441,7 +506,8 @@ type EngineStatus struct {
 // engineUnavailableReason is stated where it is shown, so a reader is never
 // left to infer why a section is empty.
 const engineUnavailableReason = "the engine exposes no statistics accessor; baseline count, maturity and " +
-	"fingerprint admission against the 512 bound are not available (task 105)"
+	"fingerprint admission against the 512 bound are not available (task 105). Each Collector's learning " +
+	"section reports what Observe returned"
 
 // ReportCollectorStatus holds one Collector's report as its latest.
 //

@@ -47,6 +47,41 @@ type statusReportRequest struct {
 	Fidelity                  *statusFidelityRequest      `json:"fidelity"`
 	TransportTargets          *[]statusTransportTargetDTO `json:"transport_targets"`
 	TransportTargetsTruncated bool                        `json:"transport_targets_truncated"`
+	Actors                    *statusActorsRequest        `json:"actors"`
+	Learning                  *statusLearningRequest      `json:"learning"`
+}
+
+type statusActorsRequest struct {
+	BoundByOverride    string `json:"bound_by_override"`
+	BoundByServiceName string `json:"bound_by_service_name"`
+	Unbound            string `json:"unbound"`
+}
+
+type statusDecisionCountDTO struct {
+	Decision string `json:"decision"`
+	Count    string `json:"count"`
+}
+
+type statusLearningRequest struct {
+	Learned              string                   `json:"learned"`
+	NotLearned           string                   `json:"not_learned"`
+	ObserveErrors        string                   `json:"observe_errors"`
+	NotLearnedByDecision []statusDecisionCountDTO `json:"not_learned_by_decision"`
+}
+
+type statusActorsSection struct {
+	Reported           bool   `json:"reported"`
+	BoundByOverride    string `json:"bound_by_override,omitempty"`
+	BoundByServiceName string `json:"bound_by_service_name,omitempty"`
+	Unbound            string `json:"unbound,omitempty"`
+}
+
+type statusLearningSection struct {
+	Reported             bool                     `json:"reported"`
+	Learned              string                   `json:"learned,omitempty"`
+	NotLearned           string                   `json:"not_learned,omitempty"`
+	ObserveErrors        string                   `json:"observe_errors,omitempty"`
+	NotLearnedByDecision []statusDecisionCountDTO `json:"not_learned_by_decision"`
 }
 
 type statusModelDTO struct {
@@ -149,6 +184,8 @@ type statusCollectorDTO struct {
 	Models             statusModelsSection    `json:"models"`
 	Fidelity           statusFidelitySection  `json:"fidelity"`
 	TransportTargets   statusTransportSection `json:"transport_targets"`
+	Actors             statusActorsSection    `json:"actors"`
+	Learning           statusLearningSection  `json:"learning"`
 }
 
 type statusProducerOutDTO struct {
@@ -315,6 +352,30 @@ func (q statusReportRequest) toDomain() (platform.CollectorStatusReport, error) 
 			})
 		}
 	}
+	if q.Actors != nil {
+		report.ActorsReported = true
+		report.Actors = platform.ActorBinding{
+			BoundByOverride:    field("actors.bound_by_override", q.Actors.BoundByOverride),
+			BoundByServiceName: field("actors.bound_by_service_name", q.Actors.BoundByServiceName),
+			Unbound:            field("actors.unbound", q.Actors.Unbound),
+		}
+	}
+	if q.Learning != nil {
+		if len(q.Learning.NotLearnedByDecision) > 8 {
+			return platform.CollectorStatusReport{}, fmt.Errorf(
+				"%w: too many decisions in the learning section", platform.ErrInvalidStatusReport)
+		}
+		report.LearningReported = true
+		report.Learning = platform.LearningOutcomes{
+			Learned:       field("learning.learned", q.Learning.Learned),
+			NotLearned:    field("learning.not_learned", q.Learning.NotLearned),
+			ObserveErrors: field("learning.observe_errors", q.Learning.ObserveErrors),
+		}
+		for _, tally := range q.Learning.NotLearnedByDecision {
+			report.Learning.NotLearnedByDecision = append(report.Learning.NotLearnedByDecision,
+				platform.DecisionTally{Decision: tally.Decision, Count: field("learning decision count", tally.Count)})
+		}
+	}
 	if err != nil {
 		return platform.CollectorStatusReport{}, err
 	}
@@ -383,6 +444,8 @@ func (h *Handler) newStatusDocument(s platform.PipelineStatus) statusDocument {
 			Models:             newStatusModelsSection(c.Report),
 			Fidelity:           newStatusFidelitySection(c.Report),
 			TransportTargets:   newStatusTransportSection(c.Report),
+			Actors:             newStatusActorsSection(c.Report),
+			Learning:           newStatusLearningSection(c.Report),
 		})
 	}
 	return statusDocument{
@@ -432,6 +495,34 @@ func newStatusTransportSection(r platform.CollectorStatusReport) statusTransport
 			Target: t.Target, Spans: u64(t.Spans), DistinctOperations: u64(t.DistinctOperations),
 			OperationsSaturated: t.OperationsSaturated,
 		})
+	}
+	return section
+}
+
+func newStatusActorsSection(r platform.CollectorStatusReport) statusActorsSection {
+	if !r.ActorsReported {
+		return statusActorsSection{}
+	}
+	return statusActorsSection{
+		Reported:           true,
+		BoundByOverride:    u64(r.Actors.BoundByOverride),
+		BoundByServiceName: u64(r.Actors.BoundByServiceName),
+		Unbound:            u64(r.Actors.Unbound),
+	}
+}
+
+func newStatusLearningSection(r platform.CollectorStatusReport) statusLearningSection {
+	section := statusLearningSection{NotLearnedByDecision: []statusDecisionCountDTO{}}
+	if !r.LearningReported {
+		return section
+	}
+	section.Reported = true
+	section.Learned = u64(r.Learning.Learned)
+	section.NotLearned = u64(r.Learning.NotLearned)
+	section.ObserveErrors = u64(r.Learning.ObserveErrors)
+	for _, tally := range r.Learning.NotLearnedByDecision {
+		section.NotLearnedByDecision = append(section.NotLearnedByDecision,
+			statusDecisionCountDTO{Decision: tally.Decision, Count: u64(tally.Count)})
 	}
 	return section
 }

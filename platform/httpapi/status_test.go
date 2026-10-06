@@ -92,7 +92,8 @@ const statusReportBody = `{
 
 const (
 	goldenEngine = `"engine":{"state":"unavailable","reason":"the engine exposes no statistics accessor; ` +
-		`baseline count, maturity and fingerprint admission against the 512 bound are not available (task 105)"}`
+		`baseline count, maturity and fingerprint admission against the 512 bound are not available (task 105). ` +
+		`Each Collector's learning section reports what Observe returned"}`
 	goldenBounds = `"bounds":{"collectors":"16","producers_per_collector":"64","scopes_per_producer":"16",` +
 		`"receiver_endpoints_per_collector":"4","models_per_collector":"64",` +
 		`"transport_targets_per_collector":"64","operations_per_target":"32",` +
@@ -115,7 +116,12 @@ const slice2Sections = `,
     {"target": "api.example.com", "spans": "120", "distinct_operations": "4", "operations_saturated": false},
     {"target": "", "spans": "77", "distinct_operations": "1", "operations_saturated": false}
   ],
-  "transport_targets_truncated": false
+  "transport_targets_truncated": false,
+  "actors": {"bound_by_override": "0", "bound_by_service_name": "398", "unbound": "14"},
+  "learning": {
+    "learned": "350", "not_learned": "48", "observe_errors": "0",
+    "not_learned_by_decision": [{"decision": "allow", "count": "8"}, {"decision": "block", "count": "40"}]
+  }
 }`
 
 // TestStatusDocumentGolden pins the whole document, byte for byte: every
@@ -133,7 +139,8 @@ func TestStatusDocumentGolden(t *testing.T) {
 			report: statusReportBody,
 			sections: `"models":{"reported":false,"calls":[],"truncated":false},` +
 				`"fidelity":{"reported":false},` +
-				`"transport_targets":{"reported":false,"targets":[],"truncated":false}}`,
+				`"transport_targets":{"reported":false,"targets":[],"truncated":false},` +
+				`"actors":{"reported":false},"learning":{"reported":false,"not_learned_by_decision":[]}}`,
 		},
 		{
 			name:   "every section reported",
@@ -142,7 +149,10 @@ func TestStatusDocumentGolden(t *testing.T) {
 				`"truncated":false},"fidelity":{"reported":true,"semantic":"201","transport":"197"},` +
 				`"transport_targets":{"reported":true,"targets":[` +
 				`{"target":"api.example.com","spans":"120","distinct_operations":"4","operations_saturated":false},` +
-				`{"target":"","spans":"77","distinct_operations":"1","operations_saturated":false}],"truncated":false}}`,
+				`{"target":"","spans":"77","distinct_operations":"1","operations_saturated":false}],"truncated":false},` +
+				`"actors":{"reported":true,"bound_by_override":"0","bound_by_service_name":"398","unbound":"14"},` +
+				`"learning":{"reported":true,"learned":"350","not_learned":"48","observe_errors":"0",` +
+				`"not_learned_by_decision":[{"decision":"allow","count":"8"},{"decision":"block","count":"40"}]}}`,
 		},
 	}
 	for _, tt := range tests {
@@ -210,6 +220,14 @@ func TestStatusReportRefusals(t *testing.T) {
 		{"operations over the per-target bound", "/v1/collectors/dev/status",
 			strings.TrimSuffix(strings.TrimSpace(statusReportBody), "}") +
 				strings.Replace(slice2Sections, `"distinct_operations": "4"`, `"distinct_operations": "33"`, 1),
+			"application/json", 400, "invalid_request"},
+		{"an unknown decision", "/v1/collectors/dev/status",
+			strings.TrimSuffix(strings.TrimSpace(statusReportBody), "}") +
+				strings.Replace(slice2Sections, `"decision": "block"`, `"decision": "maybe"`, 1),
+			"application/json", 400, "invalid_request"},
+		{"decisions that do not sum to the total", "/v1/collectors/dev/status",
+			strings.TrimSuffix(strings.TrimSpace(statusReportBody), "}") +
+				strings.Replace(slice2Sections, `"not_learned": "48"`, `"not_learned": "49"`, 1),
 			"application/json", 400, "invalid_request"},
 		{"a model call naming no model", "/v1/collectors/dev/status",
 			strings.TrimSuffix(strings.TrimSpace(statusReportBody), "}") +

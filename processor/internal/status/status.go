@@ -113,6 +113,45 @@ type Report struct {
 	// collapsing onto one HTTP destination.
 	TransportTargets          []TransportTarget `json:"transport_targets"`
 	TransportTargetsTruncated bool              `json:"transport_targets_truncated"`
+
+	// Actors is which link of the actor chain bound each span: the explicit
+	// trustvian.actor.id override, the resource's service.name fallback, or
+	// neither — in which case the span was not evaluated at all.
+	Actors ActorCounts `json:"actors"`
+
+	// Learning is what the engine's Observe reported for every analyzed span.
+	// It is what this processor can see of the engine's learned state without
+	// an engine accessor: the baseline count, maturity and fingerprint
+	// admission are not visible from here, and nothing is inferred about them.
+	Learning LearningCounts `json:"learning"`
+}
+
+// ActorCounts is spans by how their actor was bound.
+type ActorCounts struct {
+	BoundByOverride    string `json:"bound_by_override"`
+	BoundByServiceName string `json:"bound_by_service_name"`
+	Unbound            string `json:"unbound"`
+}
+
+// LearningCounts is Observe outcomes.
+//
+// NotLearned is not split into its causes, because Observe does not say which
+// applied: an ineligible decision, a store that declined the write, or a
+// baseline at its 512-fingerprint admission bound all return learned=false.
+// NotLearnedByDecision groups the same count by the decision it followed, which
+// is evidence a reader can interpret — a not-learned "allow" cannot have been
+// ineligible — without this processor restating the engine's eligibility rule.
+type LearningCounts struct {
+	Learned              string          `json:"learned"`
+	NotLearned           string          `json:"not_learned"`
+	ObserveErrors        string          `json:"observe_errors"`
+	NotLearnedByDecision []DecisionCount `json:"not_learned_by_decision"`
+}
+
+// DecisionCount is one decision and a count.
+type DecisionCount struct {
+	Decision string `json:"decision"`
+	Count    string `json:"count"`
 }
 
 // ModelCalls is one (provider, model) pair and how many calls named it.
@@ -193,7 +232,15 @@ type Tracker struct {
 
 	targets          map[string]*targetState
 	targetsTruncated bool
+
+	learned, observeErrors uint64
+	notLearned             map[string]uint64
 }
+
+// MaxDecisions bounds the decisions learning counts are grouped by. The
+// engine's vocabulary has six; the bound is what keeps an unexpected value
+// from growing the map.
+const MaxDecisions = 8
 
 type modelKey struct{ provider, model string }
 
@@ -215,9 +262,10 @@ type producerState struct {
 // NewTracker returns an empty tracker.
 func NewTracker() *Tracker {
 	return &Tracker{
-		producers: make(map[string]*producerState),
-		models:    make(map[modelKey]uint64),
-		targets:   make(map[string]*targetState),
+		producers:  make(map[string]*producerState),
+		models:     make(map[modelKey]uint64),
+		targets:    make(map[string]*targetState),
+		notLearned: make(map[string]uint64),
 	}
 }
 
@@ -314,6 +362,48 @@ func (t *Tracker) ObserveEvaluated(e Evaluated) {
 		return
 	}
 	target.operations[strings.Clone(e.Operation)] = struct{}{}
+}
+
+// ObserveLearning records one Observe outcome. err is whether Observe failed;
+// a failure is counted apart, never as "not learned".
+func (t *Tracker) ObserveLearning(learned bool, decision string, failed bool) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	switch {
+	case failed:
+		t.observeErrors++
+	case learned:
+		t.learned++
+	default:
+		if _, ok := t.notLearned[decision]; ok || len(t.notLearned) < MaxDecisions {
+			t.notLearned[decision]++
+		}
+	}
+}
+
+// Learning returns the learning section, decisions in name order.
+func (t *Tracker) Learning() LearningCounts {
+	if t == nil {
+		return LearningCounts{Learned: "0", NotLearned: "0", ObserveErrors: "0", NotLearnedByDecision: []DecisionCount{}}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var total uint64
+	byDecision := make([]DecisionCount, 0, len(t.notLearned))
+	for decision, count := range t.notLearned {
+		total += count
+		byDecision = append(byDecision, DecisionCount{Decision: Sanitize(decision), Count: formatUint(count)})
+	}
+	slices.SortFunc(byDecision, func(a, b DecisionCount) int { return strings.Compare(a.Decision, b.Decision) })
+	return LearningCounts{
+		Learned:              formatUint(t.learned),
+		NotLearned:           formatUint(total),
+		ObserveErrors:        formatUint(t.observeErrors),
+		NotLearnedByDecision: byDecision,
+	}
 }
 
 // Models returns the model section, ordered by provider then model.

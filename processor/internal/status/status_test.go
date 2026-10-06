@@ -352,3 +352,29 @@ func TestTrackerEvaluatedBounds(t *testing.T) {
 		}
 	}
 }
+
+func TestTrackerLearning(t *testing.T) {
+	tr := NewTracker()
+	tr.ObserveLearning(true, "allow", false)
+	tr.ObserveLearning(false, "block", false)
+	tr.ObserveLearning(false, "block", false)
+	tr.ObserveLearning(false, "allow", false)
+	tr.ObserveLearning(false, "allow", true) // a failure is not "not learned"
+	got, _ := json.Marshal(tr.Learning())
+	want := `{"learned":"1","not_learned":"3","observe_errors":"1",` +
+		`"not_learned_by_decision":[{"decision":"allow","count":"1"},{"decision":"block","count":"2"}]}`
+	if string(got) != want {
+		t.Fatalf("learning %s, want %s", got, want)
+	}
+
+	// An unexpected decision cannot grow the map past its bound, and every
+	// not-learned outcome that is grouped stays in the total.
+	bounded := NewTracker()
+	for i := range MaxDecisions + 4 {
+		bounded.ObserveLearning(false, strings.Repeat("d", i+1), false)
+	}
+	learning := bounded.Learning()
+	if len(learning.NotLearnedByDecision) != MaxDecisions || learning.NotLearned != formatUint(MaxDecisions) {
+		t.Fatalf("bounded learning: %+v", learning)
+	}
+}

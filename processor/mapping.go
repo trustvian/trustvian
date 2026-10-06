@@ -158,6 +158,31 @@ func EventFromSpan(resourceAttrs pcommon.Map, span ptrace.Span) event.Event {
 	}
 }
 
+// actorSource is which link of the actor chain bound an Event's actor.
+type actorSource int
+
+const (
+	actorUnbound actorSource = iota
+	actorFromOverride
+	actorFromServiceName
+)
+
+// actorSourceOf reports which link of EventFromSpan's actor chain produced
+// ev's actor: the trustvian.actor.id override when it is a non-empty string,
+// else the resource's service.name, else nothing. It reads the same attribute
+// map EventFromSpan resolved the actor from, so the two cannot disagree about
+// one span. Task 105 reports the counts; nothing decides anything from them.
+func actorSourceOf(ev event.Event) actorSource {
+	switch {
+	case stringAttr(ev.Attributes, attrActorID) != "":
+		return actorFromOverride
+	case ev.Actor.ID != "":
+		return actorFromServiceName
+	default:
+		return actorUnbound
+	}
+}
+
 // spanLineage reads the span's own parent reference, and nothing else.
 //
 // OTLP encodes a root as an all-zero parent span id, which is how root and child

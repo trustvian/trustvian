@@ -101,10 +101,17 @@ type trustvianProcessor struct {
 	receiverEndpoints []string
 	runID             string
 
-	processed     atomic.Uint64
-	analyzed      atomic.Uint64
-	invalid       atomic.Uint64
-	analyzeErrors atomic.Uint64
+	processed atomic.Uint64
+	analyzed  atomic.Uint64
+
+	// Which link of the actor chain bound each span (task 105). Counted for
+	// every span, valid or not, because the unbound ones are the point: they
+	// never become an Event the engine can analyze.
+	actorsByOverride    atomic.Uint64
+	actorsByServiceName atomic.Uint64
+	actorsUnbound       atomic.Uint64
+	invalid             atomic.Uint64
+	analyzeErrors       atomic.Uint64
 
 	mu        sync.Mutex
 	decisions map[string]uint64
@@ -552,6 +559,16 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 	p.processed.Add(1)
 
 	ev := EventFromSpan(resourceAttrs, span)
+	if p.statusTracker != nil {
+		switch actorSourceOf(ev) {
+		case actorFromOverride:
+			p.actorsByOverride.Add(1)
+		case actorFromServiceName:
+			p.actorsByServiceName.Add(1)
+		default:
+			p.actorsUnbound.Add(1)
+		}
+	}
 	if err := ev.Validate(); err != nil {
 		p.invalid.Add(1)
 		p.metrics.RecordAnalysis(ctx, metrics.OutcomeInvalidEvent, 0)
@@ -703,6 +720,7 @@ func (p *trustvianProcessor) observe(
 	observeStart := time.Now()
 	learned, err := p.engine.Observe(ctx, result)
 	observeDuration := time.Since(observeStart)
+	p.statusTracker.ObserveLearning(learned, string(result.Decision), err != nil)
 
 	switch {
 	case err != nil:
@@ -774,6 +792,13 @@ func (p *trustvianProcessor) statusSnapshot(started, now time.Time) status.Repor
 		Fidelity:                  p.statusTracker.Fidelity(),
 		TransportTargets:          targets,
 		TransportTargetsTruncated: targetsTruncated,
+
+		Actors: status.ActorCounts{
+			BoundByOverride:    strconv.FormatUint(p.actorsByOverride.Load(), 10),
+			BoundByServiceName: strconv.FormatUint(p.actorsByServiceName.Load(), 10),
+			Unbound:            strconv.FormatUint(p.actorsUnbound.Load(), 10),
+		},
+		Learning: p.statusTracker.Learning(),
 	}
 }
 

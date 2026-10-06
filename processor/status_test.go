@@ -228,6 +228,68 @@ func TestStatusReportCarriesModelsAndFidelity(t *testing.T) {
 	}
 }
 
+// TestStatusReportCountsActorBindingAndLearning covers the three links of the
+// actor chain and the learning outcomes Observe reports.
+func TestStatusReportCountsActorBindingAndLearning(t *testing.T) {
+	plane, url := newFakeStatusPlane(t)
+	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), &trustvianprocessor.Config{
+		Status: &trustvianprocessor.StatusConfig{APIURL: url, Interval: time.Second},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	td := ptrace.NewTraces()
+	now := time.Now()
+	add := func(rs ptrace.ResourceSpans, i int, override string) {
+		span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
+		span.SetName("GET /x")
+		span.SetKind(ptrace.SpanKindServer)
+		span.SetTraceID(pcommon.TraceID{7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7})
+		span.SetSpanID(pcommon.SpanID{7, 7, 7, 7, 7, 7, 7, byte(i + 1)})
+		span.SetStartTimestamp(pcommon.NewTimestampFromTime(now))
+		span.SetEndTimestamp(pcommon.NewTimestampFromTime(now.Add(time.Millisecond)))
+		span.Attributes().PutStr("http.request.method", "GET")
+		if override != "" {
+			span.Attributes().PutStr("trustvian.actor.id", override)
+		}
+	}
+	named := td.ResourceSpans().AppendEmpty()
+	named.Resource().Attributes().PutStr(string(semconv.ServiceNameKey), "svc")
+	add(named, 0, "")
+	add(named, 1, "explicit-actor")
+	anonymous := td.ResourceSpans().AppendEmpty() // no service.name, no override
+	add(anonymous, 2, "")
+	add(anonymous, 3, "")
+
+	if err := proc.ConsumeTraces(context.Background(), td); err != nil {
+		t.Fatal(err)
+	}
+	report, _ := plane.waitFor(t, func(r map[string]any) bool {
+		return r["spans"].(map[string]any)["received"] == "4"
+	})
+	actors, _ := json.Marshal(report["actors"])
+	if want := `{"bound_by_override":"1","bound_by_service_name":"1","unbound":"2"}`; string(actors) != want {
+		t.Fatalf("actors %s, want %s", actors, want)
+	}
+	if spans := report["spans"].(map[string]any); spans["invalid"] != "2" || spans["evaluated"] != "2" {
+		t.Fatalf("an unbound span must be invalid and unevaluated: %v", spans)
+	}
+	learning := report["learning"].(map[string]any)
+	if learning["learned"] != "2" || learning["not_learned"] != "0" || learning["observe_errors"] != "0" {
+		t.Fatalf("learning: %v", learning)
+	}
+	// The producer that set no service.name is still a producer, reported
+	// under the empty name rather than dropped.
+	var names []string
+	for _, p := range report["producers"].([]any) {
+		names = append(names, p.(map[string]any)["service_name"].(string))
+	}
+	if strings.Join(names, ",") != ",svc" {
+		t.Fatalf("producers %q", names)
+	}
+}
+
 func TestStatusConfigValidation(t *testing.T) {
 	tests := []struct {
 		name   string
