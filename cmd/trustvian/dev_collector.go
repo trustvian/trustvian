@@ -51,6 +51,10 @@ const (
 	// condition the processor reports rather than one dev has to clean up.
 	collectorPendingStateFile = "collector-pending.json"
 
+	// devCollectorID is how the Collector dev starts names itself on the status
+	// surface.
+	devCollectorID = "dev"
+
 	// collectorPollInterval is how often readiness is re-checked.
 	collectorPollInterval = 25 * time.Millisecond
 
@@ -126,6 +130,10 @@ processors:
     health:
       endpoint: 127.0.0.1:{{.HealthPort}}
       readiness_timeout: 2s
+    status:
+      api_url: "{{.APIURL}}"
+      collector_id: "{{.CollectorID}}"
+      receiver_endpoints: ["127.0.0.1:{{.OTLPHTTPPort}}", "127.0.0.1:{{.OTLPGRPCPort}}"]
     evaluation:
       api_url: "{{.APIURL}}"
       run_id: "{{.RunID}}"
@@ -175,6 +183,11 @@ type collectorConfigData struct {
 	// dev_baseline.go for the single-writer rule that comes with it.
 	BaselinePath string
 
+	// CollectorID names this Collector on the control plane's status surface
+	// (task 105). Fixed rather than generated, so a restarted dev replaces its
+	// own entry rather than appearing beside a stale one.
+	CollectorID string
+
 	// PendingStatePath holds the single record that may be in flight, so a
 	// Collector that dies between recording evidence and applying that record's
 	// learning can tell on restart which of the two already happened.
@@ -197,6 +210,7 @@ func (d collectorConfigData) validate() error {
 		{"behavioral_profile", d.Profile},
 		{"pending_state_path", d.PendingStatePath},
 		{"baseline path", d.BaselinePath},
+		{"collector_id", d.CollectorID},
 	} {
 		if err := validateCollectorScalar(field.name, field.value); err != nil {
 			return err

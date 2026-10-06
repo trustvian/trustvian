@@ -62,6 +62,10 @@ type ControlPlane struct {
 	// than a constructor parameter: existing callers should not have to build
 	// a bus in order to ignore it.
 	realtime RealtimePublisher
+
+	// status holds the latest report from each Collector (task 105). In
+	// memory, never persisted: it is pipeline state, not evidence.
+	status *statusRegistry
 }
 
 // ControlPlaneOption configures a control plane at construction.
@@ -91,7 +95,10 @@ func NewControlPlane(
 	if control == nil || evaluations == nil || ingest == nil {
 		return nil, errors.New("platform: control plane requires control, evaluation and ingest stores")
 	}
-	plane := &ControlPlane{control: control, evaluations: evaluations, ingest: ingest}
+	plane := &ControlPlane{
+		control: control, evaluations: evaluations, ingest: ingest,
+		status: newStatusRegistry(),
+	}
 	for _, option := range options {
 		option(plane)
 	}

@@ -467,6 +467,7 @@ func composeAndRunResult(s streams, config devConfig) devResult {
 		Profile:          identity.Profile,
 		PendingStatePath: filepath.Join(stateDir, collectorPendingStateFile),
 		BaselinePath:     baseline.path,
+		CollectorID:      devCollectorID,
 	})
 	if err != nil {
 		return devResult{code: session.fail(err)}
