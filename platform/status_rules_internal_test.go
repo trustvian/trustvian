@@ -53,12 +53,13 @@ func TestStatusRuleTable(t *testing.T) {
 		return r
 	}
 	tests := []struct {
-		name    string
-		at      time.Duration // read time after the report arrived
-		reports []CollectorStatusReport
-		absent  bool // read with no report at all
-		want    []string
-		text    string // a substring the first suggestion's text must carry
+		name     string
+		at       time.Duration // read time after the report arrived
+		reports  []CollectorStatusReport
+		absent   bool // read with no report at all
+		want     []string
+		text     string // a substring the first suggestion's text must carry
+		evidence string // a name=value the first suggestion's evidence must carry
 	}{
 		// Rule 1.
 		{name: "no collector at all", absent: true,
@@ -84,6 +85,39 @@ func TestStatusRuleTable(t *testing.T) {
 				r.Producers[0].LastSeenAge = StatusFreshWindow
 				return r
 			}()}, want: nil},
+		{name: "a collector up 2 s with no producer: too soon to claim 30 s of silence",
+			reports: []CollectorStatusReport{func() CollectorStatusReport {
+				r := ruleReport("dev-check")
+				r.Producers, r.Uptime = nil, 2*time.Second
+				return r
+			}()}, want: nil},
+		{name: "a collector up 31 s with no producer",
+			reports: []CollectorStatusReport{func() CollectorStatusReport {
+				r := ruleReport("dev")
+				r.Producers, r.Uptime = nil, 31*time.Second
+				return r
+			}()},
+			want: []string{"status.no_producer"}, text: "No producer has sent spans to Collector dev in 30 s",
+			evidence: "collector_uptime_seconds=31"},
+		{name: "the first collector up long enough is named, in identifier order",
+			reports: []CollectorStatusReport{
+				func() CollectorStatusReport {
+					r := ruleReport("a-new")
+					r.Producers, r.Uptime = nil, time.Second
+					return r
+				}(),
+				func() CollectorStatusReport {
+					r := ruleReport("b-old")
+					r.Producers, r.Uptime = nil, time.Hour
+					return r
+				}(),
+				func() CollectorStatusReport {
+					r := ruleReport("c-old")
+					r.Producers, r.Uptime = nil, time.Hour
+					return r
+				}(),
+			},
+			want: []string{"status.no_producer"}, text: "Collector b-old"},
 		{name: "one collector quiet, another active: no rule 2",
 			reports: []CollectorStatusReport{quiet(ruleReport("a")), ruleReport("b")}, want: nil},
 
@@ -169,6 +203,15 @@ func TestStatusRuleTable(t *testing.T) {
 			}
 			if tt.text != "" && !strings.Contains(status.Suggestions[0].Text, tt.text) {
 				t.Fatalf("text %q does not carry %q", status.Suggestions[0].Text, tt.text)
+			}
+			if tt.evidence != "" {
+				found := false
+				for _, e := range status.Suggestions[0].Evidence {
+					found = found || e.Name+"="+e.Value == tt.evidence
+				}
+				if !found {
+					t.Fatalf("evidence %+v does not carry %s", status.Suggestions[0].Evidence, tt.evidence)
+				}
 			}
 			for _, s := range status.Suggestions {
 				if s.RuleVersion != 1 || len(s.Evidence) == 0 {

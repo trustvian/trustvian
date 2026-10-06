@@ -150,7 +150,7 @@ over the same document
 | Rule | Fires when |
 |---|---|
 | `status.no_collector` | no Collector has reported in 30 s |
-| `status.no_producer` | a Collector is reporting, and none of the reporting Collectors has seen a span in 30 s; names the receiver endpoint when one is reported |
+| `status.no_producer` | no reporting Collector has seen a span in 30 s, and at least one has been up for 30 s; names the first such Collector, its uptime and its receiver endpoint when one is reported. A Collector that started seconds ago has not been silent for 30 s, so it fires nothing |
 | `status.spans_without_service_name` | spans reached a Collector with neither `service.name` nor `trustvian.actor.id`, and were never evaluated |
 | `status.collapsed_http_operations` | 3 or more distinct operations reached one named HTTP target at transport fidelity. DB spans, unmapped convention spans and HTTP spans with no `server.address` or `peer.service` are never counted. Common HTTP client instrumentation names every span after its method alone, so this rule rarely fires for it — see [task 105](tasks/v0.12/105-pipeline-status-surface.md#what-shipped) |
 | `status.admission_near_bound` | cannot fire: the engine reports no fingerprint admission count |
@@ -435,10 +435,13 @@ status report (at most 15 seconds), prints the status document `trustvian
 status` prints, and stops everything it started. No `--` and no command.
 
 Use it before the first real run, or when a run produced nothing: it shows
-whether the helpers start, whether the Collector reaches the control plane, and
-which endpoint a producer should export to. With nothing running, the expected
-answer is a reporting `dev-check` Collector and the `status.no_producer`
-suggestion naming its receiver.
+whether the helpers start and whether the Collector reaches the control plane.
+With nothing else wrong, the answer is a reporting `dev-check` Collector, no
+producers, and an **empty `suggestions` list**. The Collector has only just
+started, so it has not been silent long enough for `status.no_producer` to
+claim anything. Its receiver ports are chosen per run and close when the check
+exits, so they are not an endpoint to export to. A real `trustvian dev` session
+sets the producer's endpoint itself.
 
 The Collector it starts is named `dev-check` and reports status only, so a check
 against a shared control plane with `--api-url` never replaces a running `dev`

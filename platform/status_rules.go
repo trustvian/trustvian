@@ -101,12 +101,19 @@ func ruleNoCollector(status PipelineStatus) []Suggestion {
 	}}
 }
 
-// Rule 2 — status.no_producer: at least one Collector is reporting, and none
-// of the reporting Collectors has seen a span within the fresh window.
+// Rule 2 — status.no_producer: no reporting Collector has seen a span within
+// the fresh window, and at least one reporting Collector has been up for the
+// whole window — so "nothing in 30 s" is a claim about 30 s it observed.
 //
-// The endpoint named is the first reporting Collector's first receiver
-// endpoint, in identifier order. A Collector that reported no endpoint gets
-// the same sentence without one.
+// A Collector that started seconds ago has not been silent for 30 s, it has
+// only just started: `dev --check` and every new `dev` session would otherwise
+// report silence before a producer could have sent anything. Uptime is the
+// document's own read time less the Collector's start, both on the control
+// plane's clock.
+//
+// The Collector named is the first in identifier order that has been up for the
+// window; its first receiver endpoint is named when it reported one, and the
+// same sentence without one otherwise.
 func ruleNoProducer(status PipelineStatus) []Suggestion {
 	var first *CollectorStatus
 	for i := range status.Collectors {
@@ -114,20 +121,21 @@ func ruleNoProducer(status PipelineStatus) []Suggestion {
 		if c.State != CollectorReporting {
 			continue
 		}
-		if first == nil {
-			first = c
-		}
 		for _, seen := range c.ProducerLastSeen {
 			if status.ReadAt.Sub(seen) <= StatusFreshWindow {
 				return nil
 			}
 		}
+		if first == nil && status.ReadAt.Sub(c.StartedAt) >= StatusFreshWindow {
+			first = c
+		}
 	}
 	if first == nil {
-		return nil // rule 1's case, not this one's
+		return nil // nothing reporting (rule 1's case), or nothing up long enough yet
 	}
 	evidence := []SuggestionEvidence{
 		{Name: "collector_id", Value: first.Report.CollectorID},
+		{Name: "collector_uptime_seconds", Value: strconv.FormatInt(int64(status.ReadAt.Sub(first.StartedAt)/time.Second), 10)},
 		{Name: "producers_seen_within_window", Value: "0"},
 		{Name: "fresh_window_seconds", Value: freshSeconds()},
 	}

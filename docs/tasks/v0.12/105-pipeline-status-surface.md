@@ -143,7 +143,7 @@ order:
 | # | `rule` | Condition (integer / categorical, over this document) | Text template |
 |---|---|---|---|
 | 1 | `status.no_collector` | no collector report received in the last 30 s | "No Collector has reported in 30 s. Is `trustvian dev` running, and is `trustvian-collector` on its path?" |
-| 2 | `status.no_producer` | a collector reported, and `producers` is empty or every producer's `last_seen_at` is older than 30 s | "No producer has sent spans in 30 s. Check `OTEL_EXPORTER_OTLP_ENDPOINT` points at `{receiver.endpoint}`." |
+| 2 | `status.no_producer` | a collector reported, and `producers` is empty or every producer's `last_seen_at` is older than 30 s — *amended: and the Collector has been up for at least 30 s; see [What shipped](#what-shipped)* | "No producer has sent spans in 30 s. Check `OTEL_EXPORTER_OTLP_ENDPOINT` points at `{receiver.endpoint}`." |
 | 3 | `status.spans_without_service_name` | `dropped_without_actor` > 0 | "{dropped_without_actor} spans had no `service.name` and no `trustvian.actor.id`, and were not evaluated. Set the `service.name` resource attribute." |
 | 4 | `status.collapsed_http_operations` | a **named HTTP target** (category `http`, non-empty target) with `fidelity = transport` and `distinct_operations` ≥ 3 — *amended from "any target"; see [What shipped](#what-shipped)* | "{distinct_operations} operations on {target} are visible only as HTTP. Add OpenInference or OpenTelemetry GenAI instrumentation to see them as model or tool calls." |
 | 5 | `status.admission_near_bound` | engine admission available, and `admitted * 10 ≥ bound * 9` (integer form of ≥ 90 %) | "{admitted} of {bound} behaviors are admitted for {actor}. At {bound} the evaluation stops learning new behavior." |
@@ -267,7 +267,7 @@ show nothing. Live's startup budget grows by one request (`GET /v1/status`).
 ## Acceptance criteria
 
 1. With nothing running, the WebUI opens on Status and names the next step
-   (rule 1 or 2).
+   (rule 1, or rule 2 once a Collector has been up for 30 s).
 2. With an instrumented agent running, the WebUI opens on Live, as today.
 3. A producer missing `service.name` is reported with a count and rule 3's text.
 4. A workload whose model calls are visible only as HTTP is reported with rule
@@ -315,6 +315,7 @@ building, and recorded here rather than left for a reader to find in the code.
 | Suggestion `evidence` as a JSON object | An ordered list of `{name, value}` | The WebUI may not enumerate a server object's keys (ADR 0036 § 7). The order is the rule's own |
 | Report body bounded at 64 KiB | 256 KiB, the API's request bound. The processor fits an oversized report, scope lists first, and marks what it shortened | A report at every bound with maximal strings measured 681 KB. It fits at 131 KB with all 64 producers once scope lists are dropped |
 | Rule 4 over "any target with `fidelity = transport`" | Only a span whose category is `http` and whose target is named is counted per target. The platform also never fires rule 4 for an empty target, as a second guard | Transport fidelity also holds DB spans, whose operation is a span name, and the RPC fallback. The fallback includes OpenInference `CHAIN`, `GUARDRAIL`, `EVALUATOR` and `PROMPT` spans and internal spans with no target. An OpenInference-instrumented CrewAI or LangChain agent filled the empty target with three or more span names within seconds, so rule 4 told an OpenInference user to add OpenInference. Found in review |
+| Rule 2 for any reporting Collector with no fresh producer | Only for a reporting Collector up for at least the fresh window (the document's read time less the Collector's start), naming the first such Collector in identifier order with `collector_uptime_seconds` in its evidence | "No producer has sent spans … in 30 s" was printed 1.65 s after `dev --check` started its Collector, and shown in the WebUI by every new `dev` session before its workload sent anything. The sentence claimed 30 s of silence the Collector had not observed, and named a receiver port that closes when the check exits. With nothing else wrong, `dev --check` now prints an empty `suggestions` list. Found in review |
 | `status_changed` published on every report | Published only when a report changes what a reader would see, ignoring sequence, uptime and ages | An idle Collector would otherwise wake every open Status view every 10 s |
 
 **Rule 4 rarely fires for plain HTTP clients, measured.** Current

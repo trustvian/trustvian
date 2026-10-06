@@ -317,3 +317,47 @@ func TestStatusIgnoresALateOlderReport(t *testing.T) {
 		t.Fatal("a late report rolled the counters back")
 	}
 }
+
+// TestStatusDocumentGoldenForACollectorThatJustStarted is what `trustvian dev
+// --check` prints when nothing else is wrong: a Collector that has reported
+// once, 2 s after starting, with no producer yet. It has not been silent for
+// 30 s, so no rule fires — and the landing view is still Status, because
+// nothing is active.
+func TestStatusDocumentGoldenForACollectorThatJustStarted(t *testing.T) {
+	s := newStatusAPI(t)
+	report := `{"version":"1","collector_id":"dev-check","instance":"00000000000000cc","sequence":"1",` +
+		`"uptime_ms":"2000","receiver_endpoints":["127.0.0.1:4318","127.0.0.1:4317"],` +
+		`"spans":{"received":"0","evaluated":"0","invalid":"0","analyze_errors":"0"},` +
+		`"producers":[],"producers_truncated":false,"models":[],"models_truncated":false,` +
+		`"fidelity":{"semantic":"0","transport":"0"},"transport_targets":[],"transport_targets_truncated":false,` +
+		`"actors":{"bound_by_override":"0","bound_by_service_name":"0","unbound":"0"},` +
+		`"learning":{"learned":"0","not_learned":"0","observe_errors":"0","not_learned_by_decision":[]}}`
+	if r := s.post("/v1/collectors/dev-check/status", report); r.Code != http.StatusOK {
+		t.Fatalf("POST = %d %s", r.Code, r.Body.String())
+	}
+	got := strings.TrimSpace(s.get("/v1/status").Body.String())
+	want := `{"version":"1","read_at":"2026-10-06T09:00:00Z","held_since":"2026-10-06T09:00:00Z",` +
+		`"landing":"status","collectors":[{"collector_id":"dev-check","instance":"00000000000000cc",` +
+		`"state":"reporting","last_report_at":"2026-10-06T09:00:00Z","started_at":"2026-10-06T08:59:58Z",` +
+		`"receiver_endpoints":["127.0.0.1:4318","127.0.0.1:4317"],"evaluation_run_id":"",` +
+		`"spans":{"received":"0","evaluated":"0","invalid":"0","analyze_errors":"0"},` +
+		`"producers":[],"producers_truncated":false,` +
+		`"models":{"reported":true,"calls":[],"truncated":false},` +
+		`"fidelity":{"reported":true,"semantic":"0","transport":"0"},` +
+		`"transport_targets":{"reported":true,"targets":[],"truncated":false},` +
+		`"actors":{"reported":true,"bound_by_override":"0","bound_by_service_name":"0","unbound":"0"},` +
+		`"learning":{"reported":true,"learned":"0","not_learned":"0","observe_errors":"0","not_learned_by_decision":[]}}],` +
+		goldenEngine + `,` + goldenBounds + `,"suggestions":[],"suggestions_truncated":false}`
+	if got != want {
+		t.Fatalf("document:\n got %s\nwant %s", got, want)
+	}
+
+	// Once it has been up for the window with still no producer, rule 2 fires
+	// and says how long it has watched.
+	s.advance(29 * time.Second)
+	later := s.get("/v1/status").Body.String()
+	if !strings.Contains(later, `{"name":"collector_uptime_seconds","value":"31"}`) ||
+		!strings.Contains(later, `"rule":"status.no_producer"`) {
+		t.Fatalf("rule 2 did not fire once the collector had been up 31 s: %s", later)
+	}
+}
