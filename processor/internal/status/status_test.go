@@ -378,3 +378,63 @@ func TestTrackerLearning(t *testing.T) {
 		t.Fatalf("bounded learning: %+v", learning)
 	}
 }
+
+// TestFitReportStatesWhatItShortened builds a report at every bound with
+// maximal strings — far over the transport cap — and requires it to fit, with
+// each shortened section marked truncated and every count intact.
+func TestFitReportStatesWhatItShortened(t *testing.T) {
+	long := func(prefix string, i int) string {
+		return (prefix + strings.Repeat("x", maxText))[:maxText-4] + formatUint(uint64(1000+i))
+	}
+	report := Report{Spans: SpanCounts{Received: "7"}}
+	for i := range MaxProducers {
+		p := Producer{ServiceName: long("svc", i), Spans: "1", SDK: SDK{Name: long("n", i), Language: long("l", i), Version: long("v", i)}}
+		for j := range MaxScopes {
+			p.Scopes = append(p.Scopes, Scope{Name: long("s", j), Version: long("v", j)})
+		}
+		report.Producers = append(report.Producers, p)
+	}
+	for i := range MaxModels {
+		report.Models = append(report.Models, ModelCalls{Provider: long("p", i), Model: long("m", i), Calls: "1"})
+	}
+	for i := range MaxTransportTargets {
+		report.TransportTargets = append(report.TransportTargets, TransportTarget{Target: long("t", i), Spans: "1", DistinctOperations: "1"})
+	}
+	unfitted, _ := json.Marshal(report)
+	if len(unfitted) <= maxReportBody {
+		t.Fatalf("the worst case is only %d bytes; this test proves nothing", len(unfitted))
+	}
+
+	body, err := fitReport(report, maxReportBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > maxReportBody {
+		t.Fatalf("fitted report is %d bytes, over %d", len(body), maxReportBody)
+	}
+	var fitted Report
+	if err := json.Unmarshal(body, &fitted); err != nil {
+		t.Fatal(err)
+	}
+	if fitted.Spans.Received != "7" {
+		t.Fatal("a count changed while fitting")
+	}
+	for _, p := range fitted.Producers {
+		if len(p.Scopes) != 0 || !p.ScopesTruncated {
+			t.Fatalf("scope lists were not shortened first, or not marked: %+v", p)
+		}
+	}
+	if len(fitted.Producers) < MaxProducers && !fitted.ProducersTruncated {
+		t.Fatal("producers were dropped without being marked truncated")
+	}
+	t.Logf("worst case %d bytes, fitted to %d bytes with %d of %d producers", len(unfitted), len(body),
+		len(fitted.Producers), MaxProducers)
+
+	// A report that already fits is sent byte for byte as encoded.
+	small := Report{Spans: SpanCounts{Received: "1"}, Producers: []Producer{{ServiceName: "a", Scopes: []Scope{{Name: "s"}}}}}
+	got, _ := fitReport(small, maxReportBody)
+	want, _ := json.Marshal(small)
+	if string(got) != string(want) {
+		t.Fatal("a report within the limit was altered")
+	}
+}

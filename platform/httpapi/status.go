@@ -20,9 +20,10 @@ import (
 )
 
 // maxStatusReportBody bounds one status report, before it is decoded. The
-// processor checks the same figure on its encoded body, so a report it builds
-// is never refused for its size.
-const maxStatusReportBody = 64 << 10
+// same figure as every other request body on this API, and the processor fits
+// its encoded report within it (shortening the least important lists first,
+// and saying so), so a report it builds is never refused for its size.
+const maxStatusReportBody = maxAPIRequestBody
 
 // ---------------------------------------------------------------------
 // Wire DTOs

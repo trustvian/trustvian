@@ -18,11 +18,12 @@ import (
 )
 
 const (
-	// maxReportBody mirrors the control plane's cap on a status report. Checked
-	// on the encoded body, so a report this package builds is never refused for
-	// its size; if one somehow were, it is dropped and the next interval tries
-	// again rather than truncating evidence into a misleading shape.
-	maxReportBody = 64 << 10
+	// maxReportBody mirrors the control plane's cap on a status report. A
+	// report at every bound with maximal strings is several times larger, so
+	// fitReport shortens an oversized one — scope lists first, then producers,
+	// each marked truncated — rather than sending something the control plane
+	// must refuse. The typical report is a few kilobytes.
+	maxReportBody = 256 << 10
 
 	// maxResponseBody bounds what is read back from an acknowledgement.
 	maxResponseBody = 4 << 10
@@ -193,12 +194,9 @@ func (r *Reporter) send() {
 }
 
 func (r *Reporter) post(report Report) error {
-	body, err := json.Marshal(report)
+	body, err := fitReport(report, maxReportBody)
 	if err != nil {
-		return fmt.Errorf("encoding the status report: %w", err)
-	}
-	if len(body) > maxReportBody {
-		return fmt.Errorf("the status report is %d bytes, over the %d byte limit", len(body), maxReportBody)
+		return err
 	}
 
 	// Bounded by the client's own timeout, and abandoned at Stop: a shutdown
@@ -237,3 +235,51 @@ func (r *Reporter) post(report Report) error {
 }
 
 func formatUint(v uint64) string { return strconv.FormatUint(v, 10) }
+
+// fitReport encodes report within limit bytes.
+//
+// Every section is bounded in entries, but strings are only bounded in length,
+// so a report at every bound can exceed the transport's cap. What goes first is
+// what matters least to the status surface: per-producer scope lists, then
+// whole producers from the end of the name order, then models and transport
+// targets. Each removal sets its section's truncated flag, so the shortening is
+// stated rather than silent. Counts are never altered.
+func fitReport(report Report, limit int) ([]byte, error) {
+	encode := func() ([]byte, error) {
+		body, err := json.Marshal(report)
+		if err != nil {
+			return nil, fmt.Errorf("encoding the status report: %w", err)
+		}
+		return body, nil
+	}
+	body, err := encode()
+	if err != nil || len(body) <= limit {
+		return body, err
+	}
+	report.Producers = append([]Producer(nil), report.Producers...)
+	for i := range report.Producers {
+		if len(report.Producers[i].Scopes) > 0 {
+			report.Producers[i].Scopes = []Scope{}
+			report.Producers[i].ScopesTruncated = true
+		}
+	}
+	for {
+		if body, err = encode(); err != nil || len(body) <= limit {
+			return body, err
+		}
+		switch {
+		case len(report.Producers) > 0:
+			report.Producers = report.Producers[:len(report.Producers)-1]
+			report.ProducersTruncated = true
+		case len(report.Models) > 0:
+			report.Models = report.Models[:len(report.Models)-1]
+			report.ModelsTruncated = true
+		case len(report.TransportTargets) > 0:
+			report.TransportTargets = report.TransportTargets[:len(report.TransportTargets)-1]
+			report.TransportTargetsTruncated = true
+		default:
+			return nil, fmt.Errorf("the status report is %d bytes with every list empty, over the %d byte limit",
+				len(body), limit)
+		}
+	}
+}

@@ -259,7 +259,7 @@ func TestStatusReportRefusals(t *testing.T) {
 			415, "unsupported_media_type"},
 		{"oversized body", "/v1/collectors/dev/status",
 			strings.Replace(statusReportBody, `"evaluation_run_id": "run-1"`,
-				`"evaluation_run_id": "run-1", "padding": "`+strings.Repeat("x", 70<<10)+`"`, 1),
+				`"evaluation_run_id": "run-1", "padding": "`+strings.Repeat("x", 260<<10)+`"`, 1),
 			"application/json", 413, "payload_too_large"},
 	}
 	for _, tt := range tests {
