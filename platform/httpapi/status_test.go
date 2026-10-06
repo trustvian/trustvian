@@ -97,7 +97,11 @@ const (
 	goldenBounds = `"bounds":{"collectors":"16","producers_per_collector":"64","scopes_per_producer":"16",` +
 		`"receiver_endpoints_per_collector":"4","models_per_collector":"64",` +
 		`"transport_targets_per_collector":"64","operations_per_target":"32",` +
-		`"fresh_window_seconds":"30","expiry_window_seconds":"300"}`
+		`"fresh_window_seconds":"30","expiry_window_seconds":"300","suggestions":"64"}`
+	goldenNoCollector = `"suggestions":[{"rule":"status.no_collector","rule_version":1,` +
+		`"evidence":{"collectors_reporting":"0","fresh_window_seconds":"30"},` +
+		`"text":"No Collector has reported in 30 s. Is 'trustvian dev' running, and is trustvian-collector on its path?"}],` +
+		`"suggestions_truncated":false`
 	goldenCollectorHead = `{"collector_id":"dev","instance":"00000000000000aa","state":"reporting",` +
 		`"last_report_at":"2026-10-06T09:00:10Z","started_at":"2026-10-06T08:58:40Z",` +
 		`"receiver_endpoints":["127.0.0.1:4318"],"evaluation_run_id":"run-1",` +
@@ -128,9 +132,10 @@ const slice2Sections = `,
 // interface renders it, so a change to it is a contract change.
 func TestStatusDocumentGolden(t *testing.T) {
 	tests := []struct {
-		name     string
-		report   string
-		sections string
+		name        string
+		report      string
+		sections    string
+		suggestions string
 	}{
 		{
 			// A Collector that predates the optional sections: each says it was
@@ -141,6 +146,8 @@ func TestStatusDocumentGolden(t *testing.T) {
 				`"fidelity":{"reported":false},` +
 				`"transport_targets":{"reported":false,"targets":[],"truncated":false},` +
 				`"actors":{"reported":false},"learning":{"reported":false,"not_learned_by_decision":[]}}`,
+			// A fresh producer and no other evidence reported: no rule fires.
+			suggestions: `"suggestions":[],"suggestions_truncated":false`,
 		},
 		{
 			name:   "every section reported",
@@ -153,6 +160,16 @@ func TestStatusDocumentGolden(t *testing.T) {
 				`"actors":{"reported":true,"bound_by_override":"0","bound_by_service_name":"398","unbound":"14"},` +
 				`"learning":{"reported":true,"learned":"350","not_learned":"48","observe_errors":"0",` +
 				`"not_learned_by_decision":[{"decision":"allow","count":"8"},{"decision":"block","count":"40"}]}}`,
+			// Rule 3 on the 14 unbound spans, rule 4 on api.example.com's four
+			// operations; the unnamed target's single operation fires nothing.
+			suggestions: `"suggestions":[{"rule":"status.spans_without_service_name","rule_version":1,` +
+				`"evidence":{"collector_id":"dev","unbound":"14"},"text":"14 spans reached Collector dev ` +
+				`with no service.name and no trustvian.actor.id, and were not evaluated. Set the service.name ` +
+				`resource attribute (OTEL_SERVICE_NAME)."},{"rule":"status.collapsed_http_operations",` +
+				`"rule_version":1,"evidence":{"collector_id":"dev","distinct_operations":"4",` +
+				`"target":"api.example.com","threshold":"3"},"text":"4 distinct operations reached ` +
+				`api.example.com and are visible only as HTTP. Add OpenInference or OpenTelemetry GenAI ` +
+				`instrumentation to see them as model or tool calls."}],"suggestions_truncated":false`,
 		},
 	}
 	for _, tt := range tests {
@@ -161,7 +178,7 @@ func TestStatusDocumentGolden(t *testing.T) {
 
 			empty := strings.TrimSpace(s.get("/v1/status").Body.String())
 			wantEmpty := `{"version":"1","read_at":"2026-10-06T09:00:00Z","held_since":"2026-10-06T09:00:00Z",` +
-				`"collectors":[],` + goldenEngine + `,` + goldenBounds + `}`
+				`"collectors":[],` + goldenEngine + `,` + goldenBounds + `,` + goldenNoCollector + `}`
 			if empty != wantEmpty {
 				t.Fatalf("empty document:\n got %s\nwant %s", empty, wantEmpty)
 			}
@@ -176,7 +193,8 @@ func TestStatusDocumentGolden(t *testing.T) {
 			s.advance(5 * time.Second)
 			got := strings.TrimSpace(s.get("/v1/status").Body.String())
 			want := `{"version":"1","read_at":"2026-10-06T09:00:15Z","held_since":"2026-10-06T09:00:00Z",` +
-				`"collectors":[` + goldenCollectorHead + tt.sections + `],` + goldenEngine + `,` + goldenBounds + `}`
+				`"collectors":[` + goldenCollectorHead + tt.sections + `],` + goldenEngine + `,` + goldenBounds +
+				`,` + tt.suggestions + `}`
 			if got != want {
 				t.Fatalf("document:\n got %s\nwant %s", got, want)
 			}

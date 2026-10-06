@@ -168,6 +168,20 @@ type statusDocument struct {
 	Collectors []statusCollectorDTO `json:"collectors"`
 	Engine     statusEngineDTO      `json:"engine"`
 	Bounds     statusBoundsDTO      `json:"bounds"`
+
+	// Suggestions are rule-table outputs, beside the evidence and never part
+	// of it (ADR 0064). Rendered verbatim by every interface.
+	Suggestions          []suggestionDTO `json:"suggestions"`
+	SuggestionsTruncated bool            `json:"suggestions_truncated"`
+}
+
+// suggestionDTO is one rule's output. Evidence is an object keyed by field
+// name; encoding/json writes its keys sorted, so the bytes are deterministic.
+type suggestionDTO struct {
+	Rule        string            `json:"rule"`
+	RuleVersion int               `json:"rule_version"`
+	Evidence    map[string]string `json:"evidence"`
+	Text        string            `json:"text"`
 }
 
 type statusCollectorDTO struct {
@@ -214,6 +228,7 @@ type statusBoundsDTO struct {
 	OperationsPerTarget string `json:"operations_per_target"`
 	FreshWindowSeconds  string `json:"fresh_window_seconds"`
 	ExpiryWindowSeconds string `json:"expiry_window_seconds"`
+	Suggestions         string `json:"suggestions"`
 }
 
 // ---------------------------------------------------------------------
@@ -464,8 +479,23 @@ func (h *Handler) newStatusDocument(s platform.PipelineStatus) statusDocument {
 			OperationsPerTarget: strconv.Itoa(platform.MaxStatusOperationsPerTarget),
 			FreshWindowSeconds:  strconv.Itoa(int(platform.StatusFreshWindow / time.Second)),
 			ExpiryWindowSeconds: strconv.Itoa(int(platform.StatusExpiry / time.Second)),
+			Suggestions:         strconv.Itoa(platform.MaxStatusSuggestions),
 		},
+		Suggestions:          newSuggestionDTOs(s.Suggestions),
+		SuggestionsTruncated: s.SuggestionsTruncated,
 	}
+}
+
+func newSuggestionDTOs(suggestions []platform.Suggestion) []suggestionDTO {
+	out := make([]suggestionDTO, 0, len(suggestions))
+	for _, s := range suggestions {
+		evidence := make(map[string]string, len(s.Evidence))
+		for _, e := range s.Evidence {
+			evidence[e.Name] = e.Value
+		}
+		out = append(out, suggestionDTO{Rule: s.Rule, RuleVersion: s.RuleVersion, Evidence: evidence, Text: s.Text})
+	}
+	return out
 }
 
 func newStatusModelsSection(r platform.CollectorStatusReport) statusModelsSection {

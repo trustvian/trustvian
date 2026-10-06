@@ -474,6 +474,11 @@ type PipelineStatus struct {
 	ReadAt     time.Time
 	Collectors []CollectorStatus
 	Engine     EngineStatus
+
+	// Suggestions are the rule table's outputs over the fields above, in table
+	// order (status_rules.go, ADR 0064). Nothing reads them.
+	Suggestions          []Suggestion
+	SuggestionsTruncated bool
 }
 
 // CollectorStatus is one Collector's latest report, placed on this control
@@ -547,9 +552,11 @@ func (c *ControlPlane) PipelineStatus(_ context.Context, now time.Time) Pipeline
 			ProducerLastSeen: lastSeen,
 		})
 	}
-	return PipelineStatus{
+	status := PipelineStatus{
 		ReadAt:     now,
 		Collectors: collectors,
 		Engine:     EngineStatus{State: EngineUnavailable, Reason: engineUnavailableReason},
 	}
+	status.Suggestions, status.SuggestionsTruncated = evaluateStatusRules(status)
+	return status
 }
