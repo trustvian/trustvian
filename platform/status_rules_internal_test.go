@@ -225,3 +225,60 @@ func TestSuggestionsAreBounded(t *testing.T) {
 		t.Fatalf("suggestions %d truncated=%v", len(status.Suggestions), status.SuggestionsTruncated)
 	}
 }
+
+// TestSameFactsSeesEveryNonVolatileField changes each reported field in turn
+// and requires sameFacts to notice; only sequence, uptime and producer ages may
+// move unnoticed. A field added to the report without being added to
+// sameFacts fails here.
+func TestSameFactsSeesEveryNonVolatileField(t *testing.T) {
+	base := ruleReport("dev")
+	base.Producers[0].Scopes = []InstrumentationScope{{Name: "s", Version: "1"}}
+	base.Models = []ModelCalls{{Provider: "p", Model: "m", Calls: 1}}
+	base.TransportTargets = []TransportTargetStatus{{Target: "t", Spans: 2, DistinctOperations: 1}}
+	base.Learning.NotLearnedByDecision = []DecisionTally{{Decision: "block", Count: 1}}
+	base.Learning.NotLearned = 1
+
+	volatile := base.clone()
+	volatile.Sequence, volatile.Uptime = 99, time.Hour
+	volatile.Producers[0].LastSeenAge = time.Hour
+	if !sameFacts(base, volatile) {
+		t.Fatal("sequence, uptime or a producer age counted as a change")
+	}
+
+	changes := map[string]func(*CollectorStatusReport){
+		"instance":                  func(r *CollectorStatusReport) { r.Instance = "00000000000000bb" },
+		"run":                       func(r *CollectorStatusReport) { r.EvaluationRunID = "other" },
+		"endpoints":                 func(r *CollectorStatusReport) { r.ReceiverEndpoints = nil },
+		"spans":                     func(r *CollectorStatusReport) { r.Spans.Invalid++ },
+		"producers truncated":       func(r *CollectorStatusReport) { r.ProducersTruncated = true },
+		"producer name":             func(r *CollectorStatusReport) { r.Producers[0].ServiceName = "x" },
+		"producer spans":            func(r *CollectorStatusReport) { r.Producers[0].Spans++ },
+		"producer scopes":           func(r *CollectorStatusReport) { r.Producers[0].Scopes[0].Version = "2" },
+		"producer scopes truncated": func(r *CollectorStatusReport) { r.Producers[0].ScopesTruncated = true },
+		"producer sdk":              func(r *CollectorStatusReport) { r.Producers[0].SDK.Version = "2" },
+		"models reported":           func(r *CollectorStatusReport) { r.ModelsReported = false },
+		"models":                    func(r *CollectorStatusReport) { r.Models[0].Calls++ },
+		"models truncated":          func(r *CollectorStatusReport) { r.ModelsTruncated = true },
+		"fidelity reported":         func(r *CollectorStatusReport) { r.FidelityReported = false },
+		"fidelity":                  func(r *CollectorStatusReport) { r.Fidelity.Semantic++ },
+		"targets reported":          func(r *CollectorStatusReport) { r.TransportTargetsReported = false },
+		"targets":                   func(r *CollectorStatusReport) { r.TransportTargets[0].DistinctOperations++ },
+		"targets truncated":         func(r *CollectorStatusReport) { r.TransportTargetsTruncated = true },
+		"actors reported":           func(r *CollectorStatusReport) { r.ActorsReported = false },
+		"actors":                    func(r *CollectorStatusReport) { r.Actors.Unbound++ },
+		"learning reported":         func(r *CollectorStatusReport) { r.LearningReported = false },
+		"learned":                   func(r *CollectorStatusReport) { r.Learning.Learned++ },
+		"not learned":               func(r *CollectorStatusReport) { r.Learning.NotLearned++ },
+		"observe errors":            func(r *CollectorStatusReport) { r.Learning.ObserveErrors++ },
+		"by decision":               func(r *CollectorStatusReport) { r.Learning.NotLearnedByDecision[0].Count++ },
+	}
+	for name, change := range changes {
+		t.Run(name, func(t *testing.T) {
+			changed := base.clone()
+			change(&changed)
+			if sameFacts(base, changed) {
+				t.Fatalf("a change to %s went unnoticed", name)
+			}
+		})
+	}
+}

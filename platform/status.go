@@ -24,7 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -449,16 +448,37 @@ func (s *statusRegistry) record(
 
 // sameFacts compares two reports ignoring the fields that advance on every
 // report regardless of what happened: sequence, uptime and producer ages.
+//
+// Written out field by field rather than with reflection: the rules of this
+// repository exclude reflection, and a comparison that names every field is one
+// a new field cannot silently slip past — adding one to the report without
+// adding it here leaves a test that compares two reports differing only in it
+// failing.
 func sameFacts(a, b CollectorStatusReport) bool {
-	strip := func(r CollectorStatusReport) CollectorStatusReport {
-		r = r.clone()
-		r.Sequence, r.Uptime = 0, 0
-		for i := range r.Producers {
-			r.Producers[i].LastSeenAge = 0
-		}
-		return r
+	if a.CollectorID != b.CollectorID || a.Instance != b.Instance ||
+		a.EvaluationRunID != b.EvaluationRunID || a.Spans != b.Spans ||
+		a.ProducersTruncated != b.ProducersTruncated ||
+		a.ModelsReported != b.ModelsReported || a.ModelsTruncated != b.ModelsTruncated ||
+		a.FidelityReported != b.FidelityReported || a.Fidelity != b.Fidelity ||
+		a.TransportTargetsReported != b.TransportTargetsReported ||
+		a.TransportTargetsTruncated != b.TransportTargetsTruncated ||
+		a.ActorsReported != b.ActorsReported || a.Actors != b.Actors ||
+		a.LearningReported != b.LearningReported ||
+		a.Learning.Learned != b.Learning.Learned || a.Learning.NotLearned != b.Learning.NotLearned ||
+		a.Learning.ObserveErrors != b.Learning.ObserveErrors {
+		return false
 	}
-	return reflect.DeepEqual(strip(a), strip(b))
+	if !slices.Equal(a.ReceiverEndpoints, b.ReceiverEndpoints) ||
+		!slices.Equal(a.Models, b.Models) ||
+		!slices.Equal(a.TransportTargets, b.TransportTargets) ||
+		!slices.Equal(a.Learning.NotLearnedByDecision, b.Learning.NotLearnedByDecision) {
+		return false
+	}
+	return slices.EqualFunc(a.Producers, b.Producers, func(p, q ProducerStatus) bool {
+		return p.ServiceName == q.ServiceName && p.Spans == q.Spans &&
+			p.ScopesTruncated == q.ScopesTruncated && p.SDK == q.SDK &&
+			slices.Equal(p.Scopes, q.Scopes)
+	})
 }
 
 // snapshot returns every unexpired entry, ordered by Collector identifier.
