@@ -112,7 +112,7 @@ func newBehaviorDiffDTO(d platform.BehaviorDiff) behaviorDiffDTO {
 	}
 }
 
-func newScorecardDTO(s platform.EvaluationScorecard) scorecardDTO {
+func newScorecardDTO(s platform.EvaluationScorecard, cost *platform.CostComparison) scorecardDTO {
 	decisions := s.Decisions()
 	risks := s.Risks()
 	approvals := s.Approvals()
@@ -179,6 +179,7 @@ func newScorecardDTO(s platform.EvaluationScorecard) scorecardDTO {
 		Latency: newLatencySectionDTO(s.Latency()),
 		Errors:  newErrorsSectionDTO(s.Errors()),
 		Tokens:  newTokensSectionDTO(s.Tokens()),
+		Cost:    newCostSectionDTO(cost),
 	}
 }
 
@@ -222,7 +223,7 @@ func newCompareResponse(c platform.EvaluationComparison) compareResponse {
 		Reference: string(c.Reference.ID()),
 		Candidate: string(c.Candidate.ID()),
 		Diff:      newBehaviorDiffDTO(c.Diff),
-		Scorecard: newScorecardDTO(c.Scorecard),
+		Scorecard: newScorecardDTO(c.Scorecard, c.Cost),
 		Gate:      newGateResultDTO(c.Gate),
 	}
 }

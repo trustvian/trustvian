@@ -237,6 +237,10 @@ type RepeatedEvaluationComparison struct {
 	// summed over its completed repetitions, with how many of them carried
 	// that section's evidence. Gates read none of it.
 	Operational OperationalComparison
+
+	// Cost is task 087's cost section over the completed repetitions, nil
+	// when no pricing is configured.
+	Cost *CostComparison
 }
 
 // classifyPresence applies task 078's rule. j < k is validated before this.
@@ -483,7 +487,28 @@ func (c *ControlPlane) CompareRepeatedEvaluations(
 		}
 		inputs = append(inputs, input)
 	}
-	return reduceRepeated(request.Limits, request.Runs(), inputs)
+	result, err := reduceRepeated(request.Limits, request.Runs(), inputs)
+	if err != nil {
+		return RepeatedEvaluationComparison{}, err
+	}
+	var reference, candidate [][]BehaviorEntry
+	for _, in := range inputs {
+		switch {
+		case !in.evidence.Completed():
+		case in.evidence.Side == SideReference:
+			reference = append(reference, in.entries)
+		default:
+			candidate = append(candidate, in.entries)
+		}
+	}
+	cost, priced, err := compareCost(c.pricing, reference, candidate)
+	if err != nil {
+		return RepeatedEvaluationComparison{}, err
+	}
+	if priced {
+		result.Cost = &cost
+	}
+	return result, nil
 }
 
 // completedRepetition turns one completed run's persisted evidence into a

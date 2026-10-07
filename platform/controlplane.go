@@ -74,6 +74,10 @@ type ControlPlane struct {
 	// the status document say records are arriving when no Collector reports
 	// status, without reading the store.
 	lastIngest atomic.Int64
+
+	// pricing is the operator's pricing table, or the zero value when none was
+	// supplied — and then no comparison carries a cost section (task 087).
+	pricing Pricing
 }
 
 // ControlPlaneOption configures a control plane at construction.
@@ -1447,6 +1451,9 @@ type EvaluationComparison struct {
 	Diff      BehaviorDiff
 	Scorecard EvaluationScorecard
 	Gate      EvaluationGateResult
+
+	// Cost is task 087's cost section, nil when no pricing is configured.
+	Cost *CostComparison
 }
 
 // CompareEvaluations derives diff, scorecard and gate result for two runs.
@@ -1530,13 +1537,25 @@ func (c *ControlPlane) CompareEvaluations(
 		return EvaluationComparison{}, err
 	}
 
-	return EvaluationComparison{
+	// Read-time and gate-free: cost is evidence beside the verdict, never an
+	// input to it.
+	cost, priced, err := compareCost(c.pricing,
+		[][]BehaviorEntry{referenceSnapshot.Entries()}, [][]BehaviorEntry{candidateSnapshot.Entries()})
+	if err != nil {
+		return EvaluationComparison{}, err
+	}
+
+	comparison := EvaluationComparison{
 		Reference: reference,
 		Candidate: candidate,
 		Diff:      diff,
 		Scorecard: scorecard,
 		Gate:      gate,
-	}, nil
+	}
+	if priced {
+		comparison.Cost = &cost
+	}
+	return comparison, nil
 }
 
 // requireSameProject refuses a comparison spanning two projects.

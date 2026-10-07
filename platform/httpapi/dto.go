@@ -538,6 +538,11 @@ type scorecardDTO struct {
 	Latency latencySectionDTO `json:"latency"`
 	Errors  errorsSectionDTO  `json:"errors"`
 	Tokens  tokensSectionDTO  `json:"tokens"`
+
+	// Cost is present only when the control plane was given a pricing table,
+	// and then always with its provenance. Absent otherwise: no pricing
+	// changes nothing else in this document.
+	Cost *costSectionDTO `json:"cost,omitempty"`
 }
 
 type minimumGateDTO struct {

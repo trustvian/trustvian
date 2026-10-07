@@ -366,6 +366,9 @@ func classify(err error) (int, string, string) {
 
 	case errors.Is(err, platform.ErrEvaluationState),
 		errors.Is(err, platform.ErrStoreConflict),
+		// The comparison's cost exceeds what this pricing table can state in
+		// uint64 micro-units (task 087). Refused, never wrapped.
+		errors.Is(err, platform.ErrCostOverflow),
 		errors.Is(err, platform.ErrInvalidTransition),
 		// An archived environment and a full project are both "the request is
 		// coherent, the current configuration refuses it" — the same class a

@@ -243,12 +243,78 @@ type operationalSectionsDTO struct {
 	Latency latencySectionDTO `json:"latency"`
 	Errors  errorsSectionDTO  `json:"errors"`
 	Tokens  tokensSectionDTO  `json:"tokens"`
+	Cost    *costSectionDTO   `json:"cost,omitempty"`
 }
 
-func newOperationalSectionsDTO(c platform.OperationalComparison) operationalSectionsDTO {
+func newOperationalSectionsDTO(c platform.OperationalComparison, cost *platform.CostComparison) operationalSectionsDTO {
 	return operationalSectionsDTO{
 		Latency: newLatencySectionDTO(c.Latency),
 		Errors:  newErrorsSectionDTO(c.Errors),
 		Tokens:  newTokensSectionDTO(c.Tokens),
+		Cost:    newCostSectionDTO(cost),
 	}
+}
+
+// costSideDTO is one side's cost. cost_micros is absent on a side that
+// reported no tokens: its cost is unknown, not zero.
+type costSideDTO struct {
+	RunsWithEvidence string  `json:"runs_with_evidence"`
+	CostMicros       *string `json:"cost_micros,omitempty"`
+	PricedTokens     string  `json:"priced_tokens"`
+	UnpricedTokens   string  `json:"unpriced_tokens"`
+
+	// Coverage of the figure: observations that reported tokens, and those
+	// that did not.
+	TokenObservations         string `json:"token_observations"`
+	ObservationsWithoutTokens string `json:"observations_without_tokens"`
+}
+
+type costDeltaDTO struct {
+	CostMicros string `json:"cost_micros"`
+}
+
+// costSectionDTO carries its provenance on every rendering: a cost is never
+// published without the pricing version, digest and source it came from.
+type costSectionDTO struct {
+	PricingVersion string        `json:"pricing_version"`
+	PricingDigest  string        `json:"pricing_digest"`
+	Source         string        `json:"source"`
+	Currency       string        `json:"currency"`
+	Comparable     bool          `json:"comparable"`
+	Reason         string        `json:"reason,omitempty"`
+	Reference      costSideDTO   `json:"reference"`
+	Candidate      costSideDTO   `json:"candidate"`
+	Delta          *costDeltaDTO `json:"delta,omitempty"`
+}
+
+func newCostSideDTO(e platform.CostEvidence) costSideDTO {
+	dto := costSideDTO{
+		RunsWithEvidence: u64(e.RunsWithEvidence),
+		PricedTokens:     u64(e.PricedTokens), UnpricedTokens: u64(e.UnpricedTokens),
+		TokenObservations:         u64(e.TokenObservations),
+		ObservationsWithoutTokens: u64(e.ObservationsWithoutTokens),
+	}
+	if e.Available() {
+		cost := u64(e.CostMicros)
+		dto.CostMicros = &cost
+	}
+	return dto
+}
+
+// newCostSectionDTO renders the section, or nil when no pricing is configured
+// — and then the response has no cost field at all.
+func newCostSectionDTO(c *platform.CostComparison) *costSectionDTO {
+	if c == nil {
+		return nil
+	}
+	dto := &costSectionDTO{
+		PricingVersion: c.PricingVersion, PricingDigest: c.PricingDigest,
+		Source: c.Source, Currency: c.Currency,
+		Comparable: c.Comparable(), Reason: string(c.Unavailable),
+		Reference: newCostSideDTO(c.Reference), Candidate: newCostSideDTO(c.Candidate),
+	}
+	if c.Comparable() {
+		dto.Delta = &costDeltaDTO{CostMicros: delta(c.Candidate.CostMicros, c.Reference.CostMicros)}
+	}
+	return dto
 }

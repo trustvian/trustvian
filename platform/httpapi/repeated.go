@@ -213,7 +213,7 @@ func newCompareRepeatedResponse(
 		},
 		Repetitions: repetitions,
 		Behaviors:   behaviors,
-		Operational: newOperationalSectionsDTO(c.Operational),
+		Operational: newOperationalSectionsDTO(c.Operational, c.Cost),
 		Gate:        repeatedGateDTO{Checks: checks, Verdict: string(c.Gate.Verdict())},
 		Producer:    producerDTO{ControlPlaneVersion: producerVersion},
 	}

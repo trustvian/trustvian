@@ -132,6 +132,10 @@ type Options struct {
 
 	// Postgres is required when Backend is BackendPostgres, ignored otherwise.
 	Postgres *PostgresOptions
+
+	// Pricing is the operator's pricing table (task 087). The zero value means
+	// none, and then no comparison carries a cost section.
+	Pricing platform.Pricing
 }
 
 // PostgresOptions configure the shared backend.
@@ -238,7 +242,7 @@ func Start(ctx context.Context, options Options) (*Runtime, error) {
 	// One bus, published to by the control plane and subscribed to by the
 	// transport. Neither side gains the other's authority.
 	plane, err := platform.NewControlPlane(store, store, store,
-		platform.WithRealtimePublisher(bus))
+		platform.WithRealtimePublisher(bus), platform.WithPricing(options.Pricing))
 	if err != nil {
 		bus.Close()
 		store.Close()
