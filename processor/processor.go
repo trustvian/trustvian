@@ -775,15 +775,29 @@ func (p *trustvianProcessor) statusSnapshot(started, now time.Time) status.Repor
 	if uptime < 0 {
 		uptime = 0
 	}
+
+	// The outcome counters are read before the total, and the order is the
+	// invariant. processSpan increments processed first and exactly one outcome
+	// later, so at any instant every outcome is at most processed. Reading the
+	// outcomes first and processed last keeps that true across the reads, which
+	// are not one atomic snapshot: processed can only have grown since. The other
+	// order lets a span finish between the two reads, so evaluated can exceed
+	// received — and the control plane refuses such a report outright.
+	analyzed := p.analyzed.Load()
+	statusSnapshotBetweenLoads()
+	invalid := p.invalid.Load()
+	analyzeErrors := p.analyzeErrors.Load()
+	processed := p.processed.Load()
+
 	return status.Report{
 		UptimeMS:          strconv.FormatUint(uint64(uptime/time.Millisecond), 10),
 		ReceiverEndpoints: append([]string{}, p.receiverEndpoints...),
 		EvaluationRunID:   p.runID,
 		Spans: status.SpanCounts{
-			Received:      strconv.FormatUint(p.processed.Load(), 10),
-			Evaluated:     strconv.FormatUint(p.analyzed.Load(), 10),
-			Invalid:       strconv.FormatUint(p.invalid.Load(), 10),
-			AnalyzeErrors: strconv.FormatUint(p.analyzeErrors.Load(), 10),
+			Received:      strconv.FormatUint(processed, 10),
+			Evaluated:     strconv.FormatUint(analyzed, 10),
+			Invalid:       strconv.FormatUint(invalid, 10),
+			AnalyzeErrors: strconv.FormatUint(analyzeErrors, 10),
 		},
 		Producers:          producers,
 		ProducersTruncated: truncated,
@@ -802,6 +816,12 @@ func (p *trustvianProcessor) statusSnapshot(started, now time.Time) status.Repor
 		Learning: p.statusTracker.Learning(),
 	}
 }
+
+// statusSnapshotBetweenLoads runs between statusSnapshot's first and second
+// counter loads. A no-op except in a test, which uses it to land a whole span
+// inside the gap the read order has to be correct across — a gap a scheduler
+// opens only rarely, and a concurrent test therefore cannot be relied on to hit.
+var statusSnapshotBetweenLoads = func() {}
 
 // producerOf reads the resource attributes that identify a producer on the
 // status surface: service.name and telemetry.sdk.*. Nothing else on the
