@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componenttest"
@@ -41,6 +42,33 @@ var _ consumer.Traces = noopConsumer{}
 func BenchmarkConsumeTraces(b *testing.B) {
 	next := noopConsumer{}
 	proc := newTestProcessor(b, next)
+
+	td := buildTraces("svc-payment", 0.95)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := proc.ConsumeTraces(context.Background(), td); err != nil {
+			b.Fatalf("ConsumeTraces() error = %v", err)
+		}
+	}
+}
+
+// BenchmarkConsumeTracesWithStatus is BenchmarkConsumeTraces with a `status:`
+// block configured, so the pair measures exactly one variable: what task 105's
+// pipeline tracking costs on the span path. The reporter's interval is an hour
+// so its periodic POST does not fall inside the measurement; the reporter
+// itself runs off the span path.
+func BenchmarkConsumeTracesWithStatus(b *testing.B) {
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"version":"1","disposition":"accepted"}`)
+	}))
+	b.Cleanup(stub.Close)
+	proc, err := newTestProcessorWithConfig(b, noopConsumer{}, &trustvianprocessor.Config{
+		Status: &trustvianprocessor.StatusConfig{APIURL: stub.URL, Interval: time.Minute},
+	})
+	if err != nil {
+		b.Fatalf("CreateTraces() error = %v", err)
+	}
 
 	td := buildTraces("svc-payment", 0.95)
 

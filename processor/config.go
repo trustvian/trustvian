@@ -11,6 +11,7 @@ import (
 	"github.com/trustvian/trustvian/config"
 
 	"trustvian-processor/internal/evaluation"
+	"trustvian-processor/internal/status"
 )
 
 // Config is this processor's Collector configuration. Policy, when
@@ -57,6 +58,88 @@ type Config struct {
 	Storage    map[string]any    `mapstructure:"storage,omitempty"`
 	Health     *HealthConfig     `mapstructure:"health,omitempty"`
 	Evaluation *EvaluationConfig `mapstructure:"evaluation,omitempty"`
+	Status     *StatusConfig     `mapstructure:"status,omitempty"`
+}
+
+// StatusConfig makes this Collector report what it sees of its pipeline to a
+// control plane's GET /v1/status (task 105).
+//
+// A pointer, so its absence is distinguishable from a zero value: omitting the
+// block leaves every existing Collector exactly as it was, with no reporter
+// goroutine and no tracking on the span path.
+//
+// Separate from `evaluation:` on purpose. A Collector can report status without
+// feeding a run — `trustvian dev --check` starts exactly that, so checking the
+// pipeline never creates an evaluation run nobody asked for — and a Collector
+// feeding a run need not report status.
+type StatusConfig struct {
+	// APIURL is the control plane's base URL, under the same rules as
+	// evaluation.api_url.
+	APIURL string `mapstructure:"api_url"`
+
+	// CollectorID names this Collector on the status surface. Optional: when
+	// empty a random identifier is generated per process. A stable value lets a
+	// restarted Collector replace its own entry rather than appear beside it.
+	CollectorID string `mapstructure:"collector_id,omitempty"`
+
+	// Interval is how often a report is sent. Defaults to defaultStatusInterval.
+	Interval time.Duration `mapstructure:"interval,omitempty"`
+
+	// ReceiverEndpoints is what this Collector's OTLP receivers listen on,
+	// reported so the status surface can name the endpoint a producer should
+	// export to. Informational and optional: a processor cannot read another
+	// component's configuration, so whoever writes the Collector configuration
+	// states it here.
+	ReceiverEndpoints []string `mapstructure:"receiver_endpoints,omitempty"`
+}
+
+const (
+	// defaultStatusInterval is how often a Collector reports. Ten seconds keeps
+	// "no producer for 30 s" answerable with three reports of margin while
+	// costing one small loopback request per interval.
+	defaultStatusInterval = 10 * time.Second
+
+	minStatusInterval = time.Second
+	maxStatusInterval = time.Minute
+)
+
+// withDefaults returns the config with unset fields filled in.
+func (s StatusConfig) withDefaults() StatusConfig {
+	if s.Interval == 0 {
+		s.Interval = defaultStatusInterval
+	}
+	return s
+}
+
+// validate rejects a status block that cannot work, at construction, for the
+// reason EvaluationConfig.validate gives.
+func (s StatusConfig) validate() error {
+	if _, err := evaluation.ParseAPIURL(s.APIURL); err != nil {
+		return fmt.Errorf("status: %w", err)
+	}
+	if s.CollectorID != "" && !validStatusText(s.CollectorID) {
+		return errors.New("status: collector_id must be at most 256 bytes of printable UTF-8 " +
+			"with no leading or trailing whitespace")
+	}
+	interval := s.withDefaults().Interval
+	if interval < minStatusInterval || interval > maxStatusInterval {
+		return fmt.Errorf("status: interval must be between %s and %s", minStatusInterval, maxStatusInterval)
+	}
+	if len(s.ReceiverEndpoints) > status.MaxReceiverEndpoints {
+		return fmt.Errorf("status: at most %d receiver_endpoints may be listed", status.MaxReceiverEndpoints)
+	}
+	for _, endpoint := range s.ReceiverEndpoints {
+		if endpoint == "" || !validStatusText(endpoint) {
+			return errors.New("status: each receiver_endpoints entry must be a non-empty, printable value of at most 256 bytes")
+		}
+	}
+	return nil
+}
+
+// validStatusText applies the control plane's identifier rules, so a value
+// this configuration accepts is never one the control plane refuses.
+func validStatusText(s string) bool {
+	return status.Sanitize(s) == s && strings.TrimSpace(s) == s
 }
 
 // HealthConfig enables the runtime's liveness and readiness endpoints.

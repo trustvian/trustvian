@@ -1,9 +1,9 @@
 # 0064 — Suggestions are rule-table outputs beside the evidence, never verdicts
 
-**Status:** Proposed (task [105](../tasks/v0.12/105-pipeline-status-surface.md),
-[106](../tasks/v0.12/106-frequency-evidence.md) and
-[107](../tasks/v0.12/107-change-impact-view-and-report.md); accepted when the
-first of them lands). Builds on
+**Status:** Accepted with task [105](../tasks/v0.12/105-pipeline-status-surface.md)'s
+status rule table; [106](../tasks/v0.12/106-frequency-evidence.md) and
+[107](../tasks/v0.12/107-change-impact-view-and-report.md) bring their own tables
+under it. Builds on
 [ADR 0028](0028-scorecards-are-fixed-shape-comparative-evidence.md),
 [ADR 0029](0029-hard-gates-use-explicit-integer-evidence.md) and
 [ADR 0036](0036-webui-is-a-same-origin-adapter-over-v1.md), and changes none of
@@ -50,7 +50,7 @@ row. A row has:
 | `rule` | a stable identifier, such as `status.no_producer` or `compare.added_in_all_runs` |
 | `rule_version` | an integer, incremented whenever the condition or the text changes |
 | condition | a predicate over integer or categorical evidence already present in the same response, with no other input |
-| `evidence` | the names and values of the fields the condition read, copied from the same response |
+| `evidence` | the names and values of the fields the condition read, copied from the same response, as an ordered list (a renderer iterates it; it never enumerates a server object's keys — ADR 0036 § 7) |
 | `text` | a fixed sentence template; the only substitutions are values from `evidence` |
 
 A suggestion on the wire is exactly those fields:
@@ -59,7 +59,11 @@ A suggestion on the wire is exactly those fields:
 {
   "rule": "compare.added_in_all_runs",
   "rule_version": 1,
-  "evidence": {"behavior": "tool · export_customer", "candidate_runs_present": "10", "runs": "10"},
+  "evidence": [
+    {"name": "behavior", "value": "tool · export_customer"},
+    {"name": "candidate_runs_present", "value": "10"},
+    {"name": "runs", "value": "10"}
+  ],
   "text": "export_customer was added in 10/10 candidate runs. If this was expected, add it to the scenario; otherwise investigate before promoting."
 }
 ```

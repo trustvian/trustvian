@@ -70,6 +70,10 @@ type Handler struct {
 	// silently ignored — a caller that asked for a 0 write timeout would
 	// otherwise get the default and believe it got what it asked for.
 	configErr error
+
+	// statusSince is when this handler began serving status. Reports are held
+	// in memory, so GET /v1/status says how long its view covers.
+	statusSince time.Time
 }
 
 // Option configures a Handler.
@@ -151,6 +155,7 @@ func NewHandler(controlPlane *platform.ControlPlane, options ...Option) (http.Ha
 	if h.configErr != nil {
 		return nil, h.configErr
 	}
+	h.statusSince = h.now()
 	h.routes()
 	return h, nil
 }
@@ -241,6 +246,11 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("GET /v1/evidence/observations", h.findingObservations)
 
 	h.mux.HandleFunc("GET /v1/realtime", h.realtime)
+
+	// Pipeline status (task 105). The report route is how a Collector pushes
+	// what it sees; the read route is what every interface renders.
+	h.mux.HandleFunc("POST /v1/collectors/{collector_id}/status", h.reportCollectorStatus)
+	h.mux.HandleFunc("GET /v1/status", h.pipelineStatus)
 }
 
 // ---------------------------------------------------------------------
@@ -371,6 +381,14 @@ func classify(err error) (int, string, string) {
 		// request is coherent and the stored state refuses it — the message
 		// names which, because a runner reports it verbatim.
 		return http.StatusConflict, codeConflict, err.Error()
+
+	case errors.Is(err, platform.ErrStatusCollectorLimit):
+		// Infrastructure capacity, not a malformed report: the same report is
+		// accepted once a Collector expires.
+		return http.StatusConflict, codeConflict, err.Error()
+
+	case errors.Is(err, platform.ErrInvalidStatusReport):
+		return http.StatusBadRequest, codeInvalidRequest, err.Error()
 
 	case errors.Is(err, platform.ErrPromotionOrder):
 		// The configuration may legitimately change, so this is a conflict

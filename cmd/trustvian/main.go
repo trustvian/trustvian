@@ -85,6 +85,8 @@ func runPlatform(s streams, args []string, timeout time.Duration) (int, bool) {
 		return runEval(s, args[1:], timeout), true
 	case "evidence":
 		return runEvidence(s, args[1:], timeout), true
+	case "status":
+		return runStatus(s, args[1:], timeout), true
 	case "tui":
 		return runTUI(s, args[1:], timeout), true
 	case "dev":
@@ -124,6 +126,10 @@ Control-plane commands (see docs/platform-cli.md):
       --json, which writes the API's own response to stdout, and takes an
       optional --api-url; without one, a runtime started by 'make local'
       is found through ./.trustvian/runtime.json.
+
+  trustvian status     [--api-url <url>]
+      Print the control plane's pipeline status: Collectors, producers,
+      and what to check when nothing is arriving. Always the JSON document.
 
   trustvian tui        --run-id <id> [--api-url <url>]
       Watch one evaluation run live in the terminal. Read-only; requires

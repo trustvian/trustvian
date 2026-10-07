@@ -237,11 +237,12 @@ WebUI experience (097–104).
   specification.
 - Metadata-only detection evaluation (080), which is specified and runs as a
   parallel measurement in [`v0.12.0`](#v0120--change-impact).
-- The [`v0.12.0` Change Impact](#v0120--change-impact) tasks — persisted
-  fidelity (081), scenario and input versioning (086), performance and cost
-  evidence (087), the pipeline status surface (105), frequency evidence (106)
-  and the Change Impact view and report (107). They are specified in
-  [`tasks/v0.12/`](tasks/v0.12/README.md).
+- The rest of the [`v0.12.0` Change Impact](#v0120--change-impact) tasks —
+  persisted fidelity (081), scenario and input versioning (086), performance
+  and cost evidence (087), frequency evidence (106) and the Change Impact view
+  and report (107). They are specified in
+  [`tasks/v0.12/`](tasks/v0.12/README.md); the pipeline status surface (105) is
+  implemented.
 - Inspection depth 088–090, which is scoped by
   [task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md). 089 is
   PROPOSED, not approved.
@@ -515,7 +516,7 @@ per observation (076). Each is stated on screen where it applies.
 ## v0.12.0 — Change Impact
 
 **PLANNED.** Tasks 081, 086, 087 and 105–107 are specified in
-[`tasks/v0.12/`](tasks/v0.12/README.md), and none is implemented. The engine is
+[`tasks/v0.12/`](tasks/v0.12/README.md). 105 is implemented; the rest are not. The engine is
 unchanged. The platform gains:
 
 - one ephemeral status surface (105);
@@ -567,7 +568,7 @@ post the same report on the pull request, byte for byte
 
 | Task | Status | Milestone |
 |---|---|---|
-| 105 | Specified | [Pipeline status surface](tasks/v0.12/105-pipeline-status-surface.md): `GET /v1/status`, `trustvian status`, `trustvian dev --check`, a Status view that is the landing view when nothing is active, and a tested suggestion table |
+| 105 | **Implemented** | [Pipeline status surface](tasks/v0.12/105-pipeline-status-surface.md): `GET /v1/status`, `trustvian status`, `trustvian dev --check`, a Status view that is the landing view when nothing is active, and a tested suggestion table |
 | 087 | Specified | [Performance and cost evidence](tasks/v0.12/087-performance-and-cost-evidence.md): per-behavior duration buckets, status classes and 429s, token counts from `gen_ai.usage.*` / `llm.token_count.*`, and an optional versioned pricing table with provenance on every cost figure. No cost gate |
 | 106 | Specified | [Frequency evidence](tasks/v0.12/106-frequency-evidence.md): calls per run, per-target call ratio in integer permille, a `lost` classification, four optional named gate limits, and a comparison rule table |
 | 086 | Specified | [Scenario and input versioning](tasks/v0.12/086-scenario-and-input-versioning.md): scenario and input digests on each execution, `prompt_ref` beside `Model`, and sameness on the comparison with a warning outside the gate |
@@ -1293,7 +1294,7 @@ The **Gate** column says which rows the release actually depends on.
 | 094 | Public control-plane API contract and typed clients — an OpenAPI description of `/v1`, machine-validated, with generated or contract-tested clients | Not specified | none |
 | 095 | Saved investigations — a bounded durable metadata and reference surface holding investigation context that references authoritative evidence rather than copying it. Depends on 085 only | Not specified | none |
 | 096 | [Record-first admin console](tasks/v1.0/096-record-first-admin-console.md) — the browser surface reorganized around tables of records and clickable identifiers, so no journey through it requires typing one. Presentation and information architecture only; no route, capability or bound changes | Specified | none |
-| 105 | [Pipeline status surface](tasks/v0.12/105-pipeline-status-surface.md) — `GET /v1/status`, `trustvian status`, `dev --check`, a Status view that is the landing view when nothing is active, and a suggestion rule table ([ADR 0064](adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md)) | Specified (`v0.12.0`) | none |
+| 105 | [Pipeline status surface](tasks/v0.12/105-pipeline-status-surface.md) — `GET /v1/status`, `trustvian status`, `dev --check`, a Status view that is the landing view when nothing is active, and a suggestion rule table ([ADR 0064](adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md), [ADR 0065](adr/0065-collectors-report-pipeline-status-the-control-plane-holds-it-in-memory.md)) | **Implemented** (`v0.12.0`); engine statistics reported as unavailable | none |
 | 106 | [Frequency evidence](tasks/v0.12/106-frequency-evidence.md) — calls per run, per-target permille ratio, `lost` behaviors, and four optional named integer gate limits over them | Specified (`v0.12.0`) | none |
 | 107 | [Change Impact view and Model Change Report](tasks/v0.12/107-change-impact-view-and-report.md) — 081/086/087/106 evidence in one table, the result document version 2, and one renderer for the CLI and the PR comment | Specified (`v0.12.0`) | none |
 

@@ -261,6 +261,11 @@ func newRealtimeEventPayload(e platform.RealtimeEvent) realtimeEventPayload {
 		Scope:   newRealtimeScopeDTO(e.Scope),
 	}
 
+	if e.Kind == platform.RealtimeStatusChanged {
+		payload.Status = &realtimeStatusDTO{CollectorID: e.Status.CollectorID}
+		return payload
+	}
+
 	if e.Kind == platform.RealtimeObservationRecorded {
 		o := e.Observation
 		payload.Observation = &realtimeObservationDTO{

@@ -8,6 +8,41 @@ actually depend on.
 
 ## Unreleased
 
+### Added
+
+- **Pipeline status surface** (task 105,
+  [ADR 0064](docs/adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md),
+  [ADR 0065](docs/adr/0065-collectors-report-pipeline-status-the-control-plane-holds-it-in-memory.md)).
+  `GET /v1/status` says why Live is empty. For each Collector reporting to
+  the control plane it shows:
+  - the spans received, evaluated, invalid and failed;
+  - the producers seen, with their instrumentation scopes and
+    `telemetry.sdk.*`;
+  - the model calls the telemetry named;
+  - fidelity counts, and the distinct operations reaching each named HTTP
+    target at transport fidelity;
+  - how each span's actor was bound;
+  - what the engine's `Observe` returned.
+
+  A `suggestions` array holds the outputs of a five-rule, versioned table over
+  the same document. Suggestions change no exit code and no verdict. Engine
+  statistics are reported as unavailable: the engine exposes no accessor.
+
+  - The Collector processor reports through a new optional `status:` block,
+    every 10 s, to `POST /v1/collectors/{id}/status`. The control plane holds
+    the latest report per Collector in memory only, up to 16 Collectors,
+    forgetting a silent one after 5 minutes.
+  - `trustvian status` prints the document.
+  - `trustvian dev --check` composes the control plane and a status-only
+    Collector, with no workload, run or baseline, and prints the document once
+    the Collector has reported.
+  - Every `trustvian dev` Collector now reports status as `dev`.
+  - The WebUI gains a **Status** destination, rendered from the document.
+    Status is the landing view when the document's `landing` field says
+    nothing is active, and Live otherwise. It stays current through a
+    scope-less `status_changed` realtime event that reaches only unfiltered
+    streams. There is no polling.
+
 ## v0.11.0 — webui feature
 
 ### Added

@@ -32,6 +32,7 @@ import * as theme from "./core/theme.js";
 import { createSelectionContext } from "./views/context.js";
 import { bindSelector } from "./views/selectors.js";
 import { createOverview } from "./views/overview.js";
+import { createStatus } from "./views/status.js";
 import { createTraces } from "./views/traces.js";
 import { createScenarios } from "./views/scenarios.js";
 import { createSelector } from "./ui/selector.js";
@@ -129,6 +130,7 @@ drawThemeSwitch();
 // has room for.
 const PAGE_TITLES = Object.freeze([
   Object.freeze({ view: "view-live", title: "Live" }),
+  Object.freeze({ view: "view-status", title: "Pipeline status" }),
   Object.freeze({ view: "view-overview", title: "Overview" }),
   Object.freeze({ view: "view-projects", title: "Projects" }),
   Object.freeze({ view: "view-runs", title: "Evaluation runs" }),
@@ -186,6 +188,8 @@ const navItems = Array.from(document.querySelectorAll(".nav-item"));
 // The Overview controller, created once the selection context exists. Null
 // until then; the two places that reach it before that check.
 let overview = null;
+// The Status controller (task 105), created with the others below.
+let status = null;
 let traces = null;
 let scenarios = null;
 const views = Array.from(document.querySelectorAll(".view"));
@@ -864,13 +868,33 @@ async function refreshAuthoritative() {
 
 // The global session. Its authoritative snapshot is one page of projects and
 // nothing else — see the startup budget below.
+// liveStreamWasDown remembers a reconnect, so the Status view re-reads the
+// document a reconnect may have missed hints about.
+let liveStreamWasDown = false;
+
 const liveSession = new RealtimeSession(
   {
     snapshot: () => loadRootProjects(),
     realtimePath: () => api.realtimePath(""),
   },
   {
+    // Task 105: the pipeline status document changed. The Status view re-reads
+    // it when on screen and marks itself stale otherwise.
+    onStatusChanged: () => {
+      if (status !== null) {
+        status.changed();
+      }
+    },
     onState: (state) => {
+      if (state === STATE.RECONNECTING || state === STATE.FAILED) {
+        liveStreamWasDown = true;
+      }
+      if (state === STATE.LIVE && liveStreamWasDown) {
+        liveStreamWasDown = false;
+        if (status !== null) {
+          status.changed();
+        }
+      }
       connText.textContent = CONN_TEXT[state] || state;
       connChip.className = `conn-chip ${CONN_CLASS[state] || "conn-idle"}`;
       if (state === STATE.RESYNCING || state === STATE.RECONNECTING) {
@@ -2008,6 +2032,9 @@ for (const tab of byID("run-tabs").querySelectorAll(".subtab")) {
 function onEnterView(viewID) {
   if (viewID === "view-overview" && overview !== null) {
     overview.enter();
+  }
+  if (viewID === "view-status" && status !== null) {
+    status.enter();
   }
   if (viewID === "view-traces" && traces !== null) {
     traces.enter("");
@@ -3298,6 +3325,25 @@ overview = createOverview({
 byID("overview-refresh").addEventListener("click", () => overview.refresh());
 
 
+// Status (task 105).
+status = createStatus({
+  hosts: {
+    read: byID("status-read"),
+    landing: byID("status-landing"),
+    suggestions: byID("status-suggestions"),
+    collectors: byID("status-collectors"),
+    engine: byID("status-engine"),
+    bounds: byID("status-bounds"),
+  },
+  getStatus: () => api.getStatus(),
+  visible: () => currentView === "view-status",
+  nav: {
+    openLive: () => { openView("view-live"); onEnterView("view-live"); },
+  },
+});
+byID("status-refresh").addEventListener("click", () => status.refresh());
+
+
 // Traces (task 100).
 bindSelector(byID("traces-run-select"), selection, {
   level: "run",
@@ -3535,12 +3581,27 @@ selection.subscribe((what) => {
 // The Live Observatory opens itself, with no identifier and no user action.
 //
 // One unfiltered subscription and, once it hands over, exactly one page of
-// GET /v1/projects. That is the entire startup budget: no child level is
-// fetched, no continuation is followed, and there is no timer anywhere in this
-// bundle that would fetch anything later.
+// GET /v1/projects, plus one GET /v1/status (task 105). That is the entire
+// startup budget: no child level is fetched, no continuation is followed, and
+// there is no timer anywhere in this bundle that would fetch anything later.
 drawAll();
 renderProjectsLevel();
 liveSession.watch("");
+
+// And one status read (task 105), whose `landing` field decides whether this
+// page opens on Live or on Status. The control plane applies the rule — a
+// Collector reporting and a producer seen within its fresh window — and this
+// page only reads the answer. Live stays on screen until it arrives, and stays
+// if the reader has already moved, or if the control plane cannot answer.
+void api.getStatus().then((document) => {
+  status.seed(document);
+  if (document.landing === "status" && currentView === "view-live") {
+    openView("view-status");
+  }
+}).catch(() => {
+  // Live is the landing view when the status cannot be read; the Status
+  // destination reports the failure when it is opened.
+});
 
 // A run named in the fragment is prefilled, not auto-watched: opening a stream
 // because of a URL would start network activity nobody asked for.

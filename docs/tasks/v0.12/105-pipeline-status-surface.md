@@ -1,13 +1,13 @@
 # 105 — Pipeline Status Surface
 
-Status: Specified; not implemented
+Status: Implemented — see [What shipped](#what-shipped)
 Milestone: [`v0.12.0`](../../ROADMAP.md#v0120--change-impact)
 Depends on: [077](../v1.0/077-unified-otlp-local-dev-runtime.md) (implemented),
 [075](../v1.0/075-ai-semantic-telemetry-normalization.md) (implemented),
 [083](../v1.0/083-behavioral-layer-classification.md) (implemented)
 Decision record: [ADR 0064](../../adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md)
-for the suggestion table; a new ADR for the collector status report (see
-[§ ADR](#adr))
+for the suggestion table; [ADR 0065](../../adr/0065-collectors-report-pipeline-status-the-control-plane-holds-it-in-memory.md)
+for the collector status report
 Blocks: nothing. 107's Overview panel reads the same status route.
 
 ## Developer problem
@@ -143,9 +143,9 @@ order:
 | # | `rule` | Condition (integer / categorical, over this document) | Text template |
 |---|---|---|---|
 | 1 | `status.no_collector` | no collector report received in the last 30 s | "No Collector has reported in 30 s. Is `trustvian dev` running, and is `trustvian-collector` on its path?" |
-| 2 | `status.no_producer` | a collector reported, and `producers` is empty or every producer's `last_seen_at` is older than 30 s | "No producer has sent spans in 30 s. Check `OTEL_EXPORTER_OTLP_ENDPOINT` points at `{receiver.endpoint}`." |
+| 2 | `status.no_producer` | a collector reported, and `producers` is empty or every producer's `last_seen_at` is older than 30 s — *amended: and the Collector has been up for at least 30 s; see [What shipped](#what-shipped)* | "No producer has sent spans in 30 s. Check `OTEL_EXPORTER_OTLP_ENDPOINT` points at `{receiver.endpoint}`." |
 | 3 | `status.spans_without_service_name` | `dropped_without_actor` > 0 | "{dropped_without_actor} spans had no `service.name` and no `trustvian.actor.id`, and were not evaluated. Set the `service.name` resource attribute." |
-| 4 | `status.collapsed_http_operations` | any target with `fidelity = transport` and `distinct_operations` ≥ 3 | "{distinct_operations} operations on {target} are visible only as HTTP. Add OpenInference or OpenTelemetry GenAI instrumentation to see them as model or tool calls." |
+| 4 | `status.collapsed_http_operations` | a **named HTTP target** (category `http`, non-empty target) with `fidelity = transport` and `distinct_operations` ≥ 3 — *amended from "any target"; see [What shipped](#what-shipped)* | "{distinct_operations} operations on {target} are visible only as HTTP. Add OpenInference or OpenTelemetry GenAI instrumentation to see them as model or tool calls." |
 | 5 | `status.admission_near_bound` | engine admission available, and `admitted * 10 ≥ bound * 9` (integer form of ≥ 90 %) | "{admitted} of {bound} behaviors are admitted for {actor}. At {bound} the evaluation stops learning new behavior." |
 
 Rule 5 cannot fire while `engine.state` is `unavailable`. That is ADR 0064 § 3:
@@ -267,7 +267,7 @@ show nothing. Live's startup budget grows by one request (`GET /v1/status`).
 ## Acceptance criteria
 
 1. With nothing running, the WebUI opens on Status and names the next step
-   (rule 1 or 2).
+   (rule 1, or rule 2 once a Collector has been up for 30 s).
 2. With an instrumented agent running, the WebUI opens on Live, as today.
 3. A producer missing `service.name` is reported with a count and rule 3's text.
 4. A workload whose model calls are visible only as HTTP is reported with rule
@@ -297,3 +297,57 @@ ingest alone.
   names its evidence, so a developer can see why it fired.
 - **The 30-second thresholds are stated, not measured.** They are constants in
   the rule table with a version. Changing one is a `rule_version` bump.
+
+## What shipped
+
+The scope above, with these differences. Each is a decision taken while
+building, and recorded here rather than left for a reader to find in the code.
+
+| Specified | Shipped | Why |
+|---|---|---|
+| Producers, models, fidelity and actors as top-level document sections | Nested under each Collector, alongside its spans, learning and receivers | Each Collector reports its own cumulative counts. Merging them would sum counters from different processes and different start times into a figure nobody measured |
+| `models` and `provider` added to the ingest envelope | Computed in the Collector from the Event the convention table already produced. A model call is a model-layer behavior, its model is `Operation.Name` and its provider is `Target.Name` | No attribute is read twice, the ingest envelope and its hot path are unchanged, and a status-only Collector (`dev --check`) has no envelope at all |
+| Fidelity and the collapsed-operation count computed by the control plane from ingested records | Counted by the Collector and reported | Same reason. Operation names are counted and never reported |
+| `window_seconds` and window counters | Cumulative counters since the Collector started, with `started_at` | A window needs either a clock in the report or the control plane to subtract counters from two reports. Cumulative counts with a start time are exact |
+| Engine section: baseline count, maturity, admission against 512 | `unavailable` with its reason, plus a per-Collector `learning` section: learned, not learned and observe errors, with not-learned grouped by the decision it followed | Option A of [§ Conflict: engine facts](#conflict-engine-facts-and-engine-unchanged), as the maintainer decided. Rule 5 is in the table and cannot fire. The grouping lets a reader see that a not-learned `allow` was not ineligibility, without the processor restating the engine's eligibility rule |
+| `landing` decided at startup | A `landing` field computed by the control plane on every read. The WebUI reads it once at startup and never moves a reader who has already moved | No interface holds a copy of the rule |
+| Rule texts and thresholds as specified | Same rules and thresholds. Rule 2 names the first reporting Collector's first receiver endpoint, with a second fixed sentence when none was reported. Rule 4 says "at least N" when the per-target count saturated | The template substitutes only evidence values (ADR 0064) |
+| Suggestion `evidence` as a JSON object | An ordered list of `{name, value}` | The WebUI may not enumerate a server object's keys (ADR 0036 § 7). The order is the rule's own |
+| Report body bounded at 64 KiB | 256 KiB, the API's request bound. The processor fits an oversized report, scope lists first, and marks what it shortened | A report at every bound with maximal strings measured 681 KB. It fits at 131 KB with all 64 producers once scope lists are dropped |
+| Rule 4 over "any target with `fidelity = transport`" | Only a span whose category is `http` and whose target is named is counted per target. The platform also never fires rule 4 for an empty target, as a second guard | Transport fidelity also holds DB spans, whose operation is a span name, and the RPC fallback. The fallback includes OpenInference `CHAIN`, `GUARDRAIL`, `EVALUATOR` and `PROMPT` spans and internal spans with no target. An OpenInference-instrumented CrewAI or LangChain agent filled the empty target with three or more span names within seconds, so rule 4 told an OpenInference user to add OpenInference. Found in review |
+| Rule 2 for any reporting Collector with no fresh producer | Only for a reporting Collector up for at least the fresh window (the document's read time less the Collector's start), naming the first such Collector in identifier order with `collector_uptime_seconds` in its evidence | "No producer has sent spans … in 30 s" was printed 1.65 s after `dev --check` started its Collector, and shown in the WebUI by every new `dev` session before its workload sent anything. The sentence claimed 30 s of silence the Collector had not observed, and named a receiver port that closes when the check exits. With nothing else wrong, `dev --check` now prints an empty `suggestions` list. Found in review |
+| `status_changed` published on every report | Published only when a report changes what a reader would see, ignoring sequence, uptime and ages | An idle Collector would otherwise wake every open Status view every 10 s |
+
+**Rule 4 rarely fires for plain HTTP clients, measured.** Current
+`opentelemetry-instrumentation-requests` and `-httpx` (0.66b1, SDK 1.45.1;
+requests 2.34.2, httpx 0.28.1) were measured sending POSTs to one host on three
+paths (`/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank`). Both name every
+client span after its method alone (`POST`), so three paths are one distinct
+operation:
+
+```text
+OTEL_SEMCONV_STABILITY_OPT_IN=''      requests  POST  http.method, http.url — no server.address
+                                      httpx     POST  http.method, http.url — no server.address
+OTEL_SEMCONV_STABILITY_OPT_IN=http    requests  POST  http.request.method, server.address, url.full
+                                      httpx     POST  http.request.method, server.address, url.full
+```
+
+Without the opt-in there is no `server.address` either, so the target is empty.
+`trustvian dev` sets the opt-in. Rule 4 is kept as fixed above. Whether a
+different signal, such as distinct `url.path` values (which Trustvian does not
+read today) or HTTP spans whose parent is unnamed, should replace it is left
+open for the maintainer.
+
+Measured costs are in [PERFORMANCE.md](../../PERFORMANCE.md#v012-task-105-pipeline-status-surface).
+The span path costs about 160 ns per span with no new allocation. A typical report
+costs the control plane 12 µs, and a typical read 8 µs.
+
+Verified beyond the test suites:
+
+- A real `trustvian dev` session with eight GenAI spans reported its producer,
+  scope, 8 semantic spans, 8 bound by `service.name` and 8 learned, against its run.
+- `trustvian dev --check` completed in 1.65 s against freshly built helpers.
+- Headless Chrome confirmed three behaviors. The WebUI lands on Status with
+  nothing reporting and on Live with a fresh producer. A `status_changed` event
+  updates an open Status view without a reload. Light, dark and 390 px layouts
+  have no page-level horizontal scroll.

@@ -526,6 +526,7 @@ func TestCollectorConfigCarriesTheEvaluationRun(t *testing.T) {
 		// Paths, which are the values most likely to contain something awkward.
 		PendingStatePath: filepath.Join(t.TempDir(), collectorPendingStateFile),
 		BaselinePath:     filepath.Join(t.TempDir(), "baseline-git_3aabc1234.json"),
+		CollectorID:      devCollectorID,
 	}); err != nil {
 		t.Fatalf("writeCollectorConfig: %v", err)
 	}

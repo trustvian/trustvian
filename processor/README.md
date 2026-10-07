@@ -75,7 +75,8 @@ duplicated.
 
 ## Configuration
 
-`Config` has four fields: `policy`, `storage`, `health`, and `evaluation`.
+`Config` has five fields: `policy`, `storage`, `health`, `evaluation` and
+`status`.
 `policy` and `storage` each declare real Trustvian configuration in exactly
 the same schema the Go SDK and the CLI already consume — see the core
 repository's [Policy Guide](../docs/policy-guide.md) and [Storage
@@ -96,6 +97,36 @@ back — and `Shutdown` releases the connection pool.
 
 Omitting `storage` keeps the in-memory default, so a config written before
 the field existed behaves identically.
+
+`status` (added by core task 105) makes the Collector report what it sees of
+its pipeline to a control plane's `GET /v1/status`:
+
+```yaml
+processors:
+  trustvian:
+    status:
+      api_url: http://127.0.0.1:8080     # required; same rules as evaluation.api_url
+      collector_id: dev                  # optional; random per process when omitted
+      interval: 10s                      # default; 1s to 1m
+      receiver_endpoints: ["127.0.0.1:4318", "127.0.0.1:4317"]   # optional, at most 4
+```
+
+Every `interval`, one goroutine posts one report to
+`POST /v1/collectors/{collector_id}/status`: cumulative span counts, the
+producers seen (resource `service.name`, instrumentation scope, `telemetry.sdk.*`),
+the model calls and fidelity the convention table established, the distinct
+operations per named HTTP target at transport fidelity (counted, never named; DB
+and RPC-fallback spans count as transport but are never a target), how each span's
+actor was bound, and what `Engine.Observe` returned. No queue and no retry: a
+failed report is superseded by the next. Every section is bounded and says when
+it was truncated, and a report over the 256 KiB request bound is shortened —
+scope lists first — rather than refused. Nothing in a report is span content.
+`receiver_endpoints` is informational: a processor cannot read another
+component's configuration, so whoever writes the Collector configuration states
+it, as `trustvian dev` does. `status` is independent of `evaluation`: a Collector
+can report status without feeding a run, which is what `trustvian dev --check`
+starts. Omitting the block starts no goroutine and tracks nothing; with it, the
+span path costs about 160 ns more per span and allocates nothing more.
 
 `health` (added by core task 042) enables the runtime's operational
 endpoints:

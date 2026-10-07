@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,14 +18,17 @@ import (
 	"go.opentelemetry.io/collector/consumer/consumererror"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/ptrace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
 	"go.uber.org/zap"
 
 	trustvian "github.com/trustvian/trustvian"
 	"github.com/trustvian/trustvian/config"
+	"github.com/trustvian/trustvian/event"
 
 	"trustvian-processor/internal/evaluation"
 	"trustvian-processor/internal/health"
 	"trustvian-processor/internal/metrics"
+	"trustvian-processor/internal/status"
 )
 
 // Stats is a snapshot of this processor's observable counters: how
@@ -87,9 +91,27 @@ type trustvianProcessor struct {
 	// actually reads.
 	evaluation *evaluation.Sink
 
-	processed     atomic.Uint64
-	invalid       atomic.Uint64
-	analyzeErrors atomic.Uint64
+	// statusTracker and statusReporter are nil unless a `status:` block was
+	// configured (task 105). A nil tracker records nothing, so the span path
+	// pays nothing when status reporting is off.
+	statusTracker  *status.Tracker
+	statusReporter *status.Reporter
+
+	// receiverEndpoints and runID are reported as-is; see StatusConfig.
+	receiverEndpoints []string
+	runID             string
+
+	processed atomic.Uint64
+	analyzed  atomic.Uint64
+
+	// Which link of the actor chain bound each span (task 105). Counted for
+	// every span, valid or not, because the unbound ones are the point: they
+	// never become an Event the engine can analyze.
+	actorsByOverride    atomic.Uint64
+	actorsByServiceName atomic.Uint64
+	actorsUnbound       atomic.Uint64
+	invalid             atomic.Uint64
+	analyzeErrors       atomic.Uint64
 
 	mu        sync.Mutex
 	decisions map[string]uint64
@@ -235,6 +257,46 @@ func newTrustvianProcessor(set component.TelemetrySettings, next consumer.Traces
 			zap.String("pending_state_path", cfg.Evaluation.PendingStatePath))
 	}
 
+	if cfg.Status != nil {
+		sc := cfg.Status.withDefaults()
+		base, err := evaluation.ParseAPIURL(sc.APIURL)
+		if err != nil {
+			return nil, fmt.Errorf("trustvianprocessor: status: %w", err)
+		}
+		collectorID := sc.CollectorID
+		if collectorID == "" {
+			generated, err := status.NewInstance()
+			if err != nil {
+				return nil, fmt.Errorf("trustvianprocessor: status: %w", err)
+			}
+			collectorID = "collector-" + generated
+		}
+		p.statusTracker = status.NewTracker()
+		p.receiverEndpoints = append([]string{}, sc.ReceiverEndpoints...)
+		if cfg.Evaluation != nil {
+			p.runID = cfg.Evaluation.RunID
+		}
+		started := time.Now()
+		logger := set.Logger
+		reporter, err := status.NewReporter(base, collectorID, sc.Interval,
+			func(now time.Time) status.Report { return p.statusSnapshot(started, now) },
+			func(err error) {
+				// Once per failure streak, not per interval: an absent control
+				// plane is one fact, and repeating it every ten seconds would
+				// bury the Collector's own log.
+				logger.Warn("trustvianprocessor: status report not delivered; retrying each interval",
+					zap.Error(err))
+			})
+		if err != nil {
+			return nil, fmt.Errorf("trustvianprocessor: status: %w", err)
+		}
+		p.statusReporter = reporter
+		set.Logger.Info("trustvianprocessor: status reporting configured",
+			zap.String("collector_id", collectorID),
+			zap.String("instance", reporter.Instance()),
+			zap.Duration("interval", sc.Interval))
+	}
+
 	if cfg.Health != nil {
 		hc := cfg.Health.withDefaults()
 		p.health = health.New(storeProbe(configuredStore), hc.ReadinessTimeout)
@@ -347,6 +409,12 @@ func (p *trustvianProcessor) Start(ctx context.Context, _ component.Host) error 
 			zap.String("run_id", p.evaluation.RunID()))
 	}
 
+	// After evaluation initialization, so a Collector that refuses to start
+	// never announces itself to the status surface first.
+	if p.statusReporter != nil {
+		p.statusReporter.Start()
+	}
+
 	if p.healthServer == nil {
 		return nil
 	}
@@ -407,6 +475,13 @@ func (p *trustvianProcessor) Shutdown(ctx context.Context) error {
 
 	var errs error
 
+	// The status reporter stops before anything it reads from is torn down.
+	if p.statusReporter != nil {
+		if err := p.statusReporter.Stop(ctx); err != nil {
+			errs = errors.Join(errs, fmt.Errorf("status reporter shutdown: %w", err))
+		}
+	}
+
 	// 2. Then the health server, before the store: its readiness probe uses
 	//    the store, so stopping it in the other order would let a probe race
 	//    a closing connection pool.
@@ -446,10 +521,24 @@ func (p *trustvianProcessor) Shutdown(ctx context.Context) error {
 // resolves inside Record and the batch continues; only a record whose fate
 // is still unknown, or one the control plane declined outright, gets here.
 func (p *trustvianProcessor) ConsumeTraces(ctx context.Context, td ptrace.Traces) error {
+	var now time.Time
+	if p.statusTracker != nil {
+		now = time.Now()
+	}
 	for _, rs := range td.ResourceSpans().All() {
 		resourceAttrs := rs.Resource().Attributes()
+		var serviceName string
+		var sdk status.SDK
+		if p.statusTracker != nil {
+			serviceName, sdk = producerOf(resourceAttrs)
+		}
 		for _, ss := range rs.ScopeSpans().All() {
 			spans := ss.Spans()
+			if p.statusTracker != nil {
+				scope := ss.Scope()
+				p.statusTracker.ObserveScope(serviceName, sdk,
+					status.Scope{Name: scope.Name(), Version: scope.Version()}, spans.Len(), now)
+			}
 			for i := range spans.Len() {
 				// Only a declined, unresolved or indeterminately-learned
 				// evaluation ingest can return an error here, and it is
@@ -470,6 +559,16 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 	p.processed.Add(1)
 
 	ev := EventFromSpan(resourceAttrs, span)
+	if p.statusTracker != nil {
+		switch actorSourceOf(ev) {
+		case actorFromOverride:
+			p.actorsByOverride.Add(1)
+		case actorFromServiceName:
+			p.actorsByServiceName.Add(1)
+		default:
+			p.actorsUnbound.Add(1)
+		}
+	}
 	if err := ev.Validate(); err != nil {
 		p.invalid.Add(1)
 		p.metrics.RecordAnalysis(ctx, metrics.OutcomeInvalidEvent, 0)
@@ -494,7 +593,18 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 			zap.String("span", span.Name()), zap.Error(err))
 		return nil
 	}
+	p.analyzed.Add(1)
 	p.metrics.RecordAnalysis(ctx, metrics.OutcomeAnalyzed, analysisDuration)
+
+	if p.statusTracker != nil {
+		p.statusTracker.ObserveEvaluated(status.Evaluated{
+			Semantic:  fidelityOf(result) == event.FidelitySemantic,
+			Model:     layerOf(result) == event.LayerModel,
+			HTTP:      result.Event.Operation.Category == event.OperationCategoryHTTP,
+			Operation: result.Event.Operation.Name,
+			Target:    result.Event.Target.Name,
+		})
+	}
 
 	SetAttributesFromResult(span.Attributes(), result)
 	p.recordDecision(string(result.Decision))
@@ -611,6 +721,7 @@ func (p *trustvianProcessor) observe(
 	observeStart := time.Now()
 	learned, err := p.engine.Observe(ctx, result)
 	observeDuration := time.Since(observeStart)
+	p.statusTracker.ObserveLearning(learned, string(result.Decision), err != nil)
 
 	switch {
 	case err != nil:
@@ -650,6 +761,76 @@ func (p *trustvianProcessor) Stats() Stats {
 		Invalid:        p.invalid.Load(),
 		AnalyzeErrors:  p.analyzeErrors.Load(),
 		Decisions:      decisions,
+	}
+}
+
+// statusSnapshot builds the body of one status report: cumulative counters
+// since this process started, and the producers seen. The reporter adds the
+// identity and the sequence.
+func (p *trustvianProcessor) statusSnapshot(started, now time.Time) status.Report {
+	producers, truncated := p.statusTracker.Producers(now)
+	models, modelsTruncated := p.statusTracker.Models()
+	targets, targetsTruncated := p.statusTracker.TransportTargets()
+	uptime := now.Sub(started)
+	if uptime < 0 {
+		uptime = 0
+	}
+
+	// The outcome counters are read before the total, and the order is the
+	// invariant. processSpan increments processed first and exactly one outcome
+	// later, so at any instant every outcome is at most processed. Reading the
+	// outcomes first and processed last keeps that true across the reads, which
+	// are not one atomic snapshot: processed can only have grown since. The other
+	// order lets a span finish between the two reads, so evaluated can exceed
+	// received — and the control plane refuses such a report outright.
+	analyzed := p.analyzed.Load()
+	statusSnapshotBetweenLoads()
+	invalid := p.invalid.Load()
+	analyzeErrors := p.analyzeErrors.Load()
+	processed := p.processed.Load()
+
+	return status.Report{
+		UptimeMS:          strconv.FormatUint(uint64(uptime/time.Millisecond), 10),
+		ReceiverEndpoints: append([]string{}, p.receiverEndpoints...),
+		EvaluationRunID:   p.runID,
+		Spans: status.SpanCounts{
+			Received:      strconv.FormatUint(processed, 10),
+			Evaluated:     strconv.FormatUint(analyzed, 10),
+			Invalid:       strconv.FormatUint(invalid, 10),
+			AnalyzeErrors: strconv.FormatUint(analyzeErrors, 10),
+		},
+		Producers:          producers,
+		ProducersTruncated: truncated,
+
+		Models:                    models,
+		ModelsTruncated:           modelsTruncated,
+		Fidelity:                  p.statusTracker.Fidelity(),
+		TransportTargets:          targets,
+		TransportTargetsTruncated: targetsTruncated,
+
+		Actors: status.ActorCounts{
+			BoundByOverride:    strconv.FormatUint(p.actorsByOverride.Load(), 10),
+			BoundByServiceName: strconv.FormatUint(p.actorsByServiceName.Load(), 10),
+			Unbound:            strconv.FormatUint(p.actorsUnbound.Load(), 10),
+		},
+		Learning: p.statusTracker.Learning(),
+	}
+}
+
+// statusSnapshotBetweenLoads runs between statusSnapshot's first and second
+// counter loads. A no-op except in a test, which uses it to land a whole span
+// inside the gap the read order has to be correct across — a gap a scheduler
+// opens only rarely, and a concurrent test therefore cannot be relied on to hit.
+var statusSnapshotBetweenLoads = func() {}
+
+// producerOf reads the resource attributes that identify a producer on the
+// status surface: service.name and telemetry.sdk.*. Nothing else on the
+// resource is read here.
+func producerOf(resourceAttrs pcommon.Map) (string, status.SDK) {
+	return stringResourceAttr(resourceAttrs, string(semconv.ServiceNameKey)), status.SDK{
+		Name:     stringResourceAttr(resourceAttrs, string(semconv.TelemetrySDKNameKey)),
+		Language: stringResourceAttr(resourceAttrs, string(semconv.TelemetrySDKLanguageKey)),
+		Version:  stringResourceAttr(resourceAttrs, string(semconv.TelemetrySDKVersionKey)),
 	}
 }
 

@@ -851,3 +851,79 @@ fieldset > .hint { margin-bottom: 0.6rem; }
     z-index: 30;
   }
 }
+
+/* -------------------------------- status --------------------------------- */
+/* Task 105. The pipeline status document, as served. Nothing here moves: a
+   Collector's state is a word and a left rule, never a pulse, so there is no
+   motion for prefers-reduced-motion to remove — and base.css's global rule
+   would remove any that were added later. Panels reflow to one column on a
+   narrow screen, like the Overview's. */
+
+.status-head {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  justify-content: space-between;
+  margin-bottom: var(--s-4);
+}
+.status-head .region-note { margin: 0; }
+.status-landing {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--state-calm);
+  border-radius: var(--r-lg);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  justify-content: space-between;
+  margin-bottom: var(--s-4);
+  padding: var(--s-3) var(--s-5);
+}
+.status-landing p { margin: 0; }
+.status-suggestions { list-style: none; margin: 0; padding: 0; }
+.status-suggestion {
+  border-top: 1px solid var(--line-soft);
+  padding: var(--s-3) 0;
+}
+.status-suggestion:first-child { border-top: 0; padding-top: 0; }
+.status-suggestion-text { font-weight: var(--w-semi); margin: 0 0 var(--s-1); }
+.status-suggestion-rule { color: var(--muted); font-size: var(--t-small); margin: 0 0 var(--s-2); }
+.status-truncated { color: var(--state-warn); }
+.status-collectors { display: grid; gap: var(--s-5); margin: var(--s-5) 0; }
+.status-collector {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  min-width: 0;
+  padding: var(--s-4) var(--s-5);
+}
+.status-collector-head {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  justify-content: space-between;
+  margin-bottom: var(--s-3);
+}
+.status-collector-title { font-size: var(--t-lead); font-weight: var(--w-semi); margin: 0; }
+.status-state {
+  border-left: 3px solid var(--line);
+  font-size: var(--t-small);
+  font-weight: var(--w-semi);
+  padding-left: var(--s-2);
+}
+.status-state-reporting { border-left-color: var(--state-calm); }
+.status-state-stale { border-left-color: var(--state-warn); }
+.status-grid {
+  display: grid;
+  gap: var(--s-4);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr));
+  margin-top: var(--s-4);
+}
+.status-engine { margin-bottom: var(--s-4); }
+.status-grid .status-wide { grid-column: 1 / -1; }
+/* Instrumentation scope names and SDK strings are long dotted identifiers;
+   those two cells wrap anywhere rather than pushing a later column out of
+   view. Names, counts and times keep their own lines. */
+.status-grid .data-table td.status-wrap { min-width: 14ch; overflow-wrap: anywhere; white-space: normal; }

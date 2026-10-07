@@ -63,6 +63,11 @@ func createTracesProcessor(_ context.Context, set processor.Settings, cfg compon
 			return nil, err
 		}
 	}
+	if c.Status != nil {
+		if err := c.Status.validate(); err != nil {
+			return nil, err
+		}
+	}
 	p, err := newTrustvianProcessor(set.TelemetrySettings, next, c)
 	if err != nil {
 		return nil, err

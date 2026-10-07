@@ -36,6 +36,7 @@ func TestCollectorConfigRendersBothReceiversAndNoTelemetryBlock(t *testing.T) {
 		OTLPHTTPPort: 4318, OTLPGRPCPort: 4317, HealthPort: 13133,
 		APIURL: "http://127.0.0.1:9", RunID: "r", Profile: "p",
 		PendingStatePath: "/tmp/pending.json", BaselinePath: "/tmp/baseline.json",
+		CollectorID: devCollectorID,
 	}); err != nil {
 		t.Fatalf("writeCollectorConfig: %v", err)
 	}
@@ -52,6 +53,11 @@ func TestCollectorConfigRendersBothReceiversAndNoTelemetryBlock(t *testing.T) {
 		"endpoint: 127.0.0.1:13133",
 		"processors: [trustvian]",
 		"verbosity: basic",
+		// Task 105: the Collector reports its pipeline status to the same
+		// control plane, naming the receivers a producer should export to.
+		"status:",
+		`collector_id: "dev"`,
+		`receiver_endpoints: ["127.0.0.1:4318", "127.0.0.1:4317"]`,
 	} {
 		if !strings.Contains(config, want) {
 			t.Errorf("the config does not contain %q:\n%s", want, config)
@@ -84,7 +90,8 @@ func TestCollectorConfigGoesToTheStateDirectory(t *testing.T) {
 	if err := writeCollectorConfig(filepath.Join(stateDir, collectorConfigFile),
 		collectorConfigData{OTLPHTTPPort: 1, OTLPGRPCPort: 2, HealthPort: 3,
 			APIURL: "http://127.0.0.1:9", RunID: "r", Profile: "p",
-			PendingStatePath: "/tmp/pending.json", BaselinePath: "/tmp/baseline.json"}); err != nil {
+			PendingStatePath: "/tmp/pending.json", BaselinePath: "/tmp/baseline.json",
+			CollectorID: devCollectorID}); err != nil {
 		t.Fatalf("writeCollectorConfig: %v", err)
 	}
 

@@ -51,6 +51,10 @@ const (
 	// condition the processor reports rather than one dev has to clean up.
 	collectorPendingStateFile = "collector-pending.json"
 
+	// devCollectorID is how the Collector dev starts names itself on the status
+	// surface.
+	devCollectorID = "dev"
+
 	// collectorPollInterval is how often readiness is re-checked.
 	collectorPollInterval = 25 * time.Millisecond
 
@@ -118,20 +122,28 @@ receivers:
 
 processors:
   trustvian:
+{{- if .RunID}}
     storage:
       version: v1
       type: file
       file:
         path: "{{.BaselinePath}}"
+{{- end}}
     health:
       endpoint: 127.0.0.1:{{.HealthPort}}
       readiness_timeout: 2s
+    status:
+      api_url: "{{.APIURL}}"
+      collector_id: "{{.CollectorID}}"
+      receiver_endpoints: ["127.0.0.1:{{.OTLPHTTPPort}}", "127.0.0.1:{{.OTLPGRPCPort}}"]
+{{- if .RunID}}
     evaluation:
       api_url: "{{.APIURL}}"
       run_id: "{{.RunID}}"
       behavioral_profile: "{{.Profile}}"
       required: true
       pending_state_path: "{{.PendingStatePath}}"
+{{- end}}
 
 exporters:
   debug:
@@ -175,6 +187,11 @@ type collectorConfigData struct {
 	// dev_baseline.go for the single-writer rule that comes with it.
 	BaselinePath string
 
+	// CollectorID names this Collector on the control plane's status surface
+	// (task 105). Fixed rather than generated, so a restarted dev replaces its
+	// own entry rather than appearing beside a stale one.
+	CollectorID string
+
 	// PendingStatePath holds the single record that may be in flight, so a
 	// Collector that dies between recording evidence and applying that record's
 	// learning can tell on restart which of the two already happened.
@@ -191,13 +208,23 @@ type collectorConfigData struct {
 // profile are derived from a repository and could contain anything a branch name
 // or a flag can.
 func (d collectorConfigData) validate() error {
-	for _, field := range []struct{ name, value string }{
+	fields := []struct{ name, value string }{
 		{"api_url", d.APIURL},
-		{"run_id", d.RunID},
-		{"behavioral_profile", d.Profile},
-		{"pending_state_path", d.PendingStatePath},
-		{"baseline path", d.BaselinePath},
-	} {
+		{"collector_id", d.CollectorID},
+	}
+	// A configuration with no run is a status-only Collector (`dev --check`):
+	// it feeds no evaluation and keeps no baseline, so none of the run's values
+	// are rendered and none are required. Any one of them set without the
+	// others is a half-built run and is refused.
+	if d.RunID != "" || d.Profile != "" || d.PendingStatePath != "" || d.BaselinePath != "" {
+		fields = append(fields, []struct{ name, value string }{
+			{"run_id", d.RunID},
+			{"behavioral_profile", d.Profile},
+			{"pending_state_path", d.PendingStatePath},
+			{"baseline path", d.BaselinePath},
+		}...)
+	}
+	for _, field := range fields {
 		if err := validateCollectorScalar(field.name, field.value); err != nil {
 			return err
 		}

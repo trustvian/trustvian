@@ -110,6 +110,12 @@ func runFakeCollector() int {
 	go http.Serve(healthListener, mux) //nolint:errcheck // the fake exits on a signal
 	defer healthListener.Close()
 
+	if os.Getenv(fakeCollectorModeEnv) == "report-status" {
+		// Task 105: post one status report where the generated `status:` block
+		// says to, as the real processor does at Start.
+		go reportFakeStatus(string(raw))
+	}
+
 	// Waits for SIGTERM, as the real Collector does, so dev's shutdown path is
 	// what ends it.
 	signals := make(chan os.Signal, 1)
@@ -117,6 +123,31 @@ func runFakeCollector() int {
 	<-signals
 	return 0
 }
+
+// reportFakeStatus posts a minimal report to the status block's api_url under
+// its collector_id.
+func reportFakeStatus(config string) {
+	apiURL := statusAPIPattern.FindStringSubmatch(config)
+	collectorID := statusCollectorPattern.FindStringSubmatch(config)
+	if apiURL == nil || collectorID == nil {
+		fmt.Fprintln(os.Stderr, "fake collector: no status block in the generated config")
+		return
+	}
+	body := fmt.Sprintf(`{"version":"1","collector_id":%q,"instance":"00000000000000fe","sequence":"1"}`,
+		collectorID[1])
+	response, err := http.Post(apiURL[1]+"/v1/collectors/"+collectorID[1]+"/status",
+		"application/json", strings.NewReader(body))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fake collector: reporting status: %v\n", err)
+		return
+	}
+	response.Body.Close()
+}
+
+var (
+	statusAPIPattern       = regexp.MustCompile(`status:\s*\n\s*api_url:\s*"([^"]+)"`)
+	statusCollectorPattern = regexp.MustCompile(`collector_id:\s*"([^"]+)"`)
+)
 
 // endpointPattern matches the generated config's `endpoint: 127.0.0.1:PORT`
 // lines, in document order.

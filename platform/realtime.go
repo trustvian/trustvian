@@ -73,6 +73,13 @@ const (
 	RealtimeEvaluationCompleted RealtimeEventKind = "evaluation_completed"
 	RealtimeEvaluationFailed    RealtimeEventKind = "evaluation_failed"
 	RealtimeEvaluationCancelled RealtimeEventKind = "evaluation_cancelled"
+
+	// RealtimeStatusChanged says the pipeline status document changed (task
+	// 105). It carries no status, only which Collector's report moved: a
+	// reader re-reads GET /v1/status, which is the authority. Its scope is
+	// empty, so it reaches only unfiltered subscriptions — a stream narrowed
+	// to a project or a run never sees it.
+	RealtimeStatusChanged RealtimeEventKind = "status_changed"
 )
 
 // RealtimeScope is the immutable hierarchy an event belongs to.
@@ -168,6 +175,13 @@ type RealtimeEvent struct {
 
 	Evaluation  RealtimeEvaluation
 	Observation RealtimeObservation
+	Status      RealtimeStatusChange
+}
+
+// RealtimeStatusChange names the Collector whose report changed the status
+// document. Nothing else: the document itself is read from its route.
+type RealtimeStatusChange struct {
+	CollectorID string
 }
 
 // RealtimeFilter narrows a subscription.

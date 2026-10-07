@@ -123,7 +123,42 @@ trustvian promotion create --id <id> --reference-run <id> --candidate-run <id>
                            [--max-added-behavior-changes <n>]
 trustvian promotion get    --id <id>
 trustvian promotion list   --project-id <id>
+
+trustvian status
 ```
+
+### Pipeline status: `trustvian status`
+
+`trustvian status` reads `GET /v1/status` once and prints the document as the
+server sent it — with or without `--json`, because the document is the only
+format there is
+([task 105](tasks/v0.12/105-pipeline-status-surface.md)). It is the answer to
+*why is nothing arriving?*: which Collectors are reporting to this control
+plane, what each has received, which producers it has seen with their
+instrumentation scopes and SDK, which model calls the telemetry named, how many
+spans arrived only as HTTP, how each span's actor was bound, and what the
+engine's `Observe` reported.
+
+```bash
+trustvian status | jq '.suggestions[].text'
+```
+
+The `suggestions` array holds the outputs of a fixed, versioned rule table
+over the same document
+([ADR 0064](adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md)):
+
+| Rule | Fires when |
+|---|---|
+| `status.no_collector` | no Collector has reported in 30 s |
+| `status.no_producer` | no reporting Collector has seen a span in 30 s, and at least one has been up for 30 s; names the first such Collector, its uptime and its receiver endpoint when one is reported. A Collector that started seconds ago has not been silent for 30 s, so it fires nothing |
+| `status.spans_without_service_name` | spans reached a Collector with neither `service.name` nor `trustvian.actor.id`, and were never evaluated |
+| `status.collapsed_http_operations` | 3 or more distinct operations reached one named HTTP target at transport fidelity. DB spans, unmapped convention spans and HTTP spans with no `server.address` or `peer.service` are never counted. Common HTTP client instrumentation names every span after its method alone, so this rule rarely fires for it — see [task 105](tasks/v0.12/105-pipeline-status-surface.md#what-shipped) |
+| `status.admission_near_bound` | cannot fire: the engine reports no fingerprint admission count |
+
+A suggestion changes nothing else: no exit code, no verdict, no stored record.
+Branch on its `rule`, never on its `text`. `trustvian status` exits `0` whenever
+the document was read, whatever it says, and `3` when the control plane could
+not be reached.
 
 Every command additionally accepts `[--api-url <url>]` and `[--json]`.
 
@@ -388,6 +423,36 @@ refuses rather than guessing: the processor derives the actor from the arriving
 `service.name`, and an invented Agent id would produce a run whose evidence
 cannot be attributed to it.
 
+### Checking the pipeline: `--check`
+
+```text
+trustvian dev --check [--api-url <url>] [--local-bin <path>] [--collector-bin <path>]
+```
+
+Starts the control plane and a Collector exactly as `dev` does — without a
+workload, an evaluation run or a baseline — waits for the Collector's first
+status report (at most 15 seconds), prints the status document `trustvian
+status` prints, and stops everything it started. No `--` and no command.
+
+Use it before the first real run, or when a run produced nothing: it shows
+whether the helpers start and whether the Collector reaches the control plane.
+With nothing else wrong, the answer is a reporting `dev-check` Collector, no
+producers, and an **empty `suggestions` list**. The Collector has only just
+started, so it has not been silent long enough for `status.no_producer` to
+claim anything. Its receiver ports are chosen per run and close when the check
+exits, so they are not an endpoint to export to. A real `trustvian dev` session
+sets the producer's endpoint itself.
+
+The Collector it starts is named `dev-check` and reports status only, so a check
+against a shared control plane with `--api-url` never replaces a running `dev`
+session's own `dev` entry, and nothing is written to the database. Exit status:
+`0` whenever the document was printed, `2` for a usage error, `3` when the
+control plane or the Collector could not be started.
+
+Every `trustvian dev` Collector reports its status the same way, as `dev`,
+naming both of its OTLP receivers — so `trustvian status`, or the WebUI's Status
+view, can be read while a workload runs.
+
 ### Instrumentation ownership
 
 `dev` configures an exporter; it does not attach an SDK.
@@ -492,6 +557,7 @@ reading once rather than assuming.
 | `analyze`, `baseline`, `version` | success | command failed | top-level usage | — |
 | `project`, `agent`, `candidate`, most of `eval` | success | *unused* | usage | API or network failure |
 | `eval compare` | gate **PASS** | gate **FAIL** | usage | API or network failure |
+| `status`, `dev --check` | the document was read | *unused* | usage | API or network failure; for `--check`, a helper that could not start |
 | `eval run` | gate **PASS** | gate **FAIL** | usage — the scenario, the suite or `--reference`, before anything runs | API or network failure, a reference the control plane refused (before any workload), a repetition whose workload or run failed, or a scenario past its `--scenario-timeout`. A suite exits with its most severe scenario: 3, then 2, then 1, then 0 |
 | `dev` | the command’s own | the command’s own | usage | could not start |
 

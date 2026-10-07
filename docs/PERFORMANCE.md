@@ -1196,6 +1196,58 @@ expensive. Not benchmarked: there is no useful number to report for a syscall
 that precedes an I/O operation whose cost is the network's, and the reason it
 exists is a bound rather than a speed.
 
+### v0.12 task 105 (Pipeline Status Surface)
+
+Three costs, each with its common case split from its worst case: what status
+tracking adds to every span in the Collector, what one report costs the control
+plane to accept, and what `GET /v1/status` costs to serve.
+
+| Benchmark | ns/op | B/op | allocs/op | Size |
+|---|---|---|---|---|
+| `ConsumeTraces` (no `status:` block) | 1,743 | 2,432 | 46 | — |
+| `ConsumeTracesWithStatus` | 1,904 | 2,432 | 46 | — |
+| `StatusReportTypical` (one producer, one model, two targets) | 12,437 | 17,172 | 96 | 1.3 KB report |
+| `StatusReportWorst` (every bound, maximal strings) | 777,349 | 1,330,000 | 5,359 | 131 KB report |
+| `PipelineStatusEmpty` | 3,380 | 8,317 | 33 | 981 B document |
+| `PipelineStatusTypical` (one `dev` Collector) | 8,461 | 13,413 | 70 | 2.7 KB document |
+| `PipelineStatusWorst` (16 Collectors at every bound) | 2,345,404 | ~9,500,000 | 9,003 | 2.1 MB document |
+
+Medians of five or six runs, darwin/arm64, Apple M3 Pro, Go 1.27. As everywhere
+here, `ns/op` is a machine- and session-specific measurement — see
+[reading the numbers](#reading-the-numbers).
+
+**The span path pays about 160 ns per span and no allocation** (+9 % on
+`ConsumeTraces`). That is one lock per scope batch for the producer tally, one
+per span for fidelity, model and target counts, one per learning outcome, and
+three atomic adds for actor binding. Every reported name is keyed by its
+sanitized form, so two raw names that sanitize alike are one entry rather than a
+duplicate the control plane would refuse. Sanitizing a clean name is one scan
+with no allocation, and a key is copied only the first time it is seen, so the
+steady state allocates nothing. A Collector with no `status:` block takes none
+of those locks.
+
+**A report costs the control plane about 12 µs every 10 s per Collector**, which
+is negligible at the bound of 16. The worst case is 0.78 ms. It is reachable only
+by a producer population at every bound with 256-byte names, and the processor
+has already shortened that report to fit the 256 KiB request bound: dropping the
+scope lists took the measured worst case from 681 KB to 131 KB with all 64
+producers kept.
+
+**The read is O(held reports) and touches no store.** The common startup read
+is under 10 µs. At 16 Collectors at every bound the document is 2.1 MB and
+costs 2.3 ms, mostly in encoding. The allocation figure there is dominated by
+copying every held report so the document shares nothing with the registry. A
+test keeps that worst document under the 4 MiB response bound the CLI and the
+WebUI both enforce, so a reader at the bounds gets the status rather than an
+error.
+
+**The WebUI's startup budget grows by this one read.** It was one projects page
+and is now one projects page plus one `GET /v1/status`, about 8 µs of server time
+and under 3 KB for a single `dev` session. After startup there is no polling. A
+`status_changed` realtime event causes one re-read of an open Status view, and
+an idle Collector, whose reports change only their sequence, uptime and ages,
+publishes none.
+
 ## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —

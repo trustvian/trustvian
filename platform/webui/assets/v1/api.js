@@ -539,6 +539,11 @@ export function promotionCursorFault(previous, response) {
 // view's subscription: no route change, no new parameter, no new event kind.
 // Sending `run_id=` explicitly would be the same thing to the server and a
 // worse thing to read in a log.
+// Task 105: the pipeline status document. One read, no paging: the document
+// is bounded by the server.
+export const getStatus = () =>
+  request("GET", "/v1/status");
+
 export const realtimePath = (runID) =>
   runID ? `/v1/realtime?run_id=${encodeURIComponent(runID)}` : "/v1/realtime";
 

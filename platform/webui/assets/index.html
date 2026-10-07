@@ -54,6 +54,7 @@
     <p class="nav-group-label" id="nav-group-observe">Observe</p>
     <ul class="nav-list" aria-labelledby="nav-group-observe">
       <li><button type="button" class="nav-item" id="nav-live" data-view="view-live" data-icon="live" aria-current="page">Live</button></li>
+      <li><button type="button" class="nav-item" id="nav-status" data-view="view-status" data-icon="status">Status</button></li>
       <li><button type="button" class="nav-item" id="nav-overview" data-view="view-overview" data-icon="overview">Overview</button></li>
     </ul>
   </div>
@@ -198,6 +199,31 @@
       <p class="empty">No snapshot.</p>
     </div>
   </section>
+</section>
+
+<!-- ============================ Status ============================
+     Why Live is empty, or isn't (task 105). The control plane's pipeline
+     status document, rendered as served: Collectors, producers, model calls,
+     fidelity, actor binding, learning, and suggestions from a named rule
+     table. The landing view only when the document says nothing is active.
+     Read when opened, on Refresh, and when the stream says it changed — never
+     on a timer.
+-->
+<section class="view" id="view-status" data-nav="nav-status" hidden>
+  <div class="status-head">
+    <p class="region-note" id="status-read" aria-live="polite"></p>
+    <button type="button" class="btn-quiet" id="status-refresh">Refresh</button>
+  </div>
+  <div class="status-landing" id="status-landing" role="status" hidden></div>
+  <div id="status-suggestions"></div>
+  <div class="status-collectors" id="status-collectors"></div>
+  <div class="status-engine" id="status-engine"></div>
+  <p class="region-note" id="status-bounds"></p>
+  <p class="region-note">
+    Not shown, because the status surface does not hold it: span names,
+    attribute values beyond service.name, instrumentation scope and
+    telemetry.sdk.*, any content, any history, and any combined health score.
+  </p>
 </section>
 
 <!-- ============================ Overview ============================

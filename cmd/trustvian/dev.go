@@ -94,6 +94,13 @@ Identity, each derived when not given:
                          learning scope for this run; default: the candidate
   --run-id <id>          default: generated per invocation
 
+Checking the pipeline:
+  trustvian dev --check [--api-url <url>] [--local-bin <path>] [--collector-bin <path>]
+                         start the control plane and a Collector without a
+                         workload or an evaluation run, wait for the
+                         Collector's first status report, print the status
+                         document (as 'trustvian status' does) and stop
+
 Instrumentation ownership:
   --instrumentation <mode>
                          existing   your workload already sends OpenTelemetry;
@@ -127,6 +134,12 @@ func runDev(s streams, args []string) int {
 	if err := devPlatformSupported(); err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
 		return exitDevUsage
+	}
+
+	// --check composes the pipeline without a workload, so it takes no --
+	// and no command (task 105).
+	if hasCheckFlag(args) && !hasHelpFlag(args) {
+		return runDevCheck(s, args)
 	}
 
 	before, command, ok := splitDevArgs(args)
@@ -467,6 +480,7 @@ func composeAndRunResult(s streams, config devConfig) devResult {
 		Profile:          identity.Profile,
 		PendingStatePath: filepath.Join(stateDir, collectorPendingStateFile),
 		BaselinePath:     baseline.path,
+		CollectorID:      devCollectorID,
 	})
 	if err != nil {
 		return devResult{code: session.fail(err)}
