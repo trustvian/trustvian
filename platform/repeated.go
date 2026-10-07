@@ -172,6 +172,18 @@ type RepeatedBehaviorPresence struct {
 	ReferenceRunsPresent uint64
 	CandidateRunsPresent uint64
 	Classification       RepeatedClassification
+
+	// Task 106: how often, per side, over that side's completed repetitions.
+	Reference, Candidate FrequencyStats
+
+	// Lost is task 106's classification: present in all N reference
+	// repetitions and missing from at least one candidate repetition.
+	//
+	// A field beside Classification rather than a fourth value of it. 078's
+	// classification is a closed vocabulary that published consumers — the 079
+	// renderer among them — refuse to extend, and a document they cannot read
+	// would render no verdict at all. A behavior can be both removed and lost.
+	Lost bool
 }
 
 // RepeatedCheckName is one of the six checks, spelled as the wire spells it.
@@ -241,6 +253,14 @@ type RepeatedEvaluationComparison struct {
 	// Cost is task 087's cost section over the completed repetitions, nil
 	// when no pricing is configured.
 	Cost *CostComparison
+
+	// Targets is task 106's per-target frequency, ordered by target category
+	// then name. Bounded by the execution-wide behavior bound.
+	Targets []RepeatedTargetFrequency
+
+	// LostTransitions is always LostTransitionsNotRecorded: nothing records
+	// transitions per execution (task 106 § Lost transitions).
+	LostTransitions string
 }
 
 // classifyPresence applies task 078's rule. j < k is validated before this.
@@ -287,6 +307,9 @@ func reduceRepeated(
 	operational := map[ComparisonSide]*operationalSide{
 		SideReference: {}, SideCandidate: {},
 	}
+	frequency := map[ComparisonSide]*frequencySide{
+		SideReference: newFrequencySide(), SideCandidate: newFrequencySide(),
+	}
 	for _, in := range inputs {
 		repetitions = append(repetitions, in.evidence)
 		if !in.evidence.Completed() {
@@ -294,6 +317,9 @@ func reduceRepeated(
 		}
 		completed[in.evidence.Side]++
 		if err := operational[in.evidence.Side].addRun(in.entries); err != nil {
+			return RepeatedEvaluationComparison{}, err
+		}
+		if err := frequency[in.evidence.Side].addRun(in.entries); err != nil {
 			return RepeatedEvaluationComparison{}, err
 		}
 		if in.evidence.RecordCount == 0 {
@@ -348,11 +374,25 @@ func reduceRepeated(
 		if class == RepeatedAdded {
 			added++
 		}
+		ref, err := frequency[SideReference].behaviorStats(fp)
+		if err != nil {
+			return RepeatedEvaluationComparison{}, err
+		}
+		cand, err := frequency[SideCandidate].behaviorStats(fp)
+		if err != nil {
+			return RepeatedEvaluationComparison{}, err
+		}
 		behaviors = append(behaviors, RepeatedBehaviorPresence{
 			FingerprintID: fp, Behavior: t.behavior,
 			ReferenceRunsPresent: t.reference, CandidateRunsPresent: t.candidate,
 			Classification: class,
+			Reference:      ref, Candidate: cand,
+			Lost: isLost(t.reference, t.candidate, uint64(runs)),
 		})
+	}
+	targets, err := targetFrequencies(frequency[SideReference], frequency[SideCandidate])
+	if err != nil {
+		return RepeatedEvaluationComparison{}, err
 	}
 	slices.SortFunc(behaviors, func(a, b RepeatedBehaviorPresence) int {
 		switch {
@@ -385,8 +425,10 @@ func reduceRepeated(
 	}
 	return RepeatedEvaluationComparison{
 		Runs: runs, Limits: limits, Repetitions: repetitions, Behaviors: behaviors,
-		Gate:        RepeatedEvaluationGateResult{bound: true, checks: checks, verdict: verdict},
-		Operational: compareOperational(*operational[SideReference], *operational[SideCandidate]),
+		Gate:            RepeatedEvaluationGateResult{bound: true, checks: checks, verdict: verdict},
+		Operational:     compareOperational(*operational[SideReference], *operational[SideCandidate]),
+		Targets:         targets,
+		LostTransitions: LostTransitionsNotRecorded,
 	}, nil
 }
 

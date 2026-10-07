@@ -66,6 +66,45 @@ type repeatedBehaviorDTO struct {
 	ReferenceRunsPresent string                `json:"reference_runs_present"`
 	CandidateRunsPresent string                `json:"candidate_runs_present"`
 	Classification       string                `json:"classification"`
+
+	// Task 106. Reference and candidate frequency over each side's completed
+	// repetitions, and the lost classification as its own field: 078's
+	// classification is a closed vocabulary its consumers do not extend.
+	ReferenceFrequency frequencyDTO `json:"reference_frequency"`
+	CandidateFrequency frequencyDTO `json:"candidate_frequency"`
+	Lost               bool         `json:"lost"`
+}
+
+// frequencyDTO is how often one behavior or target was called on one side.
+// With no completed repetition there are no figures: runs is "0" and the
+// per-run fields are absent rather than zero.
+type frequencyDTO struct {
+	Runs                 string  `json:"runs"`
+	CallsTotal           string  `json:"calls_total"`
+	CallsPerRunMin       *string `json:"calls_per_run_min,omitempty"`
+	CallsPerRunMax       *string `json:"calls_per_run_max,omitempty"`
+	CallsPerRunMeanMilli *string `json:"calls_per_run_mean_milli,omitempty"`
+}
+
+func newFrequencyDTO(s platform.FrequencyStats) frequencyDTO {
+	dto := frequencyDTO{Runs: u64(s.Runs), CallsTotal: u64(s.CallsTotal)}
+	if s.Available() {
+		low, high, mean := u64(s.CallsPerRunMin), u64(s.CallsPerRunMax), u64(s.CallsPerRunMeanMilli)
+		dto.CallsPerRunMin, dto.CallsPerRunMax, dto.CallsPerRunMeanMilli = &low, &high, &mean
+	}
+	return dto
+}
+
+// targetFrequencyDTO is one target's frequency. call_ratio_permille is
+// present only when the reference called the target at all; at a reference
+// total of zero there is no ratio, and call_ratio_available says so.
+type targetFrequencyDTO struct {
+	TargetName         string       `json:"target_name"`
+	TargetCategory     string       `json:"target_category"`
+	ReferenceFrequency frequencyDTO `json:"reference_frequency"`
+	CandidateFrequency frequencyDTO `json:"candidate_frequency"`
+	CallRatioAvailable bool         `json:"call_ratio_available"`
+	CallRatioPermille  *string      `json:"call_ratio_permille,omitempty"`
 }
 
 type repeatedCheckDTO struct {
@@ -101,6 +140,11 @@ type compareRepeatedResponse struct {
 	// over its completed repetitions with runs_with_evidence per side. No
 	// check reads it.
 	Operational operationalSectionsDTO `json:"operational"`
+
+	// Task 106: per-target frequency, and what is known about lost
+	// transitions — always "not_recorded".
+	Targets         []targetFrequencyDTO `json:"targets"`
+	LostTransitions string               `json:"lost_transitions"`
 
 	Producer producerDTO `json:"producer"`
 }
@@ -191,6 +235,9 @@ func newCompareRepeatedResponse(
 			ReferenceRunsPresent: u64(b.ReferenceRunsPresent),
 			CandidateRunsPresent: u64(b.CandidateRunsPresent),
 			Classification:       string(b.Classification),
+			ReferenceFrequency:   newFrequencyDTO(b.Reference),
+			CandidateFrequency:   newFrequencyDTO(b.Candidate),
+			Lost:                 b.Lost,
 		})
 	}
 	checks := make([]repeatedCheckDTO, 0, 6)
@@ -211,11 +258,13 @@ func newCompareRepeatedResponse(
 			MaxBlockDecisionsPerRun:           u64(l.MaxBlockDecisionsPerRun),
 			MaxCriticalRiskObservationsPerRun: u64(l.MaxCriticalRiskObservationsPerRun),
 		},
-		Repetitions: repetitions,
-		Behaviors:   behaviors,
-		Operational: newOperationalSectionsDTO(c.Operational, c.Cost),
-		Gate:        repeatedGateDTO{Checks: checks, Verdict: string(c.Gate.Verdict())},
-		Producer:    producerDTO{ControlPlaneVersion: producerVersion},
+		Repetitions:     repetitions,
+		Behaviors:       behaviors,
+		Targets:         newTargetFrequencyDTOs(c.Targets),
+		LostTransitions: c.LostTransitions,
+		Operational:     newOperationalSectionsDTO(c.Operational, c.Cost),
+		Gate:            repeatedGateDTO{Checks: checks, Verdict: string(c.Gate.Verdict())},
+		Producer:        producerDTO{ControlPlaneVersion: producerVersion},
 	}
 }
 
@@ -244,4 +293,22 @@ func buildVersion() string {
 		}
 	}
 	return version
+}
+
+func newTargetFrequencyDTOs(targets []platform.RepeatedTargetFrequency) []targetFrequencyDTO {
+	out := make([]targetFrequencyDTO, 0, len(targets))
+	for _, t := range targets {
+		dto := targetFrequencyDTO{
+			TargetName: t.Target.Name, TargetCategory: t.Target.Category,
+			ReferenceFrequency: newFrequencyDTO(t.Reference),
+			CandidateFrequency: newFrequencyDTO(t.Candidate),
+			CallRatioAvailable: t.RatioAvailable,
+		}
+		if t.RatioAvailable {
+			ratio := u64(t.CallRatioPermille)
+			dto.CallRatioPermille = &ratio
+		}
+		out = append(out, dto)
+	}
+	return out
 }
