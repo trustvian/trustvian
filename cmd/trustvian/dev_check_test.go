@@ -104,7 +104,7 @@ func TestDevCheckPrintsTheDocumentAfterTheFirstReport(t *testing.T) {
 	}
 }
 
-func TestDevCheckPrintsTheDocumentWhenNoReportArrives(t *testing.T) {
+func TestDevCheckPrintsTheDocumentAndExitsOperationalWhenNoReportArrives(t *testing.T) {
 	setUpDevCheck(t, "")
 	_, url := newFakeStatusPlane(t)
 	previous := devCheckWait
@@ -113,11 +113,14 @@ func TestDevCheckPrintsTheDocumentWhenNoReportArrives(t *testing.T) {
 
 	var out, errOut strings.Builder
 	code := runDev(streams{out: &out, err: &errOut}, []string{"--check", "--api-url", url})
-	if code != exitDevOK {
-		t.Fatalf("exit %d\nstderr: %s", code, errOut.String())
+	// The pipeline was not checked, so the exit is operational, but the
+	// document is still printed as the control plane said it: no collector.
+	if code != exitDevOperational {
+		t.Fatalf("exit %d, want %d\nstderr: %s", code, exitDevOperational, errOut.String())
 	}
-	// A Collector that never reported is the answer, printed as the document
-	// says it: no collector.
+	if !strings.Contains(errOut.String(), "did not report status") {
+		t.Errorf("stderr does not name the missing report: %q", errOut.String())
+	}
 	if out.String() != `{"version":"1","collectors":[]}`+"\n" {
 		t.Fatalf("stdout %q", out.String())
 	}

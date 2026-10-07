@@ -49,8 +49,10 @@ the Collector's first status report (at most 15 s), then prints the control
 plane's status document — the same JSON 'trustvian status' prints — and
 stops everything it started.
 
-Exits 0 whenever the document was printed, whatever it says; 2 for a usage
-error; 3 when the control plane or the Collector could not be started.`
+Exits 0 when the check's Collector reported, whatever the document says; 2
+for a usage error; 3 when the control plane or the Collector could not be
+started, or when the Collector never reported within the wait. In that last
+case the document is still printed, so it shows what the control plane saw.`
 
 // hasCheckFlag reports whether --check appears before the separator.
 func hasCheckFlag(args []string) bool {
@@ -172,7 +174,7 @@ func runDevCheck(s streams, args []string) int {
 		"waiting for the Collector's first status report\n",
 		url, otlp.OTLPEndpoint(), otlp.OTLPGRPCEndpoint())
 
-	body, err := awaitDevCheckReport(relay.Context(), client, previous)
+	body, reported, err := awaitDevCheckReport(relay.Context(), client, previous)
 	if err != nil {
 		fmt.Fprintf(s.err, "trustvian dev: reading the status document: %v\n", err)
 		return exitDevOperational
@@ -181,26 +183,37 @@ func runDevCheck(s streams, args []string) int {
 		fmt.Fprintf(s.err, "trustvian dev: %v\n", err)
 		return exitDevOperational
 	}
+	if !reported {
+		// The document is printed either way, but a check whose own Collector
+		// never reported did not check the pipeline: a script must not read
+		// that as success.
+		fmt.Fprintf(s.err, "trustvian dev: the check's Collector did not report status within %s\n", devCheckWait)
+		return exitDevOperational
+	}
 	return exitDevOK
 }
 
 // awaitDevCheckReport re-reads the status document until it holds a report
 // from the check's own Collector, or devCheckWait passes. Either way the last
-// document read is returned: a check whose Collector never reported prints a
-// document saying so, which is the answer the check exists to give.
-func awaitDevCheckReport(ctx context.Context, client *platformClient, previous string) ([]byte, error) {
+// document read is returned, with whether the check's Collector reported: a
+// check whose Collector never reported still prints the document, which shows
+// what the control plane saw, but exits operational.
+func awaitDevCheckReport(ctx context.Context, client *platformClient, previous string) ([]byte, bool, error) {
 	deadline := time.Now().Add(devCheckWait)
 	for {
 		instance, body, err := devCheckInstance(ctx, client)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		if (instance != "" && instance != previous) || !time.Now().Before(deadline) {
-			return body, nil
+		if instance != "" && instance != previous {
+			return body, true, nil
+		}
+		if !time.Now().Before(deadline) {
+			return body, false, nil
 		}
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, false, ctx.Err()
 		case <-time.After(devCheckPollInterval):
 		}
 	}
