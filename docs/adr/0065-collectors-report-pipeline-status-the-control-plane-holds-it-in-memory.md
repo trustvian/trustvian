@@ -116,6 +116,12 @@ reports the engine as unavailable and states why. The processor reports what
   read time.
 - A Collector without a `status:` block, including any built before task 105,
   is invisible on the surface. Its spans still reach evaluation as before.
+  What the control plane does see is its own ingest: it keeps the time of its
+  last committed ingest record in memory (never persisted, so `GET /v1/status`
+  still reads no store) and publishes it as `last_ingest_at`. Records arriving
+  within the fresh window make `landing` `live`, and rule 1 then says records
+  are arriving from a Collector with no `status:` block rather than asking
+  whether `trustvian dev` runs. Like the reports, a restart forgets it.
 - `service.name`, instrumentation scope and `telemetry.sdk.*` are displayed for
   the first time. They are held in memory and never persisted, so `v0.11.0`'s
   "service names stay unretained" still holds of retention.

@@ -92,8 +92,9 @@ same document `trustvian status` and `trustvian dev --check` print.
 
 **It is the landing view only when nothing is active.** The page makes one
 status read at startup; the document's `landing` field — `live` when a
-Collector is reporting and has seen a producer within 30 seconds, `status`
-otherwise — decides where it opens. A page whose reader has already moved is
+Collector is reporting and has seen a producer within 30 seconds, or when the
+control plane committed an ingest record within 30 seconds (`last_ingest_at`),
+`status` otherwise — decides where it opens. A page whose reader has already moved is
 left where it is. When spans start arriving while Status is open, a line at the
 top says so and offers **Open Live**; the page does not move by itself.
 

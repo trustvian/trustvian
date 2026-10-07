@@ -652,6 +652,14 @@ request of its own, then 107.** 080 runs in parallel from 087 onward.
   and no rendering attributes a latency change to the change under test.
 - Records ingested before each schema step read *not recorded* for that step's
   evidence. They do not read zero.
+- `status.collapsed_http_operations` (105's rule 4) rarely fires for
+  `opentelemetry-instrumentation-requests` and `-httpx`: they name every client
+  span by its method alone, so several paths on one host are one distinct
+  operation (measured in #158). Phase 4's two-model measurement revisits the
+  signal. Without `OTEL_SEMCONV_STABILITY_OPT_IN=http` those spans also carry
+  only the legacy HTTP keys, which Trustvian does not read; changing that
+  changes behavioral identity and is
+  [task 108](tasks/v0.13/108-legacy-http-semantic-conventions.md).
 
 ## v1.0 — Local-First Behavioral Security Platform
 
@@ -1297,6 +1305,7 @@ The **Gate** column says which rows the release actually depends on.
 | 105 | [Pipeline status surface](tasks/v0.12/105-pipeline-status-surface.md) — `GET /v1/status`, `trustvian status`, `dev --check`, a Status view that is the landing view when nothing is active, and a suggestion rule table ([ADR 0064](adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md), [ADR 0065](adr/0065-collectors-report-pipeline-status-the-control-plane-holds-it-in-memory.md)) | **Implemented** (`v0.12.0`); engine statistics reported as unavailable | none |
 | 106 | [Frequency evidence](tasks/v0.12/106-frequency-evidence.md) — calls per run, per-target permille ratio, `lost` behaviors, and four optional named integer gate limits over them | Specified (`v0.12.0`) | none |
 | 107 | [Change Impact view and Model Change Report](tasks/v0.12/107-change-impact-view-and-report.md) — 081/086/087/106 evidence in one table, the result document version 2, and one renderer for the CLI and the PR comment | Specified (`v0.12.0`) | none |
+| 108 | [Legacy HTTP semantic conventions](tasks/v0.13/108-legacy-http-semantic-conventions.md) — read `http.method`/`http.url` and the other pre-stable HTTP keys, which changes `OperationCategory` and `TargetName`, so every affected fingerprint and baseline; a staged rollout | Proposed (`v0.13.0`) | none |
 
 **Production history and scale:**
 

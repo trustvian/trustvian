@@ -142,7 +142,7 @@ order:
 
 | # | `rule` | Condition (integer / categorical, over this document) | Text template |
 |---|---|---|---|
-| 1 | `status.no_collector` | no collector report received in the last 30 s | "No Collector has reported in 30 s. Is `trustvian dev` running, and is `trustvian-collector` on its path?" |
+| 1 | `status.no_collector` | no collector report received in the last 30 s — *amended: a second sentence when ingest records arrived within the window; see [What shipped](#what-shipped)* | "No Collector has reported in 30 s. Is `trustvian dev` running, and is `trustvian-collector` on its path?" |
 | 2 | `status.no_producer` | a collector reported, and `producers` is empty or every producer's `last_seen_at` is older than 30 s — *amended: and the Collector has been up for at least 30 s; see [What shipped](#what-shipped)* | "No producer has sent spans in 30 s. Check `OTEL_EXPORTER_OTLP_ENDPOINT` points at `{receiver.endpoint}`." |
 | 3 | `status.spans_without_service_name` | `dropped_without_actor` > 0 | "{dropped_without_actor} spans had no `service.name` and no `trustvian.actor.id`, and were not evaluated. Set the `service.name` resource attribute." |
 | 4 | `status.collapsed_http_operations` | a **named HTTP target** (category `http`, non-empty target) with `fidelity = transport` and `distinct_operations` ≥ 3 — *amended from "any target"; see [What shipped](#what-shipped)* | "{distinct_operations} operations on {target} are visible only as HTTP. Add OpenInference or OpenTelemetry GenAI instrumentation to see them as model or tool calls." |
@@ -162,7 +162,9 @@ complete, and so that the gap is visible rather than forgotten.
   pass, then prints the same JSON as `trustvian status` and exits.
 - Exit codes: `0` when the document was read, whatever it says. `3` when the
   control plane or the Collector could not be reached. Suggestions never change
-  an exit code (ADR 0064 § 2).
+  an exit code (ADR 0064 § 2). *Amended for `dev --check`: `3` also when the
+  check's own Collector did not report within the wait, with the document still
+  printed; see [What shipped](#what-shipped).*
 
 ### 5. The Status view
 
@@ -271,7 +273,12 @@ show nothing. Live's startup budget grows by one request (`GET /v1/status`).
 2. With an instrumented agent running, the WebUI opens on Live, as today.
 3. A producer missing `service.name` is reported with a count and rule 3's text.
 4. A workload whose model calls are visible only as HTTP is reported with rule
-   4's text, naming the target.
+   4's text, naming the target. *Amended (maintainer decision D5): met for
+   instrumentation that names client spans by route. Not met for
+   `opentelemetry-instrumentation-requests` and `-httpx`, which name every
+   client span by its method alone, so several paths on one host are one
+   distinct operation — measured in #158, see below. Rule 4 stays as fixed in
+   #158; v0.12.0 Phase 4's two-model measurement revisits the signal.*
 5. `trustvian status`, `trustvian dev --check` and the Status view show the same
    facts, and every number on the view is in the `/v1/status` response.
 6. Unavailable reads *not available*, never `0`. The engine section is
@@ -317,6 +324,9 @@ building, and recorded here rather than left for a reader to find in the code.
 | Rule 4 over "any target with `fidelity = transport`" | Only a span whose category is `http` and whose target is named is counted per target. The platform also never fires rule 4 for an empty target, as a second guard | Transport fidelity also holds DB spans, whose operation is a span name, and the RPC fallback. The fallback includes OpenInference `CHAIN`, `GUARDRAIL`, `EVALUATOR` and `PROMPT` spans and internal spans with no target. An OpenInference-instrumented CrewAI or LangChain agent filled the empty target with three or more span names within seconds, so rule 4 told an OpenInference user to add OpenInference. Found in review |
 | Rule 2 for any reporting Collector with no fresh producer | Only for a reporting Collector up for at least the fresh window (the document's read time less the Collector's start), naming the first such Collector in identifier order with `collector_uptime_seconds` in its evidence | "No producer has sent spans … in 30 s" was printed 1.65 s after `dev --check` started its Collector, and shown in the WebUI by every new `dev` session before its workload sent anything. The sentence claimed 30 s of silence the Collector had not observed, and named a receiver port that closes when the check exits. With nothing else wrong, `dev --check` now prints an empty `suggestions` list. Found in review |
 | `status_changed` published on every report | Published only when a report changes what a reader would see, ignoring sequence, uptime and ages | An idle Collector would otherwise wake every open Status view every 10 s |
+| `dev --check` exits `0` whenever the document was read | Exits `3` when the check's own Collector did not report within the 15 s wait, after still printing the document to stdout | The check exists to say whether the pipeline works. A script reading `0` from a check whose Collector never reported would read "checked" for "not checked". Follow-up to #158's review |
+| `landing` is `live` only for a reporting Collector with a fresh producer | Also `live` when an ingest record was committed within the fresh window. The control plane keeps its last commit time in memory (an atomic, set on commit, never persisted) and publishes it as `last_ingest_at`, omitted when nothing has been ingested since it started. `GET /v1/status` still reads no store | A Collector with no `status:` block — including any built before task 105 — feeds runs without reporting. Its user opened on Status and was told to start `trustvian dev`, which was already running. Follow-up to #158's review |
+| Rule 1 with one sentence | A second fixed sentence when no Collector reports status but records arrived within the window: they are arriving, the Collector feeding them has no `status:` block, and adding one shows pipeline facts. Its evidence adds `last_ingest_age_seconds`. The rule stays at version 1, since it was never released | The first sentence would tell that user to start what was already running. The choice reads only the document's own `read_at` and `last_ingest_at` (ADR 0064) |
 
 **Rule 4 rarely fires for plain HTTP clients, measured.** Current
 `opentelemetry-instrumentation-requests` and `-httpx` (0.66b1, SDK 1.45.1;
@@ -333,10 +343,13 @@ OTEL_SEMCONV_STABILITY_OPT_IN=http    requests  POST  http.request.method, serve
 ```
 
 Without the opt-in there is no `server.address` either, so the target is empty.
-`trustvian dev` sets the opt-in. Rule 4 is kept as fixed above. Whether a
+`trustvian dev` sets the opt-in. Rule 4 is kept as fixed above, and acceptance
+criterion 4 is amended rather than claimed (maintainer decision D5). Whether a
 different signal, such as distinct `url.path` values (which Trustvian does not
-read today) or HTTP spans whose parent is unnamed, should replace it is left
-open for the maintainer.
+read today) or HTTP spans whose parent is unnamed, should replace it is left to
+v0.12.0 Phase 4's two-model measurement. Reading the legacy keys at all changes
+behavioral identity, so it is its own task:
+[108](../v0.13/108-legacy-http-semantic-conventions.md).
 
 Measured costs are in [PERFORMANCE.md](../../PERFORMANCE.md#v012-task-105-pipeline-status-surface).
 The span path costs about 160 ns per span with no new allocation. A typical report

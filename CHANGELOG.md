@@ -35,7 +35,13 @@ actually depend on.
   - `trustvian status` prints the document.
   - `trustvian dev --check` composes the control plane and a status-only
     Collector, with no workload, run or baseline, and prints the document once
-    the Collector has reported.
+    the Collector has reported. When it does not report within 15 s, the
+    document is still printed and the command exits `3`.
+  - The control plane keeps the time of its last committed ingest record in
+    memory and publishes it as `last_ingest_at`. Records arriving within 30 s
+    make the landing view Live even when no Collector reports status, and rule
+    `status.no_collector` then says the Collector feeding them has no
+    `status:` block.
   - Every `trustvian dev` Collector now reports status as `dev`.
   - The WebUI gains a **Status** destination, rendered from the document.
     Status is the landing view when the document's `landing` field says

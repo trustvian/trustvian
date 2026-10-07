@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync/atomic"
 	"time"
 
 	trustvian "github.com/trustvian/trustvian"
@@ -66,6 +67,13 @@ type ControlPlane struct {
 	// status holds the latest report from each Collector (task 105). In
 	// memory, never persisted: it is pipeline state, not evidence.
 	status *statusRegistry
+
+	// lastIngest is when this control plane last committed an ingest record,
+	// as Unix nanoseconds on its own clock, or 0 when none has been committed
+	// since it started. In memory and never persisted, like status: it lets
+	// the status document say records are arriving when no Collector reports
+	// status, without reading the store.
+	lastIngest atomic.Int64
 }
 
 // ControlPlaneOption configures a control plane at construction.
@@ -865,6 +873,12 @@ type IngestRequest struct {
 	// its behalf would be a claim. Task 083.
 	BehaviorLayer event.Layer
 
+	// ReceivedAt is this control plane's clock when the request arrived. It is
+	// never persisted and never part of the record or its digest: it only
+	// feeds the status document's last_ingest_at. The zero value records
+	// nothing.
+	ReceivedAt time.Time
+
 	Record trustvian.DecisionRecord
 }
 
@@ -1029,6 +1043,7 @@ func (c *ControlPlane) applyRecord(
 	// preflight or by the commit transaction losing a race — produced no
 	// second durable record, so it must produce no second live observation.
 	if disposition == IngestApplied {
+		c.noteIngest(request.ReceivedAt)
 		c.publishObservation(ctx, run, request, committed, newBehavior)
 	}
 
