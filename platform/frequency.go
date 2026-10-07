@@ -129,14 +129,20 @@ type frequencySide struct {
 	runs      uint64
 	behaviors map[string]*frequencyAccumulator
 	targets   map[OperationalTarget]*frequencyAccumulator
-	http429   map[OperationalTarget]uint64
-	httpSaid  map[OperationalTarget]uint64
+
+	// byName is calls per run to a target name, across categories: what
+	// max_calls_per_run names, since a scenario author knows a host, not the
+	// category a convention filed it under.
+	byName   map[string]*frequencyAccumulator
+	http429  map[OperationalTarget]uint64
+	httpSaid map[OperationalTarget]uint64
 }
 
 func newFrequencySide() *frequencySide {
 	return &frequencySide{
 		behaviors: map[string]*frequencyAccumulator{},
 		targets:   map[OperationalTarget]*frequencyAccumulator{},
+		byName:    map[string]*frequencyAccumulator{},
 		http429:   map[OperationalTarget]uint64{},
 		httpSaid:  map[OperationalTarget]uint64{},
 	}
@@ -174,11 +180,26 @@ func (s *frequencySide) addRun(entries []BehaviorEntry) error {
 			f.into[t] += f.add
 		}
 	}
+	perName := map[string]uint64{}
 	for t, calls := range perTarget {
 		acc := s.targets[t]
 		if acc == nil {
 			acc = &frequencyAccumulator{}
 			s.targets[t] = acc
+		}
+		if err := acc.addRun(calls); err != nil {
+			return err
+		}
+		if perName[t.Name] > ^uint64(0)-calls {
+			return fmt.Errorf("%w: calls to one target name in one run", ErrFrequencyOverflow)
+		}
+		perName[t.Name] += calls
+	}
+	for name, calls := range perName {
+		acc := s.byName[name]
+		if acc == nil {
+			acc = &frequencyAccumulator{}
+			s.byName[name] = acc
 		}
 		if err := acc.addRun(calls); err != nil {
 			return err

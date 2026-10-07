@@ -92,6 +92,18 @@ type RepeatedEvaluationGateLimits struct {
 	// candidate repetition, never a sum or a mean.
 	MaxBlockDecisionsPerRun           uint64
 	MaxCriticalRiskObservationsPerRun uint64
+
+	// Task 106's optional limits. Unlike the five above they may be omitted,
+	// and omitted means the check is not evaluated (issue 131's precedent):
+	//
+	//	MinCandidateFrequency  every behavior in all N reference runs is in at
+	//	                       least this many candidate runs (0..N)
+	//	MaxLostBehaviors       at most this many behaviors are lost
+	//	MaxCallsPerRun         per named target, at most this many calls in any
+	//	                       one candidate run; nil is omitted (ADR 0066)
+	MinCandidateFrequency OptionalGateLimit
+	MaxLostBehaviors      OptionalGateLimit
+	MaxCallsPerRun        []TargetCallLimit
 }
 
 // RepeatedEvaluationRequest names the 2N repetitions and the limits.
@@ -141,7 +153,7 @@ func (r RepeatedEvaluationRequest) Validate() error {
 			"below k (%d), or a behavior equally present on both sides would be added",
 			ErrInvalidRepeatedRequest, j, k)
 	}
-	return nil
+	return validateFrequencyLimits(r.Limits, n)
 }
 
 // RepetitionEvidence is one repetition as the control plane found it.
@@ -227,6 +239,19 @@ type RepeatedEvaluationGateResult struct {
 	bound   bool
 	checks  [6]RepeatedGateCheck
 	verdict GateVerdict
+
+	// frequency is task 106's three optional checks, always all three, in
+	// their stable order — not_evaluated when the limit was omitted.
+	frequency [3]FrequencyGateCheck
+}
+
+// FrequencyChecks returns task 106's three checks in their stable order.
+func (r RepeatedEvaluationGateResult) FrequencyChecks() []FrequencyGateCheck {
+	out := slices.Clone(r.frequency[:])
+	for i := range out {
+		out[i].Targets = slices.Clone(out[i].Targets)
+	}
+	return out
 }
 
 // Checks returns all six checks in their stable order.
@@ -234,7 +259,8 @@ func (r RepeatedEvaluationGateResult) Checks() []RepeatedGateCheck {
 	return slices.Clone(r.checks[:])
 }
 
-// Verdict is GateVerdictPass only when all six checks passed.
+// Verdict is GateVerdictPass only when all six checks passed and no frequency
+// check failed or was deferred.
 func (r RepeatedEvaluationGateResult) Verdict() GateVerdict { return r.verdict }
 
 // RepeatedEvaluationComparison is the authoritative repeated result.
@@ -417,15 +443,27 @@ func reduceRepeated(
 		atMostCheck(CheckWorstCandidateBlockDecisions, worstBlock, limits.MaxBlockDecisionsPerRun, advisory),
 		atMostCheck(CheckWorstCandidateCriticalRiskCount, worstCR, limits.MaxCriticalRiskObservationsPerRun, advisory),
 	}
+	frequencyChecks := evaluateFrequencyGates(limits, frequencyGateInputs{
+		runs: n, referenceRuns: completed[SideReference], candidateRuns: completed[SideCandidate],
+		behaviors:       behaviors,
+		referenceByName: frequency[SideReference].byName, candidByName: frequency[SideCandidate].byName,
+	})
 	verdict := GateVerdictPass
 	for _, c := range checks {
 		if !c.Passed {
 			verdict = GateVerdictFail
 		}
 	}
+	for _, c := range frequencyChecks {
+		if c.failsVerdict() {
+			verdict = GateVerdictFail
+		}
+	}
+	limits.MaxCallsPerRun = cloneTargetLimits(limits.MaxCallsPerRun)
 	return RepeatedEvaluationComparison{
 		Runs: runs, Limits: limits, Repetitions: repetitions, Behaviors: behaviors,
-		Gate:            RepeatedEvaluationGateResult{bound: true, checks: checks, verdict: verdict},
+		Gate: RepeatedEvaluationGateResult{bound: true, checks: checks, verdict: verdict,
+			frequency: frequencyChecks},
 		Operational:     compareOperational(*operational[SideReference], *operational[SideCandidate]),
 		Targets:         targets,
 		LostTransitions: LostTransitionsNotRecorded,

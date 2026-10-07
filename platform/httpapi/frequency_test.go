@@ -9,6 +9,8 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -35,6 +37,7 @@ func withoutMember(t *testing.T, doc []byte, name string) []byte {
 // task106Members are the members 106 adds to compare-repeated.
 var task106Members = []string{
 	"reference_frequency", "candidate_frequency", "lost", "targets", "lost_transitions",
+	"frequency_checks",
 }
 
 // TestCompareRepeatedAtNEqualsOneIsUnchanged is task 106's technical
@@ -55,6 +58,13 @@ func TestCompareRepeatedAtNEqualsOneIsUnchanged(t *testing.T) {
 	})
 	a.mustStatus(r, 200, "compare-repeated")
 	got := r.Body.Bytes()
+	// With the limits omitted, all three checks are not evaluated and say
+	// nothing else.
+	if want := `"frequency_checks":[{"name":"min_candidate_frequency","state":"not_evaluated"},` +
+		`{"name":"max_lost_behaviors","state":"not_evaluated"},` +
+		`{"name":"max_calls_per_run","state":"not_evaluated"}]`; !bytes.Contains(got, []byte(want)) {
+		t.Errorf("frequency checks with the limits omitted:\n%s", got)
+	}
 	for _, member := range task106Members {
 		if !bytes.Contains(got, []byte(`"`+member+`":`)) {
 			t.Errorf("the response does not carry %s", member)
@@ -119,5 +129,75 @@ func TestFrequencyOnTheWire(t *testing.T) {
 	}
 	if body.LostTransitions != "not_recorded" {
 		t.Errorf("lost_transitions = %q", body.LostTransitions)
+	}
+}
+
+func frequencyLimitsBody(extra map[string]any) map[string]any {
+	body := repeatedLimitsBody("2", "0")
+	body["max_repeated_added_behaviors"] = "10"
+	for k, v := range extra {
+		body[k] = v
+	}
+	return body
+}
+
+// TestFrequencyGatesOverHTTP: the limits are echoed, the checks report their
+// states, and a failing or deferred check fails the verdict.
+func TestFrequencyGatesOverHTTP(t *testing.T) {
+	a := newAPI(t)
+	a.completeIsolatedRun("ref-1", []string{"read", "send"})
+	a.completeIsolatedRun("ref-2", []string{"read", "send"})
+	a.completeIsolatedRun("can-1", []string{"read", "read", "read"})
+	a.completeIsolatedRun("can-2", []string{"read", "send"})
+	r := a.do("POST", "/v1/evaluations/compare-repeated", map[string]any{
+		"reference_run_ids": []string{"ref-1", "ref-2"}, "candidate_run_ids": []string{"can-1", "can-2"},
+		"gate_limits": frequencyLimitsBody(map[string]any{
+			"min_candidate_frequency": "1",
+			"max_lost_behaviors":      "0",
+			"max_calls_per_run":       []map[string]string{{"target": "build-host", "max": "3"}, {"target": "typo.host", "max": "9"}},
+		}),
+	})
+	a.mustStatus(r, 200, "compare-repeated")
+	body := r.Body.String()
+	for _, want := range []string{
+		`"min_candidate_frequency":"1","max_lost_behaviors":"0","max_calls_per_run":[{"target":"build-host","max":"3"},{"target":"typo.host","max":"9"}]`,
+		`{"name":"min_candidate_frequency","state":"evaluated","rule":"at_least","actual":"1","bound":"1","passed":true}`,
+		`{"name":"max_lost_behaviors","state":"evaluated","rule":"at_most","actual":"1","bound":"0","passed":false}`,
+		`{"name":"max_calls_per_run","state":"evaluated","rule":"at_most","passed":false,"targets":[` +
+			`{"target":"build-host","actual":"3","max":"3","outcome":"pass"},` +
+			`{"target":"typo.host","actual":"0","max":"9","outcome":"not_observed"}]}`,
+		`"verdict":"fail"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response lacks %s\n%s", want, body)
+		}
+	}
+}
+
+func TestFrequencyLimitsAreRefusedWhenMalformed(t *testing.T) {
+	a := newAPI(t)
+	a.completeIsolatedRun("ref-1", []string{"read"})
+	a.completeIsolatedRun("can-1", []string{"read"})
+	seventeen := make([]map[string]string, 17)
+	for i := range seventeen {
+		seventeen[i] = map[string]string{"target": "t" + strconv.Itoa(i), "max": "1"}
+	}
+	for name, extra := range map[string]map[string]any{
+		"non-canonical":       {"max_lost_behaviors": "01"},
+		"a number":            {"min_candidate_frequency": 1},
+		"past N":              {"min_candidate_frequency": "2"},
+		"an empty list":       {"max_calls_per_run": []map[string]string{}},
+		"seventeen targets":   {"max_calls_per_run": seventeen},
+		"a duplicate target":  {"max_calls_per_run": []map[string]string{{"target": "a", "max": "1"}, {"target": "a", "max": "1"}}},
+		"an unknown limit":    {"max_llm_calls_per_run": "3"},
+		"a malformed maximum": {"max_calls_per_run": []map[string]string{{"target": "a", "max": "-1"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := a.do("POST", "/v1/evaluations/compare-repeated", map[string]any{
+				"reference_run_ids": []string{"ref-1"}, "candidate_run_ids": []string{"can-1"},
+				"gate_limits": frequencyLimitsBody(extra),
+			})
+			a.mustStatus(r, 400, name)
+		})
 	}
 }

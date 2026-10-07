@@ -6,6 +6,7 @@ package platform_test
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -268,7 +269,7 @@ func TestCurrentLimitsApplyToARecordedReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cmp.Gate.Verdict() != platform.GateVerdictFail || cmp.Limits != strict {
+	if cmp.Gate.Verdict() != platform.GateVerdictFail || !reflect.DeepEqual(cmp.Limits, strict) {
 		t.Errorf("verdict %s under limits %+v; want fail under the current strict limits", cmp.Gate.Verdict(), cmp.Limits)
 	}
 
