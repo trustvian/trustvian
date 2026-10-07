@@ -491,15 +491,46 @@ adapters rather than left to be discovered.
 None of this is behavioral identity: two observations differing only in how long
 they took share a fingerprint.
 
+### Usage and HTTP status code
+
+Task 087. Read from attributes, by the Collector processor only, and carried on
+the ingest envelope beside `fidelity` and `behavior_layer` — never on
+`DecisionRecord`, and never in `StableFeatures`, a fingerprint or a baseline
+key. The keys are listed once, in
+[`internal/semconv/usage.go`](../internal/semconv/usage.go), and a test asserts
+they share nothing with the content deny-list.
+
+| Envelope field | Read from, in precedence order | Rule |
+|---|---|---|
+| `tokens_input` | `gen_ai.usage.input_tokens`, `gen_ai.usage.prompt_tokens` (legacy), `llm.token_count.prompt` | an integer from 0 to 2^32 |
+| `tokens_output` | `gen_ai.usage.output_tokens`, `gen_ai.usage.completion_tokens` (legacy), `llm.token_count.completion` | an integer from 0 to 2^32 |
+| `tokens_unsplit` | `llm.token_count.total`, **only** when both parts are absent | an integer from 0 to 2^32; a total is never split |
+| `http_status_code` | `http.response.status_code`, `http.status_code` (legacy) | an integer from 100 to 599 |
+
+**The first key present decides.** A present value that is not an integer in
+range — a string, a fraction, a negative number, a float past 2^53 — makes that
+field absent, and the next key is not read: the producer stated the value and
+stated it wrongly. **Absent is never `0`**: the field is omitted from the
+envelope, and `0` means a measured zero.
+
+**Token counts come from usage attributes and from nothing else.** No text is
+counted. **The status code is never inferred from span status**: an `UNSET` or
+`ERROR` span says nothing about HTTP.
+
+The in-process SDK path (`internal/otel`) builds no envelope, so a run ingested
+that way reports tokens and status codes as unavailable. That is the honest
+outcome, not a defect.
+
 ### What is neither read nor refused
 
-Three gaps, recorded here because "not in the table" and "deliberately excluded"
-are different statements and a reader cannot tell them apart from silence. None is
-a content attribute; all three are metadata, and each has an owner.
+Two gaps, recorded here because "not in the table" and "deliberately excluded"
+are different statements and a reader cannot tell them apart from silence. Neither
+is a content attribute; both are metadata, and each has an owner. Token usage was
+the third until task 087 read it — see
+[Usage and HTTP status code](#usage-and-http-status-code).
 
 | Gap | State | Owner |
 |---|---|---|
-| **Token usage** — `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `llm.token_count.prompt`/`.completion`/`.total` | Unconsidered: not read, and not on the refused list above | [087](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#087--performance-and-cost-evidence) |
 | **Per-observation history** | Not retained. The record now *carries* correlation and operational evidence (task 084), and the platform aggregates it per run; storing one row per observation is task 067's, so a trace tree still cannot be reconstructed from retained evidence | [067](ROADMAP.md#milestone-sequence) |
 | **Latency and error *comparison*** | The evidence is carried and aggregated per run (task 084); comparing two runs on it is a separate decision | [087](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#087--performance-and-cost-evidence) |
 
