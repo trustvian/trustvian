@@ -96,7 +96,13 @@ type compareRepeatedResponse struct {
 	Repetitions []repetitionDTO           `json:"repetitions"`
 	Behaviors   []repeatedBehaviorDTO     `json:"behaviors"`
 	Gate        repeatedGateDTO           `json:"gate"`
-	Producer    producerDTO               `json:"producer"`
+
+	// Operational is task 087's latency, errors and tokens, each side summed
+	// over its completed repetitions with runs_with_evidence per side. No
+	// check reads it.
+	Operational operationalSectionsDTO `json:"operational"`
+
+	Producer producerDTO `json:"producer"`
 }
 
 func (h *Handler) compareRepeated(w http.ResponseWriter, r *http.Request) {
@@ -207,6 +213,7 @@ func newCompareRepeatedResponse(
 		},
 		Repetitions: repetitions,
 		Behaviors:   behaviors,
+		Operational: newOperationalSectionsDTO(c.Operational),
 		Gate:        repeatedGateDTO{Checks: checks, Verdict: string(c.Gate.Verdict())},
 		Producer:    producerDTO{ControlPlaneVersion: producerVersion},
 	}

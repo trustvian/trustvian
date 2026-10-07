@@ -1096,8 +1096,14 @@ func TestCompareTwoEmptyEvaluationsReturnsFailNotNotFound(t *testing.T) {
 		t.Errorf("diff = %+v, want zeros", body.Diff)
 	}
 
-	// It is a result, not an error: no error envelope, no invented code.
-	if strings.Contains(r.Body.String(), `"error"`) {
+	// It is a result, not an error: no error envelope, no invented code. A
+	// top-level key, not a substring — task 087's span status counts carry an
+	// "error" counter of their own.
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(r.Body.Bytes(), &top); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, isError := top["error"]; isError {
 		t.Errorf("empty comparison returned an error envelope: %s", r.Body.String())
 	}
 }

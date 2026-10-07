@@ -532,6 +532,12 @@ type scorecardDTO struct {
 	PolicySelection policySelectionComparisonDTO `json:"policy_selection"`
 	Metrics         metricComparisonsDTO         `json:"metrics"`
 	Behavior        behaviorSummaryDTO           `json:"behavior"`
+
+	// Task 087: latency, errors and tokens, each comparable only when both
+	// runs carried its evidence. See operational_sections.go.
+	Latency latencySectionDTO `json:"latency"`
+	Errors  errorsSectionDTO  `json:"errors"`
+	Tokens  tokensSectionDTO  `json:"tokens"`
 }
 
 type minimumGateDTO struct {

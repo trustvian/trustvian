@@ -176,6 +176,9 @@ func newScorecardDTO(s platform.EvaluationScorecard) scorecardDTO {
 			RemovedReferenceRate:   newRatioDTO(removedRate, removedKnown),
 			PresenceOverlap:        newRatioDTO(overlap, overlapKnown),
 		},
+		Latency: newLatencySectionDTO(s.Latency()),
+		Errors:  newErrorsSectionDTO(s.Errors()),
+		Tokens:  newTokensSectionDTO(s.Tokens()),
 	}
 }
 

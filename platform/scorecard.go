@@ -278,6 +278,9 @@ type EvaluationScorecard struct {
 	policy    PolicySelectionComparison
 	metrics   MetricComparisons
 	behavior  BehaviorSummary
+
+	// operational is task 087's latency, errors and tokens sections.
+	operational OperationalComparison
 }
 
 // Comparison identity, so a card is self-describing.
@@ -307,6 +310,12 @@ func (s EvaluationScorecard) Approvals() ApprovalComparison              { retur
 func (s EvaluationScorecard) PolicySelection() PolicySelectionComparison { return s.policy }
 func (s EvaluationScorecard) Metrics() MetricComparisons                 { return s.metrics }
 func (s EvaluationScorecard) Behavior() BehaviorSummary                  { return s.behavior }
+
+// Latency, Errors and Tokens are task 087's sections. Each is comparable only
+// when both runs carried its evidence, and otherwise says which did not.
+func (s EvaluationScorecard) Latency() LatencyComparison { return s.operational.Latency }
+func (s EvaluationScorecard) Errors() ErrorComparison    { return s.operational.Errors }
+func (s EvaluationScorecard) Tokens() TokenComparison    { return s.operational.Tokens }
 
 // NewEvaluationScorecard composes two aggregates and their behavioral diff
 // into one comparison, or refuses.
@@ -403,6 +412,7 @@ func NewEvaluationScorecard(
 			CorrelationState:      diff.CorrelationState(),
 			CountingPolicyVersion: diff.CountingPolicyVersion(),
 		},
+		operational: diff.Operational(),
 	}, nil
 }
 

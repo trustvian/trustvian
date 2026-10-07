@@ -487,7 +487,15 @@ type BehaviorDiff struct {
 	// what applies the fold.
 	changes          []BehaviorChange
 	correlationState CorrelationState
+
+	// operational is the latency, error and token comparison of the two
+	// snapshots' entries (task 087), computed here because only this function
+	// holds both entry sets.
+	operational OperationalComparison
 }
+
+// Operational is the latency, error and token comparison of the two runs.
+func (d BehaviorDiff) Operational() OperationalComparison { return d.operational }
 
 // Comparison identity, so a diff is self-describing.
 func (d BehaviorDiff) ReferenceRunID() EvaluationRunID                  { return d.referenceRunID }
@@ -700,6 +708,12 @@ func CompareBehaviorSnapshots(reference, candidate BehaviorSnapshot) (BehaviorDi
 	// applies the fold when a caller has the observations.
 	diff.changes = unfoldedChanges(addedIdentities(deltas))
 	diff.correlationState = CorrelationUnavailable
+
+	operational, err := compareOperationalEntries(reference.entries, candidate.entries)
+	if err != nil {
+		return BehaviorDiff{}, err
+	}
+	diff.operational = operational
 
 	return diff, nil
 }
