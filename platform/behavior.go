@@ -98,6 +98,12 @@ type BehaviorEntry struct {
 
 	// Observations counts successful Observe calls for this fingerprint.
 	Observations uint64
+
+	// Operational is the duration, status and token evidence of those
+	// observations (task 087). Every counter set in it partitions
+	// Observations, so evidence that was not reported reads as unobserved or
+	// unavailable rather than zero.
+	Operational OperationalSummary
 }
 
 // BehaviorCollector reduces a stream of DecisionRecords into the bounded set
@@ -186,6 +192,15 @@ func NewBehaviorCollector(run EvaluationRun) (*BehaviorCollector, error) {
 // detecting a repeat would need every identifier remembered — the unbounded
 // structure this design exists to exclude.
 func (c *BehaviorCollector) Observe(record trustvian.DecisionRecord) error {
+	return c.ObserveOperational(record, OperationalFacts{})
+}
+
+// ObserveOperational is Observe with the facts the record's ingest envelope
+// carried beside it: the HTTP status code and the token usage (task 087).
+// Observe is this with no facts, so an observation through it reports neither.
+//
+// Invalid facts are refused like an invalid record, before any state changes.
+func (c *BehaviorCollector) ObserveOperational(record trustvian.DecisionRecord, facts OperationalFacts) error {
 	if c == nil || !c.bound {
 		return fmt.Errorf("%w: use NewBehaviorCollector", ErrUnboundCollector)
 	}
@@ -222,6 +237,9 @@ func (c *BehaviorCollector) Observe(record trustvian.DecisionRecord) error {
 	}
 
 	if err := validateBehaviorIdentity(record.FingerprintID, record.Behavior, record.EventID); err != nil {
+		return err
+	}
+	if err := facts.Validate(); err != nil {
 		return err
 	}
 
@@ -283,10 +301,19 @@ func (c *BehaviorCollector) Observe(record trustvian.DecisionRecord) error {
 		}
 	}
 
+	// The operational fold is computed before anything changes, because it can
+	// still fail — on a malformed duration or a counter that would overflow —
+	// and a refused record must leave the collector exactly as it was.
+	operational, err := existing.Operational.observe(record, facts)
+	if err != nil {
+		return err
+	}
+
 	// Past this point nothing can fail.
 	c.observations++
 	if known {
 		existing.Observations++
+		existing.Operational = operational
 		c.entries[record.FingerprintID] = existing
 	} else {
 		// The only place an entry is created, so the two indexes are written
@@ -297,6 +324,7 @@ func (c *BehaviorCollector) Observe(record trustvian.DecisionRecord) error {
 			FingerprintID: record.FingerprintID,
 			Behavior:      record.Behavior,
 			Observations:  1,
+			Operational:   operational,
 		}
 		c.byBehavior[record.Behavior] = record.FingerprintID
 	}

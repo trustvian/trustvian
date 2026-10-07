@@ -304,6 +304,17 @@ type ingestEnvelope struct {
 	// unchanged. Task 083.
 	BehaviorLayer string `json:"behavior_layer,omitempty"`
 
+	// The operational facts ride here for the same reason and are the same
+	// kind of fact: what the span reported about its HTTP response and its
+	// token usage, which the engine never reads. Task 087. Each is optional
+	// canonical decimal text — absent means the span did not state it, which
+	// is not zero. Pointers, so an empty string is refused as malformed rather
+	// than read as absent.
+	HTTPStatusCode *string `json:"http_status_code,omitempty"`
+	TokensInput    *string `json:"tokens_input,omitempty"`
+	TokensOutput   *string `json:"tokens_output,omitempty"`
+	TokensUnsplit  *string `json:"tokens_unsplit,omitempty"`
+
 	Record jsonRaw `json:"record"`
 }
 

@@ -238,6 +238,10 @@ func TestSchemaV4MigratesForwardAddingOnlyTheIntendedSchema(t *testing.T) {
 		case tableRuns:
 			// v10, task 101: the recency key.
 			wantColumns = []string{"created_order"}
+		case tableEntries:
+			// v11, task 087: the per-behavior operational evidence.
+			wantColumns = behaviorOperationalColumns()
+			slices.Sort(wantColumns)
 		}
 		if !slices.Equal(addedColumns, wantColumns) {
 			t.Errorf("%s gained columns %v, want exactly %v", table, addedColumns, wantColumns)

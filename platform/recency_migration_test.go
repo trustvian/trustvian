@@ -18,6 +18,7 @@ import (
 // columns gone, version 9 stamped. exec runs one statement against it.
 func downgradeToV9(t testing.TB, exec func(string) error) {
 	t.Helper()
+	downgradeToV10(t, exec)
 	for _, index := range []string{indexRunsRecentByCandidate, indexRunsRecent, indexScenarioRecent} {
 		if err := exec(`DROP INDEX ` + index); err != nil {
 			t.Fatalf("drop v10 index %s: %v", index, err)

@@ -919,12 +919,19 @@ func (h *Handler) ingestRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	operational, err := operationalFactsFrom(envelope)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
 	result, err := h.controlPlane.IngestDecisionRecord(r.Context(), platform.IngestRequest{
 		RunID:             platform.EvaluationRunID(r.PathValue("run_id")),
 		Sequence:          sequence,
 		BehavioralProfile: platform.BehavioralProfileRef(envelope.BehavioralProfile),
 		Fidelity:          fidelity,
 		BehaviorLayer:     layer,
+		Operational:       operational,
 		ReceivedAt:        h.now(),
 		Record:            record,
 	})

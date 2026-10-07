@@ -35,7 +35,7 @@ import (
 // schema version. They change for different reasons, and coupling them would
 // force a migration on an unrelated release or hide a real one behind an
 // unchanged number.
-const SchemaVersion = 10
+const SchemaVersion = 11
 
 // Table names. Compile-time constants: these are the only identifiers that
 // ever appear in assembled SQL. Every caller-supplied value is a bound
@@ -123,7 +123,7 @@ const (
 // schemaTables is every table this schema owns, and the allowlist a test
 // asserts against so an event, scorecard, or gate-result table cannot appear
 // without something failing.
-var schemaTables = schemaTablesV10
+var schemaTables = schemaTablesV11
 
 // SQLiteStore is the local persistence adapter.
 //
@@ -261,13 +261,24 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 	case SchemaVersion:
 		return s.requireTables(ctx, SchemaVersion, schemaTables)
 
+	case schemaVersionV10:
+		// Task 101's schema, before task 087's per-behavior operational
+		// columns. v11 adds columns only, so the table set is the current one.
+		if err := s.requireTables(ctx, schemaVersionV10, schemaTablesV10); err != nil {
+			return err
+		}
+		return s.migrateV10ToV11(ctx)
+
 	case schemaVersionV9:
 		// Task 078's schema, before task 101's recency keys. v10 adds
 		// columns and indexes only, so the table set is the current one.
 		if err := s.requireTables(ctx, schemaVersionV9, schemaTablesV9); err != nil {
 			return err
 		}
-		return s.migrateV9ToV10(ctx)
+		if err := s.migrateV9ToV10(ctx); err != nil {
+			return err
+		}
+		return s.migrateV10ToV11(ctx)
 
 	case schemaVersionV8:
 		// Issue 131's schema, before task 078's scenario executions: the
@@ -821,7 +832,10 @@ func (s *SQLiteStore) migrateV8ToCurrent(ctx context.Context) error {
 	if err := s.migrateV8ToV9(ctx); err != nil {
 		return err
 	}
-	return s.migrateV9ToV10(ctx)
+	if err := s.migrateV9ToV10(ctx); err != nil {
+		return err
+	}
+	return s.migrateV10ToV11(ctx)
 }
 
 func (s *SQLiteStore) migrateV8ToV9(ctx context.Context) error {
@@ -863,7 +877,7 @@ func (s *SQLiteStore) migrateV8ToV9Once(ctx context.Context) error {
 // stores. Nothing is invented — a key is a re-encoding of a stored timestamp.
 func (s *SQLiteStore) migrateV9ToV10(ctx context.Context) error {
 	if err := s.migrateV9ToV10Once(ctx); err != nil {
-		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+		if s.migrationRaceRecovered(ctx, schemaVersionV10) {
 			return nil
 		}
 		return err
@@ -890,13 +904,54 @@ func (s *SQLiteStore) migrateV9ToV10Once(ctx context.Context) error {
 	if err := recencyBackfill(ctx, sqlQuerier{tx}, exec); err != nil {
 		return err
 	}
+	// Literal schemaVersionV10: v11's operational columns follow in their own
+	// step.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
-		SchemaVersion); err != nil {
+		schemaVersionV10); err != nil {
 		return fmt.Errorf("platform: migrate schema v9 to v10: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("platform: migrate schema v9 to v10: %w", err)
+	}
+	return nil
+}
+
+// migrateV10ToV11 adds task 087's per-behavior operational columns and marks
+// every existing behavior's operational evidence as not recorded: those fields
+// did not exist when it was observed, so zero would be a claim nobody measured.
+func (s *SQLiteStore) migrateV10ToV11(ctx context.Context) error {
+	if err := s.migrateV10ToV11Once(ctx); err != nil {
+		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateV10ToV11Once(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: migrate schema v10 to v11: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, statement := range behaviorOperationalSchemaStatements("TEXT") {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("platform: migrate schema v10 to v11: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, behaviorOperationalBackfillStatement()); err != nil {
+		return fmt.Errorf("platform: migrate schema v10 to v11: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
+		SchemaVersion); err != nil {
+		return fmt.Errorf("platform: migrate schema v10 to v11: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: migrate schema v10 to v11: %w", err)
 	}
 	return nil
 }
@@ -1130,6 +1185,10 @@ var schemaTablesV9 = append(append([]string{}, schemaTablesV8...),
 // v10 added columns and indexes only.
 var schemaTablesV10 = schemaTablesV9
 
+// schemaTablesV11 is what a complete v11 database holds: v10's tables, because
+// v11 added columns to the behavior entry table only (task 087).
+var schemaTablesV11 = schemaTablesV10
+
 // schemaTablesByVersion maps every schema version this binary can recognize to
 // the tables a complete database at that version holds.
 //
@@ -1150,12 +1209,13 @@ var schemaTablesByVersion = map[int][]string{
 	// same list rather than left out, because a version with no entry is one a
 	// concurrent-open race cannot recover from. v7 is the first step since v4
 	// that adds tables, so it is the first with a list of its own again.
-	schemaVersionV5: schemaTablesV4,
-	schemaVersionV6: schemaTablesV6,
-	schemaVersionV7: schemaTablesV7,
-	schemaVersionV8: schemaTablesV8,
-	schemaVersionV9: schemaTablesV9,
-	SchemaVersion:   schemaTables,
+	schemaVersionV5:  schemaTablesV4,
+	schemaVersionV6:  schemaTablesV6,
+	schemaVersionV7:  schemaTablesV7,
+	schemaVersionV8:  schemaTablesV8,
+	schemaVersionV9:  schemaTablesV9,
+	schemaVersionV10: schemaTablesV10,
+	SchemaVersion:    schemaTables,
 }
 
 func (s *SQLiteStore) storedSchemaVersion(ctx context.Context) (int, error) {
@@ -1378,7 +1438,10 @@ func schemaStatements() []string {
 			append(scenarioExecutionSchemaStatements("TEXT", "INTEGER"),
 				// v10: task 101's recency keys and indexes, the statements
 				// the v9 -> v10 migration applies.
-				recencySchemaStatements("TEXT")...)...)...)...)
+				append(recencySchemaStatements("TEXT"),
+					// v11: task 087's per-behavior operational columns,
+					// the statements the v10 -> v11 migration applies.
+					behaviorOperationalSchemaStatements("TEXT")...)...)...)...)...)
 }
 
 // observationSchemaStatements is schema v7's whole addition, written once so
@@ -2495,16 +2558,8 @@ func (s *SQLiteStore) writeEvidence(
 	}
 
 	for _, entry := range snapshot.Entries() {
-		b := entry.Behavior
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO `+tableEntries+`
-			 (run_id, fingerprint_id, actor_type, operation_category, operation_name,
-			  target_name, target_category, environment, observations)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			string(snapshot.RunID()), entry.FingerprintID,
-			string(b.ActorType), string(b.OperationCategory), b.OperationName,
-			b.TargetName, string(b.TargetCategory), b.Environment,
-			uint64Text(entry.Observations)); err != nil {
+		if _, err := tx.ExecContext(ctx, sqliteBehaviorEntryInsert,
+			behaviorEntryInsertArgs(snapshot.RunID(), entry)...); err != nil {
 			return fmt.Errorf("platform: store behavior entry: %w", err)
 		}
 	}
@@ -3037,7 +3092,8 @@ func loadSnapshot(ctx context.Context, q evidenceQuerier, id EvaluationRunID) (B
 func loadBehaviorEntries(ctx context.Context, q evidenceQuerier, id EvaluationRunID) ([]BehaviorEntry, error) {
 	rows, err := q.query(ctx, q.rebind(
 		`SELECT fingerprint_id, actor_type, operation_category, operation_name,
-		        target_name, target_category, environment, observations
+		        target_name, target_category, environment, observations, `+
+			columnOperationalCounts+`
 		 FROM `+tableEntries+` WHERE run_id = ? ORDER BY fingerprint_id ASC`), string(id))
 	if err != nil {
 		return nil, fmt.Errorf("platform: load behavior entries: %w", err)
@@ -3047,11 +3103,11 @@ func loadBehaviorEntries(ctx context.Context, q evidenceQuerier, id EvaluationRu
 	var entries []BehaviorEntry
 	for rows.Next() {
 		var entry BehaviorEntry
-		var actorType, operationCategory, targetCategory, observations string
+		var actorType, operationCategory, targetCategory, observations, operational string
 
 		if err := rows.Scan(&entry.FingerprintID, &actorType, &operationCategory,
 			&entry.Behavior.OperationName, &entry.Behavior.TargetName,
-			&targetCategory, &entry.Behavior.Environment, &observations); err != nil {
+			&targetCategory, &entry.Behavior.Environment, &observations, &operational); err != nil {
 			return nil, fmt.Errorf("platform: load behavior entries: %w", err)
 		}
 
@@ -3060,6 +3116,9 @@ func loadBehaviorEntries(ctx context.Context, q evidenceQuerier, id EvaluationRu
 		entry.Behavior.TargetCategory = event.TargetCategory(targetCategory)
 
 		if entry.Observations, err = parseUint64Text("entry observations", observations); err != nil {
+			return nil, err
+		}
+		if entry.Operational, err = decodeOperationalCounts(operational); err != nil {
 			return nil, err
 		}
 		entries = append(entries, entry)
@@ -3102,6 +3161,10 @@ func validateRestoredSnapshot(s BehaviorSnapshot, storedDistinctCount int) error
 		}
 		if entry.Observations == 0 {
 			return fmt.Errorf("entry %s has no observations", preview(entry.FingerprintID))
+		}
+		// Task 087's invariants, the same ones observe keeps on write.
+		if err := validateOperationalSummary(entry.Operational, entry.Observations); err != nil {
+			return fmt.Errorf("entry %s operational evidence: %w", preview(entry.FingerprintID), err)
 		}
 		// An entry describing a different environment than the snapshot it
 		// belongs to is evidence from two runs stitched together.
