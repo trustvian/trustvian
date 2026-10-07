@@ -1248,6 +1248,50 @@ and under 3 KB for a single `dev` session. After startup there is no polling. A
 an idle Collector, whose reports change only their sequence, uptime and ages,
 publishes none.
 
+
+### v0.12 task 087 (Performance and Cost Evidence)
+
+What per-behavior operational evidence costs the two paths it touches: the
+Collector reading the status code and token usage for the envelope, and the
+control plane persisting one more summary per behavior on every ingest.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `AnnotationsOf`, no operational facts on the span | 105 | 0 | 0 |
+| `AnnotationsOf`, usage and a status code | 63 | 0 | 0 |
+| `ReadUsage` + `ReadHTTPStatusCode` (`internal/semconv`) | 35 | 0 | 0 |
+| `IngestDecisionRecord`, before (`main` at `fa6a2d9`) | 1,692,819 | ~498,000 | ~9,540 |
+| `IngestDecisionRecord`, after | 1,940,037 | ~789,600 | ~10,505 |
+| `IngestWithOperationalFacts` (duration, status, status code, tokens) | 1,970,754 | ~804,600 | ~10,566 |
+
+Medians of six runs, darwin/arm64, Apple M3 Pro, Go 1.27, file-backed SQLite,
+64 behaviors. As everywhere here, `ns/op` is a machine- and session-specific
+measurement — see [reading the numbers](#reading-the-numbers). The ingest
+benchmarks had not run since task 065 made a run name a registered environment;
+their fixture registers one now, and the "before" row was measured with that
+same one-line fixture fix applied to `main`.
+
+**The Collector pays nothing measurable.** Reading the facts is a few map
+lookups with no allocation, and only on the evaluation path, which is dominated
+by its own fsyncs (`ConsumeTracesWithEvaluation` measured about 17.5 ms per span
+both before and after).
+
+**Ingest grows by a bounded constant: about 15 % and about 1,000 allocations per
+record at 64 behaviors.** Every ingest rewrites the run's entries and reads them
+back, so the cost is per entry, not per record, and bounded by the 512-entry
+snapshot. The first implementation stored each of the 31 counters as its own
+column and measured 3.70 ms, 2.28 MB and 43,700 allocations — more than double.
+Building the column list once and parsing without allocating brought that to
+3.21 ms and 25,100; what remained was the SQLite driver decoding 31 more columns
+for every entry of every load. The counters are therefore one canonical column,
+decoded without allocating (asserted by test). Nothing reads them in SQL.
+
+**Storage: about 64 bytes more per behavior, bounded at 650.** One run of 512
+behaviors grew from 507,904 to 540,672 bytes after `VACUUM`, and its entry table
+from 45,056 to 77,824 bytes. That fixture's counters are small; the encoded
+column is at most 31 counters of 20 digits plus separators, 650 bytes, so a
+512-behavior run's operational evidence is at most about 325 KB.
+
 ## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —

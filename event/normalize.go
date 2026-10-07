@@ -127,3 +127,38 @@ func NormalizeSpan(s NormalizedSpan) Normalization {
 func ContentAttributes() []string {
 	return semconv.ContentAttributes()
 }
+
+// Usage is what one span's usage attributes said about its tokens: input,
+// output, or — only when neither part is stated — an unsplit total, each with
+// its own Has flag, because "not stated" and "zero tokens" are different facts.
+//
+// Never behavioral identity. Task 087 carries it beside a record, on the ingest
+// envelope, and nothing in this module's engine reads it.
+type Usage = semconv.Usage
+
+// ReadUsage reads the token counts from a span's usage attributes and from
+// nothing else: gen_ai.usage.input_tokens / output_tokens, their legacy
+// prompt_tokens / completion_tokens names, OpenInference's llm.token_count.*,
+// and llm.token_count.total only when both parts are absent. A malformed value
+// is absent, never zero. Pure; attrs is not modified.
+func ReadUsage(attrs map[string]any) Usage {
+	return semconv.ReadUsage(attrs)
+}
+
+// ReadHTTPStatusCode reads http.response.status_code, else the legacy
+// http.status_code, as an integer from 100 to 599. Anything else is absent. It
+// is never inferred from span status. Pure; attrs is not modified.
+func ReadHTTPStatusCode(attrs map[string]any) (uint16, bool) {
+	return semconv.ReadHTTPStatusCode(attrs)
+}
+
+// MaxTokenCount is the largest token count one observation may report, 2^32.
+// ReadUsage treats a larger value as malformed, and the control plane refuses
+// one, so no sum over plausible records can overflow.
+const MaxTokenCount = semconv.MaxTokenCount
+
+// UsageAttributes is every key ReadUsage and ReadHTTPStatusCode read, so a
+// consumer can assert they share nothing with ContentAttributes.
+func UsageAttributes() []string {
+	return semconv.UsageAttributes()
+}

@@ -232,6 +232,15 @@ type RepeatedEvaluationComparison struct {
 	Repetitions []RepetitionEvidence // reference 1..N, then candidate 1..N
 	Behaviors   []RepeatedBehaviorPresence
 	Gate        RepeatedEvaluationGateResult
+
+	// Operational is task 087's latency, errors and tokens sections, each side
+	// summed over its completed repetitions, with how many of them carried
+	// that section's evidence. Gates read none of it.
+	Operational OperationalComparison
+
+	// Cost is task 087's cost section over the completed repetitions, nil
+	// when no pricing is configured.
+	Cost *CostComparison
 }
 
 // classifyPresence applies task 078's rule. j < k is validated before this.
@@ -275,12 +284,18 @@ func reduceRepeated(
 		worstBlock, worstCR uint64
 	)
 	repetitions := make([]RepetitionEvidence, 0, len(inputs))
+	operational := map[ComparisonSide]*operationalSide{
+		SideReference: {}, SideCandidate: {},
+	}
 	for _, in := range inputs {
 		repetitions = append(repetitions, in.evidence)
 		if !in.evidence.Completed() {
 			continue
 		}
 		completed[in.evidence.Side]++
+		if err := operational[in.evidence.Side].addRun(in.entries); err != nil {
+			return RepeatedEvaluationComparison{}, err
+		}
 		if in.evidence.RecordCount == 0 {
 			failingMinimum++
 		}
@@ -370,7 +385,8 @@ func reduceRepeated(
 	}
 	return RepeatedEvaluationComparison{
 		Runs: runs, Limits: limits, Repetitions: repetitions, Behaviors: behaviors,
-		Gate: RepeatedEvaluationGateResult{bound: true, checks: checks, verdict: verdict},
+		Gate:        RepeatedEvaluationGateResult{bound: true, checks: checks, verdict: verdict},
+		Operational: compareOperational(*operational[SideReference], *operational[SideCandidate]),
 	}, nil
 }
 
@@ -471,7 +487,28 @@ func (c *ControlPlane) CompareRepeatedEvaluations(
 		}
 		inputs = append(inputs, input)
 	}
-	return reduceRepeated(request.Limits, request.Runs(), inputs)
+	result, err := reduceRepeated(request.Limits, request.Runs(), inputs)
+	if err != nil {
+		return RepeatedEvaluationComparison{}, err
+	}
+	var reference, candidate [][]BehaviorEntry
+	for _, in := range inputs {
+		switch {
+		case !in.evidence.Completed():
+		case in.evidence.Side == SideReference:
+			reference = append(reference, in.entries)
+		default:
+			candidate = append(candidate, in.entries)
+		}
+	}
+	cost, priced, err := compareCost(c.pricing, reference, candidate)
+	if err != nil {
+		return RepeatedEvaluationComparison{}, err
+	}
+	if priced {
+		result.Cost = &cost
+	}
+	return result, nil
 }
 
 // completedRepetition turns one completed run's persisted evidence into a

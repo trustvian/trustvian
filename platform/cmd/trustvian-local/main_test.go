@@ -27,6 +27,11 @@ func TestInvocationErrors(t *testing.T) {
 		{"private address", []string{"--listen", "192.168.1.10:0"}},
 		{"hostname", []string{"--listen", "localhost:0"}},
 		{"no port", []string{"--listen", "127.0.0.1"}},
+
+		// A pricing table that cannot be used is refused before anything
+		// starts, never ignored (task 087).
+		{"missing pricing file", []string{"--pricing", "does-not-exist.yaml"}},
+		{"invalid pricing file", []string{"--pricing", writeFile(t, "version: 2\n")}},
 	}
 
 	for _, tt := range tests {
@@ -51,6 +56,15 @@ func TestInvocationErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func writeFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pricing.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // TestUsageTextDoesNotOfferRemoteExposure guards against a flag that would

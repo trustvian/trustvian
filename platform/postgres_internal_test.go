@@ -782,14 +782,12 @@ func TestPostgresIdentifierOrderingIsByteOrder(t *testing.T) {
 	// And the schema declares COLLATE "C" on every column that is an identifier
 	// or is ordered, which is what makes the byte order above a property of the
 	// schema rather than of this server's libc.
-	for _, statement := range postgresSchemaStatements() {
-		if !strings.Contains(statement, tableEntries) {
-			continue
-		}
-		if !strings.Contains(statement, `fingerprint_id     TEXT COLLATE "C"`) {
-			t.Error("platform_behavior_entries.fingerprint_id is not COLLATE \"C\"; " +
-				"the one ORDER BY in either backend would then follow the server's " +
-				"locale and could disagree with SQLite")
-		}
+	//
+	// The CREATE TABLE only: schema 11's ALTER statements name the table too,
+	// and add counters, not the ordered identifier.
+	if !strings.Contains(postgresStatementCreating(tableEntries), `fingerprint_id     TEXT COLLATE "C"`) {
+		t.Error("platform_behavior_entries.fingerprint_id is not COLLATE \"C\"; " +
+			"the one ORDER BY in either backend would then follow the server's " +
+			"locale and could disagree with SQLite")
 	}
 }

@@ -124,6 +124,11 @@ const (
 // told apart by the stamp.
 const schemaVersionV9 = 9
 
+// schemaVersionV10 is task 101's schema, the last version without task 087's
+// per-behavior operational columns. v11 adds columns only, so v10 and v11 hold
+// the same tables and are told apart by the stamp.
+const schemaVersionV10 = 10
+
 // recencySchemaStatements are v10's whole schema change, in either dialect.
 //
 // A column with an empty default, filled by recencyBackfill in the same

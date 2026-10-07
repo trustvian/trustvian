@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -155,7 +156,7 @@ func TestSQLiteSchemaV9DamageAndNewerAreRefused(t *testing.T) {
 			return nil
 		},
 		"newer stamp": func(exec func(string) error) error {
-			return exec(`UPDATE ` + tableSchemaVersion + ` SET version = 11 WHERE id = 1`)
+			return exec(`UPDATE ` + tableSchemaVersion + ` SET version = ` + strconv.Itoa(SchemaVersion+1) + ` WHERE id = 1`)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -263,7 +264,7 @@ func TestPostgresSchemaV8FixtureMigratesAndDamageIsRefused(t *testing.T) {
 			return nil
 		},
 		"newer stamp": func(pool *pgxpool.Pool) error {
-			_, err := pool.Exec(ctx, `UPDATE `+tableSchemaVersion+` SET version = 11 WHERE id = 1`)
+			_, err := pool.Exec(ctx, `UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`, SchemaVersion+1)
 			return err
 		},
 	} {

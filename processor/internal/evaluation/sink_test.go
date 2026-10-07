@@ -158,7 +158,7 @@ func TestInitializeSeedsCursorFromServer(t *testing.T) {
 	server := newIngestServer(t, 5)
 	sink := newTestSink(t, server.URL)
 
-	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{EventID: "e"}, "", "", learningFor("e")); err != nil {
+	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{EventID: "e"}, Annotations{}, learningFor("e")); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
 	got := server.acceptedSequences()
@@ -194,7 +194,7 @@ func TestRecordBeforeInitializeFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, "", "", learningFor("e")); err == nil {
+	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, Annotations{}, learningFor("e")); err == nil {
 		t.Fatal("Record() error = nil, want a refusal before Initialize")
 	}
 }
@@ -204,7 +204,7 @@ func TestRecordAdvancesGapFree(t *testing.T) {
 	sink := newTestSink(t, server.URL)
 
 	for range 5 {
-		if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{EventID: "e"}, "", "", learningFor("e")); err != nil {
+		if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{EventID: "e"}, Annotations{}, learningFor("e")); err != nil {
 			t.Fatalf("Record() error = %v", err)
 		}
 	}
@@ -232,7 +232,7 @@ func TestRecordConcurrentIsGapFree(t *testing.T) {
 			defer wg.Done()
 			for range each {
 				if _, err := sink.Record(context.Background(),
-					trustvian.DecisionRecord{EventID: "e"}, "", "",
+					trustvian.DecisionRecord{EventID: "e"}, Annotations{},
 
 					learningFor("e")); err != nil {
 					errs <- err
@@ -276,7 +276,7 @@ func TestRecordReportsReplayed(t *testing.T) {
 	defer server.Close()
 
 	sink := newTestSink(t, server.URL)
-	got, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, "", "", learningFor("e"))
+	got, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, Annotations{}, learningFor("e"))
 	if err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
@@ -310,7 +310,7 @@ func TestRecordRejectsUnknownDisposition(t *testing.T) {
 	defer server.Close()
 
 	sink := newTestSink(t, server.URL)
-	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, "", "", learningFor("e"))
+	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, Annotations{}, learningFor("e"))
 	if err == nil {
 		t.Fatal("Record() error = nil, want an unrecognized disposition to fail closed")
 	}
@@ -345,7 +345,7 @@ func TestRecordRejectsNonAdvancingSequence(t *testing.T) {
 	defer server.Close()
 
 	sink := newTestSink(t, server.URL)
-	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, "", "", learningFor("e"))
+	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, Annotations{}, learningFor("e"))
 	if err == nil {
 		t.Fatal("Record() error = nil, want a non-advancing cursor to fail closed")
 	}
@@ -401,12 +401,12 @@ func TestRecordDoesNotAdvanceOnFailure(t *testing.T) {
 	defer server.Close()
 
 	sink := newTestSink(t, server.URL)
-	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, "", "", learningFor("e")); err != nil {
+	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, Annotations{}, learningFor("e")); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
 
 	refuse.Store(true)
-	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, "", "", learningFor("e"))
+	_, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, Annotations{}, learningFor("e"))
 	if err == nil {
 		t.Fatal("Record() error = nil, want the server refusal surfaced")
 	}
@@ -425,7 +425,7 @@ func TestRecordDoesNotAdvanceOnFailure(t *testing.T) {
 
 	// And the next successful record must therefore be sequence 2.
 	refuse.Store(false)
-	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, "", "", learningFor("e")); err != nil {
+	if _, err := sink.Record(context.Background(), trustvian.DecisionRecord{}, Annotations{}, learningFor("e")); err != nil {
 		t.Fatalf("Record() error = %v", err)
 	}
 	if got := sink.nextSequence(); got != 3 {

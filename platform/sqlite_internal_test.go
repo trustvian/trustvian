@@ -694,6 +694,7 @@ func TestCompletenessIsStickyAcrossWrites(t *testing.T) {
 			FingerprintID: "fp-0",
 			Behavior:      rec.Behavior,
 			Observations:  1,
+			Operational:   unavailableOperational(1),
 		}},
 	}
 	if err := store.SaveEvaluationEvidence(ctx, aggregate, incomplete); err != nil {
@@ -716,6 +717,7 @@ func TestCompletenessIsStickyAcrossWrites(t *testing.T) {
 		FingerprintID: "fp-0",
 		Behavior:      rec.Behavior,
 		Observations:  2,
+		Operational:   unavailableOperational(2),
 	}}
 	if grown.RecordCount() <= aggregate.RecordCount() {
 		t.Fatalf("precondition: the second write must carry a higher count")
@@ -1255,9 +1257,11 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 	// table and no table.
 	//
 	// v10 too: task 101 adds two columns and three indexes.
+	//
+	// v11 too: task 087 adds thirty-one columns to the behavior entry table.
 	indexOnly := map[int]bool{
 		schemaVersionV5: true, schemaVersionV6: true, schemaVersionV8: true,
-		schemaVersionV10: true,
+		schemaVersionV10: true, schemaVersionV11: true,
 	}
 	for version := schemaVersionV1 + 1; version <= SchemaVersion; version++ {
 		previous := schemaTablesByVersion[version-1]
@@ -1284,5 +1288,8 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 // schemaVersionV9 is declared in recency.go now that v10 exists: production
 // migration code names it, not only these guards.
 
-// schemaVersionV10 is task 101's recency keys, named for the same guards.
-const schemaVersionV10 = 10
+// schemaVersionV10 is declared in recency.go now that v11 exists.
+
+// schemaVersionV11 is task 087's per-behavior operational columns, named for
+// the same guards.
+const schemaVersionV11 = 11

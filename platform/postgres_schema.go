@@ -192,7 +192,9 @@ func postgresSchemaStatements() []string {
 			// v8 -> v9 migration applies.
 			append(scenarioExecutionSchemaStatements(`TEXT COLLATE "C"`, "BIGINT"),
 				// v10: task 101's recency keys and indexes.
-				recencySchemaStatements(`TEXT COLLATE "C"`)...)...)...)...)
+				append(recencySchemaStatements(`TEXT COLLATE "C"`),
+					// v11: task 087's per-behavior operational columns.
+					behaviorOperationalSchemaStatements(`TEXT COLLATE "C"`)...)...)...)...)...)
 }
 
 // postgresPromotionsStatement is v4's only table, kept separate so the
@@ -413,15 +415,22 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			return verifyPostgresVersion(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTables()):
-			// The current table set, which v9 shares: v10 added columns and
-			// indexes only. A v9 stamp migrates forward; otherwise the stamp
-			// must be the current version, and anything else fails closed.
+			// The current table set, which v9 and v10 share: v10 added columns
+			// and indexes and v11 added columns only. A v9 or v10 stamp
+			// migrates forward; otherwise the stamp must be the current
+			// version, and anything else fails closed.
 			version, err := postgresStoredVersion(ctx, tx)
 			if err != nil {
 				return err
 			}
-			if version == schemaVersionV9 {
-				return migratePostgresV9ToV10(ctx, tx)
+			switch version {
+			case schemaVersionV9:
+				if err := migratePostgresV9ToV10(ctx, tx); err != nil {
+					return err
+				}
+				return migratePostgresV10ToV11(ctx, tx)
+			case schemaVersionV10:
+				return migratePostgresV10ToV11(ctx, tx)
 			}
 			return verifyPostgresVersion(ctx, tx)
 
@@ -702,7 +711,10 @@ func migratePostgresV8ToCurrent(ctx context.Context, tx pgx.Tx) error {
 	if err := migratePostgresV8ToV9(ctx, tx); err != nil {
 		return err
 	}
-	return migratePostgresV9ToV10(ctx, tx)
+	if err := migratePostgresV9ToV10(ctx, tx); err != nil {
+		return err
+	}
+	return migratePostgresV10ToV11(ctx, tx)
 }
 
 // migratePostgresV9ToV10 mirrors SQLite's migrateV9ToV10 from the same
@@ -719,6 +731,27 @@ func migratePostgresV9ToV10(ctx context.Context, tx pgx.Tx) error {
 	}
 	if err := recencyBackfill(ctx, pgxQuerier{q: tx}, exec); err != nil {
 		return err
+	}
+	// Literal schemaVersionV10: v11 is its own step.
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
+		schemaVersionV10); err != nil {
+		return mapPostgresError("schema version", "", err)
+	}
+	return nil
+}
+
+// migratePostgresV10ToV11 mirrors SQLite's migrateV10ToV11 from the same
+// definitions: one column on the behavior entry table holding 31 counters, then a backfill
+// marking every existing behavior's operational evidence as not recorded.
+func migratePostgresV10ToV11(ctx context.Context, tx pgx.Tx) error {
+	for _, stmt := range behaviorOperationalSchemaStatements(`TEXT COLLATE "C"`) {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return mapPostgresError("schema migration", "", err)
+		}
+	}
+	if _, err := tx.Exec(ctx, behaviorOperationalBackfillStatement()); err != nil {
+		return mapPostgresError("schema migration", "", err)
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,

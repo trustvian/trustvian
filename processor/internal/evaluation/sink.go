@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	trustvian "github.com/trustvian/trustvian"
-	"github.com/trustvian/trustvian/event"
 )
 
 // LearnFunc applies the local half of one record's delivery.
@@ -105,20 +104,20 @@ type pendingRecord struct {
 	record   trustvian.DecisionRecord
 	learning json.RawMessage
 
-	// fidelity and layer are the fifth and sixth parts of the logical request,
-	// and unlike the profile they vary per record — so a re-presentation within this process
-	// has to carry the one its first attempt sent.
+	// annotations are the remaining parts of the logical request — fidelity,
+	// layer and the operational facts — and unlike the profile they vary per
+	// record, so a re-presentation within this process has to carry the ones
+	// its first attempt sent.
 	//
 	// It is kept in memory and deliberately not in the durable entry. A
 	// recovered entry is only ever re-presented to *prove* which record
 	// occupies a taken sequence, and the control plane recognizes a retry by
 	// the record's own digest: it replays without consuming fidelity, or it
-	// conflicts. Fidelity is read only when a record is applied, which a
+	// conflicts. Annotations are read only when a record is applied, which a
 	// recovered posting entry cannot be — the sequence it wants is already
 	// taken, or the entry is discarded before any request is sent. Persisting
 	// it would change the on-disk format to carry a value no reader uses.
-	fidelity event.Fidelity
-	layer    event.Layer
+	annotations Annotations
 
 	// state mirrors the durable entry's own, because the two mean different
 	// things to the next call. posting is recoverable in place: the record
@@ -368,7 +367,7 @@ func (s *Sink) Initialize(ctx context.Context) (Recovery, error) {
 			// proves the previous process never got that far.
 			// No fidelity and no layer: this re-presentation can only be
 			// recognized or refused, never applied, and both are read only on
-			// apply. See pendingRecord.fidelity.
+			// apply. See pendingRecord.annotations.
 			s.pending = &pendingRecord{
 				sequence: sequence, record: entry.Record,
 				learning: entry.Learning, state: statePosting}
@@ -434,14 +433,13 @@ func (s *Sink) Initialize(ctx context.Context) (Recovery, error) {
 // same ctx; a sink that still cannot settle the record reports ErrUnresolved
 // and refuses to accept another one until it can.
 //
-// fidelity and layer travel beside the record rather than inside it, because
-// DecisionRecord carries no attributes and both describe how the record was
-// produced rather than anything the engine decided. A zero fidelity is "not
-// stated", which the control plane reads as transport; a zero layer is "not
-// classified", which stays unclassified rather than becoming transport.
+// annotations travel beside the record rather than inside it, because
+// DecisionRecord carries no attributes and each describes how the record was
+// produced, or what the span reported, rather than anything the engine
+// decided. See Annotations for what each zero value means.
 func (s *Sink) Record(
 	ctx context.Context, record trustvian.DecisionRecord,
-	fidelity event.Fidelity, layer event.Layer, learning []byte,
+	annotations Annotations, learning []byte,
 ) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -478,7 +476,7 @@ func (s *Sink) Record(
 
 	sequence := s.next
 	held := &pendingRecord{
-		sequence: sequence, record: record, fidelity: fidelity, layer: layer,
+		sequence: sequence, record: record, annotations: annotations,
 		learning: learning, state: statePosting}
 	if err := s.journal.write(entryFor(s.runID, statePosting, held)); err != nil {
 		// Nothing has been sent, so the sequence is untouched and this
@@ -489,7 +487,7 @@ func (s *Sink) Record(
 	}
 	s.pending = held
 
-	disposition, err := s.attempt(ctx, sequence, fidelity, layer, record)
+	disposition, err := s.attempt(ctx, sequence, annotations, record)
 	if err == nil {
 		if settleErr := s.settle(ctx); settleErr != nil {
 			return "", settleErr
@@ -522,7 +520,7 @@ func (s *Sink) Record(
 // absent, so its sequence stays bound to it rather than being handed on.
 func (s *Sink) reconcile(ctx context.Context) (string, error) {
 	held := s.pending
-	disposition, err := s.attempt(ctx, held.sequence, held.fidelity, held.layer, held.record)
+	disposition, err := s.attempt(ctx, held.sequence, held.annotations, held.record)
 	if err != nil {
 		return "", fmt.Errorf(
 			"%w: sequence %d holds a record the control plane may already have; "+
@@ -598,9 +596,9 @@ func (s *Sink) settle(ctx context.Context) error {
 // Failing closed and holding the sequence are the same decision here.
 func (s *Sink) attempt(
 	ctx context.Context, sequence uint64,
-	fidelity event.Fidelity, layer event.Layer, record trustvian.DecisionRecord,
+	annotations Annotations, record trustvian.DecisionRecord,
 ) (string, error) {
-	result, err := s.client.ingest(ctx, s.runID, sequence, s.profile, fidelity, layer, record)
+	result, err := s.client.ingest(ctx, s.runID, sequence, s.profile, annotations, record)
 	if err != nil {
 		return "", err
 	}

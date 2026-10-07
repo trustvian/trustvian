@@ -19,6 +19,7 @@ import (
 	"math"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -856,10 +857,14 @@ func (f *controlPlaneFixture) benchSeedRunning(b *testing.B, runID platform.Eval
 	project, _ := platform.NewProject("proj-1", "Bench")
 	agent, _ := platform.NewAgent("agent-1", "proj-1", "Bench agent")
 	candidate, _ := platform.NewCandidate(candidateID, "agent-1", platform.CandidateMetadata{})
+	// Task 065: a run names an environment its project owns. Without this the
+	// ingest and compare benchmarks fail at setup, which they had since 065.
+	environment, _ := platform.NewEnvironment(fixtureEnvironment, "proj-1", "Staging")
 	for _, err := range []error{
 		f.plane.CreateProject(ctx, project),
 		f.plane.CreateAgent(ctx, agent),
 		f.plane.CreateCandidate(ctx, candidate),
+		f.plane.CreateEnvironment(ctx, environment),
 	} {
 		if err != nil && !errors.Is(err, platform.ErrStoreAlreadyExists) {
 			b.Fatalf("seed error = %v", err)
@@ -895,6 +900,40 @@ func BenchmarkIngestDecisionRecord(b *testing.B) {
 			BehavioralProfile: fixtureProfile,
 			Record: ingestRecord(
 				fmt.Sprintf("evt-%d", sequence), fmt.Sprintf("fp-%d", n), fmt.Sprintf("op-%d", n)),
+		}); err != nil {
+			b.Fatalf("IngestDecisionRecord() error = %v", err)
+		}
+	}
+}
+
+// BenchmarkIngestWithOperationalFacts is BenchmarkIngestDecisionRecord with
+// every record carrying a duration, a span status, an HTTP status code and
+// token usage (task 087), so the pair measures what the per-behavior
+// operational fold and its thirty-one columns cost on the ingest path.
+func BenchmarkIngestWithOperationalFacts(b *testing.B) {
+	f := benchFixture(b)
+	f.benchSeedRunning(b, "run-1", "cand-1")
+	ctx := b.Context()
+
+	facts := platform.OperationalFacts{
+		HTTPStatusCode: 200,
+		Usage:          event.Usage{Input: 1200, HasInput: true, Output: 300, HasOutput: true},
+	}
+	var sequence uint64
+	b.ReportAllocs()
+	for b.Loop() {
+		sequence++
+		n := sequence % 64
+		record := ingestRecord(
+			fmt.Sprintf("evt-%d", sequence), fmt.Sprintf("fp-%d", n), fmt.Sprintf("op-%d", n))
+		record.DurationNanos = strconv.FormatUint(sequence*1_000_003%20_000_000_000, 10)
+		record.SpanStatus = event.StatusOK
+		if _, err := f.plane.IngestDecisionRecord(ctx, platform.IngestRequest{
+			RunID:             "run-1",
+			Sequence:          sequence,
+			BehavioralProfile: fixtureProfile,
+			Operational:       facts,
+			Record:            record,
 		}); err != nil {
 			b.Fatalf("IngestDecisionRecord() error = %v", err)
 		}

@@ -74,6 +74,10 @@ type ControlPlane struct {
 	// the status document say records are arriving when no Collector reports
 	// status, without reading the store.
 	lastIngest atomic.Int64
+
+	// pricing is the operator's pricing table, or the zero value when none was
+	// supplied — and then no comparison carries a cost section (task 087).
+	pricing Pricing
 }
 
 // ControlPlaneOption configures a control plane at construction.
@@ -873,6 +877,15 @@ type IngestRequest struct {
 	// its behalf would be a claim. Task 083.
 	BehaviorLayer event.Layer
 
+	// Operational is the HTTP status code and token usage the record's span
+	// reported, travelling beside the record for the same reason fidelity and
+	// layer do: the engine has no opinion about either, and neither is on
+	// DecisionRecord (task 087). The zero value states nothing, which is what a
+	// producer built before task 087 sends. Like fidelity it is read only when
+	// a record is applied and is not part of the record's digest, so a replay
+	// carrying different facts replays the stored record unchanged.
+	Operational OperationalFacts
+
 	// ReceivedAt is this control plane's clock when the request arrived. It is
 	// never persisted and never part of the record or its digest: it only
 	// feeds the status document's last_ingest_at. The zero value records
@@ -979,6 +992,13 @@ func (c *ControlPlane) applyRecord(
 	ctx context.Context, run EvaluationRun, request IngestRequest,
 	digest string, state EvaluationIngestState,
 ) (IngestResult, error) {
+	// Checked first, not left to the collector: a saturated collector refuses
+	// before it reads anything, and invalid facts must be refused whatever
+	// state the run's behavioral evidence is in.
+	if err := request.Operational.Validate(); err != nil {
+		return IngestResult{}, err
+	}
+
 	aggregate, collector, err := c.currentEvidence(ctx, run)
 	if err != nil {
 		return IngestResult{}, err
@@ -1002,7 +1022,8 @@ func (c *ControlPlane) applyRecord(
 	//
 	// Every other collector error — environment mismatch, fingerprint
 	// conflict, invalid identity, overflow — rejects the whole ingest.
-	if err := collector.Observe(request.Record); err != nil && !errors.Is(err, ErrBehaviorCapacity) {
+	if err := collector.ObserveOperational(request.Record, request.Operational); err != nil &&
+		!errors.Is(err, ErrBehaviorCapacity) {
 		return IngestResult{}, err
 	}
 
@@ -1430,6 +1451,9 @@ type EvaluationComparison struct {
 	Diff      BehaviorDiff
 	Scorecard EvaluationScorecard
 	Gate      EvaluationGateResult
+
+	// Cost is task 087's cost section, nil when no pricing is configured.
+	Cost *CostComparison
 }
 
 // CompareEvaluations derives diff, scorecard and gate result for two runs.
@@ -1513,13 +1537,25 @@ func (c *ControlPlane) CompareEvaluations(
 		return EvaluationComparison{}, err
 	}
 
-	return EvaluationComparison{
+	// Read-time and gate-free: cost is evidence beside the verdict, never an
+	// input to it.
+	cost, priced, err := compareCost(c.pricing,
+		[][]BehaviorEntry{referenceSnapshot.Entries()}, [][]BehaviorEntry{candidateSnapshot.Entries()})
+	if err != nil {
+		return EvaluationComparison{}, err
+	}
+
+	comparison := EvaluationComparison{
 		Reference: reference,
 		Candidate: candidate,
 		Diff:      diff,
 		Scorecard: scorecard,
 		Gate:      gate,
-	}, nil
+	}
+	if priced {
+		comparison.Cost = &cost
+	}
+	return comparison, nil
 }
 
 // requireSameProject refuses a comparison spanning two projects.

@@ -228,6 +228,7 @@ func (h *Handler) routes() {
 	// Task 078: N isolated repetitions per side. A separate route, so the
 	// single-pair contract above is untouched.
 	h.mux.HandleFunc("POST /v1/evaluations/compare-repeated", h.compareRepeated)
+	h.mux.HandleFunc("GET /v1/evaluations/operational", h.operationalByTarget)
 
 	// Task 078: persisted scenario executions and recorded-reference reuse.
 	h.mux.HandleFunc("POST /v1/scenario-executions", h.beginScenarioExecution)
@@ -365,6 +366,9 @@ func classify(err error) (int, string, string) {
 
 	case errors.Is(err, platform.ErrEvaluationState),
 		errors.Is(err, platform.ErrStoreConflict),
+		// The comparison's cost exceeds what this pricing table can state in
+		// uint64 micro-units (task 087). Refused, never wrapped.
+		errors.Is(err, platform.ErrCostOverflow),
 		errors.Is(err, platform.ErrInvalidTransition),
 		// An archived environment and a full project are both "the request is
 		// coherent, the current configuration refuses it" — the same class a
@@ -438,6 +442,9 @@ func classify(err error) (int, string, string) {
 		// a learning scope. Neither can succeed as asked whatever the state.
 		errors.Is(err, platform.ErrInvalidRepeatedRequest),
 		errors.Is(err, platform.ErrRepeatedIsolation),
+		// A per-target operational read naming no runs, unequal sides, a run
+		// twice, or a cursor this server did not issue (task 087).
+		errors.Is(err, platform.ErrInvalidOperationalRequest),
 		// A run submitted to a scenario execution it does not belong to.
 		errors.Is(err, platform.ErrScenarioScope),
 		// A recency read narrowed to an agent or candidate outside the scope
@@ -919,12 +926,19 @@ func (h *Handler) ingestRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	operational, err := operationalFactsFrom(envelope)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
 	result, err := h.controlPlane.IngestDecisionRecord(r.Context(), platform.IngestRequest{
 		RunID:             platform.EvaluationRunID(r.PathValue("run_id")),
 		Sequence:          sequence,
 		BehavioralProfile: platform.BehavioralProfileRef(envelope.BehavioralProfile),
 		Fidelity:          fidelity,
 		BehaviorLayer:     layer,
+		Operational:       operational,
 		ReceivedAt:        h.now(),
 		Record:            record,
 	})

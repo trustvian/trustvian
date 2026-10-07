@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	platform "trustvian-platform"
 	"trustvian-platform/localruntime"
 )
 
@@ -37,7 +38,7 @@ const (
 
 const usage = `usage:
   trustvian-local [--state-dir <dir>] [--listen <loopback-address>]
-                  [--backend sqlite|postgres]
+                  [--backend sqlite|postgres] [--pricing <file>]
 
 Runs the local Trustvian control plane: persistence, realtime bus, and the /v1
 HTTP API on a loopback listener. Clients in the same directory discover it
@@ -46,6 +47,10 @@ through <state-dir>/runtime.json and need no --api-url.
   --state-dir   project-local state directory (default .trustvian)
   --listen      loopback address to bind (default 127.0.0.1:0)
   --backend     persistence backend (default sqlite)
+  --pricing     a versioned pricing table (YAML); comparisons then carry a
+                cost section with the table's version, source and digest.
+                Without it there is no cost, and nothing else changes.
+                Trustvian ships no prices.
 
 The default needs no configuration at all: SQLite, one file under --state-dir.
 
@@ -83,6 +88,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		"loopback address to bind")
 	backend := fs.String("backend", "",
 		"persistence backend: sqlite (default) or postgres")
+	pricingPath := fs.String("pricing", "", "pricing table file (YAML)")
 
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(stderr, "trustvian-local: %v\n%s\n", err, usage)
@@ -96,6 +102,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 
+	// Read and validated before anything starts: a table that cannot be used
+	// is the caller's mistake, and a runtime that started without the prices
+	// it was given would publish comparisons silently missing their cost.
+	var pricing platform.Pricing
+	if *pricingPath != "" {
+		var err error
+		if pricing, err = loadPricing(*pricingPath); err != nil {
+			fmt.Fprintf(stderr, "trustvian-local: %v\n", err)
+			return exitUsage
+		}
+	}
+
 	// One cancellation path, owned here. The runtime package takes a context
 	// and never installs a signal handler of its own.
 	ctx, stop := signal.NotifyContext(context.Background(),
@@ -106,6 +124,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		StateDir:      *stateDir,
 		ListenAddress: *listen,
 		Backend:       *backend,
+		Pricing:       pricing,
 	}
 	// The DSN is attached only when PostgreSQL was asked for, so an environment
 	// variable left set from something else cannot change which backend runs.
@@ -140,6 +159,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// StateSummary is a safe description rather than a connection string.
 	fmt.Fprintf(stdout, "Store: %s\n", runtime.Backend())
 	fmt.Fprintf(stdout, "State: %s\n", runtime.StateSummary())
+	// Only when a table was given, so a runtime without one prints exactly
+	// what it always did.
+	if pricing.Configured() {
+		fmt.Fprintf(stdout, "Pricing: %s (%s)\n", pricing.Version(), pricing.Digest())
+	}
 	fmt.Fprintf(stdout, "Local clients in this directory can now omit --api-url.\n")
 	// No browser is launched. There is no --open flag and no OS-specific
 	// launcher: a security tool that opens windows by itself is a surprise,

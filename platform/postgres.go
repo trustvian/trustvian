@@ -1194,15 +1194,8 @@ func (s *PostgresStore) writeEvidence(
 	}
 
 	for _, entry := range snapshot.Entries() {
-		b := entry.Behavior
-		if _, err := tx.Exec(ctx,
-			`INSERT INTO `+tableEntries+`
-			 (run_id, fingerprint_id, actor_type, operation_category,
-			  operation_name, target_name, target_category, environment, observations)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-			runID, string(entry.FingerprintID), b.ActorType, b.OperationCategory,
-			b.OperationName, b.TargetName, b.TargetCategory, string(b.Environment),
-			uint64Text(entry.Observations)); err != nil {
+		if _, err := tx.Exec(ctx, postgresBehaviorEntryInsert,
+			behaviorEntryInsertArgs(snapshot.RunID(), entry)...); err != nil {
 			return mapPostgresError("behavior entry", runID, err)
 		}
 	}

@@ -91,8 +91,11 @@ func TestSemanticPathLeaksNoContentToAnyV1Payload(t *testing.T) {
 		"environment": testEnvironment, "behavioral_profile": testProfile,
 	}), 201, "create run")
 	a.mustStatus(a.do("POST", "/v1/evaluation-runs/run-1/start", nil), 200, "start")
-	a.mustStatus(a.do("POST", "/v1/evaluation-runs/run-1/records",
-		envelope(1, record)), 200, "ingest")
+	// Task 087's envelope fields ride beside the record, so the sections and
+	// the per-target route below are sweeping real operational evidence.
+	withUsage := envelope(1, record)
+	withUsage["tokens_input"], withUsage["tokens_output"], withUsage["http_status_code"] = "120", "30", "200"
+	a.mustStatus(a.do("POST", "/v1/evaluation-runs/run-1/records", withUsage), 200, "ingest")
 	a.mustStatus(a.do("POST", "/v1/evaluation-runs/run-1/complete", nil), 200, "complete")
 
 	maxUint := platform.FormatSequence(math.MaxUint64)
@@ -140,6 +143,9 @@ func TestSemanticPathLeaksNoContentToAnyV1Payload(t *testing.T) {
 		"GET /v1/agents/agent-1/candidates":         a.do("GET", "/v1/agents/agent-1/candidates", nil).Body.String(),
 		"GET /v1/candidates/cand-1/evaluation-runs": a.do("GET", "/v1/candidates/cand-1/evaluation-runs", nil).Body.String(),
 		"POST /v1/evaluations/compare":              comparison.Body.String(),
+		// Task 087's per-target read: the one new route, and it names targets.
+		"GET /v1/evaluations/operational": a.do("GET",
+			"/v1/evaluations/operational?reference_run_id=run-1&candidate_run_id=run-1", nil).Body.String(),
 	}
 
 	for key, canary := range canaries {
@@ -174,6 +180,14 @@ func TestSemanticPathLeaksNoContentToAnyV1Payload(t *testing.T) {
 			t.Errorf("%s matched no observation, so its absence of canaries proves "+
 				"nothing:\n%s", name, bodies[name])
 		}
+	}
+
+	// The per-target read must have returned the target, with its tokens, or
+	// its silence proves nothing.
+	if operational := bodies["GET /v1/evaluations/operational"]; !strings.Contains(operational, "export.localhost") ||
+		!strings.Contains(operational, `"input":"120"`) {
+		t.Errorf("the per-target read holds no target or no tokens, so its absence of canaries "+
+			"proves nothing:\n%s", operational)
 	}
 
 	// Absence must not have been achieved by losing the behavior with it.

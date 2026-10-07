@@ -12,7 +12,11 @@ package platform
 // dialects still differ in placeholder syntax and upsert spelling, which stays
 // in each backend's own file where it is visible.
 
-import "strings"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
 
 // aggregateInsertColumns is the authoritative column order.
 //
@@ -162,4 +166,203 @@ func operationalBackfillStatement(table string) string {
 	return `UPDATE ` + table + `
 	           SET duration_unobserved = record_count,
 	               span_status_unavailable = record_count`
+}
+
+// ---------------------------------------------------------------------
+// Schema 11: per-behavior operational evidence (task 087)
+// ---------------------------------------------------------------------
+
+// columnOperationalCounts is schema 11's one column on the behavior entry
+// table: the entry's thirty-one operational counters as canonical decimal text,
+// comma-separated, in operationalCounterNames order.
+//
+// One column rather than thirty-one, measured. Every ingest rewrites the run's
+// entries and reads them back three times, and with a column per counter the
+// SQLite driver's per-column decode doubled the cost of an ingest and
+// multiplied its allocations by 2.6 (task 087's What shipped has the numbers).
+// Nothing reads these counters in SQL — the control plane sums them in Go — so
+// a column each bought no query and cost every ingest. Each counter is still
+// canonical decimal text like every other counter, and each is validated on
+// restore exactly as before.
+const columnOperationalCounts = "operational_counts"
+
+// operationalCounterCount is how many counters operational_counts holds.
+const operationalCounterCount = 31
+
+// operationalCounterNames names the counters in storage order: the eleven
+// duration buckets, 084's duration statistics and span statuses, HTTP status
+// classes and 429s, then tokens. The observed duration count is not stored: it
+// is the bucket total, and storing it twice would be a second value to keep in
+// step. Used for the storage order and for naming a corrupt counter.
+var operationalCounterNames = func() [operationalCounterCount]string {
+	names := make([]string, 0, operationalCounterCount)
+	for _, upper := range durationBucketUpperMillis {
+		names = append(names, "duration_le_"+strconv.FormatUint(upper, 10)+"ms")
+	}
+	names = append(names,
+		"duration_gt_"+strconv.FormatUint(durationBucketUpperMillis[len(durationBucketUpperMillis)-1], 10)+"ms",
+		"duration_unobserved", "duration_sum", "duration_min", "duration_max",
+		"span_status_unavailable", "span_status_unset", "span_status_ok", "span_status_error",
+		"http_1xx", "http_2xx", "http_3xx", "http_4xx", "http_5xx", "http_status_unavailable",
+		"http_429",
+		"tokens_input", "tokens_output", "tokens_unsplit", "tokens_observed", "tokens_unobserved",
+	)
+	if len(names) != operationalCounterCount {
+		panic("platform: schema 11 counter list is not thirty-one counters")
+	}
+	var out [operationalCounterCount]string
+	copy(out[:], names)
+	return out
+}()
+
+// operationalCounters is a summary's counters in storage order.
+func operationalCounters(s OperationalSummary) [operationalCounterCount]uint64 {
+	var c [operationalCounterCount]uint64
+	copy(c[:DurationBucketCount], s.Buckets[:])
+	copy(c[DurationBucketCount:], []uint64{
+		s.Durations.Unobserved, s.Durations.Sum, s.Durations.Min, s.Durations.Max,
+		s.SpanStatus.Unavailable, s.SpanStatus.Unset, s.SpanStatus.OK, s.SpanStatus.Error,
+		s.HTTPStatus.Informational, s.HTTPStatus.Success, s.HTTPStatus.Redirection,
+		s.HTTPStatus.ClientError, s.HTTPStatus.ServerError, s.HTTPStatus.Unavailable,
+		s.HTTP429,
+		s.Tokens.Input, s.Tokens.Output, s.Tokens.Unsplit, s.Tokens.Observed, s.Tokens.Unobserved,
+	})
+	return c
+}
+
+// encodeOperationalCounts renders a summary as operational_counts stores it.
+func encodeOperationalCounts(s OperationalSummary) string {
+	counters := operationalCounters(s)
+	buf := make([]byte, 0, 2*operationalCounterCount)
+	for i, n := range counters {
+		if i > 0 {
+			buf = append(buf, ',')
+		}
+		buf = strconv.AppendUint(buf, n, 10)
+	}
+	return string(buf)
+}
+
+// decodeOperationalCounts parses operational_counts back into a summary. Every
+// counter must be canonical decimal text, exactly thirty-one of them; anything
+// else is corruption. Whether the summary is consistent is
+// validateOperationalSummary's. Allocation-free on valid input: it runs for
+// every entry on every ingest.
+func decodeOperationalCounts(text string) (OperationalSummary, error) {
+	var values [operationalCounterCount]uint64
+	rest := text
+	for i := range values {
+		field, tail, more := strings.Cut(rest, ",")
+		if more != (i < operationalCounterCount-1) {
+			return OperationalSummary{}, fmt.Errorf("%w: entry %s holds the wrong number of counters",
+				ErrStoreCorrupt, columnOperationalCounts)
+		}
+		v, ok := parseCanonicalUint64(field)
+		if !ok {
+			return OperationalSummary{}, fmt.Errorf("%w: entry %s is not a canonical uint64: %q",
+				ErrStoreCorrupt, operationalCounterNames[i], preview(field))
+		}
+		values[i] = v
+		rest = tail
+	}
+	var s OperationalSummary
+	copy(s.Buckets[:], values[:DurationBucketCount])
+	r := values[DurationBucketCount:]
+	count, err := sumNoOverflow(s.Buckets[:])
+	if err != nil {
+		return OperationalSummary{}, fmt.Errorf("%w: entry duration buckets overflow", ErrStoreCorrupt)
+	}
+	s.Durations = DurationSummary{Count: count, Unobserved: r[0], Sum: r[1], Min: r[2], Max: r[3]}
+	s.SpanStatus = SpanStatusCounts{Unavailable: r[4], Unset: r[5], OK: r[6], Error: r[7]}
+	s.HTTPStatus = HTTPStatusClassCounts{
+		Informational: r[8], Success: r[9], Redirection: r[10],
+		ClientError: r[11], ServerError: r[12], Unavailable: r[13],
+	}
+	s.HTTP429 = r[14]
+	s.Tokens = TokenCounts{Input: r[15], Output: r[16], Unsplit: r[17], Observed: r[18], Unobserved: r[19]}
+	return s, nil
+}
+
+// parseCanonicalUint64 accepts exactly what uint64Text writes — decimal
+// digits, no sign, no leading zero — without allocating.
+func parseCanonicalUint64(s string) (uint64, bool) {
+	if s == "" || s[0] < '0' || s[0] > '9' || (len(s) > 1 && s[0] == '0') {
+		return 0, false
+	}
+	v, err := strconv.ParseUint(s, 10, 64)
+	return v, err == nil
+}
+
+// behaviorOperationalSchemaStatements are schema 11's whole change, in either
+// dialect, shipped on a fresh database too so a fresh and a migrated table are
+// column-for-column identical (the v8 and v10 precedent). The empty default is
+// what lets ADD COLUMN work on a table with rows; it is never left in place —
+// the migration backfills every existing row, every write states the column,
+// and the read path refuses an empty value as corruption.
+func behaviorOperationalSchemaStatements(textType string) []string {
+	return []string{
+		`ALTER TABLE ` + tableEntries + ` ADD COLUMN ` + columnOperationalCounts + ` ` + textType + ` NOT NULL DEFAULT ''`,
+	}
+}
+
+// behaviorOperationalBackfillStatement makes a behavior recorded before schema
+// 11 say *not recorded* rather than *zero*: every "nothing was stated" counter
+// — unobserved durations, unavailable span status and HTTP status, unobserved
+// tokens — is the entry's observations, and every other counter is 0. That is
+// the truth, since those fields did not exist when it was observed, and it
+// satisfies every partition invariant. Spelled with `||`, which both dialects
+// share. Applied by the migration only.
+func behaviorOperationalBackfillStatement() string {
+	var b strings.Builder
+	b.WriteString(`UPDATE ` + tableEntries + ` SET ` + columnOperationalCounts + ` = '`)
+	unavailable := map[string]bool{
+		"duration_unobserved": true, "span_status_unavailable": true,
+		"http_status_unavailable": true, "tokens_unobserved": true,
+	}
+	for i, name := range operationalCounterNames {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		if unavailable[name] {
+			b.WriteString("' || observations || '")
+		} else {
+			b.WriteString("0")
+		}
+	}
+	b.WriteString("'")
+	return b.String()
+}
+
+// The entry INSERT in each dialect, built once.
+var (
+	sqliteBehaviorEntryInsert   = behaviorEntryInsertStatement(func(int) string { return "?" })
+	postgresBehaviorEntryInsert = behaviorEntryInsertStatement(func(i int) string { return "$" + strconv.Itoa(i) })
+)
+
+// behaviorEntryInsertStatement is the one INSERT both backends run for an
+// entry, its placeholders spelled by the dialect (placeholder(i) for the i-th,
+// from 1).
+func behaviorEntryInsertStatement(placeholder func(int) string) string {
+	columns := []string{
+		"run_id", "fingerprint_id", "actor_type", "operation_category", "operation_name",
+		"target_name", "target_category", "environment", "observations", columnOperationalCounts,
+	}
+	marks := make([]string, len(columns))
+	for i := range marks {
+		marks[i] = placeholder(i + 1)
+	}
+	return `INSERT INTO ` + tableEntries + ` (` + strings.Join(columns, ", ") +
+		`) VALUES (` + strings.Join(marks, ", ") + `)`
+}
+
+// behaviorEntryInsertArgs renders one entry in behaviorEntryInsertStatement's
+// order.
+func behaviorEntryInsertArgs(runID EvaluationRunID, entry BehaviorEntry) []any {
+	b := entry.Behavior
+	return []any{
+		string(runID), entry.FingerprintID,
+		string(b.ActorType), string(b.OperationCategory), b.OperationName,
+		b.TargetName, string(b.TargetCategory), b.Environment,
+		uint64Text(entry.Observations), encodeOperationalCounts(entry.Operational),
+	}
 }
