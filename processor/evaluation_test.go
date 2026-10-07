@@ -50,6 +50,10 @@ type ingestAPIServer struct {
 	// records[i], keyed by their JSON name, present only when sent.
 	operational []map[string]string
 
+	// bodies[i] is the raw envelope records[i] arrived in, for privacy
+	// tripwires that must look at every byte rather than at chosen fields.
+	bodies [][]byte
+
 	// digests[i] is the encoded record durably stored at sequence i+1. The
 	// control plane recognizes a retry by content, so a stub without this
 	// could not replay one — and a replay that ignored content would prove
@@ -167,6 +171,7 @@ func newIngestAPIServer(t *testing.T) *ingestAPIServer {
 				cp.fidelities = append(cp.fidelities, envelope.Fidelity)
 				cp.layers = append(cp.layers, envelope.BehaviorLayer)
 				cp.operational = append(cp.operational, sentOperational)
+				cp.bodies = append(cp.bodies, body)
 				cp.digests = append(cp.digests, digest)
 				cp.next++
 				next := cp.next
@@ -261,6 +266,13 @@ func (cp *ingestAPIServer) recordedLayers() []string {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
 	return append([]string(nil), cp.layers...)
+}
+
+// recordedBodies is every raw envelope that was applied, in order.
+func (cp *ingestAPIServer) recordedBodies() [][]byte {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	return append([][]byte(nil), cp.bodies...)
 }
 
 // recordedOperational is the task 087 envelope fields that arrived beside

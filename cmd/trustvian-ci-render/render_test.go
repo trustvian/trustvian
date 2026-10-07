@@ -933,6 +933,68 @@ func TestRenderToleratesButNeverRendersUnknownFields(t *testing.T) {
 	}
 }
 
+// task087Operational is a compare-repeated "operational" object exactly as the
+// control plane publishes it since task 087, cost section included.
+const task087Operational = `{
+  "latency": {"comparable": true,
+    "reference": {"runs_with_evidence": "3", "buckets": [{"bound": "le_1ms", "count": "0"},
+      {"bound": "gt_10000ms", "count": "1"}], "observed": "4", "unobserved": "0",
+      "sum_nanos": "16421647000", "min_nanos": "1200000", "max_nanos": "12000000000"},
+    "candidate": {"runs_with_evidence": "3", "buckets": [], "observed": "4", "unobserved": "0",
+      "sum_nanos": "15971278000", "min_nanos": "1100000", "max_nanos": "11000000000"},
+    "delta": {"buckets": [], "observed": "0", "unobserved": "0", "sum_nanos": "-450369000",
+      "min_nanos": "-100000", "max_nanos": "-1000000000"}},
+  "errors": {"comparable": false, "reason": "candidate_unavailable",
+    "reference": {"runs_with_evidence": "1", "span_status": {"unavailable": "0", "unset": "0", "ok": "4", "error": "0"},
+      "http_status": {"1xx": "0", "2xx": "4", "3xx": "0", "4xx": "0", "5xx": "0", "unavailable": "0"}, "http_429": "0"},
+    "candidate": {"runs_with_evidence": "0", "span_status": {"unavailable": "4", "unset": "0", "ok": "0", "error": "0"},
+      "http_status": {"1xx": "0", "2xx": "0", "3xx": "0", "4xx": "0", "5xx": "0", "unavailable": "4"}, "http_429": "0"}},
+  "tokens": {"comparable": true,
+    "reference": {"runs_with_evidence": "3", "input": "1380", "output": "239", "unsplit": "0", "observed": "4", "unobserved": "11"},
+    "candidate": {"runs_with_evidence": "3", "input": "1356", "output": "217", "unsplit": "0", "observed": "4", "unobserved": "11"},
+    "delta": {"input": "-24", "output": "-22", "unsplit": "0", "observed": "0", "unobserved": "0"}},
+  "cost": {"pricing_version": "team-2026-10", "pricing_digest": "sha256:4006213e9a5580ea06ab750a1ebb1bb0a96787be63bac430b529aa561cddbafb",
+    "source": "fixture", "currency": "USD", "comparable": true,
+    "reference": {"runs_with_evidence": "3", "cost_micros": "233", "priced_tokens": "1619", "unpriced_tokens": "0"},
+    "candidate": {"runs_with_evidence": "3", "cost_micros": "222", "priced_tokens": "1573", "unpriced_tokens": "0"},
+    "delta": {"cost_micros": "-11"}}
+}`
+
+// TestRenderAcceptsTask087Sections: the 079 renderer keeps rendering a result
+// document whose comparison carries task 087's operational sections, byte for
+// byte as it rendered the document without them. They are additive fields it
+// neither refuses nor renders.
+func TestRenderAcceptsTask087Sections(t *testing.T) {
+	var operational map[string]any
+	if err := json.Unmarshal([]byte(task087Operational), &operational); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name string
+		code int
+	}{{"fail", 1}, {"pass", 0}, {"suite", 1}} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := artifact(t, tt.name)
+			mutateResult(t, dir, func(d map[string]any) {
+				if members, ok := d["members"].([]any); ok {
+					for i := range members {
+						obj(d, "members", i, "result", "comparison")["operational"] = operational
+					}
+					return
+				}
+				obj(d, "comparison")["operational"] = operational
+			})
+			out := render(dir, expected(tt.code), defaultLimits)
+			if out.state == stateNoVerdict {
+				t.Fatalf("a document with task 087's sections was refused: %s", out.reason)
+			}
+			if out.markdown != render(filepath.Join("testdata", "artifacts", tt.name), expected(tt.code), defaultLimits).markdown {
+				t.Error("task 087's sections changed the rendering")
+			}
+		})
+	}
+}
+
 // The renderer transcribes; it never decides. A document whose stored
 // classification, check outcome, verdict and suite summary contradict its own
 // counts is rendered exactly as stored — the control plane owns all of them.

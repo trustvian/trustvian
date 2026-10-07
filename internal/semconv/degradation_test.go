@@ -318,3 +318,32 @@ func TestNoContentKeyIsAlsoAnIdentityKey(t *testing.T) {
 		}
 	}
 }
+
+// TestUsageAndStatusChangeNoNormalization is the degradation contract for task
+// 087's keys: adding token usage and a status code to any span — transport,
+// GenAI or OpenInference — normalizes exactly as the span without them did.
+func TestUsageAndStatusChangeNoNormalization(t *testing.T) {
+	spans := []semconv.Span{
+		{Kind: semconv.KindClient, Attributes: map[string]any{
+			"http.request.method": "POST", "server.address": "export.localhost"}},
+		{Kind: semconv.KindClient, Attributes: map[string]any{
+			semconv.AttrGenAIOperationName: "chat", "gen_ai.request.model": "llama3.2", "gen_ai.provider.name": "ollama"}},
+		{Kind: semconv.KindInternal, Attributes: map[string]any{
+			semconv.AttrGenAIOperationName: "execute_tool", semconv.AttrGenAIToolName: "export_customer"}},
+		{Kind: semconv.KindInternal, Attributes: map[string]any{
+			"openinference.span.kind": "LLM", "llm.model_name": "llama3.2"}},
+	}
+	for i, span := range spans {
+		without := semconv.Normalize(span)
+		with := map[string]any{}
+		for k, v := range span.Attributes {
+			with[k] = v
+		}
+		for _, key := range semconv.UsageAttributes() {
+			with[key] = int64(77)
+		}
+		if got := semconv.Normalize(semconv.Span{Kind: span.Kind, Attributes: with}); got != without {
+			t.Errorf("span %d: usage and status changed the normalization:\n got %+v\nwant %+v", i, got, without)
+		}
+	}
+}

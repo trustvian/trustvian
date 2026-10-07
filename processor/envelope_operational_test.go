@@ -1,9 +1,12 @@
 package trustvianprocessor_test
 
 import (
+	"bytes"
 	"context"
 	"maps"
 	"testing"
+
+	"github.com/trustvian/trustvian/event"
 
 	"go.opentelemetry.io/collector/consumer/consumertest"
 	"go.opentelemetry.io/collector/pdata/pcommon"
@@ -112,5 +115,38 @@ func TestOperationalFactsAreNotIdentity(t *testing.T) {
 	if plainFP != richFP || plainDecision != richDecision || plainName != richName {
 		t.Fatalf("usage and status changed the behavior: (%s %s %s) vs (%s %s %s)",
 			plainFP, plainDecision, plainName, richFP, richDecision, richName)
+	}
+}
+
+// TestTheEnvelopeCarriesNoContent is the privacy tripwire on the new fields:
+// a model call carrying every content attribute both conventions define, and
+// usage beside them, sends the token counts and none of the content — checked
+// on the raw request bytes, not on the fields this test thought to decode.
+func TestTheEnvelopeCarriesNoContent(t *testing.T) {
+	cp := newIngestAPIServer(t)
+	proc, err := newTestProcessorWithConfig(t, consumertest.NewNop(), cp.config(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	canaries := map[string]string{}
+	td := modelCallSpan(func(m pcommon.Map) {
+		m.PutInt("gen_ai.usage.input_tokens", 120)
+		m.PutInt("gen_ai.usage.output_tokens", 30)
+		for _, key := range event.ContentAttributes() {
+			canaries[key] = "CANARY-087-" + key
+			m.PutStr(key, canaries[key])
+		}
+	})
+	if err := proc.ConsumeTraces(context.Background(), td); err != nil {
+		t.Fatal(err)
+	}
+	bodies := cp.recordedBodies()
+	if len(bodies) != 1 || !bytes.Contains(bodies[0], []byte(`"tokens_input":"120"`)) {
+		t.Fatalf("the envelope did not carry the tokens, so its silence proves nothing: %s", bodies)
+	}
+	for key, canary := range canaries {
+		if bytes.Contains(bodies[0], []byte(canary)) {
+			t.Errorf("content attribute %s reached the envelope", key)
+		}
 	}
 }
