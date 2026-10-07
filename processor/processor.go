@@ -635,14 +635,15 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 		}
 
 		ingestStart := time.Now()
-		// Fidelity travels beside the record, not inside it: DecisionRecord
-		// carries no attributes, and the value describes how the Event was
-		// derived rather than anything the engine decided — the same reason
+		// Fidelity, layer and the operational facts travel beside the
+		// record, not inside it: DecisionRecord carries no attributes, and
+		// each describes how the Event was derived or what its span
+		// reported rather than anything the engine decided — the same reason
 		// the behavioral profile rides alongside. Read from the same Result
-		// that produced the span attribute a few lines up, so the two can
+		// that produced the span attributes a few lines up, so the two can
 		// never disagree about one span.
 		disposition, err := p.evaluation.Record(
-			ctx, result.DecisionRecord(), fidelityOf(result), layerOf(result), learning)
+			ctx, result.DecisionRecord(), annotationsOf(result), learning)
 		ingestDuration := time.Since(ingestStart)
 		if err != nil {
 			p.metrics.RecordEvaluationIngest(ctx, metrics.OutcomeError, ingestDuration)

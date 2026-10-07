@@ -36,7 +36,6 @@ import (
 	"time"
 
 	trustvian "github.com/trustvian/trustvian"
-	"github.com/trustvian/trustvian/event"
 )
 
 const (
@@ -230,6 +229,9 @@ func ParseAPIURL(raw string) (*url.URL, error) {
 // which this module cannot import.
 func formatSequence(v uint64) string { return strconv.FormatUint(v, 10) }
 
+// formatCount renders a count, where 0 is a valid measurement.
+func formatCount(v uint64) string { return strconv.FormatUint(v, 10) }
+
 // parseSequence decodes a wire sequence, rejecting anything non-canonical.
 //
 // Mirrors platform.ParseSequence. A value needing coercion was not produced
@@ -275,6 +277,21 @@ type ingestEnvelope struct {
 	// opinion about. Optional — absent means "not classified", so a producer built
 	// before task 083 keeps working unchanged. Task 083.
 	BehaviorLayer string `json:"behavior_layer,omitempty"`
+
+	// The operational facts ride here for the same reason and are the same
+	// kind of fact: what the span reported about its response and its token
+	// usage, which the engine never reads (task 087). Canonical decimal
+	// strings, like every other integer on this wire. Each is omitted when the
+	// span did not state it: absent is not zero. The control plane decodes
+	// this envelope strictly, so one built before task 087 refuses a record
+	// carrying any of the four — as one built before task 083 refuses
+	// behavior_layer. A Collector is never newer than the control plane it
+	// feeds when trustvian dev composes both; one deployed separately must be
+	// upgraded after its control plane.
+	HTTPStatusCode string `json:"http_status_code,omitempty"`
+	TokensInput    string `json:"tokens_input,omitempty"`
+	TokensOutput   string `json:"tokens_output,omitempty"`
+	TokensUnsplit  string `json:"tokens_unsplit,omitempty"`
 
 	Record trustvian.DecisionRecord `json:"record"`
 }
@@ -375,16 +392,28 @@ func (c *client) runStatus(ctx context.Context, runID string) (string, error) {
 // cap — is definitive by construction.
 func (c *client) ingest(
 	ctx context.Context, runID string, sequence uint64,
-	profile string, fidelity event.Fidelity, layer event.Layer,
+	profile string, annotations Annotations,
 	record trustvian.DecisionRecord,
 ) (ingestResult, error) {
 	envelope := ingestEnvelope{
 		Version:           wireVersion,
 		Sequence:          formatSequence(sequence),
 		BehavioralProfile: profile,
-		Fidelity:          string(fidelity),
-		BehaviorLayer:     string(layer),
+		Fidelity:          string(annotations.Fidelity),
+		BehaviorLayer:     string(annotations.Layer),
 		Record:            record,
+	}
+	if annotations.HTTPStatusCode != 0 {
+		envelope.HTTPStatusCode = strconv.FormatUint(uint64(annotations.HTTPStatusCode), 10)
+	}
+	if u := annotations.Usage; u.HasInput {
+		envelope.TokensInput = formatCount(u.Input)
+	}
+	if u := annotations.Usage; u.HasOutput {
+		envelope.TokensOutput = formatCount(u.Output)
+	}
+	if u := annotations.Usage; u.HasUnsplit {
+		envelope.TokensUnsplit = formatCount(u.Unsplit)
 	}
 	encoded, err := json.Marshal(envelope)
 	if err != nil {

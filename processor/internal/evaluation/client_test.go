@@ -155,7 +155,7 @@ func TestIngestPostsTheWireContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newClient() error = %v", err)
 	}
-	got, err := c.ingest(context.Background(), "run-1", 1, "support-reference", "", "",
+	got, err := c.ingest(context.Background(), "run-1", 1, "support-reference", Annotations{},
 		trustvian.DecisionRecord{EventID: "e1", Decision: "observe_only"})
 
 	if err != nil {
@@ -199,7 +199,7 @@ func TestIngestSurfacesServerErrorEnvelope(t *testing.T) {
 	defer server.Close()
 
 	c, _ := newClient(server.URL, requestTimeout)
-	_, err := c.ingest(context.Background(), "run-1", 4, "p", "", "", trustvian.DecisionRecord{})
+	_, err := c.ingest(context.Background(), "run-1", 4, "p", Annotations{}, trustvian.DecisionRecord{})
 	if err == nil {
 		t.Fatal("ingest() error = nil, want a conflict")
 	}
@@ -227,7 +227,7 @@ func TestIngestRejectsOversizedBodyBeforeSending(t *testing.T) {
 	}
 
 	record := trustvian.DecisionRecord{PolicyReason: strings.Repeat("x", maxRequestBody)}
-	_, err = c.ingest(context.Background(), "run-1", 1, "support-reference", "", "", record)
+	_, err = c.ingest(context.Background(), "run-1", 1, "support-reference", Annotations{}, record)
 	if err == nil {
 		t.Fatal("ingest() error = nil, want the request body bound enforced")
 	}
@@ -252,7 +252,7 @@ func TestClientRefusesRedirect(t *testing.T) {
 	defer server.Close()
 
 	c, _ := newClient(server.URL, requestTimeout)
-	if _, err := c.ingest(context.Background(), "run-1", 1, "p", "", "", trustvian.DecisionRecord{}); err == nil {
+	if _, err := c.ingest(context.Background(), "run-1", 1, "p", Annotations{}, trustvian.DecisionRecord{}); err == nil {
 		t.Fatal("ingest() error = nil, want a refused redirect")
 	}
 }
@@ -270,7 +270,7 @@ func TestClientBoundsResponseBody(t *testing.T) {
 	defer server.Close()
 
 	c, _ := newClient(server.URL, requestTimeout)
-	_, err := c.ingest(context.Background(), "run-1", 1, "p", "", "", trustvian.DecisionRecord{})
+	_, err := c.ingest(context.Background(), "run-1", 1, "p", Annotations{}, trustvian.DecisionRecord{})
 	if err == nil {
 		t.Fatal("ingest() error = nil, want the response bound to be enforced")
 	}
@@ -377,7 +377,7 @@ func TestIngestClassifiesFailureOutcomes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("newClient() error = %v", err)
 			}
-			_, err = c.ingest(context.Background(), "run-1", 1, "p", "", "", trustvian.DecisionRecord{})
+			_, err = c.ingest(context.Background(), "run-1", 1, "p", Annotations{}, trustvian.DecisionRecord{})
 			if err == nil {
 				t.Fatal("ingest() error = nil, want a failure")
 			}
@@ -400,7 +400,7 @@ func TestIngestTreatsAnUnreachableHostAsDefinitive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newClient() error = %v", err)
 	}
-	_, err = c.ingest(context.Background(), "run-1", 1, "p", "", "", trustvian.DecisionRecord{})
+	_, err = c.ingest(context.Background(), "run-1", 1, "p", Annotations{}, trustvian.DecisionRecord{})
 	if err == nil {
 		t.Fatal("ingest() error = nil, want a refused connection surfaced")
 	}
@@ -422,7 +422,7 @@ func TestIngestTreatsAnOversizedBodyAsDefinitive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newClient() error = %v", err)
 	}
-	_, err = c.ingest(context.Background(), "run-1", 1, "p", "", "",
+	_, err = c.ingest(context.Background(), "run-1", 1, "p", Annotations{},
 		trustvian.DecisionRecord{EventID: strings.Repeat("x", maxRequestBody+1)})
 
 	if err == nil {
@@ -446,7 +446,7 @@ func TestRefusedRedirectIsDefinitive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newClient() error = %v", err)
 	}
-	_, err = c.ingest(context.Background(), "run-1", 1, "p", "", "", trustvian.DecisionRecord{})
+	_, err = c.ingest(context.Background(), "run-1", 1, "p", Annotations{}, trustvian.DecisionRecord{})
 	if err == nil {
 		t.Fatal("ingest() error = nil, want the redirect refused")
 	}

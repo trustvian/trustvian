@@ -46,6 +46,10 @@ type ingestAPIServer struct {
 	fidelities []string
 	layers     []string
 
+	// operational[i] holds the task 087 envelope fields that rode beside
+	// records[i], keyed by their JSON name, present only when sent.
+	operational []map[string]string
+
 	// digests[i] is the encoded record durably stored at sequence i+1. The
 	// control plane recognizes a retry by content, so a stub without this
 	// could not replay one — and a replay that ignored content would prove
@@ -123,6 +127,22 @@ func newIngestAPIServer(t *testing.T) *ingestAPIServer {
 				BehaviorLayer     string                   `json:"behavior_layer"`
 				Record            trustvian.DecisionRecord `json:"record"`
 			}
+			var operational map[string]any
+			if err := json.Unmarshal(body, &operational); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			sentOperational := map[string]string{}
+			for _, key := range []string{"http_status_code", "tokens_input", "tokens_output", "tokens_unsplit"} {
+				if v, ok := operational[key]; ok {
+					s, isString := v.(string)
+					if !isString {
+						w.WriteHeader(http.StatusBadRequest)
+						return
+					}
+					sentOperational[key] = s
+				}
+			}
 			if err := json.Unmarshal(body, &envelope); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
 				return
@@ -146,6 +166,7 @@ func newIngestAPIServer(t *testing.T) *ingestAPIServer {
 				cp.records = append(cp.records, envelope.Record)
 				cp.fidelities = append(cp.fidelities, envelope.Fidelity)
 				cp.layers = append(cp.layers, envelope.BehaviorLayer)
+				cp.operational = append(cp.operational, sentOperational)
 				cp.digests = append(cp.digests, digest)
 				cp.next++
 				next := cp.next
@@ -240,6 +261,14 @@ func (cp *ingestAPIServer) recordedLayers() []string {
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
 	return append([]string(nil), cp.layers...)
+}
+
+// recordedOperational is the task 087 envelope fields that arrived beside
+// each record.
+func (cp *ingestAPIServer) recordedOperational() []map[string]string {
+	cp.mu.Lock()
+	defer cp.mu.Unlock()
+	return append([]map[string]string(nil), cp.operational...)
 }
 
 // config points a processor at this server, with its own pending state file.

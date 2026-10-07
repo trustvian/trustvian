@@ -5,6 +5,8 @@ import (
 
 	trustvian "github.com/trustvian/trustvian"
 	"github.com/trustvian/trustvian/event"
+
+	"trustvian-processor/internal/evaluation"
 )
 
 // Trustvian output attributes — the same five names and meanings as
@@ -94,6 +96,22 @@ func layerOf(result trustvian.Result) event.Layer {
 		return event.LayerUnspecified
 	}
 	return layer
+}
+
+// annotationsOf collects what rides beside one result's record on the ingest
+// envelope. Fidelity and layer are read back from the attributes the mapping
+// wrote, as the span enrichment reads them; the status code and token counts
+// are read from the span's own attributes, which Event.Attributes carries
+// unchanged. Neither of those two is ever written to the span or to the
+// record: they are evidence for the control plane, not enrichment (task 087).
+func annotationsOf(result trustvian.Result) evaluation.Annotations {
+	code, _ := event.ReadHTTPStatusCode(result.Event.Attributes)
+	return evaluation.Annotations{
+		Fidelity:       fidelityOf(result),
+		Layer:          layerOf(result),
+		HTTPStatusCode: code,
+		Usage:          event.ReadUsage(result.Event.Attributes),
+	}
 }
 
 // layerFor decides the layer for one normalization result.
