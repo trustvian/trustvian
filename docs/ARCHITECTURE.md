@@ -741,6 +741,19 @@ candidate's runs newest first with a `(key, id)` keyset cursor. The key is
 derived from the stored time at every write and once by the migration's
 backfill; `created_at` remains the time.
 
+Schema 11 ([task 087](tasks/v0.12/087-performance-and-cost-evidence.md)) adds
+one column to the behavior entry table, `operational_counts`: each behavior's 31
+operational counters, as canonical decimal text in a documented order. Those
+counters are its duration buckets and statistics, span and HTTP status classes,
+429s and token sums. The column is decoded without allocating and validated on
+restore like every other counter, and the migration marks existing behaviors
+*not recorded*. It is one column rather than 31 because every ingest rewrites a
+run's entries and reads them back. A column per counter doubled ingest cost in
+the SQLite driver for values nothing queries in SQL. Comparisons sum these
+summaries in Go, per run, per target and over N runs, and price them on read
+when `trustvian-local --pricing` supplied a table. Nothing per target or per
+cost is stored.
+
 Whether that execution is a usable reference, and the verdict itself, stay in
 `ControlPlane`, which reuses `CompareRepeatedEvaluations` unchanged
 ([ADR 0054](adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)).

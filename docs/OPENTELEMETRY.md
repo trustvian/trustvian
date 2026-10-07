@@ -523,16 +523,17 @@ outcome, not a defect.
 
 ### What is neither read nor refused
 
-Two gaps, recorded here because "not in the table" and "deliberately excluded"
-are different statements and a reader cannot tell them apart from silence. Neither
-is a content attribute; both are metadata, and each has an owner. Token usage was
-the third until task 087 read it — see
-[Usage and HTTP status code](#usage-and-http-status-code).
+Gaps, recorded here because "not in the table" and "deliberately excluded" are
+different statements and a reader cannot tell them apart from silence. None is a
+content attribute; all are metadata, and each has an owner. Token usage was one
+until task 087 read it — see
+[Usage and HTTP status code](#usage-and-http-status-code) — and the latency and
+error comparison row below is now implemented.
 
 | Gap | State | Owner |
 |---|---|---|
 | **Per-observation history** | Not retained. The record now *carries* correlation and operational evidence (task 084), and the platform aggregates it per run; storing one row per observation is task 067's, so a trace tree still cannot be reconstructed from retained evidence | [067](ROADMAP.md#milestone-sequence) |
-| **Latency and error *comparison*** | The evidence is carried and aggregated per run (task 084); comparing two runs on it is a separate decision | [087](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md#087--performance-and-cost-evidence) |
+| **Latency and error *comparison*** | Implemented by task 087: per-behavior duration buckets and status counts, compared per run and per target, with HTTP status classes from [Usage and HTTP status code](#usage-and-http-status-code) | [087](tasks/v0.12/087-performance-and-cost-evidence.md) |
 
 The bridging is described under
 [Why latency/error are bridged, not mapped](#mapping-table) and is unchanged: it

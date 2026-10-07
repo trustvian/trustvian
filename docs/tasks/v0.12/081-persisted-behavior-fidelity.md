@@ -181,6 +181,11 @@ Under the proposed phase order, 087 (per-behavior operational columns) and 086
 
 A human decides. The specification does not depend on the number.
 
+**Landed (maintainer decision D4):** task 087 took **v11**, the next free
+version, with its per-behavior `operational_counts` column. 081 takes the next
+free version when it lands, which is v12 if 086 has not landed first, and v13
+if it has.
+
 ## Risks
 
 - **This is the milestone's migration risk.** It adds columns to the widest

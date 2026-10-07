@@ -364,10 +364,30 @@ owns authentication and remote access.
 
 ```text
 trustvian-local [--state-dir <dir>] [--listen <loopback-address>]
+                [--backend sqlite|postgres] [--pricing <file>]
 ```
 
 `--state-dir` defaults to `.trustvian`; `--listen` defaults to `127.0.0.1:0`
 and accepts only numeric loopback (`127.0.0.1:8080`, `[::1]:0`).
+
+`--pricing` takes a versioned pricing table, and every comparison then carries
+a `cost` section with the table's `pricing_version`, `source` and
+`pricing_digest`. Trustvian ships no prices. Without the flag there is no cost
+section and nothing else in any response changes:
+
+```yaml
+version: 1
+pricing_version: "team-2026-10"
+source: "copied from provider pricing page, 2026-10-01"
+currency: USD
+models:
+  - model: llama3.2            # a model call's operation name
+    input_micros_per_million_tokens: 100000
+    output_micros_per_million_tokens: 400000
+```
+
+Prices are integer micro-units of the currency per million tokens. A table that
+does not validate stops the runtime before it starts (exit 2).
 
 `trustvian-local` is built from a repository-internal module, so `go install`
 does not produce it. It does ship in the macOS and Linux release archives

@@ -49,6 +49,28 @@ actually depend on.
     scope-less `status_changed` realtime event that reaches only unfiltered
     streams. There is no polling.
 
+- **Performance and cost evidence** (task 087). A comparison now says what
+  happened to latency, errors and tokens, per run and per target, and — with an
+  operator-supplied pricing table — what it cost.
+  - The Collector reads `http.response.status_code` (or the legacy
+    `http.status_code`) and token usage from `gen_ai.usage.*` and
+    `llm.token_count.*`, and only from those attributes. It sends them on the
+    ingest envelope beside the record, never in it. A malformed value is
+    absent, never `0`.
+  - Each behavior keeps eleven integer-millisecond duration buckets, span
+    status counts, HTTP status classes, a 429 count and token sums. They are
+    persisted at platform schema 11, and existing behaviors read *not
+    recorded*.
+  - `eval compare` gains `latency`, `errors` and `tokens` sections, and
+    `compare-repeated` gains them under `operational`, summed over N runs. A
+    section either side cannot support is `comparable: false` with a reason,
+    and has no delta.
+  - `GET /v1/evaluations/operational` and `trustvian eval operational` break
+    the same evidence down by target.
+  - `trustvian-local --pricing <file>` adds a `cost` section in integer
+    micro-units, with the table's version, source and digest on every figure.
+    Trustvian ships no prices. There is no cost gate.
+
 ## v0.11.0 — webui feature
 
 ### Added

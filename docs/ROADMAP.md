@@ -516,7 +516,8 @@ per observation (076). Each is stated on screen where it applies.
 ## v0.12.0 — Change Impact
 
 **PLANNED.** Tasks 081, 086, 087 and 105–107 are specified in
-[`tasks/v0.12/`](tasks/v0.12/README.md). 105 is implemented; the rest are not. The engine is
+[`tasks/v0.12/`](tasks/v0.12/README.md). 105 and 087 are implemented; the rest
+are not. The engine is
 unchanged. The platform gains:
 
 - one ephemeral status surface (105);
@@ -569,7 +570,7 @@ post the same report on the pull request, byte for byte
 | Task | Status | Milestone |
 |---|---|---|
 | 105 | **Implemented** | [Pipeline status surface](tasks/v0.12/105-pipeline-status-surface.md): `GET /v1/status`, `trustvian status`, `trustvian dev --check`, a Status view that is the landing view when nothing is active, and a tested suggestion table |
-| 087 | Specified | [Performance and cost evidence](tasks/v0.12/087-performance-and-cost-evidence.md): per-behavior duration buckets, status classes and 429s, token counts from `gen_ai.usage.*` / `llm.token_count.*`, and an optional versioned pricing table with provenance on every cost figure. No cost gate |
+| 087 | **Implemented** | [Performance and cost evidence](tasks/v0.12/087-performance-and-cost-evidence.md): per-behavior duration buckets, status classes and 429s, token counts from `gen_ai.usage.*` / `llm.token_count.*`, and an optional versioned pricing table with provenance on every cost figure. No cost gate. Schema 11 |
 | 106 | Specified | [Frequency evidence](tasks/v0.12/106-frequency-evidence.md): calls per run, per-target call ratio in integer permille, a `lost` classification, four optional named gate limits, and a comparison rule table |
 | 086 | Specified | [Scenario and input versioning](tasks/v0.12/086-scenario-and-input-versioning.md): scenario and input digests on each execution, `prompt_ref` beside `Model`, and sameness on the comparison with a warning outside the gate |
 | 081 | Specified | [Persisted per-behavior fidelity](tasks/v0.12/081-persisted-behavior-fidelity.md): fidelity (and, proposed, layer) counts per behavior on both backends, reported as the lowest level seen; `TestFidelityIsNotPersistedYet` inverted |
@@ -1292,7 +1293,7 @@ The **Gate** column says which rows the release actually depends on.
 | 084 | [Correlation and operational evidence on the record boundary](tasks/v1.0/084-correlation-operational-evidence.md) — parent span identity, duration and error status promoted from volatile feature inputs to recorded evidence, additively | **Implemented** — carried, aggregated per run and persisted at schema 6; per-observation history is 067's and is now implemented | `v1.0` |
 | 085 | [Evidence resolution](tasks/v1.0/085-evidence-resolution.md) — from a gate check or a behavioral delta to the behaviors and observations behind it, as a resolution query rather than a payload inside a fixed-shape verdict. Authoritative at the control plane, exercised over `/v1` and the CLI, and **delivered before 076 consumes it** | **Implemented** — two `GET` routes and a CLI family, no schema change; three checks resolve and the two evidence checks are aggregate-only by construction | `v1.0` (via 17) |
 | 086 | [Scenario and input versioning](tasks/v0.12/086-scenario-and-input-versioning.md) — a scenario-definition digest and an input digest on the evidence, and a prompt *reference* beside `Model`, so a comparison can state whether both sides ran the same thing | Specified (`v0.12.0`) | neither |
-| 087 | [Performance and cost evidence](tasks/v0.12/087-performance-and-cost-evidence.md) — latency and error comparison from 084, token counts from the conventions, and cost only with an explicit pricing version and provenance | Specified (`v0.12.0`) | neither |
+| 087 | [Performance and cost evidence](tasks/v0.12/087-performance-and-cost-evidence.md) — latency and error comparison from 084, token counts from the conventions, and cost only with an explicit pricing version and provenance | **Implemented** (`v0.12.0`) — schema 11, `GET /v1/evaluations/operational`, `trustvian-local --pricing` | neither |
 | 088 | Review decisions and annotations — an append-only note on a resolved finding, and an acknowledgement recorded **beside** the computed verdict rather than replacing it | Not specified | neither |
 | 089 | **PROPOSED** — optional quality evaluation and prompt experimentation. Contradicts [What Trustvian is not becoming](#what-trustvian-is-not-becoming) as written; needs a product-boundary decision, and closing it is a legitimate outcome | Not specified | none |
 | 090 | Trace-backend interoperability — a documented OTLP fan-out to a trace backend beside Trustvian, with no runtime dependency in either direction. **Off by default; enabling it names the destination and whether content-bearing attributes may be transmitted.** Optional integration ([ADR 0046](adr/0046-trace-backends-are-interoperability-targets-not-dependencies.md)) | Not specified | none |

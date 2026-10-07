@@ -107,6 +107,9 @@ trustvian eval run          --scenario <file> [--reference <execution-id>|last]
                             [--collector-bin <path>]
 trustvian eval run          --suite <dir> --scenario-timeout <duration>
                             [--fail-fast] [--reference last] [--collector-bin <path>]
+trustvian eval operational  --reference-run <id> --candidate-run <id>
+                            [--reference-run <id> --candidate-run <id> ...]
+                            [--after <cursor>] [--limit <n>]
 
 trustvian env create   --project-id <id> --ref <ref> --name <name> [--rank <n>]
 trustvian env get      --project-id <id> --ref <ref>
@@ -239,6 +242,28 @@ in byte order with the server bounding every page. There is no `search`, and no
 `update` or `delete` for a promotion, because the API has no such routes: a
 client-side list would have to invent ordering, paging and scoping nothing has
 decided, and a recorded decision is history rather than a row to edit.
+
+### Latency, errors, tokens and cost per target: `eval operational`
+
+`trustvian eval compare` carries three run-level sections on its scorecard —
+`latency`, `errors` and `tokens` — and, when the control plane was started with
+`--pricing`, a `cost` section. Each is comparable only when both runs carried
+its evidence. Otherwise it says which run did not, and carries no `delta`.
+`eval operational` breaks the same evidence down by target:
+
+```text
+trustvian eval operational --reference-run run-ref --candidate-run run-cand
+```
+
+It prints `GET /v1/evaluations/operational`'s body unchanged, in both output
+modes. Repeat each flag once per run to read a repeated comparison's sides
+(the same N each). Every section then says on how many runs that target carried
+its evidence. Rows are ordered by target category, then name. A page holds at
+most 64 rows, and `next_after` is the `--after` for the next one. Exit status is
+`0`, `2` for usage and `3` for an API failure, like the rest of `eval`.
+
+Latency is descriptive. Through a model-driven agent the model dominates it,
+and nothing here attributes a change to the change under test.
 
 ### Following a finding to its evidence
 
