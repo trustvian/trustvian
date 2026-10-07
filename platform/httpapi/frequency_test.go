@@ -37,7 +37,7 @@ func withoutMember(t *testing.T, doc []byte, name string) []byte {
 // task106Members are the members 106 adds to compare-repeated.
 var task106Members = []string{
 	"reference_frequency", "candidate_frequency", "lost", "targets", "lost_transitions",
-	"frequency_checks",
+	"frequency_checks", "suggestions", "suggestions_truncated",
 }
 
 // TestCompareRepeatedAtNEqualsOneIsUnchanged is task 106's technical
@@ -129,6 +129,16 @@ func TestFrequencyOnTheWire(t *testing.T) {
 	}
 	if body.LostTransitions != "not_recorded" {
 		t.Errorf("lost_transitions = %q", body.LostTransitions)
+	}
+	// send: in 2/2 reference runs and 1/2 candidate runs, so rule 3 fires,
+	// with its evidence in the order it read it.
+	wantSuggestions := `"suggestions":[{"rule":"compare.lost_in_half","rule_version":1,"evidence":[` +
+		`{"name":"fingerprint_id","value":"fp-send"},{"name":"behavior","value":"tool/send → build-host"},` +
+		`{"name":"reference_runs_present","value":"2"},{"name":"candidate_runs_present","value":"1"},` +
+		`{"name":"runs","value":"2"}],"text":"tool/send → build-host was in every reference run and is ` +
+		`missing from 1 of 2 candidate runs. Task completion may have regressed."}],"suggestions_truncated":false`
+	if !strings.Contains(r.Body.String(), wantSuggestions) {
+		t.Errorf("suggestions:\n%s", r.Body.String())
 	}
 }
 

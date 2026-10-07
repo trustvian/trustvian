@@ -287,6 +287,11 @@ type RepeatedEvaluationComparison struct {
 	// LostTransitions is always LostTransitionsNotRecorded: nothing records
 	// transitions per execution (task 106 § Lost transitions).
 	LostTransitions string
+
+	// Suggestions are the comparison rule table's outputs (ADR 0064), beside
+	// the gate and read by nothing: no check, no verdict, no stored record.
+	Suggestions          []Suggestion
+	SuggestionsTruncated bool
 }
 
 // classifyPresence applies task 078's rule. j < k is validated before this.
@@ -460,14 +465,18 @@ func reduceRepeated(
 		}
 	}
 	limits.MaxCallsPerRun = cloneTargetLimits(limits.MaxCallsPerRun)
-	return RepeatedEvaluationComparison{
+	comparison := RepeatedEvaluationComparison{
 		Runs: runs, Limits: limits, Repetitions: repetitions, Behaviors: behaviors,
 		Gate: RepeatedEvaluationGateResult{bound: true, checks: checks, verdict: verdict,
 			frequency: frequencyChecks},
 		Operational:     compareOperational(*operational[SideReference], *operational[SideCandidate]),
 		Targets:         targets,
 		LostTransitions: LostTransitionsNotRecorded,
-	}, nil
+	}
+	// Last, over the finished comparison: the rules read evidence and the
+	// gate never reads them.
+	comparison.Suggestions, comparison.SuggestionsTruncated = evaluateComparisonRules(comparison)
+	return comparison, nil
 }
 
 func equalsCheck(name RepeatedCheckName, actual, bound uint64) RepeatedGateCheck {

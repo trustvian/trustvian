@@ -216,6 +216,11 @@ type compareRepeatedResponse struct {
 	Targets         []targetFrequencyDTO `json:"targets"`
 	LostTransitions string               `json:"lost_transitions"`
 
+	// Suggestions are the comparison rule table's outputs (ADR 0064), beside
+	// the evidence and never part of it. Branch on rule, never on text.
+	Suggestions          []suggestionDTO `json:"suggestions"`
+	SuggestionsTruncated bool            `json:"suggestions_truncated"`
+
 	Producer producerDTO `json:"producer"`
 }
 
@@ -381,11 +386,13 @@ func newCompareRepeatedResponse(
 			MaxLostBehaviors:                  optionalLimit(l.MaxLostBehaviors),
 			MaxCallsPerRun:                    targetCallLimitDTOs(l.MaxCallsPerRun),
 		},
-		Repetitions:     repetitions,
-		Behaviors:       behaviors,
-		Targets:         newTargetFrequencyDTOs(c.Targets),
-		LostTransitions: c.LostTransitions,
-		Operational:     newOperationalSectionsDTO(c.Operational, c.Cost),
+		Repetitions:          repetitions,
+		Behaviors:            behaviors,
+		Targets:              newTargetFrequencyDTOs(c.Targets),
+		LostTransitions:      c.LostTransitions,
+		Suggestions:          newSuggestionDTOs(c.Suggestions),
+		SuggestionsTruncated: c.SuggestionsTruncated,
+		Operational:          newOperationalSectionsDTO(c.Operational, c.Cost),
 		Gate: repeatedGateDTO{Checks: checks, Verdict: string(c.Gate.Verdict()),
 			FrequencyChecks: newFrequencyCheckDTOs(c.Gate.FrequencyChecks())},
 		Producer: producerDTO{ControlPlaneVersion: producerVersion},
