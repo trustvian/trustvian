@@ -518,10 +518,15 @@ type PipelineStatus struct {
 	Collectors []CollectorStatus
 	Engine     EngineStatus
 
+	// LastIngestAt is when this control plane last committed an ingest
+	// record, on its own clock, or the zero time when it has committed none
+	// since it started. Held in memory only, like the reports.
+	LastIngestAt time.Time
+
 	// Landing is which view an interface opens on: Live when something is
-	// active — a Collector reporting and a producer seen within the fresh
-	// window — and Status otherwise. Decided here so no interface holds its
-	// own copy of the rule.
+	// active — a Collector reporting with a producer seen within the fresh
+	// window, or an ingest record committed within it — and Status otherwise.
+	// Decided here so no interface holds its own copy of the rule.
 	Landing Landing
 
 	// Suggestions are the rule table's outputs over the fields above, in table
@@ -557,8 +562,13 @@ const (
 )
 
 // landingFor applies the rule: active means a reporting Collector that has
-// seen a producer within the fresh window.
-func landingFor(now time.Time, collectors []CollectorStatus) Landing {
+// seen a producer within the fresh window, or an ingest record committed
+// within it. The second covers a Collector with no `status:` block: records
+// arriving are activity whether or not anything reports pipeline status.
+func landingFor(now, lastIngest time.Time, collectors []CollectorStatus) Landing {
+	if ingestFresh(now, lastIngest) {
+		return LandingLive
+	}
 	for _, c := range collectors {
 		if c.State != CollectorReporting {
 			continue
@@ -570,6 +580,36 @@ func landingFor(now time.Time, collectors []CollectorStatus) Landing {
 		}
 	}
 	return LandingStatus
+}
+
+// ingestFresh reports whether an ingest record was committed within the fresh
+// window before now. The zero time is "never", which is never fresh.
+func ingestFresh(now, lastIngest time.Time) bool {
+	return !lastIngest.IsZero() && now.Sub(lastIngest) <= StatusFreshWindow
+}
+
+// noteIngest records that an ingest record was committed at `at`. It only
+// moves forward, so concurrent commits finishing out of order never move
+// last_ingest_at back. The zero time records nothing.
+func (c *ControlPlane) noteIngest(at time.Time) {
+	if at.IsZero() {
+		return
+	}
+	next := at.UnixNano()
+	for {
+		current := c.lastIngest.Load()
+		if current >= next || c.lastIngest.CompareAndSwap(current, next) {
+			return
+		}
+	}
+}
+
+// lastIngestAt returns the last committed ingest time, or the zero time.
+func (c *ControlPlane) lastIngestAt() time.Time {
+	if nanos := c.lastIngest.Load(); nanos != 0 {
+		return time.Unix(0, nanos).UTC()
+	}
+	return time.Time{}
 }
 
 // EngineState says whether engine facts are available.
@@ -620,7 +660,7 @@ func (c *ControlPlane) ReportCollectorStatus(
 
 // PipelineStatus reads the status document as of now.
 //
-// Pure over the held reports and now: the same reports and the same instant
+// Pure over the held reports, the last ingest time and now: the same inputs
 // produce the same document. It reads no store, so it costs the same whatever
 // the database holds.
 func (c *ControlPlane) PipelineStatus(_ context.Context, now time.Time) PipelineStatus {
@@ -643,11 +683,13 @@ func (c *ControlPlane) PipelineStatus(_ context.Context, now time.Time) Pipeline
 			ProducerLastSeen: lastSeen,
 		})
 	}
+	lastIngest := c.lastIngestAt()
 	status := PipelineStatus{
-		ReadAt:     now,
-		Collectors: collectors,
-		Engine:     EngineStatus{State: EngineUnavailable, Reason: engineUnavailableReason},
-		Landing:    landingFor(now, collectors),
+		ReadAt:       now,
+		Collectors:   collectors,
+		Engine:       EngineStatus{State: EngineUnavailable, Reason: engineUnavailableReason},
+		LastIngestAt: lastIngest,
+		Landing:      landingFor(now, lastIngest, collectors),
 	}
 	status.Suggestions, status.SuggestionsTruncated = evaluateStatusRules(status)
 	return status

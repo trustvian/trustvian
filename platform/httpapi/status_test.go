@@ -361,3 +361,69 @@ func TestStatusDocumentGoldenForACollectorThatJustStarted(t *testing.T) {
 		t.Fatalf("rule 2 did not fire once the collector had been up 31 s: %s", later)
 	}
 }
+
+// TestStatusWhenRecordsArriveWithoutStatus covers a Collector with no
+// `status:` block: records commit, but nothing reports pipeline status. The
+// document says records are arriving (last_ingest_at, landing live, rule 1's
+// second sentence) instead of telling the user to start `trustvian dev`.
+func TestStatusWhenRecordsArriveWithoutStatus(t *testing.T) {
+	var mu sync.Mutex
+	now := testEpoch
+	clock := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	advance := func(d time.Duration) {
+		mu.Lock()
+		now = now.Add(d)
+		mu.Unlock()
+	}
+	a := newRealtimeAPI(t, httpapi.WithClock(clock))
+	status := func() string {
+		t.Helper()
+		response, err := a.client.Get(a.server.URL + "/v1/status")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		var body bytes.Buffer
+		if _, err := body.ReadFrom(response.Body); err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(body.String())
+	}
+
+	// Neither status nor ingest: no last_ingest_at, and rule 1's first sentence.
+	before := status()
+	if strings.Contains(before, "last_ingest_at") || !strings.Contains(before, `"landing":"status"`) ||
+		!strings.Contains(before, goldenNoCollector) {
+		t.Fatalf("document before any ingest:\n%s", before)
+	}
+
+	a.seedRunning("run-1", "cand-1")
+	a.ingest("run-1", 1, fidelityRecord("export"))
+	advance(4 * time.Second)
+
+	const ingestedAt = `"last_ingest_at":"2026-01-01T00:00:00Z"`
+	want := `{"version":"1","read_at":"2026-01-01T00:00:04Z","held_since":"2026-01-01T00:00:00Z",` +
+		ingestedAt + `,"landing":"live","collectors":[],` + goldenEngine + `,` + goldenBounds + `,` +
+		`"suggestions":[{"rule":"status.no_collector","rule_version":1,` +
+		`"evidence":[{"name":"collectors_reporting","value":"0"},{"name":"fresh_window_seconds","value":"30"},` +
+		`{"name":"last_ingest_age_seconds","value":"4"}],` +
+		`"text":"No Collector has reported status in 30 s, but records arrived 4 s ago. ` +
+		`The Collector feeding them has no status: block; add one to see pipeline facts here."}],` +
+		`"suggestions_truncated":false}`
+	if got := status(); got != want {
+		t.Fatalf("document after an ingest:\n got %s\nwant %s", got, want)
+	}
+
+	// Past the window the ingest is still published, but it no longer makes
+	// anything active: the landing and rule 1 go back to the no-ingest case.
+	advance(platform.StatusFreshWindow - 3*time.Second) // 31 s after the ingest
+	after := status()
+	if !strings.Contains(after, ingestedAt) || !strings.Contains(after, `"landing":"status"`) ||
+		!strings.Contains(after, goldenNoCollector) {
+		t.Fatalf("document past the fresh window:\n%s", after)
+	}
+}

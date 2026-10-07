@@ -332,3 +332,66 @@ func TestSameFactsSeesEveryNonVolatileField(t *testing.T) {
 		})
 	}
 }
+
+// TestRuleOneAndLandingWithIngest crosses the two inputs task 105's follow-up
+// added: a reporting Collector and a recently committed ingest record. Only
+// the case with records and no reporting Collector changes from before.
+func TestRuleOneAndLandingWithIngest(t *testing.T) {
+	tests := []struct {
+		name      string
+		reported  bool
+		ingestAge time.Duration // 0 means no ingest at all
+		landing   Landing
+		rules     []string
+		text      string
+	}{
+		{name: "ingest without status", ingestAge: 4 * time.Second, landing: LandingLive,
+			rules: []string{"status.no_collector"}, text: "but records arrived 4 s ago"},
+		{name: "ingest at the edge of the window", ingestAge: StatusFreshWindow, landing: LandingLive,
+			rules: []string{"status.no_collector"}, text: "but records arrived 30 s ago"},
+		{name: "ingest past the window", ingestAge: StatusFreshWindow + time.Second, landing: LandingStatus,
+			rules: []string{"status.no_collector"}, text: "Is 'trustvian dev' running"},
+		{name: "neither", landing: LandingStatus,
+			rules: []string{"status.no_collector"}, text: "Is 'trustvian dev' running"},
+		{name: "status only", reported: true, landing: LandingLive},
+		{name: "status and ingest", reported: true, ingestAge: time.Second, landing: LandingLive},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plane := &ControlPlane{status: newStatusRegistry()}
+			if tt.reported {
+				if _, _, err := plane.status.record(ruleReport("dev"), rulesEpoch); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.ingestAge != 0 {
+				plane.noteIngest(rulesEpoch.Add(-tt.ingestAge))
+			}
+			status := plane.PipelineStatus(t.Context(), rulesEpoch)
+			if status.Landing != tt.landing {
+				t.Errorf("landing %q, want %q", status.Landing, tt.landing)
+			}
+			if got := rulesFired(status); !reflect.DeepEqual(got, tt.rules) {
+				t.Fatalf("rules %v, want %v", got, tt.rules)
+			}
+			if tt.text != "" && !strings.Contains(status.Suggestions[0].Text, tt.text) {
+				t.Errorf("text %q does not carry %q", status.Suggestions[0].Text, tt.text)
+			}
+		})
+	}
+}
+
+// TestNoteIngestOnlyMovesForward: commits that finish out of order never move
+// last_ingest_at back, and the zero time records nothing.
+func TestNoteIngestOnlyMovesForward(t *testing.T) {
+	plane := &ControlPlane{status: newStatusRegistry()}
+	plane.noteIngest(time.Time{})
+	if got := plane.lastIngestAt(); !got.IsZero() {
+		t.Fatalf("the zero time was recorded as %s", got)
+	}
+	plane.noteIngest(rulesEpoch)
+	plane.noteIngest(rulesEpoch.Add(-time.Second))
+	if got := plane.lastIngestAt(); !got.Equal(rulesEpoch) {
+		t.Fatalf("last ingest %s, want %s", got, rulesEpoch)
+	}
+}

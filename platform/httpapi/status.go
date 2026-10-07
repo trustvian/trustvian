@@ -166,6 +166,11 @@ type statusDocument struct {
 	// document needs to know how long "nothing" has covered.
 	HeldSince string `json:"held_since"`
 
+	// LastIngestAt is when this control plane last committed an ingest
+	// record, omitted when it has committed none since it started. In memory
+	// only, like held_since, so a restart forgets it.
+	LastIngestAt string `json:"last_ingest_at,omitempty"`
+
 	// Landing is the view an interface opens on: "live" when something is
 	// active, "status" otherwise. The control plane decides; a browser reads.
 	Landing string `json:"landing"`
@@ -474,13 +479,18 @@ func (h *Handler) newStatusDocument(s platform.PipelineStatus) statusDocument {
 			Learning:           newStatusLearningSection(c.Report),
 		})
 	}
+	lastIngestAt := ""
+	if !s.LastIngestAt.IsZero() {
+		lastIngestAt = formatTime(s.LastIngestAt)
+	}
 	return statusDocument{
-		Version:    WireVersion,
-		ReadAt:     formatTime(s.ReadAt),
-		HeldSince:  formatTime(h.statusSince),
-		Landing:    string(s.Landing),
-		Collectors: collectors,
-		Engine:     statusEngineDTO{State: string(s.Engine.State), Reason: s.Engine.Reason},
+		Version:      WireVersion,
+		ReadAt:       formatTime(s.ReadAt),
+		HeldSince:    formatTime(h.statusSince),
+		LastIngestAt: lastIngestAt,
+		Landing:      string(s.Landing),
+		Collectors:   collectors,
+		Engine:       statusEngineDTO{State: string(s.Engine.State), Reason: s.Engine.Reason},
 		Bounds: statusBoundsDTO{
 			Collectors:          strconv.Itoa(platform.MaxStatusCollectors),
 			ProducersPerReport:  strconv.Itoa(platform.MaxStatusProducers),

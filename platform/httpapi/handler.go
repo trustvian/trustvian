@@ -925,6 +925,7 @@ func (h *Handler) ingestRecord(w http.ResponseWriter, r *http.Request) {
 		BehavioralProfile: platform.BehavioralProfileRef(envelope.BehavioralProfile),
 		Fidelity:          fidelity,
 		BehaviorLayer:     layer,
+		ReceivedAt:        h.now(),
 		Record:            record,
 	})
 	if err != nil {

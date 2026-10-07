@@ -85,17 +85,33 @@ func freshSeconds() string { return strconv.Itoa(int(StatusFreshWindow / time.Se
 
 // Rule 1 — status.no_collector: no Collector has reported within the fresh
 // window.
+//
+// Two fixed sentences, chosen by one more fact from the same document: whether
+// an ingest record was committed within the window. Without one, nothing is
+// reaching this control plane. With one, records are arriving from a Collector
+// that has no `status:` block, so the pipeline works and only its facts are
+// missing — telling that user to start `trustvian dev` would be wrong.
 func ruleNoCollector(status PipelineStatus) []Suggestion {
 	for _, c := range status.Collectors {
 		if c.State == CollectorReporting {
 			return nil
 		}
 	}
+	evidence := []SuggestionEvidence{
+		{Name: "collectors_reporting", Value: "0"},
+		{Name: "fresh_window_seconds", Value: freshSeconds()},
+	}
+	if ingestFresh(status.ReadAt, status.LastIngestAt) {
+		age := strconv.FormatInt(int64(status.ReadAt.Sub(status.LastIngestAt)/time.Second), 10)
+		return []Suggestion{{
+			Evidence: append(evidence, SuggestionEvidence{Name: "last_ingest_age_seconds", Value: age}),
+			Text: fmt.Sprintf("No Collector has reported status in %s s, but records arrived %s s ago. "+
+				"The Collector feeding them has no status: block; add one to see pipeline facts here.",
+				freshSeconds(), age),
+		}}
+	}
 	return []Suggestion{{
-		Evidence: []SuggestionEvidence{
-			{Name: "collectors_reporting", Value: "0"},
-			{Name: "fresh_window_seconds", Value: freshSeconds()},
-		},
+		Evidence: evidence,
 		Text: fmt.Sprintf("No Collector has reported in %s s. Is 'trustvian dev' running, and is "+
 			"trustvian-collector on its path?", freshSeconds()),
 	}}
