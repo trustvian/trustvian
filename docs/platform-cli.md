@@ -149,10 +149,10 @@ over the same document
 
 | Rule | Fires when |
 |---|---|
-| `status.no_collector` | no Collector has reported in 30 s |
+| `status.no_collector` | no Collector has reported in 30 s. When ingest records arrived within the 30 s anyway, its second sentence says the Collector feeding them has no `status:` block, with `last_ingest_age_seconds` in its evidence |
 | `status.no_producer` | no reporting Collector has seen a span in 30 s, and at least one has been up for 30 s; names the first such Collector, its uptime and its receiver endpoint when one is reported. A Collector that started seconds ago has not been silent for 30 s, so it fires nothing |
 | `status.spans_without_service_name` | spans reached a Collector with neither `service.name` nor `trustvian.actor.id`, and were never evaluated |
-| `status.collapsed_http_operations` | 3 or more distinct operations reached one named HTTP target at transport fidelity. DB spans, unmapped convention spans and HTTP spans with no `server.address` or `peer.service` are never counted. Common HTTP client instrumentation names every span after its method alone, so this rule rarely fires for it — see [task 105](tasks/v0.12/105-pipeline-status-surface.md#what-shipped) |
+| `status.collapsed_http_operations` | 3 or more distinct operations reached one named HTTP target at transport fidelity. DB spans, unmapped convention spans and HTTP spans with no `server.address` or `service.peer.name` are never counted. Common HTTP client instrumentation names every span after its method alone, so this rule rarely fires for it — see [task 105](tasks/v0.12/105-pipeline-status-surface.md#what-shipped) |
 | `status.admission_near_bound` | cannot fire: the engine reports no fingerprint admission count |
 
 A suggestion changes nothing else: no exit code, no verdict, no stored record.
@@ -446,8 +446,11 @@ sets the producer's endpoint itself.
 The Collector it starts is named `dev-check` and reports status only, so a check
 against a shared control plane with `--api-url` never replaces a running `dev`
 session's own `dev` entry, and nothing is written to the database. Exit status:
-`0` whenever the document was printed, `2` for a usage error, `3` when the
-control plane or the Collector could not be started.
+`0` when the `dev-check` Collector reported, whatever the document says; `2`
+for a usage error; `3` when the control plane or the Collector could not be
+started, or when the Collector did not report within the 15 seconds. In that
+last case the document is still printed to stdout, showing what the control
+plane saw, so a script can tell "the pipeline is not checked" from "checked".
 
 Every `trustvian dev` Collector reports its status the same way, as `dev`,
 naming both of its OTLP receivers — so `trustvian status`, or the WebUI's Status
@@ -557,7 +560,7 @@ reading once rather than assuming.
 | `analyze`, `baseline`, `version` | success | command failed | top-level usage | — |
 | `project`, `agent`, `candidate`, most of `eval` | success | *unused* | usage | API or network failure |
 | `eval compare` | gate **PASS** | gate **FAIL** | usage | API or network failure |
-| `status`, `dev --check` | the document was read | *unused* | usage | API or network failure; for `--check`, a helper that could not start |
+| `status`, `dev --check` | the document was read; for `--check`, and its Collector reported | *unused* | usage | API or network failure; for `--check`, a helper that could not start or a Collector that did not report within the wait (the document is still printed) |
 | `eval run` | gate **PASS** | gate **FAIL** | usage — the scenario, the suite or `--reference`, before anything runs | API or network failure, a reference the control plane refused (before any workload), a repetition whose workload or run failed, or a scenario past its `--scenario-timeout`. A suite exits with its most severe scenario: 3, then 2, then 1, then 0 |
 | `dev` | the command’s own | the command’s own | usage | could not start |
 
