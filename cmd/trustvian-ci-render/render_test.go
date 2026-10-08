@@ -1056,6 +1056,54 @@ func TestRenderAcceptsTask106Fields(t *testing.T) {
 	}
 }
 
+// TestRenderAcceptsTask086Fields: the 079 renderer keeps rendering a result
+// document carrying task 086's sameness block and warnings — a difference in
+// every answer included — byte for byte as it rendered it without them.
+// Neither is a check, so neither reaches the verdict.
+func TestRenderAcceptsTask086Fields(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	other := "sha256:" + strings.Repeat("b", 64)
+	for _, tt := range []struct {
+		name string
+		code int
+	}{{"fail", 1}, {"pass", 0}, {"suite", 1}} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := artifact(t, tt.name)
+			plant := func(c map[string]any) {
+				c["sameness"] = map[string]any{
+					"same_scenario": "false", "same_inputs": "not_recorded", "same_model": "false",
+					"same_prompt_ref": "true",
+					"reference": map[string]any{"scenario_digest": digest, "inputs": "declared",
+						"input_digest": digest, "model": "llama3.2",
+						"prompt_ref": map[string]any{"name": "sys@v14", "digest": digest}},
+					"candidate": map[string]any{"scenario_digest": other, "inputs": "not_recorded",
+						"model": "gemma3:4b", "prompt_ref": map[string]any{"name": "sys@v14", "digest": digest}},
+				}
+				c["warnings"] = []any{
+					map[string]any{"code": "scenario_differs", "text": "WARNING-CANARY"},
+					map[string]any{"code": "model_differs", "text": "WARNING-CANARY"},
+				}
+			}
+			mutateResult(t, dir, func(d map[string]any) {
+				if members, ok := d["members"].([]any); ok {
+					for i := range members {
+						plant(obj(d, "members", i, "result", "comparison"))
+					}
+					return
+				}
+				plant(obj(d, "comparison"))
+			})
+			out := render(dir, expected(tt.code), defaultLimits)
+			if out.state == stateNoVerdict {
+				t.Fatalf("a document with task 086's fields was refused: %s", out.reason)
+			}
+			if out.markdown != render(filepath.Join("testdata", "artifacts", tt.name), expected(tt.code), defaultLimits).markdown {
+				t.Error("task 086's fields changed the rendering")
+			}
+		})
+	}
+}
+
 // The renderer transcribes; it never decides. A document whose stored
 // classification, check outcome, verdict and suite summary contradict its own
 // counts is rendered exactly as stored — the control plane owns all of them.
