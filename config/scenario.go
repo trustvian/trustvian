@@ -37,6 +37,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"unicode/utf8"
 
 	yaml "go.yaml.in/yaml/v3"
 )
@@ -97,7 +98,35 @@ type ScenarioGate struct {
 	MaxRepeatedAddedBehaviors         *uint64 `yaml:"max_repeated_added_behaviors"`
 	MaxBlockDecisionsPerRun           *uint64 `yaml:"max_block_decisions_per_run"`
 	MaxCriticalRiskObservationsPerRun *uint64 `yaml:"max_critical_risk_observations_per_run"`
+
+	// Task 106's optional frequency limits. Unlike the five above, each may be
+	// omitted, and omitted means the control plane does not evaluate it — it
+	// is never defaulted. Present, each is validated here exactly as the
+	// control plane will validate it, so a scenario that cannot run fails
+	// before anything starts.
+	//
+	// max_llm_calls_per_run is deliberately not a field: it needs per-behavior
+	// layer evidence that task 081 has not persisted yet, so it stays an
+	// unknown field and is refused.
+	MinCandidateFrequency *uint64               `yaml:"min_candidate_frequency"`
+	MaxLostBehaviors      *uint64               `yaml:"max_lost_behaviors"`
+	MaxCallsPerRun        []ScenarioTargetLimit `yaml:"max_calls_per_run"`
 }
+
+// ScenarioTargetLimit is one max_calls_per_run entry: the most calls one
+// candidate run may make to the named target.
+type ScenarioTargetLimit struct {
+	Target string  `yaml:"target"`
+	Max    *uint64 `yaml:"max"`
+}
+
+// max_calls_per_run bounds, restated from the platform's own (ADR 0066): this
+// package cannot import the platform module, and the control plane validates
+// again whatever this lets through.
+const (
+	maxScenarioCallTargets     = 16
+	maxScenarioCallTargetBytes = 255
+)
 
 var (
 	scenarioNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
@@ -181,7 +210,42 @@ func (g ScenarioGate) validate(runs uint64) error {
 	if j >= k {
 		return scenarioError("gate.added_reference_presence_maximum (j) is %d; it must be below k (%d)", j, k)
 	}
+	if g.MinCandidateFrequency != nil && *g.MinCandidateFrequency > runs {
+		return scenarioError("gate.min_candidate_frequency is %d; a behavior is in at most %d runs",
+			*g.MinCandidateFrequency, runs)
+	}
+	if g.MaxCallsPerRun == nil {
+		return nil
+	}
+	if len(g.MaxCallsPerRun) == 0 || len(g.MaxCallsPerRun) > maxScenarioCallTargets {
+		return scenarioError("gate.max_calls_per_run lists %d targets; it must list 1..%d",
+			len(g.MaxCallsPerRun), maxScenarioCallTargets)
+	}
+	seen := make(map[string]struct{}, len(g.MaxCallsPerRun))
+	for i, entry := range g.MaxCallsPerRun {
+		if entry.Target == "" || len(entry.Target) > maxScenarioCallTargetBytes || !printableTarget(entry.Target) {
+			return scenarioError("gate.max_calls_per_run[%d].target must be 1..%d bytes of printable text",
+				i, maxScenarioCallTargetBytes)
+		}
+		if _, dup := seen[entry.Target]; dup {
+			return scenarioError("gate.max_calls_per_run names target %q twice", entry.Target)
+		}
+		seen[entry.Target] = struct{}{}
+		if entry.Max == nil {
+			return scenarioError("gate.max_calls_per_run[%d].max is required; there is no default", i)
+		}
+	}
 	return nil
+}
+
+// printableTarget refuses control characters, as the control plane does.
+func printableTarget(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return false
+		}
+	}
+	return utf8.ValidString(s)
 }
 
 // LoadScenario decodes and validates one scenario document. Strict: unknown
@@ -255,6 +319,11 @@ func requireIntegerCounts(data []byte) error {
 			MaxRepeatedAddedBehaviors         any `yaml:"max_repeated_added_behaviors"`
 			MaxBlockDecisionsPerRun           any `yaml:"max_block_decisions_per_run"`
 			MaxCriticalRiskObservationsPerRun any `yaml:"max_critical_risk_observations_per_run"`
+			MinCandidateFrequency             any `yaml:"min_candidate_frequency"`
+			MaxLostBehaviors                  any `yaml:"max_lost_behaviors"`
+			MaxCallsPerRun                    []struct {
+				Max any `yaml:"max"`
+			} `yaml:"max_calls_per_run"`
 		} `yaml:"gate"`
 	}
 	if err := yaml.Unmarshal(data, &counts); err != nil {
@@ -270,11 +339,20 @@ func requireIntegerCounts(data []byte) error {
 		{"gate.max_repeated_added_behaviors", counts.Gate.MaxRepeatedAddedBehaviors},
 		{"gate.max_block_decisions_per_run", counts.Gate.MaxBlockDecisionsPerRun},
 		{"gate.max_critical_risk_observations_per_run", counts.Gate.MaxCriticalRiskObservationsPerRun},
+		{"gate.min_candidate_frequency", counts.Gate.MinCandidateFrequency},
+		{"gate.max_lost_behaviors", counts.Gate.MaxLostBehaviors},
 	} {
 		switch field.value.(type) {
 		case nil, int, int64, uint64:
 		default:
 			return scenarioError("%s must be a whole number, got %v", field.name, field.value)
+		}
+	}
+	for i, entry := range counts.Gate.MaxCallsPerRun {
+		switch entry.Max.(type) {
+		case nil, int, int64, uint64:
+		default:
+			return scenarioError("gate.max_calls_per_run[%d].max must be a whole number, got %v", i, entry.Max)
 		}
 	}
 	return nil

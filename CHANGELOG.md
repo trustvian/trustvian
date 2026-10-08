@@ -49,6 +49,24 @@ actually depend on.
     scope-less `status_changed` realtime event that reaches only unfiltered
     streams. There is no polling.
 
+- **Frequency evidence** (task 106,
+  [ADR 0066](docs/adr/0066-a-per-target-call-limit-is-one-named-check-over-a-bounded-list.md)).
+  A repeated comparison now says how often, not only whether.
+  - Per behavior and per target, it reports calls per run (total, min, max and
+    the mean in thousandths) and, per target, an integer permille call ratio
+    against the reference.
+  - A behavior in every reference run and missing from a candidate run is
+    marked `lost`.
+  - Three optional, named gate limits are added: `min_candidate_frequency`,
+    `max_lost_behaviors` and `max_calls_per_run`. They are accepted under a
+    scenario's `gate:` and on `compare-repeated`. Omitted, they change nothing.
+    A configured limit whose evidence is absent is reported `deferred` and
+    fails the verdict.
+  - A fixed rule table adds up to 64 named `suggestions`: added in every run,
+    a target at twice the load returning 429s, and lost in half the runs.
+    Suggestions change no verdict.
+  - Every addition is additive. `classification` and the six checks are
+    unchanged, so the 079 renderer reads the documents as before.
 - **Performance and cost evidence** (task 087). A comparison now says what
   happened to latency, errors and tokens, per run and per target, and — with an
   operator-supplied pricing table — what it cost.

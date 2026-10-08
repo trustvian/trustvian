@@ -1,10 +1,10 @@
 # 106 — Frequency Evidence
 
-Status: Specified; not implemented
+Status: Implemented — see [What shipped](#what-shipped)
 Milestone: [`v0.12.0`](../../ROADMAP.md#v0120--change-impact)
 Depends on: [078](../v1.0/078-behavioral-scenario-suites.md) (implemented),
 [087](087-performance-and-cost-evidence.md) for the 429 rule,
-[081](081-persisted-behavior-fidelity.md) for `max_llm_calls_per_run`
+[081](081-persisted-behavior-fidelity.md) now owns `max_llm_calls_per_run` (D3)
 Decision records: [ADR 0029](../../adr/0029-hard-gates-use-explicit-integer-evidence.md),
 [ADR 0053](../../adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md),
 [ADR 0064](../../adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md)
@@ -38,6 +38,26 @@ stopped finishing its task.
 | Layer (model / tool / …) per behavior | **Not persisted, by ADR 0047 § 2** | carried on the envelope and realtime only |
 | HTTP status / 429 | **Absent** until 087 | — |
 | Scenario gate keys | five | `ScenarioGate` (`config/scenario.go:94-99`) |
+
+**Re-verified against `946a4fc` before implementation.** Rows that no longer
+held as written:
+
+- **Moved line references.** 087 moved several cited lines:
+  - classification: `platform/repeated.go:236-245` → `:247-256`;
+  - `CompareRepeatedEvaluations`: `:395` → `:411`;
+  - `BehaviorEntry`: `platform/behavior.go:90-101` → `:90-107`, gaining 087's
+    `Operational`;
+  - `BehaviorDelta`: `:407-419` → `:435-447`;
+  - the delta DTO: `httpapi/dto.go:378-384` → `:389-395`.
+- **"HTTP status / 429: Absent until 087"** no longer holds. 087 persists
+  per-behavior HTTP status classes and `http_429`.
+- **"Calls per run, per-target ratio: Absent"** still holds for calls. A
+  per-target aggregation now exists: 087's `GET /v1/evaluations/operational`
+  sums operational summaries per target.
+
+The rest held. `observation.go:74`, `scenario_execution.go:121-126`,
+`httpapi/repeated.go:63-69` and `ScenarioGate` at `config/scenario.go:94-99`
+were unchanged.
 
 ## Scope
 
@@ -87,7 +107,7 @@ means evaluated. Zero is a strict value, not "unset".
 | `min_candidate_frequency` | the minimum `candidate.runs_present` over behaviors with `reference.runs_present == N` | value ≥ limit | presence (always available) |
 | `max_lost_behaviors` | the count of behaviors classified `lost` | value ≤ limit | presence |
 | `max_calls_per_run` | per named target: max over candidate runs of that target's calls in one run | value ≤ the target's limit, for every named target | presence + per-run observations |
-| `max_llm_calls_per_run` | max over candidate runs of model-layer calls in one run | value ≤ limit | **layer per behavior, persisted** — only after 081 persists it |
+| ~~`max_llm_calls_per_run`~~ | **Moved to [081](081-persisted-behavior-fidelity.md#max_llm_calls_per_run-moved-here-from-106-maintainer-decision-d3)** (maintainer decision D3). It needs layer evidence only 081 persists, and shipping it first would make every scenario that configures it fail as deferred. The scenario parser keeps refusing it as unknown until 081 | | |
 
 `_per_run` takes the **maximum across repetitions**, never a sum or a mean,
 for the reason 078 gave for `max_block_decisions_per_run`: a sum would make a
@@ -168,13 +188,14 @@ ADR 0029 § 5 rejects `map[string]threshold` and gates over fields whose
 semantics have not been approved. A per-target limit is keyed by a string, and
 the targets are producer-supplied.
 
-Proposed resolution: the semantics are fixed and approved here ("calls to this
+**Decided (D2), recorded in [ADR 0066](../../adr/0066-a-per-target-call-limit-is-one-named-check-over-a-bounded-list.md):**
+the semantics are fixed and approved here ("calls to this
 target in one run"), and only the *key* is configurable. The list is bounded
 (16) and validated (unique, non-empty, at most 255 bytes). It produces **one
 named check** (`max_calls_per_run`), whose evidence lists each target's actual
 value, limit and outcome in configuration order. The check fails if any target
-fails. This is the closest shape to ADR 0029 that the request allows. A human
-decides whether that is enough, or whether a per-target limit should wait.
+fails. This is the closest shape to ADR 0029 that the request allows, and the maintainer
+accepted it.
 
 ### Conflict: deferred and fail-closed
 
@@ -182,7 +203,7 @@ ADR 0029 § 2 fails closed on missing evidence. The brief asks for limits to be
 "deferred rather than approximated". Those agree on *not approximating*. They
 can disagree on the verdict.
 
-**Proposed: a `deferred` check fails the verdict.** A developer who configured
+**Decided (D1): a `deferred` check fails the verdict.** A developer who configured
 `max_llm_calls_per_run` and ran with a producer that emits no layer evidence
 asked a question that could not be answered. Reporting PASS would answer it
 anyway. The output names the missing evidence, and the developer can remove the
@@ -261,3 +282,82 @@ This specification is the "own review" that ADR 0029 § 7 asks for.
   to the mean is the honest minimum. No rule fires on calls per run alone.
 - **Per-target limits invite a long configuration.** That is why the list is
   bounded at 16.
+
+## What shipped
+
+All four layers as scoped, with D1–D3 applied. No schema step: everything is
+read from what 078 and 087 already persist. The differences below are each a
+decision taken while building.
+
+| Specified | Shipped | Why |
+|---|---|---|
+| `lost` as a new value of `classification` | A boolean `lost` beside `classification` on every behavior. A behavior can be both `removed` and lost | `classification` is a closed vocabulary. The 079 renderer refuses any value outside `added`/`removed`/`neither`, so every released renderer would have shown *no verdict* for any document containing `lost`. The compatibility contract requires existing clients to keep accepting the documents |
+| The new checks among the gate's checks | `gate.frequency_checks`: always three entries in fixed order, each with `state` `not_evaluated`, `evaluated` or `deferred` | `gate.checks` is "exactly six in a stable order" (`docs/compatibility.md`), and the renderer refuses a seventh. The verdict accounts for both arrays |
+| "max and min over the N runs" | Over the side's **completed** repetitions. With none completed, `runs` is `"0"` and the per-run figures are absent | A run that did not complete is not evidence, and 078's completion checks already fail it. Reporting it as zero calls would be a measurement nobody made |
+| `min_candidate_frequency` over behaviors with `reference.runs_present == N` | The same, and `deferred` when no behavior was in every reference run | A minimum over nothing is not a figure. Under D1 it fails rather than passing vacuously |
+| `max_calls_per_run[target]` | Keyed by target **name**, summed across target categories | A scenario author knows a host, not the category a convention filed it under |
+| A typo'd target "reported `not_observed`" | `not_observed` also **fails** the check | Otherwise the typo still passes the verdict, and only a careful reader would notice (ADR 0066 § 4) |
+| The limits echoed in `gate_limits` | Echoed only when supplied (`omitempty`) | With the limits omitted the echo is byte-identical to before 106 |
+| `{ratio}` rendered from permille | One decimal, truncated: 2400 → "2.4×", 2999 → "2.9×" | Computed from the integer, so every renderer gets the same text |
+| Rule 2 "never fires without status evidence" | Fires only when `call_ratio_permille ≥ 2000` **and** the candidate's summed `http_429 > 0` | Without status codes `http_429` is 0, so no separate availability check is needed (tested) |
+| Suggestions | `suggestions[]` and `suggestions_truncated` on compare-repeated, at most 64 | Rules 1 and 3 fire per behavior, so 512 behaviors could produce over 1,000 sentences without a bound |
+
+### Measured with a real model
+
+`trustvian eval run` at `runs: 5` ran the demo agent
+(`trustvian-python-agent-demo`, `harness/run_agent.py`, 3 tickets) against
+itself:
+
+- the same configuration on both sides, under `trustvian dev` built from this
+  branch;
+- Ollama `gemma3:4b` at the agent's default temperature;
+- `opentelemetry-instrument` with requests instrumentation;
+- all three frequency limits configured.
+
+Every figure below is read from the `compare-repeated` response in the result
+document of execution
+`scn-frequency-106-measurement-20261007T203736-0eb5d3c5`.
+
+| Behavior | Present (ref / cand) | Calls per run, both sides (min / max / mean‰) |
+|---|---|---|
+| `http/POST → ollama.localhost` (the model) | 5/5 / 5/5 | 20 / 20 / 20000 |
+| `tool/send_email`, `http/POST → mail.localhost` | 5/5 / 5/5 | 6 / 6 / 6000 |
+| `tool/crm_lookup`, `tool/knowledge_search`, `http/GET → crm.localhost`, `→ knowledge.localhost` | 5/5 / 5/5 | 4 / 4 / 4000 |
+| six others, once per run | 5/5 / 5/5 | 1 / 1 / 1000 |
+
+- **Per target:** every `call_ratio_permille` was **1000**. The model received
+  100 calls a side, and the unnamed target 85.
+- **Checks:**
+  - `min_candidate_frequency` evaluated, actual 5 ≥ 1;
+  - `max_lost_behaviors` evaluated, actual 0 ≤ 0;
+  - `max_calls_per_run` passed, at `crm.localhost` 4 ≤ 50 and `ollama.localhost`
+    20 ≤ 50.
+- **Verdict:** PASS, with no suggestions and `lost_transitions: "not_recorded"`.
+
+What this does and does not show:
+
+- **The pipeline:** the figures arrive from real telemetry, through the gate,
+  as specified.
+- **No variance:** this agent at its default temperature made exactly the same
+  calls in all ten runs. Every minimum equals its maximum, so the run exercises
+  none of the min/max spread, `lost`, or any rule. Measuring those against a
+  real model needs a nonzero temperature (the demo's `make stability` setting
+  is 0.7) and is left to Phase 4's measurement.
+- **Tool spans carry no target.** The convention table names tools by tool name
+  only, so every tool behavior shares the unnamed target, here 85 calls a
+  side. `max_calls_per_run` therefore limits hosts, not tools. A per-tool limit
+  would be a different check.
+
+Proven by test:
+
+- the N = 1 response is byte-identical to `main`'s at `946a4fc` once the added
+  members are removed;
+- every new counter is invariant under all 36 orderings of three runs a side;
+- SQLite and PostgreSQL agree on a golden;
+- overflow is an error;
+- each check is tested in each state, and each rule firing, not firing and
+  without evidence;
+- removing the rule table changes nothing else;
+- the 079 renderer renders a document carrying every new field byte for byte;
+- `StableFeatures` and the baseline key keep exactly their fields.
+

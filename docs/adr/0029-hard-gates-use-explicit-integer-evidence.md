@@ -99,6 +99,10 @@ before task 057, and — most importantly — permit gates over fields whose
 semantics have not been approved. The five checks are known and named; a
 struct says so and a DSL does not.
 
+*Narrowly amended by [ADR 0066](0066-a-per-target-call-limit-is-one-named-check-over-a-bounded-list.md)
+for one gate, `max_calls_per_run`: approved semantics, a configurable key, a
+bounded list, one named check. Nothing else here changes.*
+
 ### 6. Gates keep factual names
 
 `AddedBehaviors`, `BlockDecisions`, `CriticalRiskObservations`.

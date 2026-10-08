@@ -995,6 +995,67 @@ func TestRenderAcceptsTask087Sections(t *testing.T) {
 	}
 }
 
+// TestRenderAcceptsTask106Fields: the 079 renderer keeps rendering a result
+// document carrying task 106's frequency evidence — per-behavior frequency and
+// lost, per-target frequency, the frequency checks, the extra gate limits and
+// the comparison suggestions — byte for byte as it rendered it without them.
+// None changes the six checks, the classification vocabulary or the verdict.
+func TestRenderAcceptsTask106Fields(t *testing.T) {
+	frequency := map[string]any{"runs": "3", "calls_total": "9", "calls_per_run_min": "3",
+		"calls_per_run_max": "3", "calls_per_run_mean_milli": "3000"}
+	for _, tt := range []struct {
+		name string
+		code int
+	}{{"fail", 1}, {"pass", 0}, {"suite", 1}} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := artifact(t, tt.name)
+			plant := func(c map[string]any) {
+				limits := obj(c, "gate_limits")
+				limits["min_candidate_frequency"] = "1"
+				limits["max_lost_behaviors"] = "0"
+				limits["max_calls_per_run"] = []any{map[string]any{"target": "crm.internal", "max": "6"}}
+				for i := range c["behaviors"].([]any) {
+					b := obj(c, "behaviors", i)
+					b["reference_frequency"], b["candidate_frequency"], b["lost"] = frequency, frequency, false
+				}
+				c["targets"] = []any{map[string]any{"target_name": "crm.internal", "target_category": "internal",
+					"reference_frequency": frequency, "candidate_frequency": frequency,
+					"call_ratio_available": true, "call_ratio_permille": "1000"}}
+				c["lost_transitions"] = "not_recorded"
+				obj(c, "gate")["frequency_checks"] = []any{
+					map[string]any{"name": "min_candidate_frequency", "state": "evaluated", "rule": "at_least",
+						"actual": "3", "bound": "1", "passed": true},
+					map[string]any{"name": "max_lost_behaviors", "state": "not_evaluated"},
+					map[string]any{"name": "max_calls_per_run", "state": "deferred",
+						"missing_evidence": "no completed candidate repetition"},
+				}
+				c["suggestions"] = []any{map[string]any{"rule": "compare.lost_in_half", "rule_version": 1,
+					"evidence": []any{map[string]any{"name": "runs", "value": "3"}}, "text": "SUGGESTION-CANARY"}}
+				c["suggestions_truncated"] = false
+			}
+			mutateResult(t, dir, func(d map[string]any) {
+				if members, ok := d["members"].([]any); ok {
+					for i := range members {
+						plant(obj(d, "members", i, "result", "comparison"))
+					}
+					return
+				}
+				plant(obj(d, "comparison"))
+			})
+			out := render(dir, expected(tt.code), defaultLimits)
+			if out.state == stateNoVerdict {
+				t.Fatalf("a document with task 106's fields was refused: %s", out.reason)
+			}
+			if strings.Contains(out.markdown, "SUGGESTION-CANARY") {
+				t.Error("a suggestion was rendered; the renderer renders none")
+			}
+			if out.markdown != render(filepath.Join("testdata", "artifacts", tt.name), expected(tt.code), defaultLimits).markdown {
+				t.Error("task 106's fields changed the rendering")
+			}
+		})
+	}
+}
+
 // The renderer transcribes; it never decides. A document whose stored
 // classification, check outcome, verdict and suite summary contradict its own
 // counts is rendered exactly as stored — the control plane owns all of them.

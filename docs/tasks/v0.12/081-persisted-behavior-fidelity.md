@@ -8,7 +8,7 @@ Decision records: [ADR 0045](../../adr/0045-conventions-are-read-frameworks-are-
 (consequences), [ADR 0047](../../adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md)
 § 2, which this task proposes to amend (see
 [§ Layer is persisted too](#layer-is-persisted-too-amends-adr-0047--2))
-Blocks: 106's `max_llm_calls_per_run`; 107's fidelity column
+Blocks: `max_llm_calls_per_run` (specified here since D3); 107's fidelity column
 Planned in: [ROADMAP § Milestone sequence](../../ROADMAP.md#milestone-sequence),
 *"081 is a deferral, not a discovery"*
 
@@ -113,6 +113,40 @@ no `model` category) are unchanged.
 If a human prefers to keep ADR 0047 § 2 as written, the layer columns are
 dropped from this task, and `max_llm_calls_per_run` stays `deferred`
 indefinitely (106 § 2).
+
+## `max_llm_calls_per_run` moved here from 106 (maintainer decision D3)
+
+The limit needs persisted layer evidence, and this task persists it. Shipped
+with 106, it would have made every scenario that configured it fail as
+`deferred` until this task landed. So it is specified here, and the scenario
+parser rejects the field as unknown until then. 106's file records the move.
+
+| Limit | Check value | Passes when | Evidence it needs |
+|---|---|---|---|
+| `max_llm_calls_per_run` | max over candidate runs of model-layer calls in one run | value ≤ limit | the per-behavior `layer_model` counts this task persists |
+
+It follows 106's other optional limits exactly:
+
+- **Optional.** Omitted means `not_evaluated`, and the verdict is unchanged.
+- **Integer.** It reads the per-run maximum, never a sum or a mean.
+- **One more `gate.frequency_checks` entry**, after 106's three.
+- **Deferred when evidence is absent.** A run whose layer counts are all
+  `layer_unrecorded` or `layer_unclassified` leaves the check `deferred`, which
+  fails the verdict and names the missing evidence (D1). It is never computed
+  from a substitute such as category `external`.
+
+Tests (moved from 106):
+
+- omitted → `not_evaluated`, satisfied, violated, and layer evidence absent →
+  `deferred` → FAIL;
+- a run migrated from before this schema step reads `deferred`, never `0`;
+- the scenario parser accepts `gate.max_llm_calls_per_run` with 106's
+  parse-time validation, and refuses it as unknown before this task.
+
+Acceptance (moved from 106 criteria 3 and 4): `max_llm_calls_per_run` is
+optional, named and integer, is reported as evaluated, not evaluated or
+deferred, and is accepted by the scenario file with the existing parse-time
+validation.
 
 ## Scope
 

@@ -10,7 +10,7 @@ Their specifications live here because this is the milestone that builds them.
 |---|---|
 | [105 — Pipeline status surface](105-pipeline-status-surface.md) | Implemented |
 | [087 — Performance and cost evidence](087-performance-and-cost-evidence.md) | Implemented |
-| [106 — Frequency evidence](106-frequency-evidence.md) | Specified |
+| [106 — Frequency evidence](106-frequency-evidence.md) | Implemented |
 | [086 — Scenario and input versioning](086-scenario-and-input-versioning.md) | Specified |
 | [081 — Persisted per-behavior fidelity](081-persisted-behavior-fidelity.md) | Specified |
 | [107 — Change Impact view and Model Change Report](107-change-impact-view-and-report.md) | Specified |
@@ -21,7 +21,8 @@ under `v1.0/`.
 
 **Proposed build order: 105, then 087 → 106, then 086, then 081 alone, then
 107.** 105 depends on none of the others. 106's 429 rule reads 087's status
-classes, and its `max_llm_calls_per_run` reads the layer counts 081 persists.
+classes; `max_llm_calls_per_run` moved to 081, which persists the layer counts
+it reads (decision D3).
 107 renders all of them and computes nothing.
 
 **Schema steps.** 087, 086, 081 and 107 (the gate-result snapshot on an

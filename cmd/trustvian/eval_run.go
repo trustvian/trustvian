@@ -447,6 +447,9 @@ func (r scenarioRunner) execute(ctx context.Context, s streams, client *platform
 			MaxRepeatedAddedBehaviors:         u64Text(*gate.MaxRepeatedAddedBehaviors),
 			MaxBlockDecisionsPerRun:           u64Text(*gate.MaxBlockDecisionsPerRun),
 			MaxCriticalRiskObservationsPerRun: u64Text(*gate.MaxCriticalRiskObservationsPerRun),
+			MinCandidateFrequency:             optionalLimitBody(gate.MinCandidateFrequency),
+			MaxLostBehaviors:                  optionalLimitBody(gate.MaxLostBehaviors),
+			MaxCallsPerRun:                    targetLimitBodies(gate.MaxCallsPerRun),
 		},
 	}, "scenario-executions", executionID, "complete")
 	if err != nil {
@@ -692,6 +695,36 @@ type repeatedLimitsBody struct {
 	MaxRepeatedAddedBehaviors         string `json:"max_repeated_added_behaviors"`
 	MaxBlockDecisionsPerRun           string `json:"max_block_decisions_per_run"`
 	MaxCriticalRiskObservationsPerRun string `json:"max_critical_risk_observations_per_run"`
+
+	// Task 106's optional limits, sent only when the scenario sets them.
+	MinCandidateFrequency *string           `json:"min_candidate_frequency,omitempty"`
+	MaxLostBehaviors      *string           `json:"max_lost_behaviors,omitempty"`
+	MaxCallsPerRun        []targetLimitBody `json:"max_calls_per_run,omitempty"`
+}
+
+type targetLimitBody struct {
+	Target string `json:"target"`
+	Max    string `json:"max"`
+}
+
+// optionalLimitBody renders a scenario's optional limit, or nothing.
+func optionalLimitBody(v *uint64) *string {
+	if v == nil {
+		return nil
+	}
+	text := u64Text(*v)
+	return &text
+}
+
+func targetLimitBodies(limits []config.ScenarioTargetLimit) []targetLimitBody {
+	if limits == nil {
+		return nil
+	}
+	out := make([]targetLimitBody, 0, len(limits))
+	for _, l := range limits {
+		out = append(out, targetLimitBody{Target: l.Target, Max: u64Text(*l.Max)})
+	}
+	return out
 }
 
 // Reference modes on the begin request.
@@ -760,6 +793,22 @@ type repeatedDTO struct {
 			Advisory string `json:"advisory"`
 		} `json:"checks"`
 		Verdict string `json:"verdict"`
+		// Task 106's optional checks; absent from an older control plane.
+		FrequencyChecks []struct {
+			Name            string `json:"name"`
+			State           string `json:"state"`
+			Rule            string `json:"rule"`
+			Actual          string `json:"actual"`
+			Bound           string `json:"bound"`
+			Passed          bool   `json:"passed"`
+			MissingEvidence string `json:"missing_evidence"`
+			Targets         []struct {
+				Target  string `json:"target"`
+				Actual  string `json:"actual"`
+				Max     string `json:"max"`
+				Outcome string `json:"outcome"`
+			} `json:"targets"`
+		} `json:"frequency_checks"`
 	} `json:"gate"`
 	Producer struct {
 		ServerVersion string `json:"control_plane_version"`
@@ -836,6 +885,29 @@ func renderScenarioResult(w io.Writer, name, executionID string,
 		}
 		fmt.Fprintf(w, "  %s %s: %s (%s %s)%s\n", checkMark(check.Passed),
 			strings.ReplaceAll(check.Name, "_", " "), check.Actual, rule, check.Bound, advisory)
+	}
+	// Task 106's checks, only those the scenario configured: a FAIL caused by
+	// one must show which. Transcribed, never evaluated here.
+	for _, check := range c.Gate.FrequencyChecks {
+		name := strings.ReplaceAll(check.Name, "_", " ")
+		switch check.State {
+		case "evaluated":
+			if check.Targets != nil {
+				fmt.Fprintf(w, "  %s %s\n", checkMark(check.Passed), name)
+				for _, t := range check.Targets {
+					fmt.Fprintf(w, "      %s: %s (<= %s)   %s\n", t.Target, t.Actual, t.Max,
+						strings.ReplaceAll(t.Outcome, "_", " "))
+				}
+				continue
+			}
+			rule := "<="
+			if check.Rule == "at_least" {
+				rule = ">="
+			}
+			fmt.Fprintf(w, "  %s %s: %s (%s %s)\n", checkMark(check.Passed), name, check.Actual, rule, check.Bound)
+		case "deferred":
+			fmt.Fprintf(w, "  %s %s: deferred — %s\n", checkMark(false), name, check.MissingEvidence)
+		}
 	}
 	fmt.Fprintf(w, "\nGate: %s\n", verdictLabel(c.Gate.Verdict))
 	return nil

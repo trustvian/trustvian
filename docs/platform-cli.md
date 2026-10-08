@@ -676,6 +676,23 @@ trustvian eval run --scenario scenarios/support-login.yaml --json > result.json
   a value past 64 bits are refused rather than converted. This includes values
   that arrive through a `<<` merge or an alias.
 - Any of these is exit `2` before a repetition starts.
+- Three **optional** frequency limits go under `gate:` too (task 106). Each is
+  omitted by default, and omitted means it is not evaluated — never defaulted:
+
+  ```yaml
+    min_candidate_frequency: 4        # every behavior in all N reference runs is in >= 4 candidate runs
+    max_lost_behaviors: 0             # behaviors in every reference run and missing from a candidate run
+    max_calls_per_run:                # per target name, the most calls any one candidate run makes
+      - {target: crm.internal, max: 6}
+  ```
+
+  `min_candidate_frequency` is at most `runs`. `max_calls_per_run` lists 1 to 16
+  unique targets of at most 255 bytes. A target neither side ever called is
+  reported `not_observed` and fails the check, so a typo cannot pass. A
+  configured limit whose evidence is absent is `deferred` and fails the
+  verdict, naming what was missing. `max_llm_calls_per_run` is not accepted yet:
+  it waits for task 081. Exit codes are unchanged, and a FAIL from one of these
+  is a gate FAIL, exit `1`.
 - `k = 1, j = 0` is the documented guidance for a workload whose variance you
   have not measured. It is set semantics — "in at least one candidate run and no
   reference run" — at every N. It is guidance, not a default, and the
@@ -718,6 +735,16 @@ counts nothing.
   repetition was empty, repeatedly added behaviors against
   `max_repeated_added_behaviors`, and the worst candidate repetition's block
   decisions and critical-risk observations against the two `_per_run` limits.
+  Any of the three frequency limits the scenario sets is evaluated too, and
+  printed under the six.
+- It also reports how often (task 106), all as integers:
+  - per behavior and side: `calls_total`, `calls_per_run_min`/`max` and
+    `calls_per_run_mean_milli` (thousandths), and whether the behavior was
+    `lost`;
+  - per target: the same, plus `call_ratio_permille`, which is absent when the
+    reference never called the target;
+  - up to 64 named `suggestions` from a fixed rule table, which change no check
+    and no verdict.
 
 ```text
 support-login   runs 5

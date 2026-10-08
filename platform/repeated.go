@@ -92,6 +92,18 @@ type RepeatedEvaluationGateLimits struct {
 	// candidate repetition, never a sum or a mean.
 	MaxBlockDecisionsPerRun           uint64
 	MaxCriticalRiskObservationsPerRun uint64
+
+	// Task 106's optional limits. Unlike the five above they may be omitted,
+	// and omitted means the check is not evaluated (issue 131's precedent):
+	//
+	//	MinCandidateFrequency  every behavior in all N reference runs is in at
+	//	                       least this many candidate runs (0..N)
+	//	MaxLostBehaviors       at most this many behaviors are lost
+	//	MaxCallsPerRun         per named target, at most this many calls in any
+	//	                       one candidate run; nil is omitted (ADR 0066)
+	MinCandidateFrequency OptionalGateLimit
+	MaxLostBehaviors      OptionalGateLimit
+	MaxCallsPerRun        []TargetCallLimit
 }
 
 // RepeatedEvaluationRequest names the 2N repetitions and the limits.
@@ -141,7 +153,7 @@ func (r RepeatedEvaluationRequest) Validate() error {
 			"below k (%d), or a behavior equally present on both sides would be added",
 			ErrInvalidRepeatedRequest, j, k)
 	}
-	return nil
+	return validateFrequencyLimits(r.Limits, n)
 }
 
 // RepetitionEvidence is one repetition as the control plane found it.
@@ -172,6 +184,18 @@ type RepeatedBehaviorPresence struct {
 	ReferenceRunsPresent uint64
 	CandidateRunsPresent uint64
 	Classification       RepeatedClassification
+
+	// Task 106: how often, per side, over that side's completed repetitions.
+	Reference, Candidate FrequencyStats
+
+	// Lost is task 106's classification: present in all N reference
+	// repetitions and missing from at least one candidate repetition.
+	//
+	// A field beside Classification rather than a fourth value of it. 078's
+	// classification is a closed vocabulary that published consumers — the 079
+	// renderer among them — refuse to extend, and a document they cannot read
+	// would render no verdict at all. A behavior can be both removed and lost.
+	Lost bool
 }
 
 // RepeatedCheckName is one of the six checks, spelled as the wire spells it.
@@ -215,6 +239,19 @@ type RepeatedEvaluationGateResult struct {
 	bound   bool
 	checks  [6]RepeatedGateCheck
 	verdict GateVerdict
+
+	// frequency is task 106's three optional checks, always all three, in
+	// their stable order — not_evaluated when the limit was omitted.
+	frequency [3]FrequencyGateCheck
+}
+
+// FrequencyChecks returns task 106's three checks in their stable order.
+func (r RepeatedEvaluationGateResult) FrequencyChecks() []FrequencyGateCheck {
+	out := slices.Clone(r.frequency[:])
+	for i := range out {
+		out[i].Targets = slices.Clone(out[i].Targets)
+	}
+	return out
 }
 
 // Checks returns all six checks in their stable order.
@@ -222,7 +259,8 @@ func (r RepeatedEvaluationGateResult) Checks() []RepeatedGateCheck {
 	return slices.Clone(r.checks[:])
 }
 
-// Verdict is GateVerdictPass only when all six checks passed.
+// Verdict is GateVerdictPass only when all six checks passed and no frequency
+// check failed or was deferred.
 func (r RepeatedEvaluationGateResult) Verdict() GateVerdict { return r.verdict }
 
 // RepeatedEvaluationComparison is the authoritative repeated result.
@@ -241,6 +279,19 @@ type RepeatedEvaluationComparison struct {
 	// Cost is task 087's cost section over the completed repetitions, nil
 	// when no pricing is configured.
 	Cost *CostComparison
+
+	// Targets is task 106's per-target frequency, ordered by target category
+	// then name. Bounded by the execution-wide behavior bound.
+	Targets []RepeatedTargetFrequency
+
+	// LostTransitions is always LostTransitionsNotRecorded: nothing records
+	// transitions per execution (task 106 § Lost transitions).
+	LostTransitions string
+
+	// Suggestions are the comparison rule table's outputs (ADR 0064), beside
+	// the gate and read by nothing: no check, no verdict, no stored record.
+	Suggestions          []Suggestion
+	SuggestionsTruncated bool
 }
 
 // classifyPresence applies task 078's rule. j < k is validated before this.
@@ -287,6 +338,9 @@ func reduceRepeated(
 	operational := map[ComparisonSide]*operationalSide{
 		SideReference: {}, SideCandidate: {},
 	}
+	frequency := map[ComparisonSide]*frequencySide{
+		SideReference: newFrequencySide(), SideCandidate: newFrequencySide(),
+	}
 	for _, in := range inputs {
 		repetitions = append(repetitions, in.evidence)
 		if !in.evidence.Completed() {
@@ -294,6 +348,9 @@ func reduceRepeated(
 		}
 		completed[in.evidence.Side]++
 		if err := operational[in.evidence.Side].addRun(in.entries); err != nil {
+			return RepeatedEvaluationComparison{}, err
+		}
+		if err := frequency[in.evidence.Side].addRun(in.entries); err != nil {
 			return RepeatedEvaluationComparison{}, err
 		}
 		if in.evidence.RecordCount == 0 {
@@ -348,11 +405,25 @@ func reduceRepeated(
 		if class == RepeatedAdded {
 			added++
 		}
+		ref, err := frequency[SideReference].behaviorStats(fp)
+		if err != nil {
+			return RepeatedEvaluationComparison{}, err
+		}
+		cand, err := frequency[SideCandidate].behaviorStats(fp)
+		if err != nil {
+			return RepeatedEvaluationComparison{}, err
+		}
 		behaviors = append(behaviors, RepeatedBehaviorPresence{
 			FingerprintID: fp, Behavior: t.behavior,
 			ReferenceRunsPresent: t.reference, CandidateRunsPresent: t.candidate,
 			Classification: class,
+			Reference:      ref, Candidate: cand,
+			Lost: isLost(t.reference, t.candidate, uint64(runs)),
 		})
+	}
+	targets, err := targetFrequencies(frequency[SideReference], frequency[SideCandidate])
+	if err != nil {
+		return RepeatedEvaluationComparison{}, err
 	}
 	slices.SortFunc(behaviors, func(a, b RepeatedBehaviorPresence) int {
 		switch {
@@ -377,17 +448,35 @@ func reduceRepeated(
 		atMostCheck(CheckWorstCandidateBlockDecisions, worstBlock, limits.MaxBlockDecisionsPerRun, advisory),
 		atMostCheck(CheckWorstCandidateCriticalRiskCount, worstCR, limits.MaxCriticalRiskObservationsPerRun, advisory),
 	}
+	frequencyChecks := evaluateFrequencyGates(limits, frequencyGateInputs{
+		runs: n, referenceRuns: completed[SideReference], candidateRuns: completed[SideCandidate],
+		behaviors:       behaviors,
+		referenceByName: frequency[SideReference].byName, candidByName: frequency[SideCandidate].byName,
+	})
 	verdict := GateVerdictPass
 	for _, c := range checks {
 		if !c.Passed {
 			verdict = GateVerdictFail
 		}
 	}
-	return RepeatedEvaluationComparison{
+	for _, c := range frequencyChecks {
+		if c.failsVerdict() {
+			verdict = GateVerdictFail
+		}
+	}
+	limits.MaxCallsPerRun = cloneTargetLimits(limits.MaxCallsPerRun)
+	comparison := RepeatedEvaluationComparison{
 		Runs: runs, Limits: limits, Repetitions: repetitions, Behaviors: behaviors,
-		Gate:        RepeatedEvaluationGateResult{bound: true, checks: checks, verdict: verdict},
-		Operational: compareOperational(*operational[SideReference], *operational[SideCandidate]),
-	}, nil
+		Gate: RepeatedEvaluationGateResult{bound: true, checks: checks, verdict: verdict,
+			frequency: frequencyChecks},
+		Operational:     compareOperational(*operational[SideReference], *operational[SideCandidate]),
+		Targets:         targets,
+		LostTransitions: LostTransitionsNotRecorded,
+	}
+	// Last, over the finished comparison: the rules read evidence and the
+	// gate never reads them.
+	comparison.Suggestions, comparison.SuggestionsTruncated = evaluateComparisonRules(comparison)
+	return comparison, nil
 }
 
 func equalsCheck(name RepeatedCheckName, actual, bound uint64) RepeatedGateCheck {

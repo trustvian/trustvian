@@ -516,8 +516,8 @@ per observation (076). Each is stated on screen where it applies.
 ## v0.12.0 — Change Impact
 
 **PLANNED.** Tasks 081, 086, 087 and 105–107 are specified in
-[`tasks/v0.12/`](tasks/v0.12/README.md). 105 and 087 are implemented; the rest
-are not. The engine is
+[`tasks/v0.12/`](tasks/v0.12/README.md). 105, 087 and 106 are implemented; the
+rest are not. The engine is
 unchanged. The platform gains:
 
 - one ephemeral status surface (105);
@@ -571,7 +571,7 @@ post the same report on the pull request, byte for byte
 |---|---|---|
 | 105 | **Implemented** | [Pipeline status surface](tasks/v0.12/105-pipeline-status-surface.md): `GET /v1/status`, `trustvian status`, `trustvian dev --check`, a Status view that is the landing view when nothing is active, and a tested suggestion table |
 | 087 | **Implemented** | [Performance and cost evidence](tasks/v0.12/087-performance-and-cost-evidence.md): per-behavior duration buckets, status classes and 429s, token counts from `gen_ai.usage.*` / `llm.token_count.*`, and an optional versioned pricing table with provenance on every cost figure. No cost gate. Schema 11 |
-| 106 | Specified | [Frequency evidence](tasks/v0.12/106-frequency-evidence.md): calls per run, per-target call ratio in integer permille, a `lost` classification, four optional named gate limits, and a comparison rule table |
+| 106 | **Implemented** | [Frequency evidence](tasks/v0.12/106-frequency-evidence.md): calls per run, per-target call ratio in integer permille, a `lost` classification, three optional named gate limits ([ADR 0066](adr/0066-a-per-target-call-limit-is-one-named-check-over-a-bounded-list.md); `max_llm_calls_per_run` moved to 081), and a comparison rule table. No schema step |
 | 086 | Specified | [Scenario and input versioning](tasks/v0.12/086-scenario-and-input-versioning.md): scenario and input digests on each execution, `prompt_ref` beside `Model`, and sameness on the comparison with a warning outside the gate |
 | 081 | Specified | [Persisted per-behavior fidelity](tasks/v0.12/081-persisted-behavior-fidelity.md): fidelity (and, proposed, layer) counts per behavior on both backends, reported as the lowest level seen; `TestFidelityIsNotPersistedYet` inverted |
 | 107 | Specified | [Change Impact view and Model Change Report](tasks/v0.12/107-change-impact-view-and-report.md): Compare becomes Change Impact, the result document goes to version 2, `trustvian eval report`, one shared renderer for the CLI and the PR comment, and an Overview panel |
@@ -1304,7 +1304,7 @@ The **Gate** column says which rows the release actually depends on.
 | 095 | Saved investigations — a bounded durable metadata and reference surface holding investigation context that references authoritative evidence rather than copying it. Depends on 085 only | Not specified | none |
 | 096 | [Record-first admin console](tasks/v1.0/096-record-first-admin-console.md) — the browser surface reorganized around tables of records and clickable identifiers, so no journey through it requires typing one. Presentation and information architecture only; no route, capability or bound changes | Specified | none |
 | 105 | [Pipeline status surface](tasks/v0.12/105-pipeline-status-surface.md) — `GET /v1/status`, `trustvian status`, `dev --check`, a Status view that is the landing view when nothing is active, and a suggestion rule table ([ADR 0064](adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md), [ADR 0065](adr/0065-collectors-report-pipeline-status-the-control-plane-holds-it-in-memory.md)) | **Implemented** (`v0.12.0`); engine statistics reported as unavailable | none |
-| 106 | [Frequency evidence](tasks/v0.12/106-frequency-evidence.md) — calls per run, per-target permille ratio, `lost` behaviors, and four optional named integer gate limits over them | Specified (`v0.12.0`) | none |
+| 106 | [Frequency evidence](tasks/v0.12/106-frequency-evidence.md) — calls per run, per-target permille ratio, `lost` behaviors, and three optional named integer gate limits over them | **Implemented** (`v0.12.0`) | none |
 | 107 | [Change Impact view and Model Change Report](tasks/v0.12/107-change-impact-view-and-report.md) — 081/086/087/106 evidence in one table, the result document version 2, and one renderer for the CLI and the PR comment | Specified (`v0.12.0`) | none |
 | 108 | [Legacy HTTP semantic conventions](tasks/v0.13/108-legacy-http-semantic-conventions.md) — read `http.method`/`http.url` and the other pre-stable HTTP keys, which changes `OperationCategory` and `TargetName`, so every affected fingerprint and baseline; a staged rollout | Proposed (`v0.13.0`) | none |
 
