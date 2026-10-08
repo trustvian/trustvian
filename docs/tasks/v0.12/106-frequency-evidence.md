@@ -361,3 +361,8 @@ Proven by test:
 - the 079 renderer renders a document carrying every new field byte for byte;
 - `StableFeatures` and the baseline key keep exactly their fields.
 
+## Future work
+
+- `max_calls_per_run` limits hosts, not tools: tool spans carry no target, so
+  every tool behavior shares the unnamed target. A per-tool limit would be a
+  separate named check.
