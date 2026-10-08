@@ -292,6 +292,12 @@ type RepeatedEvaluationComparison struct {
 	// the gate and read by nothing: no check, no verdict, no stored record.
 	Suggestions          []Suggestion
 	SuggestionsTruncated bool
+	// Sameness is task 086's: whether both sides ran the same scenario,
+	// inputs, model and prompt, as their executions recorded. Warnings state
+	// each difference. Both sit beside the gate, read by nothing: no check, no
+	// verdict, no refusal.
+	Sameness ComparisonSameness
+	Warnings []ComparisonWarning
 }
 
 // classifyPresence applies task 078's rule. j < k is validated before this.
@@ -498,6 +504,22 @@ func atMostCheck(name RepeatedCheckName, actual, bound uint64, advisory string) 
 // that is merely not completed is not refused: it fails check 1 or 2, so the
 // result still shows everything that was measured.
 func (c *ControlPlane) CompareRepeatedEvaluations(
+	ctx context.Context, request RepeatedEvaluationRequest,
+) (RepeatedEvaluationComparison, error) {
+	result, err := c.compareRepeated(ctx, request)
+	if err != nil {
+		return RepeatedEvaluationComparison{}, err
+	}
+	result.Sameness, result.Warnings, err = c.samenessOfRuns(ctx, request)
+	if err != nil {
+		return RepeatedEvaluationComparison{}, err
+	}
+	return result, nil
+}
+
+// compareRepeated is the comparison without its sameness, which depends on
+// who is asking: the runs' recorded executions, or the execution completing.
+func (c *ControlPlane) compareRepeated(
 	ctx context.Context, request RepeatedEvaluationRequest,
 ) (RepeatedEvaluationComparison, error) {
 	if err := request.Validate(); err != nil {

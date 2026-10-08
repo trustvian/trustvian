@@ -3802,6 +3802,23 @@ func (s *SQLiteStore) FailScenarioExecution(
 
 // LatestCompletedScenarioExecution returns what `last` names in this scope,
 // choosing and loading it from one snapshot.
+// RunProvenance reads what the executions that ran these runs recorded,
+// from one snapshot.
+func (s *SQLiteStore) RunProvenance(
+	ctx context.Context, runIDs []EvaluationRunID,
+) (map[EvaluationRunID][]SideProvenance, bool, error) {
+	var (
+		out      map[EvaluationRunID][]SideProvenance
+		complete bool
+	)
+	err := s.readScenarioExecutions(ctx, func(q sqlQuerier) error {
+		var err error
+		out, complete, err = loadRunProvenance(ctx, q, runIDs)
+		return err
+	})
+	return out, complete, err
+}
+
 func (s *SQLiteStore) LatestCompletedScenarioExecution(
 	ctx context.Context, scenarioName string, scope ScenarioScope,
 ) (ScenarioExecution, error) {

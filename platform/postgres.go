@@ -1345,6 +1345,23 @@ func (s *PostgresStore) FailScenarioExecution(
 	return out, err
 }
 
+// RunProvenance reads what the executions that ran these runs recorded,
+// from one snapshot.
+func (s *PostgresStore) RunProvenance(
+	ctx context.Context, runIDs []EvaluationRunID,
+) (map[EvaluationRunID][]SideProvenance, bool, error) {
+	var (
+		out      map[EvaluationRunID][]SideProvenance
+		complete bool
+	)
+	err := s.withReadSnapshot(ctx, func(tx pgx.Tx) error {
+		var err error
+		out, complete, err = loadRunProvenance(ctx, pgxQuerier{q: tx}, runIDs)
+		return err
+	})
+	return out, complete, err
+}
+
 // LatestCompletedScenarioExecution returns what `last` names in this scope,
 // choosing and loading it from one snapshot.
 func (s *PostgresStore) LatestCompletedScenarioExecution(

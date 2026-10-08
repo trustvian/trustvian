@@ -121,6 +121,20 @@ func conformScenarioProvenance(t *testing.T, open func(testing.TB) Store) {
 					got.Provenance(SideReference), got.Provenance(SideCandidate), tt.reference, tt.candidate)
 			}
 		}
+		// Each run reads back as its own side's provenance; an unrecorded
+		// run is absent.
+		recorded, complete, err := store.(RunProvenanceStore).RunProvenance(ctx, []EvaluationRunID{
+			EvaluationRunID(tt.id + "-reference-1"), EvaluationRunID(tt.id + "-candidate-1"), "unrecorded"})
+		if err != nil || !complete {
+			t.Fatalf("RunProvenance(%s) = %v, complete %v", tt.id, err, complete)
+		}
+		if len(recorded) != 2 ||
+			len(recorded[EvaluationRunID(tt.id+"-reference-1")]) != 1 ||
+			recorded[EvaluationRunID(tt.id+"-reference-1")][0] != tt.reference ||
+			len(recorded[EvaluationRunID(tt.id+"-candidate-1")]) != 1 ||
+			recorded[EvaluationRunID(tt.id+"-candidate-1")][0] != tt.candidate {
+			t.Fatalf("RunProvenance(%s) = %+v", tt.id, recorded)
+		}
 	}
 }
 

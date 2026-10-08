@@ -5,6 +5,8 @@ package platform_test
 
 import (
 	"errors"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -136,5 +138,78 @@ func TestProvenanceIsRefusedBeforeAnythingIsStored(t *testing.T) {
 				t.Fatalf("a refused execution was stored: %v", err)
 			}
 		})
+	}
+}
+
+// TestSamenessIsNotRecordedForExecutionsBeforeProvenance: an execution with
+// nothing recorded — begun by a client that predates task 086, or migrated
+// from schema 11 — answers not_recorded to everything, never false, and
+// produces no warning, even against one that recorded everything.
+func TestSamenessIsNotRecordedForExecutionsBeforeProvenance(t *testing.T) {
+	f := newFixture(t)
+	f.runExecution(t, "e1", platform.ScenarioReference{}, platform.ExecutionProvenance{},
+		reps(1, "read"), reps(1, "read"))
+	full := provenance(digestOf("a"), digestOf("b"), "", "gemma3:4b")
+	full.Candidate.PromptRef = platform.PromptRef{Name: "sys@v14", Digest: digestOf("c")}
+	_, cmp := f.runExecution(t, "e2", platform.ScenarioReference{ExecutionID: "e1"}, full, nil, reps(1, "read"))
+	s := cmp.Sameness
+	for name, state := range map[string]platform.SamenessState{
+		"scenario": s.SameScenario, "inputs": s.SameInputs, "model": s.SameModel, "prompt_ref": s.SamePromptRef,
+	} {
+		if state != platform.SameNotRecorded {
+			t.Errorf("same_%s = %s, want not_recorded", name, state)
+		}
+	}
+	if len(cmp.Warnings) != 0 || s.Reference != (platform.SideProvenance{}) || s.Candidate.Model != "gemma3:4b" {
+		t.Errorf("warnings %+v, sameness %+v", cmp.Warnings, s)
+	}
+}
+
+// TestSamenessChangesNoGateResult: the same evidence compared under the same
+// model and under a different one has the same checks, frequency checks and
+// verdict — only sameness and warnings differ.
+func TestSamenessChangesNoGateResult(t *testing.T) {
+	f := newFixture(t)
+	f.runExecution(t, "e1", platform.ScenarioReference{},
+		provenance(digestOf("a"), "", "llama3.2", "llama3.2"), reps(2, "read"), reps(2, "read", "export"))
+	_, same := f.runExecution(t, "e2", platform.ScenarioReference{ExecutionID: "e1"},
+		provenance(digestOf("a"), "", "", "llama3.2"), nil, reps(2, "read", "export"))
+	_, changed := f.runExecution(t, "e3", platform.ScenarioReference{ExecutionID: "e1"},
+		provenance(digestOf("d"), digestOf("e"), "", "gemma3:4b"), nil, reps(2, "read", "export"))
+	if len(same.Warnings) != 0 || len(changed.Warnings) != 3 {
+		t.Fatalf("warnings: same %+v, changed %+v", same.Warnings, changed.Warnings)
+	}
+	if !reflect.DeepEqual(same.Gate, changed.Gate) || !reflect.DeepEqual(same.Behaviors, changed.Behaviors) ||
+		!reflect.DeepEqual(same.Suggestions, changed.Suggestions) {
+		t.Fatalf("sameness changed the gate:\nsame    %+v\nchanged %+v", same.Gate, changed.Gate)
+	}
+	codes := []string{changed.Warnings[0].Code, changed.Warnings[1].Code, changed.Warnings[2].Code}
+	if want := []string{platform.WarningScenarioDiffers, platform.WarningInputsDiffer,
+		platform.WarningModelDiffers}; !slices.Equal(codes, want) {
+		t.Fatalf("warning codes %v, want %v", codes, want)
+	}
+}
+
+// TestProvenanceIsNotBehavioralIdentity: the same workload under a different
+// scenario, inputs, model and prompt reference produces the same fingerprints
+// and behaviors. Provenance is recorded on the execution and read by
+// sameness; it never reaches a record, StableFeatures, a fingerprint or a
+// learning scope (identity_fields_test.go pins the types themselves).
+func TestProvenanceIsNotBehavioralIdentity(t *testing.T) {
+	f := newFixture(t)
+	plain, plainCmp := f.runExecution(t, "e1", platform.ScenarioReference{}, platform.ExecutionProvenance{},
+		reps(2, "read", "export"), reps(2, "read", "send"))
+	full := provenance(digestOf("a"), digestOf("b"), "llama3.2", "gemma3:4b")
+	full.Candidate.PromptRef = platform.PromptRef{Name: "sys@v14", Digest: digestOf("c")}
+	declared, declaredCmp := f.runExecution(t, "e2", platform.ScenarioReference{}, full,
+		reps(2, "read", "export"), reps(2, "read", "send"))
+	if !reflect.DeepEqual(plainCmp.Behaviors, declaredCmp.Behaviors) || len(plainCmp.Behaviors) != 3 {
+		t.Fatalf("behaviors differ under different provenance:\n%+v\n%+v", plainCmp.Behaviors, declaredCmp.Behaviors)
+	}
+	for i, r := range declared.Repetitions() {
+		if strings.Contains(string(r.BehavioralProfile), "llama") || strings.Contains(string(r.BehavioralProfile), "sha256") ||
+			strings.TrimPrefix(string(r.BehavioralProfile), "e2") != strings.TrimPrefix(string(plain.Repetitions()[i].BehavioralProfile), "e1") {
+			t.Fatalf("learning scope %s depends on provenance", r.BehavioralProfile)
+		}
 	}
 }

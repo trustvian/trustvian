@@ -269,7 +269,8 @@ func (c *ControlPlane) requireRunInScope(
 
 // CompleteScenarioExecution evaluates an execution and records it completed.
 //
-// The verdict is CompareRepeatedEvaluations', called once and unchanged: every
+// The verdict is CompareRepeatedEvaluations' comparison, called once and
+// unchanged; only its sameness is this execution's own record. Every
 // rule that holds for a self-contained comparison — isolation across all 2N
 // profiles, one environment, one-to-one identity, complete evidence, the six
 // checks — holds for one that reuses a recorded reference, because it is the
@@ -353,7 +354,7 @@ func (c *ControlPlane) CompleteScenarioExecution(
 		}
 	}
 
-	comparison, err := c.CompareRepeatedEvaluations(ctx, RepeatedEvaluationRequest{
+	comparison, err := c.compareRepeated(ctx, RepeatedEvaluationRequest{
 		ReferenceRunIDs: referenceIDs,
 		CandidateRunIDs: request.CandidateRunIDs,
 		Limits:          request.Limits,
@@ -361,6 +362,11 @@ func (c *ControlPlane) CompleteScenarioExecution(
 	if err != nil {
 		return none(err)
 	}
+	// This execution's own record, not a lookup by run: its candidate runs
+	// are associated only once it completes, and its reference side carries
+	// whichever execution ran those runs.
+	comparison.Sameness, comparison.Warnings = newComparisonSameness(
+		execution.Provenance(SideReference), execution.Provenance(SideCandidate))
 
 	repetitions := make([]ScenarioRepetition, 0, len(comparison.Repetitions))
 	for _, r := range comparison.Repetitions {
