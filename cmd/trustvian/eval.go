@@ -53,6 +53,17 @@ const evalUsage = `usage:
                               --max-critical-risk-observations <n>
                               [--max-added-behavior-changes <n>]
                               [--api-url <url>] [--json]
+  trustvian eval compare-repeated
+                              --reference-run <id> [--reference-run <id> ...]
+                              --candidate-run <id> [--candidate-run <id> ...]
+                              --added-candidate-presence-minimum <k>
+                              --added-reference-presence-maximum <j>
+                              --max-repeated-added-behaviors <n>
+                              --max-block-decisions-per-run <n>
+                              --max-critical-risk-observations-per-run <n>
+                              [--min-candidate-frequency <n>] [--max-lost-behaviors <n>]
+                              [--max-calls-per-run <target>=<max> ...]
+                              [--api-url <url>] [--json]
   trustvian eval run          --scenario <file> [--collector-bin <path>]
                               [--api-url <url>] [--json]
   trustvian eval operational  --reference-run <id> --candidate-run <id>
@@ -85,6 +96,8 @@ func runEval(s streams, args []string, timeout time.Duration) int {
 		return runEvalRun(s, args[1:], timeout)
 	case "operational":
 		return runEvalOperational(s, args[1:], timeout)
+	case "compare-repeated":
+		return runEvalCompareRepeated(s, args[1:], timeout)
 	default:
 		return usageFailure(s, evalUsage, fmt.Errorf("unknown eval command %q", args[0]))
 	}

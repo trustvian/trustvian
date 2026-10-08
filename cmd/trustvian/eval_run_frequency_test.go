@@ -60,7 +60,7 @@ func TestEvalRunRendersTheConfiguredFrequencyChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	if err := renderScenarioResult(&out, "support", "scn-test", nil, c); err != nil {
+	if err := renderScenarioResult(&out, "support", "scn-test", nil, nil, c); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{

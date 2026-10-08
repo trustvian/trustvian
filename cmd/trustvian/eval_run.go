@@ -161,6 +161,9 @@ const scenarioCleanupTimeout = 10 * time.Second
 type scenarioJob struct {
 	scenario config.ScenarioConfig
 	scope    executionScope
+	// provenance is what the execution records about the scenario (task
+	// 086), computed with the scope, before anything runs.
+	provenance *executionProvenanceBody
 }
 
 // scenarioOutcome is how one scenario ended.
@@ -245,8 +248,13 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 		return emitError(s, *common.json, err)
 	}
 
-	outcome := r.execute(context.Background(), s, client, scenarioJob{scenario: scenario, scope: scope},
-		reference, *collectorBin)
+	provenance, err := scenarioProvenance(scenario, *scenarioPath, *collectorBin, reference != nil)
+	if err != nil {
+		return usageFailure(s, evalRunUsage, err)
+	}
+
+	outcome := r.execute(context.Background(), s, client,
+		scenarioJob{scenario: scenario, scope: scope, provenance: provenance}, reference, *collectorBin)
 	if outcome.err != nil {
 		return emitError(s, *common.json, outcome.err)
 	}
@@ -329,7 +337,7 @@ func (r scenarioRunner) execute(ctx context.Context, s streams, client *platform
 	begun, err := r.begin(ctx, client, beginExecutionBody{
 		ID: executionID, ScenarioName: scenario.Name, Runs: runs,
 		ProjectID: scope.project, AgentID: scope.agent, Environment: scope.environment,
-		Reference: reference,
+		Reference: reference, Provenance: job.provenance,
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -349,6 +357,10 @@ func (r scenarioRunner) execute(ctx context.Context, s streams, client *platform
 		out := stopped(err)
 		out.executionID = executionID
 		return out
+	}
+	if job.provenance != nil {
+		fmt.Fprintf(s.err, "trustvian eval run: recorded scenario_digest %s, %s\n",
+			job.provenance.ScenarioDigest, inputsLine(job.provenance))
 	}
 	if reference != nil {
 		if begun.ReferenceExecution == nil {
@@ -523,6 +535,9 @@ func (r scenarioRunner) execute(ctx context.Context, s streams, client *platform
 			CLIVersion:    r.cliVersion(),
 			ServerVersion: comparison.Producer.ServerVersion,
 		},
+		// What the control plane recorded for this execution, as it said
+		// so when the execution began.
+		Provenance: begun.Execution.Provenance,
 		// The server's comparison, unchanged in content: nothing it said is
 		// renamed, dropped or recomputed on the way through. (Embedding it
 		// compacts its whitespace; that is the only difference.)
@@ -536,7 +551,8 @@ func (r scenarioRunner) execute(ctx context.Context, s streams, client *platform
 	return scenarioOutcome{
 		exit: exit, document: document, executionID: executionID,
 		render: func(w io.Writer) error {
-			return renderScenarioResult(w, scenario.Name, executionID, provenance, comparison)
+			return renderScenarioResult(w, scenario.Name, executionID, provenance, begun.Execution.Provenance,
+				comparison)
 		},
 	}
 }
@@ -746,11 +762,17 @@ type beginExecutionBody struct {
 	AgentID      string                 `json:"agent_id"`
 	Environment  string                 `json:"environment"`
 	Reference    *scenarioReferenceBody `json:"reference,omitempty"`
+
+	// Provenance is task 086's: the scenario and input digests and each
+	// side's declared model and prompt reference.
+	Provenance *executionProvenanceBody `json:"provenance,omitempty"`
 }
 
 // executionSummary decodes only what the runner reports about an execution.
 type executionSummary struct {
 	ID string `json:"id"`
+	// Provenance is kept raw: the result document carries it unchanged.
+	Provenance json.RawMessage `json:"provenance"`
 }
 
 type beginExecutionResponse struct {
@@ -810,6 +832,9 @@ type repeatedDTO struct {
 			} `json:"targets"`
 		} `json:"frequency_checks"`
 	} `json:"gate"`
+	// Task 086's sameness and warnings; absent from an older control plane.
+	Sameness *samenessDTO `json:"sameness"`
+	Warnings []warningDTO `json:"warnings"`
 	Producer struct {
 		ServerVersion string `json:"control_plane_version"`
 	} `json:"producer"`
@@ -825,9 +850,12 @@ type scenarioResultDocument struct {
 	// Reference is present only when the reference side was reused: the
 	// mode asked for and the execution it resolved to. execution_id stays
 	// this invocation's own.
-	Reference  *referenceProvenance `json:"reference,omitempty"`
-	Producers  producers            `json:"producers"`
-	Comparison json.RawMessage      `json:"comparison"`
+	Reference *referenceProvenance `json:"reference,omitempty"`
+	Producers producers            `json:"producers"`
+	// Provenance is what the control plane recorded for this execution
+	// (task 086), verbatim; absent from a control plane that predates it.
+	Provenance json.RawMessage `json:"provenance,omitempty"`
+	Comparison json.RawMessage `json:"comparison"`
 }
 
 type referenceProvenance struct {
@@ -848,11 +876,14 @@ type producers struct {
 // renderScenarioResult prints the server's result. Every number is a field of
 // the response; this computes none of them.
 func renderScenarioResult(w io.Writer, name, executionID string,
-	reference *referenceProvenance, c repeatedDTO) error {
+	reference *referenceProvenance, recorded json.RawMessage, c repeatedDTO) error {
 	fmt.Fprintf(w, "%s   runs %d   (execution %s)\n", name, c.Runs, executionID)
 	if reference != nil {
 		fmt.Fprintf(w, "Reference side reused from execution %s (%s)\n", reference.ExecutionID,
 			reference.Mode)
+	}
+	if err := renderRecordedProvenance(w, recorded); err != nil {
+		return err
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "Behavior                                  reference   candidate\n")
@@ -909,6 +940,7 @@ func renderScenarioResult(w io.Writer, name, executionID string,
 			fmt.Fprintf(w, "  %s %s: deferred — %s\n", checkMark(false), name, check.MissingEvidence)
 		}
 	}
+	renderSameness(w, c.Sameness, c.Warnings)
 	fmt.Fprintf(w, "\nGate: %s\n", verdictLabel(c.Gate.Verdict))
 	return nil
 }

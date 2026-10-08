@@ -1057,8 +1057,9 @@ func TestRenderAcceptsTask106Fields(t *testing.T) {
 }
 
 // TestRenderAcceptsTask086Fields: the 079 renderer keeps rendering a result
-// document carrying task 086's sameness block and warnings — a difference in
-// every answer included — byte for byte as it rendered it without them.
+// document carrying task 086's recorded provenance, sameness block and
+// warnings — a difference in every answer included — byte for byte as it
+// rendered it without them.
 // Neither is a check, so neither reaches the verdict.
 func TestRenderAcceptsTask086Fields(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
@@ -1084,13 +1085,20 @@ func TestRenderAcceptsTask086Fields(t *testing.T) {
 					map[string]any{"code": "model_differs", "text": "WARNING-CANARY"},
 				}
 			}
+			// eval run's result document carries what the execution recorded.
+			recorded := map[string]any{
+				"reference": map[string]any{"scenario_digest": digest, "inputs": "not_declared", "model": "llama3.2"},
+				"candidate": map[string]any{"scenario_digest": other, "inputs": "not_recorded"},
+			}
 			mutateResult(t, dir, func(d map[string]any) {
 				if members, ok := d["members"].([]any); ok {
 					for i := range members {
+						obj(d, "members", i, "result")["provenance"] = recorded
 						plant(obj(d, "members", i, "result", "comparison"))
 					}
 					return
 				}
+				d["provenance"] = recorded
 				plant(obj(d, "comparison"))
 			})
 			out := render(dir, expected(tt.code), defaultLimits)
