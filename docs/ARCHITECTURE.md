@@ -754,6 +754,16 @@ summaries in Go, per run, per target and over N runs, and price them on read
 when `trustvian-local --pricing` supplied a table. Nothing per target or per
 cost is stored.
 
+Schema 12 ([task 086](tasks/v0.12/086-scenario-and-input-versioning.md),
+[ADR 0067](adr/0067-scenario-provenance-is-recorded-per-execution-side.md))
+adds ten nullable columns to `platform_scenario_executions`. They hold, per
+side, the scenario and input digests the CLI computed and the model and prompt
+reference the side declared. NULL is "not recorded", so the migration
+backfills nothing. A reused reference side copies the referenced execution's
+values. Both backends implement `RunProvenanceStore`, one bounded query from
+runs to the provenance their executions recorded, which compare-repeated reads
+for its `sameness` block. No check reads that block.
+
 Whether that execution is a usable reference, and the verdict itself, stay in
 `ControlPlane`, which reuses `CompareRepeatedEvaluations` unchanged
 ([ADR 0054](adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)).

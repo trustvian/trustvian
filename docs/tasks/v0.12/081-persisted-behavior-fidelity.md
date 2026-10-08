@@ -216,9 +216,9 @@ Under the proposed phase order, 087 (per-behavior operational columns) and 086
 A human decides. The specification does not depend on the number.
 
 **Landed (maintainer decision D4):** task 087 took **v11**, the next free
-version, with its per-behavior `operational_counts` column. 081 takes the next
-free version when it lands, which is v12 if 086 has not landed first, and v13
-if it has.
+version, with its per-behavior `operational_counts` column. Task 086 then took
+**v12**, ten nullable provenance columns on `platform_scenario_executions`. 081
+takes the next free version when it lands: **v13**.
 
 ## Risks
 

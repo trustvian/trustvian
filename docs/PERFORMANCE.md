@@ -1292,6 +1292,23 @@ from 45,056 to 77,824 bytes. That fixture's counters are small; the encoded
 column is at most 31 counters of 20 digits plus separators, 650 bytes, so a
 512-behavior run's operational evidence is at most about 325 KB.
 
+### v0.12 task 086 (Scenario and Input Versioning)
+
+Task 086 adds no work to ingest, to the Collector or to the engine. The one
+new read is on `POST /v1/evaluations/compare-repeated`: a single bounded query
+that finds what the executions recording the compared runs said about them.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `RunProvenance`, 128 runs (64 a side, the bound), one execution | 742,928–753,465 | ~132,600 | 2,254 |
+
+Three runs, darwin/arm64, Apple M3 Pro, Go 1.27, file-backed SQLite. This is
+once per comparison, not per record, and is bounded by `MaxRepetitions`. A
+completing execution does not pay it, because it compares its own record.
+Storage grows by ten nullable TEXT columns per execution. Per side that is at
+most three 71-byte digests (scenario, inputs, prompt) and a model and a prompt
+name of at most 128 bytes each: 469 bytes a side, 938 an execution.
+
 ## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —
