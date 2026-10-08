@@ -1258,10 +1258,13 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 	//
 	// v10 too: task 101 adds two columns and three indexes.
 	//
-	// v11 too: task 087 adds thirty-one columns to the behavior entry table.
+	// v11 too: task 087 adds one column, of thirty-one counters, to the behavior
+	// entry table.
+	//
+	// v12 too: task 086 adds ten columns to the scenario execution table.
 	indexOnly := map[int]bool{
 		schemaVersionV5: true, schemaVersionV6: true, schemaVersionV8: true,
-		schemaVersionV10: true, schemaVersionV11: true,
+		schemaVersionV10: true, schemaVersionV11: true, schemaVersionV12: true,
 	}
 	for version := schemaVersionV1 + 1; version <= SchemaVersion; version++ {
 		previous := schemaTablesByVersion[version-1]
@@ -1290,6 +1293,8 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 
 // schemaVersionV10 is declared in recency.go now that v11 exists.
 
-// schemaVersionV11 is task 087's per-behavior operational columns, named for
-// the same guards.
-const schemaVersionV11 = 11
+// schemaVersionV11 is declared in scenario_provenance.go now that v12 exists.
+
+// schemaVersionV12 is task 086's scenario provenance columns, named for the
+// same guards.
+const schemaVersionV12 = 12

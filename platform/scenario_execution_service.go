@@ -42,6 +42,11 @@ type BeginScenarioExecutionRequest struct {
 	Scope        ScenarioScope
 	Reference    ScenarioReference
 	At           time.Time
+
+	// Provenance is what the client recorded about the scenario it runs
+	// (task 086). The zero value records nothing, which is what a client
+	// predating it sends.
+	Provenance ExecutionProvenance
 }
 
 // CompleteScenarioExecutionRequest finishes one execution.
@@ -99,6 +104,15 @@ func (c *ControlPlane) BeginScenarioExecution(
 		request.Runs, request.Reference.ExecutionID, request.At); err != nil {
 		return ScenarioExecution{}, ScenarioExecution{}, err
 	}
+	if err := request.Provenance.validate(); err != nil {
+		return ScenarioExecution{}, ScenarioExecution{}, err
+	}
+	if request.Reference.Recorded() && request.Provenance.Reference != (SideDeclaration{}) {
+		return ScenarioExecution{}, ScenarioExecution{}, fmt.Errorf(
+			"%w: a reused reference side ran under the referenced execution, whose model and prompt "+
+				"reference are already recorded; this execution declares only its candidate side",
+			ErrInvalidRepeatedRequest)
+	}
 
 	var reference ScenarioExecution
 	if request.Reference.Recorded() {
@@ -117,6 +131,17 @@ func (c *ControlPlane) BeginScenarioExecution(
 
 	execution, err := NewScenarioExecution(request.ID, request.ScenarioName, request.Scope,
 		request.Runs, reference.ID(), request.At)
+	if err != nil {
+		return ScenarioExecution{}, ScenarioExecution{}, err
+	}
+	// The reference side's provenance is whoever ran its runs: this
+	// execution, or — reused — the referenced execution's reference side,
+	// copied, so a chain of reuse keeps naming the execution that ran them.
+	referenceSide := request.Provenance.side(request.Provenance.Reference)
+	if request.Reference.Recorded() {
+		referenceSide = reference.Provenance(SideReference)
+	}
+	execution, err = execution.withProvenance(referenceSide, request.Provenance.side(request.Provenance.Candidate))
 	if err != nil {
 		return ScenarioExecution{}, ScenarioExecution{}, err
 	}

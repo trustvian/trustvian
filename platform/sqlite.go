@@ -35,7 +35,7 @@ import (
 // schema version. They change for different reasons, and coupling them would
 // force a migration on an unrelated release or hide a real one behind an
 // unchanged number.
-const SchemaVersion = 11
+const SchemaVersion = 12
 
 // Table names. Compile-time constants: these are the only identifiers that
 // ever appear in assembled SQL. Every caller-supplied value is a bound
@@ -123,7 +123,7 @@ const (
 // schemaTables is every table this schema owns, and the allowlist a test
 // asserts against so an event, scorecard, or gate-result table cannot appear
 // without something failing.
-var schemaTables = schemaTablesV11
+var schemaTables = schemaTablesV12
 
 // SQLiteStore is the local persistence adapter.
 //
@@ -261,13 +261,21 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 	case SchemaVersion:
 		return s.requireTables(ctx, SchemaVersion, schemaTables)
 
+	case schemaVersionV11:
+		// Task 087's schema, before task 086's scenario provenance columns.
+		// v12 adds columns only, so the table set is the current one.
+		if err := s.requireTables(ctx, schemaVersionV11, schemaTablesV11); err != nil {
+			return err
+		}
+		return s.migrateV11ToV12(ctx)
+
 	case schemaVersionV10:
 		// Task 101's schema, before task 087's per-behavior operational
 		// columns. v11 adds columns only, so the table set is the current one.
 		if err := s.requireTables(ctx, schemaVersionV10, schemaTablesV10); err != nil {
 			return err
 		}
-		return s.migrateV10ToV11(ctx)
+		return s.migrateV10ToCurrent(ctx)
 
 	case schemaVersionV9:
 		// Task 078's schema, before task 101's recency keys. v10 adds
@@ -278,7 +286,7 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 		if err := s.migrateV9ToV10(ctx); err != nil {
 			return err
 		}
-		return s.migrateV10ToV11(ctx)
+		return s.migrateV10ToCurrent(ctx)
 
 	case schemaVersionV8:
 		// Issue 131's schema, before task 078's scenario executions: the
@@ -835,7 +843,15 @@ func (s *SQLiteStore) migrateV8ToCurrent(ctx context.Context) error {
 	if err := s.migrateV9ToV10(ctx); err != nil {
 		return err
 	}
-	return s.migrateV10ToV11(ctx)
+	return s.migrateV10ToCurrent(ctx)
+}
+
+// migrateV10ToCurrent is every step from v10 forward.
+func (s *SQLiteStore) migrateV10ToCurrent(ctx context.Context) error {
+	if err := s.migrateV10ToV11(ctx); err != nil {
+		return err
+	}
+	return s.migrateV11ToV12(ctx)
 }
 
 func (s *SQLiteStore) migrateV8ToV9(ctx context.Context) error {
@@ -922,7 +938,7 @@ func (s *SQLiteStore) migrateV9ToV10Once(ctx context.Context) error {
 // did not exist when it was observed, so zero would be a claim nobody measured.
 func (s *SQLiteStore) migrateV10ToV11(ctx context.Context) error {
 	if err := s.migrateV10ToV11Once(ctx); err != nil {
-		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+		if s.migrationRaceRecovered(ctx, schemaVersionV11) {
 			return nil
 		}
 		return err
@@ -945,13 +961,51 @@ func (s *SQLiteStore) migrateV10ToV11Once(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, behaviorOperationalBackfillStatement()); err != nil {
 		return fmt.Errorf("platform: migrate schema v10 to v11: %w", err)
 	}
+	// Literal schemaVersionV11: v12's provenance columns follow in their own
+	// step.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
-		SchemaVersion); err != nil {
+		schemaVersionV11); err != nil {
 		return fmt.Errorf("platform: migrate schema v10 to v11: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("platform: migrate schema v10 to v11: %w", err)
+	}
+	return nil
+}
+
+// migrateV11ToV12 adds task 086's scenario provenance columns. No backfill:
+// NULL is "not recorded", which is exactly what is known about an execution
+// begun before them — never an empty digest.
+func (s *SQLiteStore) migrateV11ToV12(ctx context.Context) error {
+	if err := s.migrateV11ToV12Once(ctx); err != nil {
+		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateV11ToV12Once(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: migrate schema v11 to v12: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, statement := range scenarioProvenanceSchemaStatements() {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("platform: migrate schema v11 to v12: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
+		SchemaVersion); err != nil {
+		return fmt.Errorf("platform: migrate schema v11 to v12: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: migrate schema v11 to v12: %w", err)
 	}
 	return nil
 }
@@ -1189,6 +1243,10 @@ var schemaTablesV10 = schemaTablesV9
 // v11 added columns to the behavior entry table only (task 087).
 var schemaTablesV11 = schemaTablesV10
 
+// schemaTablesV12 is what a complete v12 database holds: v11's tables, because
+// v12 added columns to the scenario execution table only (task 086).
+var schemaTablesV12 = schemaTablesV11
+
 // schemaTablesByVersion maps every schema version this binary can recognize to
 // the tables a complete database at that version holds.
 //
@@ -1215,6 +1273,7 @@ var schemaTablesByVersion = map[int][]string{
 	schemaVersionV8:  schemaTablesV8,
 	schemaVersionV9:  schemaTablesV9,
 	schemaVersionV10: schemaTablesV10,
+	schemaVersionV11: schemaTablesV11,
 	SchemaVersion:    schemaTables,
 }
 
@@ -1441,7 +1500,9 @@ func schemaStatements() []string {
 				append(recencySchemaStatements("TEXT"),
 					// v11: task 087's per-behavior operational columns,
 					// the statements the v10 -> v11 migration applies.
-					behaviorOperationalSchemaStatements("TEXT")...)...)...)...)...)
+					append(behaviorOperationalSchemaStatements("TEXT"),
+						// v12: task 086's scenario provenance columns.
+						scenarioProvenanceSchemaStatements()...)...)...)...)...)...)
 }
 
 // observationSchemaStatements is schema v7's whole addition, written once so

@@ -148,13 +148,15 @@ func insertScenarioExecution(ctx context.Context, w scenarioExecutionWriter, e S
 	if err != nil {
 		return err
 	}
+	args := []any{string(e.id), e.scenarioName, string(e.scope.ProjectID), string(e.scope.AgentID),
+		string(e.scope.Environment), int64(e.runs), reference, string(e.status), timeText(e.startedAt), key}
+	args = append(args, provenanceColumnValues(e.provenance[0])...)
+	args = append(args, provenanceColumnValues(e.provenance[1])...)
 	_, err = w.exec(ctx, w.rebind(
 		`INSERT INTO `+tableScenarioExecutions+` (
 		   id, scenario_name, project_id, agent_id, environment, runs,
-		   reference_execution_id, status, started_at, started_order
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		string(e.id), e.scenarioName, string(e.scope.ProjectID), string(e.scope.AgentID),
-		string(e.scope.Environment), int64(e.runs), reference, string(e.status), timeText(e.startedAt), key)
+		   reference_execution_id, status, started_at, started_order, `+scenarioProvenanceColumnList+`
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), args...)
 	if err != nil {
 		return w.writeError("scenario execution", string(e.id), err)
 	}
@@ -262,14 +264,19 @@ func loadScenarioExecutionRow(
 		runs                                                 int64
 		reference, finishedAt, verdict                       sql.NullString
 		sequence                                             sql.NullInt64
+		provenance                                           [10]sql.NullString
 	)
+	targets := []any{&name, &project, &agent, &environment, &runs, &reference, &status,
+		&startedAt, &finishedAt, &sequence, &verdict}
+	for i := range provenance {
+		targets = append(targets, &provenance[i])
+	}
 	err := q.queryRow(ctx, q.rebind(
 		`SELECT scenario_name, project_id, agent_id, environment, runs,
 		        reference_execution_id, status, started_at, finished_at,
-		        completion_sequence, verdict
+		        completion_sequence, verdict, `+scenarioProvenanceColumnList+`
 		 FROM `+tableScenarioExecutions+` WHERE id = ?`), string(id)).
-		Scan(&name, &project, &agent, &environment, &runs, &reference, &status,
-			&startedAt, &finishedAt, &sequence, &verdict)
+		Scan(targets...)
 	switch {
 	case q.noRows(err):
 		return ScenarioExecution{}, fmt.Errorf("%w: scenario execution %s",
@@ -294,6 +301,14 @@ func loadScenarioExecutionRow(
 		return ScenarioExecution{}, fmt.Errorf("%w: scenario execution %s has runs %d",
 			ErrStoreCorrupt, preview(string(id)), runs)
 	}
+	// NULL is "not recorded"; an empty string is nothing any write produces,
+	// and reading it as either state would be inventing one.
+	for i, column := range provenance {
+		if column.Valid && column.String == "" {
+			return ScenarioExecution{}, fmt.Errorf("%w: scenario execution %s has an empty %s",
+				ErrStoreCorrupt, preview(string(id)), scenarioProvenanceColumns()[i])
+		}
+	}
 	return ScenarioExecution{
 		id: id, scenarioName: name,
 		scope: ScenarioScope{ProjectID: ProjectID(project), AgentID: AgentID(agent),
@@ -301,6 +316,9 @@ func loadScenarioExecutionRow(
 		runs: int(runs), reference: ScenarioExecutionID(reference.String),
 		status: ScenarioExecutionStatus(status), startedAt: started, finishedAt: finished,
 		completionSequence: uint64(sequence.Int64), verdict: GateVerdict(verdict.String),
+		provenance: [2]SideProvenance{
+			sideProvenanceFromColumns(provenance[0:5]), sideProvenanceFromColumns(provenance[5:10]),
+		},
 	}, nil
 }
 

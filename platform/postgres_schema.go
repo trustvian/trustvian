@@ -194,7 +194,9 @@ func postgresSchemaStatements() []string {
 				// v10: task 101's recency keys and indexes.
 				append(recencySchemaStatements(`TEXT COLLATE "C"`),
 					// v11: task 087's per-behavior operational columns.
-					behaviorOperationalSchemaStatements(`TEXT COLLATE "C"`)...)...)...)...)...)
+					append(behaviorOperationalSchemaStatements(`TEXT COLLATE "C"`),
+						// v12: task 086's scenario provenance columns.
+						scenarioProvenanceSchemaStatements()...)...)...)...)...)...)
 }
 
 // postgresPromotionsStatement is v4's only table, kept separate so the
@@ -415,10 +417,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			return verifyPostgresVersion(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTables()):
-			// The current table set, which v9 and v10 share: v10 added columns
-			// and indexes and v11 added columns only. A v9 or v10 stamp
-			// migrates forward; otherwise the stamp must be the current
-			// version, and anything else fails closed.
+			// The current table set, which v9 through v11 share: v10 added
+			// columns and indexes, v11 and v12 added columns only. A v9, v10
+			// or v11 stamp migrates forward; otherwise the stamp must be the
+			// current version, and anything else fails closed.
 			version, err := postgresStoredVersion(ctx, tx)
 			if err != nil {
 				return err
@@ -428,9 +430,11 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 				if err := migratePostgresV9ToV10(ctx, tx); err != nil {
 					return err
 				}
-				return migratePostgresV10ToV11(ctx, tx)
+				return migratePostgresV10ToCurrent(ctx, tx)
 			case schemaVersionV10:
-				return migratePostgresV10ToV11(ctx, tx)
+				return migratePostgresV10ToCurrent(ctx, tx)
+			case schemaVersionV11:
+				return migratePostgresV11ToV12(ctx, tx)
 			}
 			return verifyPostgresVersion(ctx, tx)
 
@@ -714,7 +718,15 @@ func migratePostgresV8ToCurrent(ctx context.Context, tx pgx.Tx) error {
 	if err := migratePostgresV9ToV10(ctx, tx); err != nil {
 		return err
 	}
-	return migratePostgresV10ToV11(ctx, tx)
+	return migratePostgresV10ToCurrent(ctx, tx)
+}
+
+// migratePostgresV10ToCurrent is every step from v10 forward.
+func migratePostgresV10ToCurrent(ctx context.Context, tx pgx.Tx) error {
+	if err := migratePostgresV10ToV11(ctx, tx); err != nil {
+		return err
+	}
+	return migratePostgresV11ToV12(ctx, tx)
 }
 
 // migratePostgresV9ToV10 mirrors SQLite's migrateV9ToV10 from the same
@@ -752,6 +764,24 @@ func migratePostgresV10ToV11(ctx context.Context, tx pgx.Tx) error {
 	}
 	if _, err := tx.Exec(ctx, behaviorOperationalBackfillStatement()); err != nil {
 		return mapPostgresError("schema migration", "", err)
+	}
+	// Literal schemaVersionV11: v12 is its own step.
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
+		schemaVersionV11); err != nil {
+		return mapPostgresError("schema version", "", err)
+	}
+	return nil
+}
+
+// migratePostgresV11ToV12 mirrors SQLite's migrateV11ToV12 from the same
+// definitions: ten nullable provenance columns on the scenario execution
+// table, and no backfill — NULL is "not recorded".
+func migratePostgresV11ToV12(ctx context.Context, tx pgx.Tx) error {
+	for _, stmt := range scenarioProvenanceSchemaStatements() {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return mapPostgresError("schema migration", "", err)
+		}
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
