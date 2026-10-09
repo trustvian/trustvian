@@ -433,3 +433,48 @@ func TestSideProvenanceDeclarationsAreValidated(t *testing.T) {
 		})
 	}
 }
+
+// TestAGateLimitAloneMovesOnlyTheScenarioDigest: the gate is part of what a
+// side ran, so a changed threshold changes scenario_digest — and nothing else
+// an execution records: the input digest and both sides' declarations stay.
+func TestAGateLimitAloneMovesOnlyTheScenarioDigest(t *testing.T) {
+	t.Setenv("TV_GATE_TEST_MODEL", "gemma3:4b")
+	_, scenarioPath := inputRepository(t)
+	doc := replaceLine(t, provenanceScenario, "inputs:", "inputs: [fixtures/a.json, fixtures/b.json]")
+	doc = replaceLine(t, doc, "model_env:", "model_env: TV_GATE_TEST_MODEL")
+	lookup := func(name string) (string, bool) { return os.LookupEnv(name) }
+	for _, tt := range []struct{ name, prefix, with string }{
+		{"a required limit", "max_block_decisions_per_run:", "max_block_decisions_per_run: 1"},
+		{"k", "added_candidate_presence_minimum:", "added_candidate_presence_minimum: 3"},
+		{"an optional limit", "min_candidate_frequency:", "min_candidate_frequency: 2"},
+		{"a per-target maximum", "- {target: crm.localhost, max: 9}", "- {target: crm.localhost, max: 10}"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			before := mustScenario(t, doc)
+			after := mustScenario(t, replaceLine(t, doc, tt.prefix, tt.with))
+			if before.Digest() == after.Digest() {
+				t.Fatal("a changed gate limit left scenario_digest unchanged")
+			}
+			if a, b := inputDigest(t, before, scenarioPath), inputDigest(t, after, scenarioPath); a != b {
+				t.Fatalf("input_digest moved: %s, %s", a, b)
+			}
+			for _, side := range []struct {
+				name          string
+				before, after ScenarioSide
+			}{{"reference", before.Reference, after.Reference}, {"candidate", before.Candidate, after.Candidate}} {
+				p, err := side.before.Provenance(side.name, lookup)
+				if err != nil {
+					t.Fatal(err)
+				}
+				q, err := side.after.Provenance(side.name, lookup)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if p.Model != q.Model || (p.PromptRef == nil) != (q.PromptRef == nil) ||
+					(p.PromptRef != nil && *p.PromptRef != *q.PromptRef) {
+					t.Fatalf("%s declarations moved: %+v, %+v", side.name, p, q)
+				}
+			}
+		})
+	}
+}

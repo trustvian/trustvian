@@ -26,6 +26,11 @@ func TestComparisonSamenessAnswers(t *testing.T) {
 			SameTrue, SameTrue, SameNotRecorded, SameNotRecorded, nil},
 		{"one declared inputs", side(a, b, "", PromptRef{}), side(a, "", "", PromptRef{}),
 			SameTrue, SameFalse, SameNotRecorded, SameNotRecorded, []string{WarningInputsDiffer}},
+		// A changed gate limit moves scenario_digest alone (config's
+		// TestAGateLimitAloneMovesOnlyTheScenarioDigest): only same_scenario
+		// answers false, with one warning.
+		{"only a gate limit", side(a, b, "m", ref), side(testDigest("d"), b, "m", ref),
+			SameFalse, SameTrue, SameTrue, SameTrue, []string{WarningScenarioDiffers}},
 		{"only the model", side(a, b, "llama3.2", ref), side(a, b, "gemma3:4b", ref),
 			SameTrue, SameTrue, SameFalse, SameTrue, []string{WarningModelDiffers}},
 		{"the prompt's digest", side(a, b, "m", ref), side(a, b, "m", PromptRef{Name: ref.Name, Digest: b}),
