@@ -196,7 +196,9 @@ func postgresSchemaStatements() []string {
 					// v11: task 087's per-behavior operational columns.
 					append(behaviorOperationalSchemaStatements(`TEXT COLLATE "C"`),
 						// v12: task 086's scenario provenance columns.
-						scenarioProvenanceSchemaStatements()...)...)...)...)...)...)
+						append(scenarioProvenanceSchemaStatements(),
+							// v13: task 081's per-behavior fidelity counts.
+							behaviorFidelitySchemaStatements(`TEXT COLLATE "C"`)...)...)...)...)...)...)...)
 }
 
 // postgresPromotionsStatement is v4's only table, kept separate so the
@@ -417,9 +419,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			return verifyPostgresVersion(ctx, tx)
 
 		case slices.Equal(present, sortedSchemaTables()):
-			// The current table set, which v9 through v11 share: v10 added
-			// columns and indexes, v11 and v12 added columns only. A v9, v10
-			// or v11 stamp migrates forward; otherwise the stamp must be the
+			// The current table set, which v9 through v12 share: v10 added
+			// columns and indexes, v11, v12 and v13 added columns only. A v9
+			// to v12 stamp migrates forward; otherwise the stamp must be the
 			// current version, and anything else fails closed.
 			version, err := postgresStoredVersion(ctx, tx)
 			if err != nil {
@@ -434,7 +436,9 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			case schemaVersionV10:
 				return migratePostgresV10ToCurrent(ctx, tx)
 			case schemaVersionV11:
-				return migratePostgresV11ToV12(ctx, tx)
+				return migratePostgresV11ToCurrent(ctx, tx)
+			case schemaVersionV12:
+				return migratePostgresV12ToV13(ctx, tx)
 			}
 			return verifyPostgresVersion(ctx, tx)
 
@@ -726,7 +730,15 @@ func migratePostgresV10ToCurrent(ctx context.Context, tx pgx.Tx) error {
 	if err := migratePostgresV10ToV11(ctx, tx); err != nil {
 		return err
 	}
-	return migratePostgresV11ToV12(ctx, tx)
+	return migratePostgresV11ToCurrent(ctx, tx)
+}
+
+// migratePostgresV11ToCurrent is every step from v11 forward.
+func migratePostgresV11ToCurrent(ctx context.Context, tx pgx.Tx) error {
+	if err := migratePostgresV11ToV12(ctx, tx); err != nil {
+		return err
+	}
+	return migratePostgresV12ToV13(ctx, tx)
 }
 
 // migratePostgresV9ToV10 mirrors SQLite's migrateV9ToV10 from the same
@@ -782,6 +794,27 @@ func migratePostgresV11ToV12(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, stmt); err != nil {
 			return mapPostgresError("schema migration", "", err)
 		}
+	}
+	// Literal schemaVersionV12: v13 is its own step.
+	if _, err := tx.Exec(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,
+		schemaVersionV12); err != nil {
+		return mapPostgresError("schema version", "", err)
+	}
+	return nil
+}
+
+// migratePostgresV12ToV13 mirrors SQLite's migrateV12ToV13 from the same
+// definitions: one column of nine counters on the behavior entry table, then a
+// backfill marking every existing behavior's fidelity and layer unrecorded.
+func migratePostgresV12ToV13(ctx context.Context, tx pgx.Tx) error {
+	for _, stmt := range behaviorFidelitySchemaStatements(`TEXT COLLATE "C"`) {
+		if _, err := tx.Exec(ctx, stmt); err != nil {
+			return mapPostgresError("schema migration", "", err)
+		}
+	}
+	if _, err := tx.Exec(ctx, behaviorFidelityBackfillStatement()); err != nil {
+		return mapPostgresError("schema migration", "", err)
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = $1 WHERE id = 1`,

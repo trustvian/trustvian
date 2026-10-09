@@ -695,6 +695,7 @@ func TestCompletenessIsStickyAcrossWrites(t *testing.T) {
 			Behavior:      rec.Behavior,
 			Observations:  1,
 			Operational:   unavailableOperational(1),
+			Fidelity:      unrecordedFidelity(1),
 		}},
 	}
 	if err := store.SaveEvaluationEvidence(ctx, aggregate, incomplete); err != nil {
@@ -718,6 +719,7 @@ func TestCompletenessIsStickyAcrossWrites(t *testing.T) {
 		Behavior:      rec.Behavior,
 		Observations:  2,
 		Operational:   unavailableOperational(2),
+		Fidelity:      unrecordedFidelity(2),
 	}}
 	if grown.RecordCount() <= aggregate.RecordCount() {
 		t.Fatalf("precondition: the second write must carry a higher count")
@@ -1262,9 +1264,12 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 	// entry table.
 	//
 	// v12 too: task 086 adds ten columns to the scenario execution table.
+	//
+	// v13 too: task 081 adds one column, of nine counters, to the behavior
+	// entry table.
 	indexOnly := map[int]bool{
 		schemaVersionV5: true, schemaVersionV6: true, schemaVersionV8: true,
-		schemaVersionV10: true, schemaVersionV11: true, schemaVersionV12: true,
+		schemaVersionV10: true, schemaVersionV11: true, schemaVersionV12: true, schemaVersionV13: true,
 	}
 	for version := schemaVersionV1 + 1; version <= SchemaVersion; version++ {
 		previous := schemaTablesByVersion[version-1]
@@ -1295,6 +1300,7 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 
 // schemaVersionV11 is declared in scenario_provenance.go now that v12 exists.
 
-// schemaVersionV12 is task 086's scenario provenance columns, named for the
-// same guards.
-const schemaVersionV12 = 12
+// schemaVersionV12 is declared in behavior_fidelity.go now that v13 exists.
+
+// schemaVersionV13 is task 081's fidelity counts, named for the same guards.
+const schemaVersionV13 = 13

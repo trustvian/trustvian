@@ -272,3 +272,42 @@ func decodeFidelityCounts(text string) (BehaviorFidelity, error) {
 		LayerTransport: v[6], LayerUnclassified: v[7], LayerUnrecorded: v[8],
 	}, nil
 }
+
+// schemaVersionV12 is task 086's schema, the last version without task 081's
+// fidelity counts. v13 adds a column only, so v12 and v13 hold the same tables
+// and are told apart by the stamp.
+const schemaVersionV12 = 12
+
+// behaviorFidelitySchemaStatements are schema 13's whole change, in either
+// dialect, shipped on a fresh database too so a fresh and a migrated table are
+// column-for-column identical. The empty default is never left in place: the
+// migration backfills every existing row, every write states the column, and
+// the read path refuses an empty value as corruption.
+func behaviorFidelitySchemaStatements(textType string) []string {
+	return []string{
+		`ALTER TABLE ` + tableEntries + ` ADD COLUMN ` + columnFidelityCounts + ` ` + textType + ` NOT NULL DEFAULT ''`,
+	}
+}
+
+// behaviorFidelityBackfillStatement makes a behavior recorded before schema 13
+// say *unrecorded* in both groups — fidelity_unrecorded and layer_unrecorded
+// are its observations, every other counter is 0 — which is the truth and
+// keeps every invariant. Nothing is backfilled from retained observations:
+// task 067 never retained fidelity. Spelled with `||`, which both dialects
+// share. Applied by the migration only.
+func behaviorFidelityBackfillStatement() string {
+	var b strings.Builder
+	b.WriteString(`UPDATE ` + tableEntries + ` SET ` + columnFidelityCounts + ` = '`)
+	for i, name := range fidelityCounterNames {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		if name == "fidelity_unrecorded" || name == "layer_unrecorded" {
+			b.WriteString("' || observations || '")
+		} else {
+			b.WriteString("0")
+		}
+	}
+	b.WriteString("'")
+	return b.String()
+}

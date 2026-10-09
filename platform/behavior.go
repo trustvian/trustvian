@@ -104,6 +104,11 @@ type BehaviorEntry struct {
 	// Observations, so evidence that was not reported reads as unobserved or
 	// unavailable rather than zero.
 	Operational OperationalSummary
+
+	// Fidelity counts those observations by the fidelity and layer their
+	// envelopes stated (task 081). Both groups partition Observations, so an
+	// observation that stated neither reads unrecorded rather than transport.
+	Fidelity BehaviorFidelity
 }
 
 // BehaviorCollector reduces a stream of DecisionRecords into the bounded set
@@ -308,12 +313,17 @@ func (c *BehaviorCollector) ObserveOperational(record trustvian.DecisionRecord, 
 	if err != nil {
 		return err
 	}
+	fidelity, err := existing.Fidelity.observe("", event.LayerUnspecified)
+	if err != nil {
+		return err
+	}
 
 	// Past this point nothing can fail.
 	c.observations++
 	if known {
 		existing.Observations++
 		existing.Operational = operational
+		existing.Fidelity = fidelity
 		c.entries[record.FingerprintID] = existing
 	} else {
 		// The only place an entry is created, so the two indexes are written
@@ -325,6 +335,7 @@ func (c *BehaviorCollector) ObserveOperational(record trustvian.DecisionRecord, 
 			Behavior:      record.Behavior,
 			Observations:  1,
 			Operational:   operational,
+			Fidelity:      fidelity,
 		}
 		c.byBehavior[record.Behavior] = record.FingerprintID
 	}

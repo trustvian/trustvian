@@ -31,6 +31,7 @@ func fullProvenance(model string) SideProvenance {
 // gone, version 11 stamped. exec runs one statement against it.
 func downgradeToV11(t testing.TB, exec func(string) error) {
 	t.Helper()
+	downgradeToV12(t, exec)
 	for _, column := range scenarioProvenanceColumns() {
 		if err := exec(`ALTER TABLE ` + tableScenarioExecutions + ` DROP COLUMN ` + column); err != nil {
 			t.Fatalf("drop v12 column %s: %v", column, err)

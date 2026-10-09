@@ -130,6 +130,11 @@ func statementVersion(stmt string) (int, bool) {
 		strings.HasPrefix(trimmed, `ALTER TABLE `+tableScenarioExecutions+` ADD COLUMN `) {
 		return schemaVersionV10, true
 	}
+	// v13: task 081's fidelity counts, an ALTER statement on a fresh database
+	// too. Checked before v11, which adds a column to the same table.
+	if strings.HasPrefix(trimmed, `ALTER TABLE `+tableEntries+` ADD COLUMN `+columnFidelityCounts+` `) {
+		return schemaVersionV13, true
+	}
 	// v11: task 087's per-behavior operational columns, ALTER statements on a
 	// fresh database too.
 	if strings.HasPrefix(trimmed, `ALTER TABLE `+tableEntries+` ADD COLUMN `) {
@@ -832,8 +837,9 @@ func TestPostgresMigratesV4ForwardAddingIndexesAndOperationalColumns(t *testing.
 			// v10, task 101: the recency key.
 			wantColumns = []string{"created_order"}
 		case tableEntries:
-			// v11, task 087: the per-behavior operational evidence.
-			wantColumns = behaviorOperationalColumns()
+			// v11, task 087: the per-behavior operational evidence; v13,
+			// task 081: the fidelity counts.
+			wantColumns = append(behaviorOperationalColumns(), columnFidelityCounts)
 			slices.Sort(wantColumns)
 		}
 		if !slices.Equal(addedColumns, wantColumns) {

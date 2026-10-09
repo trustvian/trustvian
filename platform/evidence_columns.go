@@ -346,6 +346,7 @@ func behaviorEntryInsertStatement(placeholder func(int) string) string {
 	columns := []string{
 		"run_id", "fingerprint_id", "actor_type", "operation_category", "operation_name",
 		"target_name", "target_category", "environment", "observations", columnOperationalCounts,
+		columnFidelityCounts,
 	}
 	marks := make([]string, len(columns))
 	for i := range marks {
@@ -364,5 +365,6 @@ func behaviorEntryInsertArgs(runID EvaluationRunID, entry BehaviorEntry) []any {
 		string(b.ActorType), string(b.OperationCategory), b.OperationName,
 		b.TargetName, string(b.TargetCategory), b.Environment,
 		uint64Text(entry.Observations), encodeOperationalCounts(entry.Operational),
+		encodeFidelityCounts(entry.Fidelity),
 	}
 }
