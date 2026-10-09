@@ -201,7 +201,7 @@ files:
   "control_plane": "started",
   "cli": {"exit_code": 1},
   "result": {"status": "present", "file": "result.json", "bytes": 4096, "sha256": "<64 hex>"},
-  "runtime": {"source_commit": "<40 hex>", "go_version": "go1.27.1"}
+  "runtime": {"source_commit": "<40 hex>", "go_version": "go1.27.2"}
 }
 ```
 

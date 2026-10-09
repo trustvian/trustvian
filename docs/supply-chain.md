@@ -233,6 +233,33 @@ Resolved rather than excepted:
   requires the vulnerable `v0.29.0`, so upgrading the owning direct
   dependency could not fix this; an explicit indirect requirement was the
   only available resolution.
+- The Go security release of 2026-10-08, cleared by raising what each module
+  actually reached, with no exception:
+  - `GO-2026-6603`, `GO-2026-6610`, `GO-2026-6611`, `GO-2026-6612` and
+    `GO-2026-6617` in `golang.org/x/net/http2`, reachable in the
+    **processor** module, which imports `x/net/http2` through the Collector's
+    OTLP receiver (`otlpreceiver` → `confighttp`). They were cleared by an
+    explicit indirect requirement on `golang.org/x/net v0.60.0`. The
+    Collector modules (`configgrpc`, `confighttp`, `otelcol` and others at
+    `v0.160.0` / `v1.66.0`) require at most `v0.58.0`, so as with `x/text`,
+    upgrading them could not fix it. Minimal version selection raised
+    `x/crypto` to `v0.57.0`, `x/sync` to `v0.23.0`, `x/sys` to `v0.48.0` and
+    `x/text` to `v0.42.0` with it, because `x/net v0.60.0` requires them.
+  - `GO-2026-6603`, `-6605`, `-6607`, `-6608`, `-6610`, `-6611`, `-6612`,
+    `-6613` and `-6617` in the standard library, reachable in the
+    **examples** module. It pinned `go 1.27.0`, so CI scanned it with that
+    toolchain. Its directive is now `go 1.27`, as the other three modules
+    declare, and every `actions/setup-go` step sets `check-latest: true`, so
+    scans and builds use the newest 1.27 patch: `go1.27.2`, which fixes all
+    of them, and `GO-2026-6599`, `-6600`, `-6604` and `-6609` with them. The
+    root, platform and processor modules were already scanned with
+    `go1.27.2`, and showed nothing from the standard library.
+  - The `trustvian-run` and `trustvian-comment` actions build their pinned
+    runtime with the Go version in `.github/actions/trustvian-run/runtime.env`.
+    That pin moved from `1.27.1` to `1.27.2`, with go.dev's published
+    archive digests. The source commit it builds still carries
+    `x/net v0.58.0`. Moving it to a commit with this fix is the separate
+    reviewed change `runtime.env` describes.
 
 Exceptions are recorded per-finding with a review condition; there are no
 time-unbounded blanket ignores, and a finding is excepted only when no

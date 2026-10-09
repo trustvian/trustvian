@@ -85,6 +85,7 @@ jobs:
           # From go.mod, so the CI toolchain cannot drift from the version
           # the module itself declares.
           go-version-file: go.mod
+          check-latest: true
           cache: true
 
       - name: Format
@@ -189,6 +190,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          check-latest: true
           cache: true
 
       - name: Install PostgreSQL 17 client tools
@@ -239,6 +241,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: processor/go.mod
+          check-latest: true
           cache: true
           cache-dependency-path: processor/go.sum
 
@@ -293,6 +296,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: examples/go.mod
+          check-latest: true
           cache: true
           cache-dependency-path: examples/go.sum
 
@@ -389,6 +393,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: platform/go.mod
+          check-latest: true
           cache: true
           cache-dependency-path: platform/go.mod
 
@@ -519,6 +524,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          check-latest: true
           cache: true
 
       - name: Build the release matrix
@@ -617,6 +623,7 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          check-latest: true
           cache: true
 
       - name: Test the release preflight

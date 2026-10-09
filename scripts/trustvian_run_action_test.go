@@ -914,16 +914,16 @@ func TestRunActionRuntimePin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out, err := load(pin); err != nil || strings.TrimSpace(out) != runtimePin+" 1.27.1" {
+	if out, err := load(pin); err != nil || strings.TrimSpace(out) != runtimePin+" 1.27.2" {
 		t.Fatalf("the shipped pin: %q %v", out, err)
 	}
 	good := readFile(t, pin)
 	tests := map[string]string{
 		"short commit":     strings.Replace(good, runtimePin, "5521759", 1),
 		"branch name":      strings.Replace(good, runtimePin, "main", 1),
-		"floating go":      strings.Replace(good, "GO_VERSION=1.27.1", "GO_VERSION=1.27", 1),
+		"floating go":      strings.Replace(good, "GO_VERSION=1.27.2", "GO_VERSION=1.27", 1),
 		"unknown key":      good + "GOFLAGS=-insecure\n",
-		"duplicate key":    good + "GO_VERSION=1.27.1\n",
+		"duplicate key":    good + "GO_VERSION=1.27.2\n",
 		"missing digest":   regexp.MustCompile(`(?m)^GO_SHA256_LINUX_AMD64=.*\n`).ReplaceAllString(good, ""),
 		"non-github":       strings.Replace(good, "https://github.com/trustvian/trustvian.git", "http://evil.example/t.git", 1),
 		"shell expression": strings.Replace(good, runtimePin, "$(touch /tmp/x)", 1),

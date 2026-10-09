@@ -8,6 +8,36 @@ actually depend on.
 
 ## Unreleased
 
+### Security
+
+- **The Go security release of 2026-10-08** (HTTP/2, `net/http`,
+  `mime/multipart`, `crypto/tls` and `html/template`;
+  [`docs/supply-chain.md`](docs/supply-chain.md)). Builds now use `go1.27.2`,
+  and the Collector requires `golang.org/x/net v0.60.0`.
+  - Fixed: `GO-2026-6599`, `-6600`, `-6603`, `-6604`, `-6605`, `-6607`,
+    `-6608`, `-6609`, `-6610`, `-6611`, `-6612`, `-6613` and `-6617`.
+  - Every CI and release workflow now installs the newest patch of Go 1.27
+    (`check-latest: true`). The examples module no longer pins `go 1.27.0`.
+    The `trustvian-run` action builds its runtime with `go1.27.2`.
+  - **v0.11.0's published binaries and image predate the fix.** Read with
+    `go version -m`: all six archive binaries checked (`trustvian`,
+    `trustvian-local` and `trustvian-collector`, for linux/amd64 and
+    darwin/arm64) and the `ghcr.io/trustvian/trustvian-collector:v0.11.0`
+    image's binary
+    (`sha256:643532142a8ebeabb7504fd4b591c77615a4495e0e5c478462b40f865113bddc`)
+    were built with `go1.27.1`. The Collector was also built with
+    `golang.org/x/net v0.58.0`.
+  - `govulncheck -mode=binary` reports these vulnerable symbols in the
+    v0.11.0 linux/amd64 archive binaries and the image:
+    - `trustvian`: `GO-2026-6603`, `-6605`, `-6607`, `-6608`, `-6610`,
+      `-6611`, `-6613` and `-6617`, all in the standard library;
+    - `trustvian-local`: `GO-2026-6603`, `-6607`, `-6608`, `-6611`, `-6612`,
+      `-6613` and `-6617`, all in the standard library;
+    - `trustvian-collector`, in the archives and the image: `GO-2026-6599`,
+      `-6600`, `-6603`, `-6605`, `-6607`, `-6608`, `-6610`, `-6611`, `-6612`,
+      `-6613` and `-6617` in the standard library, and `GO-2026-6603`,
+      `-6611`, `-6612` and `-6617` also in `golang.org/x/net`.
+
 ### Added
 
 - **Pipeline status surface** (task 105,
