@@ -90,7 +90,7 @@ as long as its own decision holds.
 | [0064](0064-suggestions-are-rule-table-outputs-beside-the-evidence.md) | Suggestions are rule-table outputs beside the evidence, never verdicts | Accepted |
 | [0065](0065-collectors-report-pipeline-status-the-control-plane-holds-it-in-memory.md) | Collectors report pipeline status; the control plane holds it in memory | Accepted |
 | [0066](0066-a-per-target-call-limit-is-one-named-check-over-a-bounded-list.md) | A per-target call limit is one named check over a bounded list | Accepted |
-| [0067](0067-scenario-provenance-is-recorded-per-execution-side.md) | Scenario provenance is recorded per execution side | **Proposed** |
+| [0067](0067-scenario-provenance-is-recorded-per-execution-side.md) | Scenario provenance is recorded per execution side | Accepted |
 
 **0046 is the first record here carried as Proposed.** Its reasoning is
 complete and no maintainer has ratified it, which is exactly what this status

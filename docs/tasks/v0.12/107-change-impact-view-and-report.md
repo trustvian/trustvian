@@ -152,6 +152,16 @@ execution, Change Impact shows the single-run comparison's sections and marks
 frequency, sameness and repeated fidelity *not applicable — not a scenario
 execution*.
 
+### Open decision: sameness on the single-run comparison
+
+Task 086 puts `sameness` and `warnings[]` on the repeated comparison only.
+`POST /v1/evaluations/compare` does not carry them, and the entry-points
+paragraph above marks sameness *not applicable* for a pair of runs outside an
+execution. This task decides whether that stays, or whether the single-run
+comparison gains the same block, looked up through the executions that
+recorded each run, as compare-repeated already does. Either way the answer is
+additive and no check reads it.
+
 ## Non-goals
 
 - **No computation in any adapter**: no division, no rounding, no

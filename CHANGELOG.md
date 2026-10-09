@@ -69,8 +69,6 @@ actually depend on.
     entry. No check reads either, and the verdict is unchanged.
   - New `trustvian eval compare-repeated` prints the repeated comparison of
     any runs, body unchanged.
-  - A control plane older than this refuses the new begin field: upgrade it
-    before the CLI.
 - **Frequency evidence** (task 106,
   [ADR 0066](docs/adr/0066-a-per-target-call-limit-is-one-named-check-over-a-bounded-list.md)).
   A repeated comparison now says how often, not only whether.
@@ -110,6 +108,10 @@ actually depend on.
   - `trustvian-local --pricing <file>` adds a `cost` section in integer
     micro-units, with the table's version, source and digest on every figure.
     Trustvian ships no prices. There is no cost gate.
+
+### Changed
+
+- **Upgrade the control plane before the CLI.** A control plane older than task 086 refuses the `provenance` field that `trustvian eval run` sends when it begins a scenario execution, and the run fails with `400` before any workload starts. `trustvian dev` itself sends no provenance and is unaffected.
 
 ## v0.11.0 — webui feature
 

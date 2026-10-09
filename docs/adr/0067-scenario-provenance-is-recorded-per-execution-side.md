@@ -1,8 +1,9 @@
 # 0067 — Scenario provenance is recorded per execution side
 
-**Status:** Proposed (task [086](../tasks/v0.12/086-scenario-and-input-versioning.md)).
-Amends task 086's specification § 3, which put the model and the prompt
-reference on the candidate. A maintainer accepts or revises this in review.
+**Status:** Accepted, 2026-10-09 (task
+[086](../tasks/v0.12/086-scenario-and-input-versioning.md), accepted by the
+maintainer in the review of #162). Amends task 086's specification § 3, which
+put the model and the prompt reference on the candidate.
 
 ## Context
 

@@ -203,7 +203,7 @@ each a decision taken while building, listed first.
 
 | Specified | Shipped | Why |
 |---|---|---|
-| `PromptRef` on `CandidateMetadata`, `Model` reused from the candidate (§ 3) | A declared model and prompt reference **per execution side**, beside the digests; `CandidateMetadata` is unchanged ([ADR 0067](../../adr/0067-scenario-provenance-is-recorded-per-execution-side.md), proposed) | Candidates are create-only, and `trustvian dev` creates its candidate without metadata, keyed by the git revision. A changed `OLLAMA_MODEL` reruns under the same candidate, so a candidate field could never record it |
+| `PromptRef` on `CandidateMetadata`, `Model` reused from the candidate (§ 3) | A declared model and prompt reference **per execution side**, beside the digests; `CandidateMetadata` is unchanged ([ADR 0067](../../adr/0067-scenario-provenance-is-recorded-per-execution-side.md), accepted 2026-10-09) | Candidates are create-only, and `trustvian dev` creates its candidate without metadata, keyed by the git revision. A changed `OLLAMA_MODEL` reruns under the same candidate, so a candidate field could never record it |
 | `prompt_ref`: one string, at most 255 bytes | `prompt_ref` is `{name, digest}`. The name is 1 to 128 of `[A-Za-z0-9._:/@+-]`, starting alphanumeric, and the digest is `sha256:` and 64 lowercase hex. The model has the name's format | The brief: "name and digest only". With no whitespace allowed, a sentence of prompt text is refused outright, not just bounded. As the specification says, a refusal is still not proof that the value is not text |
 | The model and prompt come from the candidate | Stated in the scenario file (`model`, `prompt_ref`), or named as a variable of the side's environment (`model_env`, `prompt_ref_env`, the latter holding `<name>@sha256:<hex>`), never both. Absent when neither is given | The brief: "supplied by the scenario file or an environment variable". `model_env: OLLAMA_MODEL` reads the same variable the demo agent reads its model from, after the side's `env` is applied |
 | `inputs_digest`, `same_prompt`, `"not_stated"`, `true`/`false` as JSON booleans | `input_digest`, `same_prompt_ref`, `"not_recorded"`, and every answer a string: `"true"`, `"false"`, `"not_recorded"` | The brief's names. One type per field: a consumer never has to branch on whether a value is a boolean or a string |
@@ -232,6 +232,13 @@ each a decision taken while building, listed first.
 
   It excludes environment values, input contents, `model`, `model_env`,
   `prompt_ref` and `prompt_ref_env`.
+
+  **What moves it, plainly:** any definition value, *gate limits included*.
+  Changing only a threshold gives `same_scenario: "false"` and a
+  `scenario_differs` warning, on purpose: the question is whether both sides
+  ran the same thing, and the gate is part of the thing. Environment values,
+  input contents (that is `input_digest`), the model and the prompt reference
+  never move it.
   `TestScenarioDigestMatchesTheDocumentedEncoding` rebuilds it by hand.
 - **`input_digest`** — `"sha256:"` + hex SHA-256 of the compact JSON list
   `[{"path": …, "sha256": …}, …]`, sorted by path.

@@ -835,6 +835,11 @@ candidate:
   # or prompt_ref_env: SUPPORT_PROMPT_REF, holding <name>@sha256:<64 hex>
 ```
 
+- **What moves `scenario_digest`:** any value of the definition — name,
+  `runs`, scope, commands, env *keys*, input paths and **every gate limit**, so
+  a changed threshold alone reads `same_scenario: "false"` with a
+  `scenario_differs` warning. What does not: env *values*, input contents
+  (those are `input_digest`), the model and the prompt reference.
 - **`scenario_digest`** is `sha256:` and the hex SHA-256 of the validated
   scenario re-encoded as canonical JSON. The encoding has a fixed field order,
   `env` reduced to its sorted keys, `inputs` as sorted clean paths,
@@ -860,7 +865,10 @@ candidate:
   environment its workload runs with (the process environment plus the side's
   `env`). An unset or empty variable declares nothing. A model and a prompt
   name are 1 to 128 characters with no whitespace, so neither can hold prompt
-  text; a prompt digest is `sha256:` and 64 lowercase hex. A value that does
+  text; a prompt digest is `sha256:` and 64 lowercase hex. Refusing is not
+  proof that a value is not text: the format rule guards against pasting a
+  prompt by accident, and is not a privacy guarantee. Put only a name and a
+  digest there. A value that does
   not fit is exit `2` before anything runs. With `--reference`, the reused
   reference side keeps the declarations of the execution that ran it.
 
@@ -892,8 +900,7 @@ model. Each `false` adds a warning (`scenario_differs`, `inputs_differ`,
 advice: a changed model is often the point of the comparison. **No check reads
 sameness or warnings, and neither changes the verdict.**
 
-A control plane older than task 086 refuses the begin request's `provenance`
-field. Upgrade the control plane before the CLI.
+**Upgrade the control plane before the CLI.** A control plane older than task 086 refuses the `provenance` field that `trustvian eval run` sends when it begins a scenario execution, and the run fails with `400` before any workload starts. `trustvian dev` itself sends no provenance and is unaffected.
 
 ### Calibrating `N`, `k` and `j`
 
