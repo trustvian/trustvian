@@ -1,6 +1,6 @@
 module trustvian-examples
 
-go 1.27.0
+go 1.27
 
 replace github.com/trustvian/trustvian => ../
 
