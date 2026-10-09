@@ -8,11 +8,15 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
 // task086Members are the members 086 adds to compare-repeated.
 var task086Members = []string{"sameness", "warnings"}
+
+// task081Members are the members 081 adds to every behavior row.
+var task081Members = []string{"reference_fidelity", "candidate_fidelity"}
 
 const samenessNotRecorded = `{"same_scenario":"not_recorded","same_inputs":"not_recorded",` +
 	`"same_model":"not_recorded","same_prompt_ref":"not_recorded",` +
@@ -52,7 +56,7 @@ func TestCompareRepeatedIsUnchangedButForSameness(t *testing.T) {
 	if w := member(t, got, "warnings"); w != `[]` {
 		t.Errorf("warnings = %s, want []", w)
 	}
-	for _, name := range task086Members {
+	for _, name := range append(slices.Clone(task086Members), task081Members...) {
 		got = withoutMember(t, got, name)
 	}
 	if !bytes.Equal(bytes.TrimSpace(got), bytes.TrimSpace(before)) {

@@ -68,7 +68,7 @@ func TestCompareRepeatedAtNEqualsOneIsUnchanged(t *testing.T) {
 		`{"name":"max_calls_per_run","state":"not_evaluated"}]`; !bytes.Contains(got, []byte(want)) {
 		t.Errorf("frequency checks with the limits omitted:\n%s", got)
 	}
-	for _, member := range append(slices.Clone(task106Members), task086Members...) {
+	for _, member := range append(append(slices.Clone(task106Members), task086Members...), task081Members...) {
 		if !bytes.Contains(got, []byte(`"`+member+`":`)) {
 			t.Errorf("the response does not carry %s", member)
 		}

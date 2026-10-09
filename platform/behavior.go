@@ -455,6 +455,11 @@ type BehaviorDelta struct {
 	ReferenceRate float64
 	CandidateRate float64
 	RateDelta     float64
+
+	// ReferenceFidelity and CandidateFidelity are each side's fidelity and
+	// layer counts for this behavior (task 081); zero on a side that did not
+	// observe it. Reported() is the level a reader is shown.
+	ReferenceFidelity, CandidateFidelity BehaviorFidelity
 }
 
 // BehaviorDiff is the factual comparison of two behavioral snapshots.
@@ -661,12 +666,15 @@ func CompareBehaviorSnapshots(reference, candidate BehaviorSnapshot) (BehaviorDi
 			Behavior:       cand.Behavior,
 			Presence:       BehaviorAdded,
 			CandidateCount: cand.Observations,
+
+			CandidateFidelity: cand.Fidelity,
 		}
 		// Consistency was established above, so a shared fingerprint is
 		// known to describe the same behavior on both sides.
 		if ref, ok := refByID[cand.FingerprintID]; ok {
 			delta.Presence = BehaviorShared
 			delta.ReferenceCount = ref.Observations
+			delta.ReferenceFidelity = ref.Fidelity
 		}
 		deltas = append(deltas, delta)
 	}
@@ -685,6 +693,8 @@ func CompareBehaviorSnapshots(reference, candidate BehaviorSnapshot) (BehaviorDi
 			Behavior:       ref.Behavior,
 			Presence:       BehaviorRemoved,
 			ReferenceCount: ref.Observations,
+
+			ReferenceFidelity: ref.Fidelity,
 		})
 	}
 

@@ -89,6 +89,8 @@ func newBehaviorDiffDTO(d platform.BehaviorDiff) behaviorDiffDTO {
 			Behavior:              newBehaviorDescriptorDTO(delta.Behavior),
 			ReferenceObservations: u64(delta.ReferenceCount),
 			CandidateObservations: u64(delta.CandidateCount),
+			ReferenceFidelity:     newBehaviorFidelityDTO(delta.ReferenceFidelity, delta.ReferenceCount),
+			CandidateFidelity:     newBehaviorFidelityDTO(delta.CandidateFidelity, delta.CandidateCount),
 		})
 	}
 	changes := make([]behaviorChangeDTO, 0, d.AddedChangeCount())

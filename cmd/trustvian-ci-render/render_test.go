@@ -1112,6 +1112,50 @@ func TestRenderAcceptsTask086Fields(t *testing.T) {
 	}
 }
 
+// TestRenderAcceptsTask081Fields: the 079 renderer keeps rendering a result
+// document whose behavior rows carry task 081's per-side fidelity — a mixed
+// side, and a side with none — byte for byte as it rendered it without them.
+func TestRenderAcceptsTask081Fields(t *testing.T) {
+	fidelity := func(level string, mixed bool) map[string]any {
+		return map[string]any{"level": level, "mixed": mixed, "semantic": "2", "transport": "1",
+			"unrecorded": "0", "layer": map[string]any{"model": "0", "tool": "2", "retrieval": "0",
+				"transport": "1", "unclassified": "0", "unrecorded": "0"}}
+	}
+	for _, tt := range []struct {
+		name string
+		code int
+	}{{"fail", 1}, {"pass", 0}, {"suite", 1}} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := artifact(t, tt.name)
+			plant := func(c map[string]any) {
+				for i := range c["behaviors"].([]any) {
+					b := obj(c, "behaviors", i)
+					b["candidate_fidelity"] = fidelity("transport", true)
+					if i%2 == 0 {
+						b["reference_fidelity"] = fidelity("semantic", false)
+					}
+				}
+			}
+			mutateResult(t, dir, func(d map[string]any) {
+				if members, ok := d["members"].([]any); ok {
+					for i := range members {
+						plant(obj(d, "members", i, "result", "comparison"))
+					}
+					return
+				}
+				plant(obj(d, "comparison"))
+			})
+			out := render(dir, expected(tt.code), defaultLimits)
+			if out.state == stateNoVerdict {
+				t.Fatalf("a document with task 081's fields was refused: %s", out.reason)
+			}
+			if out.markdown != render(filepath.Join("testdata", "artifacts", tt.name), expected(tt.code), defaultLimits).markdown {
+				t.Error("task 081's fields changed the rendering")
+			}
+		})
+	}
+}
+
 // The renderer transcribes; it never decides. A document whose stored
 // classification, check outcome, verdict and suite summary contradict its own
 // counts is rendered exactly as stored — the control plane owns all of them.

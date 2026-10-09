@@ -106,3 +106,33 @@ func TestInProcessObservationsStayUnrecorded(t *testing.T) {
 		t.Fatalf("in-process counts %+v", got)
 	}
 }
+
+// TestFidelityAndLayerAreNotBehavioralIdentity: the same records under every
+// countable pair produce the same fingerprint, the same StableFeatures and the
+// same entry in all but the counts. identity_fields_test.go pins the types.
+func TestFidelityAndLayerAreNotBehavioralIdentity(t *testing.T) {
+	run := operationalRun(t)
+	var first BehaviorEntry
+	for i, pair := range [][2]string{{"semantic", "model"}, {"semantic", "tool"}, {"transport", "transport"}, {"", ""}} {
+		c, err := NewBehaviorCollector(run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		facts := OperationalFacts{Fidelity: event.Fidelity(pair[0]), Layer: event.Layer(pair[1])}
+		if err := c.ObserveOperational(operationalTestRecord(run, "e1", "", event.StatusOK), facts); err != nil {
+			t.Fatal(err)
+		}
+		entry := c.Snapshot().Entries()[0]
+		if i == 0 {
+			first = entry
+			continue
+		}
+		if entry.FingerprintID != first.FingerprintID || entry.Behavior != first.Behavior ||
+			entry.Observations != first.Observations || entry.Operational != first.Operational {
+			t.Fatalf("pair %v changed the entry's identity: %+v vs %+v", pair, entry, first)
+		}
+		if entry.Fidelity == first.Fidelity {
+			t.Fatalf("pair %v was not counted", pair)
+		}
+	}
+}

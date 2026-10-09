@@ -3,8 +3,8 @@ package trustvian_test
 // Behavioral identity is exactly what it was (task 106's constraint, and every
 // v0.12.0 task's): nothing new enters StableFeatures — and so no fingerprint —
 // or a baseline key. Frequency evidence, operational evidence, the gates over
-// them and task 086's scenario provenance are computed beside identity, never
-// inside it. A field added to
+// them, task 086's scenario provenance and task 081's persisted fidelity and
+// layer counts are computed beside identity, never inside it. A field added to
 // either type fails here, next to the change that added it, rather than as a
 // baseline reset in someone's deployment.
 

@@ -196,6 +196,10 @@ type RepeatedBehaviorPresence struct {
 	// renderer among them — refuse to extend, and a document they cannot read
 	// would render no verdict at all. A behavior can be both removed and lost.
 	Lost bool
+
+	// Task 081: each side's fidelity and layer counts, summed over its
+	// completed repetitions before the disagreement rule is applied.
+	ReferenceFidelity, CandidateFidelity BehaviorFidelity
 }
 
 // RepeatedCheckName is one of the six checks, spelled as the wire spells it.
@@ -327,6 +331,8 @@ func reduceRepeated(
 	type tally struct {
 		behavior             trustvian.StableFeatures
 		reference, candidate uint64
+
+		referenceFidelity, candidateFidelity BehaviorFidelity
 	}
 	seen := make(map[string]*tally)
 	// The reverse direction of the identity contract. A descriptor that
@@ -395,10 +401,16 @@ func reduceRepeated(
 					preview(other), preview(entry.FingerprintID))
 			}
 			fingerprintOf[entry.Behavior] = entry.FingerprintID
+			var err error
 			if in.evidence.Side == SideReference {
 				t.reference++
+				t.referenceFidelity, err = t.referenceFidelity.Add(entry.Fidelity)
 			} else {
 				t.candidate++
+				t.candidateFidelity, err = t.candidateFidelity.Add(entry.Fidelity)
+			}
+			if err != nil {
+				return RepeatedEvaluationComparison{}, err
 			}
 		}
 	}
@@ -425,6 +437,8 @@ func reduceRepeated(
 			Classification: class,
 			Reference:      ref, Candidate: cand,
 			Lost: isLost(t.reference, t.candidate, uint64(runs)),
+
+			ReferenceFidelity: t.referenceFidelity, CandidateFidelity: t.candidateFidelity,
 		})
 	}
 	targets, err := targetFrequencies(frequency[SideReference], frequency[SideCandidate])

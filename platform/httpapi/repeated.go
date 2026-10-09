@@ -91,6 +91,11 @@ type repeatedBehaviorDTO struct {
 	ReferenceFrequency frequencyDTO `json:"reference_frequency"`
 	CandidateFrequency frequencyDTO `json:"candidate_frequency"`
 	Lost               bool         `json:"lost"`
+
+	// Task 081: each side's fidelity summed over its completed repetitions,
+	// absent on a side whose repetitions never observed the behavior.
+	ReferenceFidelity *behaviorFidelityDTO `json:"reference_fidelity,omitempty"`
+	CandidateFidelity *behaviorFidelityDTO `json:"candidate_fidelity,omitempty"`
 }
 
 // frequencyDTO is how often one behavior or target was called on one side.
@@ -401,6 +406,8 @@ func newCompareRepeatedResponse(
 			ReferenceFrequency:   newFrequencyDTO(b.Reference),
 			CandidateFrequency:   newFrequencyDTO(b.Candidate),
 			Lost:                 b.Lost,
+			ReferenceFidelity:    newBehaviorFidelityDTO(b.ReferenceFidelity, b.Reference.CallsTotal),
+			CandidateFidelity:    newBehaviorFidelityDTO(b.CandidateFidelity, b.Candidate.CallsTotal),
 		})
 	}
 	checks := make([]repeatedCheckDTO, 0, 6)
