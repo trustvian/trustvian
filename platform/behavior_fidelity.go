@@ -29,8 +29,9 @@ import (
 // layer their envelopes stated.
 //
 // Each group partitions the observations. Unrecorded is an observation whose
-// envelope stated neither: the in-process SDK path, `trustvian eval ingest`,
-// and every observation recorded before schema 13. A layer is claimed exactly
+// envelope did not state the pair: the in-process SDK path, `trustvian eval
+// ingest`, a client stating only one of the two fields, and every observation
+// recorded before schema 13. A layer is claimed exactly
 // when fidelity is semantic, so the two groups are tied:
 //
 //	LayerModel + LayerTool + LayerRetrieval + LayerUnclassified == Semantic
@@ -61,43 +62,40 @@ const (
 )
 
 // ErrInvalidFidelityPair reports an envelope whose fidelity and layer
-// contradict each other, or that states a layer without a fidelity. No
-// Trustvian producer sends one: the Collector states both or neither.
+// contradict each other: transport fidelity with a semantic layer, or semantic
+// fidelity with the transport layer. No Trustvian producer sends one — the
+// Collector states both or neither — and both cannot be true.
 var ErrInvalidFidelityPair = errors.New("platform: fidelity and behavior layer disagree")
 
-// validateFidelityPair accepts exactly the pairs the layer rule allows: both
-// absent; transport with transport; semantic with model, tool, retrieval or
-// no layer. Anything else is a claim that cannot be true, and is refused rather
-// than counted as unrecorded — counting it would let a submitter erase its own
-// evidence by corrupting it (task 084's rule).
+// validateFidelityPair refuses a contradictory pair, rather than counting it as
+// unrecorded: that would let a submitter erase its own evidence by corrupting
+// it (task 084's rule).
+//
+// A partial pair — fidelity without a layer, or a layer without a fidelity — is
+// not refused. The envelope contract makes both fields independently optional,
+// so it is valid input; it simply does not say enough to place the observation
+// in both groups, and observe counts it unrecorded in each. Only the pairs the
+// layer rule produces are counted as stated: transport with transport, and
+// semantic with model, tool, retrieval or no layer.
 func validateFidelityPair(f event.Fidelity, l event.Layer) error {
-	switch f {
-	case "":
-		if l == event.LayerUnspecified {
-			return nil
-		}
-	case event.FidelityTransport:
-		if l == event.LayerTransport {
-			return nil
-		}
-	case event.FidelitySemantic:
-		switch l {
-		case event.LayerUnspecified, event.LayerModel, event.LayerTool, event.LayerRetrieval:
-			return nil
-		}
+	contradictory := (f == event.FidelityTransport && (l == event.LayerModel || l == event.LayerTool ||
+		l == event.LayerRetrieval)) || (f == event.FidelitySemantic && l == event.LayerTransport)
+	if !contradictory {
+		return nil
 	}
-	return fmt.Errorf("%w: fidelity %q with behavior_layer %q; a layer is stated exactly when fidelity is, "+
-		"transport goes with transport, and a semantic layer goes with semantic fidelity",
-		ErrInvalidFidelityPair, f, l)
+	return fmt.Errorf("%w: fidelity %q with behavior_layer %q; transport fidelity goes with the transport "+
+		"layer, and a semantic layer goes with semantic fidelity", ErrInvalidFidelityPair, f, l)
 }
 
 // observe counts one observation, or reports why it cannot, leaving the
 // receiver unchanged. The pair must already be valid.
 func (b BehaviorFidelity) observe(f event.Fidelity, l event.Layer) (BehaviorFidelity, error) {
 	next := b
-	var fidelity, layer *uint64
-	switch f {
-	case event.FidelitySemantic:
+	// Unrecorded in both groups unless the pair is one the layer rule
+	// produces: neither field, or only one of them, states the whole pair.
+	fidelity, layer := &next.Unrecorded, &next.LayerUnrecorded
+	switch {
+	case f == event.FidelitySemantic:
 		fidelity = &next.Semantic
 		switch l {
 		case event.LayerModel:
@@ -109,10 +107,8 @@ func (b BehaviorFidelity) observe(f event.Fidelity, l event.Layer) (BehaviorFide
 		default:
 			layer = &next.LayerUnclassified
 		}
-	case event.FidelityTransport:
+	case f == event.FidelityTransport && l == event.LayerTransport:
 		fidelity, layer = &next.Transport, &next.LayerTransport
-	default:
-		fidelity, layer = &next.Unrecorded, &next.LayerUnrecorded
 	}
 	if err := addCount(fidelity, 1, "fidelity count"); err != nil {
 		return b, err

@@ -313,7 +313,7 @@ func (c *BehaviorCollector) ObserveOperational(record trustvian.DecisionRecord, 
 	if err != nil {
 		return err
 	}
-	fidelity, err := existing.Fidelity.observe("", event.LayerUnspecified)
+	fidelity, err := existing.Fidelity.observe(facts.Fidelity, facts.Layer)
 	if err != nil {
 		return err
 	}

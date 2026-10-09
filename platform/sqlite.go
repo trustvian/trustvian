@@ -3225,10 +3225,17 @@ func loadBehaviorEntries(ctx context.Context, q evidenceQuerier, id EvaluationRu
 	defer rows.Close()
 
 	var entries []BehaviorEntry
+	// The scan targets live outside the loop. Scan takes their addresses, so
+	// declared inside it each would escape to the heap once per row — every
+	// ingest reads a run's entries back several times, and task 081's column
+	// would otherwise have added one more allocation per row to that.
+	var (
+		entry                                                      BehaviorEntry
+		actorType, operationCategory, targetCategory, observations string
+		operational, fidelity                                      string
+	)
 	for rows.Next() {
-		var entry BehaviorEntry
-		var actorType, operationCategory, targetCategory, observations, operational, fidelity string
-
+		entry = BehaviorEntry{}
 		if err := rows.Scan(&entry.FingerprintID, &actorType, &operationCategory,
 			&entry.Behavior.OperationName, &entry.Behavior.TargetName,
 			&targetCategory, &entry.Behavior.Environment, &observations, &operational, &fidelity); err != nil {

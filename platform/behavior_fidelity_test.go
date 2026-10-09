@@ -12,26 +12,48 @@ import (
 	"github.com/trustvian/trustvian/event"
 )
 
-// TestOnlyPairsTheLayerRuleAllowsAreAccepted walks every fidelity × layer pair
-// the envelope can spell, including absent.
-func TestOnlyPairsTheLayerRuleAllowsAreAccepted(t *testing.T) {
-	accepted := map[[2]string]bool{
-		{"", ""}:                   true,
-		{"transport", "transport"}: true,
-		{"semantic", ""}:           true,
-		{"semantic", "model"}:      true,
-		{"semantic", "tool"}:       true,
-		{"semantic", "retrieval"}:  true,
+// TestOnlyContradictoryPairsAreRefused walks every fidelity × layer pair the
+// envelope can spell, including absent, and where each accepted one is counted.
+func TestOnlyContradictoryPairsAreRefused(t *testing.T) {
+	refused := map[[2]string]bool{
+		{"transport", "model"}: true, {"transport", "tool"}: true, {"transport", "retrieval"}: true,
+		{"semantic", "transport"}: true,
+	}
+	counted := map[[2]string]BehaviorFidelity{
+		{"transport", "transport"}: {Transport: 1, LayerTransport: 1},
+		{"semantic", ""}:           {Semantic: 1, LayerUnclassified: 1},
+		{"semantic", "model"}:      {Semantic: 1, LayerModel: 1},
+		{"semantic", "tool"}:       {Semantic: 1, LayerTool: 1},
+		{"semantic", "retrieval"}:  {Semantic: 1, LayerRetrieval: 1},
 	}
 	for _, f := range []event.Fidelity{"", event.FidelityTransport, event.FidelitySemantic} {
 		for _, l := range []event.Layer{event.LayerUnspecified, event.LayerModel, event.LayerTool,
 			event.LayerRetrieval, event.LayerTransport} {
+			key := [2]string{string(f), string(l)}
 			err := validateFidelityPair(f, l)
-			if want := accepted[[2]string{string(f), string(l)}]; (err == nil) != want {
-				t.Errorf("(%q, %q): error %v, want accepted %v", f, l, err, want)
+			if (err != nil) != refused[key] {
+				t.Errorf("(%q, %q): error %v, want refused %v", f, l, err, refused[key])
 			}
-			if err != nil && !errors.Is(err, ErrInvalidFidelityPair) {
-				t.Errorf("(%q, %q): error %v is not ErrInvalidFidelityPair", f, l, err)
+			if err != nil {
+				if !errors.Is(err, ErrInvalidFidelityPair) {
+					t.Errorf("(%q, %q): error %v is not ErrInvalidFidelityPair", f, l, err)
+				}
+				continue
+			}
+			got, err := BehaviorFidelity{}.observe(f, l)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, ok := counted[key]
+			if !ok {
+				// Neither field, or only one: the pair is not stated.
+				want = unrecordedFidelity(1)
+			}
+			if got != want {
+				t.Errorf("(%q, %q) counted %+v, want %+v", f, l, got, want)
+			}
+			if err := validateBehaviorFidelity(got, 1); err != nil {
+				t.Errorf("(%q, %q) broke an invariant: %v", f, l, err)
 			}
 		}
 	}
