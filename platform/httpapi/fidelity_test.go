@@ -306,3 +306,50 @@ func TestComparisonsReportPersistedFidelity(t *testing.T) {
 		t.Errorf("repeated reference fidelity = %s", got)
 	}
 }
+
+// TestMaxLLMCallsPerRunOverHTTP: the limit is accepted, echoed and evaluated
+// from the persisted layer counts, and a candidate run with no semantically
+// named observation defers it (decision D8).
+func TestMaxLLMCallsPerRunOverHTTP(t *testing.T) {
+	a := newAPI(t)
+	a.completeRunWithFidelity("llm-ref", []observedOp{{"chat", "semantic", "model"}})
+	a.completeRunWithFidelity("llm-cand-1", []observedOp{
+		{"chat", "semantic", "model"}, {"chat", "semantic", "model"}, {"read", "semantic", "tool"}})
+	a.completeRunWithFidelity("llm-cand-plain", []observedOp{{"chat", "transport", "transport"}})
+	compare := func(candidate, limit string) map[string]any {
+		limits := repeatedLimitsBody("1", "0")
+		limits["max_llm_calls_per_run"] = limit
+		r := a.do("POST", "/v1/evaluations/compare-repeated", map[string]any{
+			"reference_run_ids": []string{"llm-ref"}, "candidate_run_ids": []string{candidate},
+			"gate_limits": limits,
+		})
+		a.mustStatus(r, 200, "compare-repeated")
+		var body struct {
+			GateLimits map[string]any `json:"gate_limits"`
+			Gate       struct {
+				Verdict         string           `json:"verdict"`
+				FrequencyChecks []map[string]any `json:"frequency_checks"`
+			} `json:"gate"`
+		}
+		if err := json.Unmarshal(r.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.GateLimits["max_llm_calls_per_run"] != limit || len(body.Gate.FrequencyChecks) != 4 {
+			t.Fatalf("echo %v, checks %v", body.GateLimits, body.Gate.FrequencyChecks)
+		}
+		check := body.Gate.FrequencyChecks[3]
+		check["verdict"] = body.Gate.Verdict
+		return check
+	}
+	if c := compare("llm-cand-1", "2"); c["name"] != "max_llm_calls_per_run" || c["state"] != "evaluated" ||
+		c["actual"] != "2" || c["bound"] != "2" || c["passed"] != true {
+		t.Errorf("evaluated check = %v", c)
+	}
+	if c := compare("llm-cand-1", "1"); c["passed"] != false || c["verdict"] != "fail" {
+		t.Errorf("violated check = %v", c)
+	}
+	if c := compare("llm-cand-plain", "100"); c["state"] != "deferred" || c["verdict"] != "fail" ||
+		!strings.Contains(c["missing_evidence"].(string), "no semantically named observation") {
+		t.Errorf("deferred check = %v", c)
+	}
+}

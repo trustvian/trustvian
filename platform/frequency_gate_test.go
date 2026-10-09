@@ -109,7 +109,8 @@ func TestDeferredChecksFailTheVerdict(t *testing.T) {
 		AddedCandidatePresenceMinimum: 1, MaxRepeatedAddedBehaviors: 100,
 		MaxBlockDecisionsPerRun: 100, MaxCriticalRiskObservationsPerRun: 100,
 		MinCandidateFrequency: NewOptionalGateLimit(1), MaxLostBehaviors: NewOptionalGateLimit(5),
-		MaxCallsPerRun: []TargetCallLimit{{Target: "t-c", Max: 100}},
+		MaxCallsPerRun:    []TargetCallLimit{{Target: "t-c", Max: 100}},
+		MaxLLMCallsPerRun: NewOptionalGateLimit(10),
 	}
 	c, err := reduceRepeated(all, 1, []repetitionInput{
 		runWith(SideReference, 1, map[string]uint64{"crm": 1}), failedCandidate,

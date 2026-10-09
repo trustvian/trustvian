@@ -31,6 +31,9 @@ type repeatedLimitsDTO struct {
 	MinCandidateFrequency *string               `json:"min_candidate_frequency,omitempty"`
 	MaxLostBehaviors      *string               `json:"max_lost_behaviors,omitempty"`
 	MaxCallsPerRun        *[]targetCallLimitDTO `json:"max_calls_per_run,omitempty"`
+
+	// Task 081's optional limit, the same way.
+	MaxLLMCallsPerRun *string `json:"max_llm_calls_per_run,omitempty"`
 }
 
 // targetCallLimitDTO is one max_calls_per_run entry.
@@ -59,6 +62,7 @@ type repeatedLimitsResponseDTO struct {
 	MinCandidateFrequency *string              `json:"min_candidate_frequency,omitempty"`
 	MaxLostBehaviors      *string              `json:"max_lost_behaviors,omitempty"`
 	MaxCallsPerRun        []targetCallLimitDTO `json:"max_calls_per_run,omitempty"`
+	MaxLLMCallsPerRun     *string              `json:"max_llm_calls_per_run,omitempty"`
 }
 
 // repetitionDTO is one repetition as the control plane found it, including its
@@ -146,9 +150,10 @@ type repeatedGateDTO struct {
 	Checks  []repeatedCheckDTO `json:"checks"`
 	Verdict string             `json:"verdict"`
 
-	// FrequencyChecks are task 106's three optional checks, always all three
-	// in their stable order, in a field of their own: checks is exactly six,
-	// and its consumers refuse a seventh. The verdict accounts for both.
+	// FrequencyChecks are the optional checks, always all four in their
+	// stable order — task 106's three, then task 081's max_llm_calls_per_run —
+	// in a field of their own: checks is exactly six, and its consumers refuse
+	// a seventh. The verdict accounts for both.
 	FrequencyChecks []frequencyCheckDTO `json:"frequency_checks"`
 }
 
@@ -340,6 +345,7 @@ func (l repeatedLimitsDTO) decode() (platform.RepeatedEvaluationGateLimits, erro
 	}{
 		{"min_candidate_frequency", l.MinCandidateFrequency, &out.MinCandidateFrequency},
 		{"max_lost_behaviors", l.MaxLostBehaviors, &out.MaxLostBehaviors},
+		{"max_llm_calls_per_run", l.MaxLLMCallsPerRun, &out.MaxLLMCallsPerRun},
 	} {
 		if field.value == nil {
 			continue
@@ -429,6 +435,7 @@ func newCompareRepeatedResponse(
 			MaxCriticalRiskObservationsPerRun: u64(l.MaxCriticalRiskObservationsPerRun),
 			MinCandidateFrequency:             optionalLimit(l.MinCandidateFrequency),
 			MaxLostBehaviors:                  optionalLimit(l.MaxLostBehaviors),
+			MaxLLMCallsPerRun:                 optionalLimit(l.MaxLLMCallsPerRun),
 			MaxCallsPerRun:                    targetCallLimitDTOs(l.MaxCallsPerRun),
 		},
 		Repetitions:          repetitions,

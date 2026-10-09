@@ -34,7 +34,8 @@ func TestEvalCompareRepeatedForwardsAndPrintsTheBody(t *testing.T) {
 		body := compareRepeatedReply(tt.verdict)
 		api.reply(200, body)
 		args := append(append(append([]string{}, compareRepeatedArgs...), "--min-candidate-frequency", "1",
-			"--max-calls-per-run", "crm.internal=6", "--max-calls-per-run", "kb=1=2", "--api-url", api.url()),
+			"--max-calls-per-run", "crm.internal=6", "--max-calls-per-run", "kb=1=2",
+			"--max-llm-calls-per-run", "40", "--api-url", api.url()),
 			tt.mode...)
 		result := runPlatformCLI(t, args...)
 		result.mustExit(t, tt.exit, "eval compare-repeated "+tt.verdict)
@@ -48,7 +49,8 @@ func TestEvalCompareRepeatedForwardsAndPrintsTheBody(t *testing.T) {
 			`"added_candidate_presence_minimum":"2","added_reference_presence_maximum":"0",` +
 			`"max_repeated_added_behaviors":"0","max_block_decisions_per_run":"0",` +
 			`"max_critical_risk_observations_per_run":"18446744073709551615","min_candidate_frequency":"1",` +
-			`"max_calls_per_run":[{"target":"crm.internal","max":"6"},{"target":"kb=1","max":"2"}]}}`
+			`"max_calls_per_run":[{"target":"crm.internal","max":"6"},{"target":"kb=1","max":"2"}],` +
+			`"max_llm_calls_per_run":"40"}}`
 		if string(request.body) != want {
 			t.Fatalf("request body\n%s\nwant\n%s", request.body, want)
 		}

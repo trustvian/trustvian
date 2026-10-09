@@ -15,6 +15,7 @@ func TestEvalRunForwardsTheFrequencyLimits(t *testing.T) {
   max_lost_behaviors: 0
   max_calls_per_run:
     - {target: crm.internal, max: 6}
+  max_llm_calls_per_run: 40
 `
 	if code, _, _ := runScenario(t, &recorder{}, api.url(), "--scenario", writeScenario(t, scenario)); code != exitOK {
 		t.Fatalf("exit %d", code)
@@ -29,6 +30,7 @@ func TestEvalRunForwardsTheFrequencyLimits(t *testing.T) {
 		"min_candidate_frequency": `"3"`,
 		"max_lost_behaviors":      `"0"`,
 		"max_calls_per_run":       `[{"target":"crm.internal","max":"6"}]`,
+		"max_llm_calls_per_run":   `"40"`,
 	} {
 		if got := string(body.GateLimits[key]); got != want {
 			t.Errorf("gate_limits.%s = %s, want %s", key, got, want)
@@ -42,7 +44,8 @@ func TestEvalRunForwardsTheFrequencyLimits(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	if raw := string(plain.request(t, "/complete")); strings.Contains(raw, "min_candidate_frequency") ||
-		strings.Contains(raw, "max_lost_behaviors") || strings.Contains(raw, "max_calls_per_run") {
+		strings.Contains(raw, "max_lost_behaviors") || strings.Contains(raw, "max_calls_per_run") ||
+		strings.Contains(raw, "max_llm_calls_per_run") {
 		t.Errorf("omitted limits were sent: %s", raw)
 	}
 }

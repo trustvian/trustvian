@@ -462,6 +462,7 @@ func (r scenarioRunner) execute(ctx context.Context, s streams, client *platform
 			MinCandidateFrequency:             optionalLimitBody(gate.MinCandidateFrequency),
 			MaxLostBehaviors:                  optionalLimitBody(gate.MaxLostBehaviors),
 			MaxCallsPerRun:                    targetLimitBodies(gate.MaxCallsPerRun),
+			MaxLLMCallsPerRun:                 optionalLimitBody(gate.MaxLLMCallsPerRun),
 		},
 	}, "scenario-executions", executionID, "complete")
 	if err != nil {
@@ -716,6 +717,8 @@ type repeatedLimitsBody struct {
 	MinCandidateFrequency *string           `json:"min_candidate_frequency,omitempty"`
 	MaxLostBehaviors      *string           `json:"max_lost_behaviors,omitempty"`
 	MaxCallsPerRun        []targetLimitBody `json:"max_calls_per_run,omitempty"`
+	// Task 081's optional limit, sent only when the scenario sets it.
+	MaxLLMCallsPerRun *string `json:"max_llm_calls_per_run,omitempty"`
 }
 
 type targetLimitBody struct {

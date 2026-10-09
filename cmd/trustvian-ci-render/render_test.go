@@ -1114,7 +1114,8 @@ func TestRenderAcceptsTask086Fields(t *testing.T) {
 
 // TestRenderAcceptsTask081Fields: the 079 renderer keeps rendering a result
 // document whose behavior rows carry task 081's per-side fidelity — a mixed
-// side, and a side with none — byte for byte as it rendered it without them.
+// side, and a side with none — and whose gate carries the fourth frequency
+// check, deferred, byte for byte as it rendered it without them.
 func TestRenderAcceptsTask081Fields(t *testing.T) {
 	fidelity := func(level string, mixed bool) map[string]any {
 		return map[string]any{"level": level, "mixed": mixed, "semantic": "2", "transport": "1",
@@ -1128,6 +1129,14 @@ func TestRenderAcceptsTask081Fields(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := artifact(t, tt.name)
 			plant := func(c map[string]any) {
+				obj(c, "gate_limits")["max_llm_calls_per_run"] = "40"
+				obj(c, "gate")["frequency_checks"] = []any{
+					map[string]any{"name": "min_candidate_frequency", "state": "not_evaluated"},
+					map[string]any{"name": "max_lost_behaviors", "state": "not_evaluated"},
+					map[string]any{"name": "max_calls_per_run", "state": "not_evaluated"},
+					map[string]any{"name": "max_llm_calls_per_run", "state": "deferred",
+						"missing_evidence": "run \"r\" has no semantically named observation; model calls cannot be counted"},
+				}
 				for i := range c["behaviors"].([]any) {
 					b := obj(c, "behaviors", i)
 					b["candidate_fidelity"] = fidelity("transport", true)

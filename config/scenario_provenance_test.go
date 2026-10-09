@@ -131,6 +131,8 @@ func TestScenarioDigestChangesOnAnyDefinitionValue(t *testing.T) {
 		{"a required limit", "max_block_decisions_per_run:", "max_block_decisions_per_run: 1"},
 		{"an optional limit", "min_candidate_frequency:", "min_candidate_frequency: 2"},
 		{"an optional limit removed", "min_candidate_frequency:", ""},
+		{"max_llm_calls_per_run added", "min_candidate_frequency:",
+			"min_candidate_frequency: 1\n  max_llm_calls_per_run: 40"},
 		{"an optional limit added", "max_critical_risk_observations_per_run:",
 			"max_critical_risk_observations_per_run: 0\n  max_lost_behaviors: 0"},
 		{"a per-target maximum", "- {target: crm.localhost, max: 9}", "- {target: crm.localhost, max: 10}"},
@@ -178,11 +180,28 @@ func TestScenarioDigestMatchesTheDocumentedEncoding(t *testing.T) {
 		`"gate":{"added_candidate_presence_minimum":1,"added_reference_presence_maximum":0,` +
 		`"max_repeated_added_behaviors":0,"max_block_decisions_per_run":0,` +
 		`"max_critical_risk_observations_per_run":0,"min_candidate_frequency":null,` +
-		`"max_lost_behaviors":null,"max_calls_per_run":null}}`
+		`"max_lost_behaviors":null,"max_calls_per_run":null,"max_llm_calls_per_run":null}}`
 	sum := sha256.Sum256([]byte(canonical))
 	want := "sha256:" + hex.EncodeToString(sum[:])
 	if got := mustScenario(t, validScenario).Digest(); got != want {
 		t.Fatalf("Digest() = %s, the documented encoding gives %s", got, want)
+	}
+}
+
+// TestTask081MovedEveryScenarioDigestOnce pins the one discontinuity task 081
+// made: the canonical gate gained max_llm_calls_per_run, encoded null when
+// omitted exactly as 106's limits are, so the same file digests differently
+// from a pre-081 CLI. The old value is what task 086 shipped for validScenario.
+func TestTask081MovedEveryScenarioDigestOnce(t *testing.T) {
+	const before081 = "sha256:89b64730b24de44ee55062fffab59cfe63f2eceec3f568f6695dd77beec53194"
+	const after081 = "sha256:d54f9e98e7d43636a65a92e6c610d3a8e2713b4b46a589d7a61eeb17b08181ad"
+	if got := mustScenario(t, validScenario).Digest(); got != after081 || got == before081 {
+		t.Fatalf("Digest() = %s; want %s (it was %s before task 081)", got, after081, before081)
+	}
+	with := mustScenario(t, replaceLine(t, validScenario, "max_critical_risk_observations_per_run:",
+		"max_critical_risk_observations_per_run: 0\n  max_llm_calls_per_run: 40")).Digest()
+	if with == after081 {
+		t.Fatal("setting max_llm_calls_per_run left the digest unchanged")
 	}
 }
 

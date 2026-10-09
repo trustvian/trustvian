@@ -65,7 +65,8 @@ func TestCompareRepeatedAtNEqualsOneIsUnchanged(t *testing.T) {
 	// nothing else.
 	if want := `"frequency_checks":[{"name":"min_candidate_frequency","state":"not_evaluated"},` +
 		`{"name":"max_lost_behaviors","state":"not_evaluated"},` +
-		`{"name":"max_calls_per_run","state":"not_evaluated"}]`; !bytes.Contains(got, []byte(want)) {
+		`{"name":"max_calls_per_run","state":"not_evaluated"},` +
+		`{"name":"max_llm_calls_per_run","state":"not_evaluated"}]`; !bytes.Contains(got, []byte(want)) {
 		t.Errorf("frequency checks with the limits omitted:\n%s", got)
 	}
 	for _, member := range append(append(slices.Clone(task106Members), task086Members...), task081Members...) {

@@ -59,6 +59,13 @@ func TestCompareRepeatedIsUnchangedButForSameness(t *testing.T) {
 	for _, name := range append(slices.Clone(task086Members), task081Members...) {
 		got = withoutMember(t, got, name)
 	}
+	// Task 081's fourth optional check, not evaluated when omitted: the one
+	// additive entry in gate.frequency_checks.
+	fourth := []byte(`,{"name":"max_llm_calls_per_run","state":"not_evaluated"}`)
+	if !bytes.Contains(got, fourth) {
+		t.Fatalf("the response does not carry max_llm_calls_per_run as not evaluated:\n%s", got)
+	}
+	got = bytes.Replace(got, fourth, nil, 1)
 	if !bytes.Equal(bytes.TrimSpace(got), bytes.TrimSpace(before)) {
 		t.Fatalf("the pre-086 response changed:\n got %s\nwant %s", got, before)
 	}
