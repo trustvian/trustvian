@@ -127,6 +127,12 @@ type ScenarioExecution struct {
 	// repetitions is empty until completed, then exactly N per side, each
 	// side in index order 1..N, reference side first.
 	repetitions []ScenarioRepetition
+
+	// provenance is what each side ran (task 086), fixed when the execution
+	// begins: index 0 the reference side, 1 the candidate side. A reused
+	// reference side carries the referenced execution's reference-side
+	// provenance, copied, because those are the runs it reuses.
+	provenance [2]SideProvenance
 }
 
 // NewScenarioExecution returns a running execution. reference is empty for an
@@ -192,6 +198,25 @@ func (e ScenarioExecution) SideRepetitions(side ComparisonSide) []ScenarioRepeti
 		}
 	}
 	return out
+}
+
+// Provenance returns what the execution recorded for one side; the zero
+// value — nothing recorded — for an execution begun before schema 12.
+func (e ScenarioExecution) Provenance(side ComparisonSide) SideProvenance {
+	if side == SideReference {
+		return e.provenance[0]
+	}
+	return e.provenance[1]
+}
+
+// withProvenance returns the execution carrying each side's provenance.
+func (e ScenarioExecution) withProvenance(reference, candidate SideProvenance) (ScenarioExecution, error) {
+	next := e
+	next.provenance = [2]SideProvenance{reference, candidate}
+	if err := next.validate(); err != nil {
+		return ScenarioExecution{}, err
+	}
+	return next, nil
 }
 
 // complete returns the completed execution. The sequence is assigned by the
@@ -265,6 +290,11 @@ func (e ScenarioExecution) validate() error {
 	}
 	if e.startedAt.IsZero() {
 		return fmt.Errorf("%w: scenario execution started_at is not set", ErrInvalidTimestamp)
+	}
+	for _, p := range e.provenance {
+		if err := p.validate(); err != nil {
+			return err
+		}
 	}
 
 	running := e.status == ScenarioExecutionRunning

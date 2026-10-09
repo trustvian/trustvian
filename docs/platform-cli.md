@@ -110,6 +110,16 @@ trustvian eval run          --suite <dir> --scenario-timeout <duration>
 trustvian eval operational  --reference-run <id> --candidate-run <id>
                             [--reference-run <id> --candidate-run <id> ...]
                             [--after <cursor>] [--limit <n>]
+trustvian eval compare-repeated
+                            --reference-run <id> [--reference-run <id> ...]
+                            --candidate-run <id> [--candidate-run <id> ...]
+                            --added-candidate-presence-minimum <k>
+                            --added-reference-presence-maximum <j>
+                            --max-repeated-added-behaviors <n>
+                            --max-block-decisions-per-run <n>
+                            --max-critical-risk-observations-per-run <n>
+                            [--min-candidate-frequency <n>] [--max-lost-behaviors <n>]
+                            [--max-calls-per-run <target>=<max> ...]
 
 trustvian env create   --project-id <id> --ref <ref> --name <name> [--rank <n>]
 trustvian env get      --project-id <id> --ref <ref>
@@ -264,6 +274,33 @@ most 64 rows, and `next_after` is the `--after` for the next one. Exit status is
 
 Latency is descriptive. Through a model-driven agent the model dominates it,
 and nothing here attributes a change to the change under test.
+
+### Any runs, repeated: `eval compare-repeated`
+
+`trustvian eval run` reaches the repeated comparison through a scenario
+execution. `eval compare-repeated` asks `POST /v1/evaluations/compare-repeated`
+about any runs, for example two executions' candidate sides:
+
+```text
+trustvian eval compare-repeated \
+  --reference-run scn-a-candidate-1 --reference-run scn-a-candidate-2 \
+  --candidate-run scn-b-candidate-1 --candidate-run scn-b-candidate-2 \
+  --added-candidate-presence-minimum 2 --added-reference-presence-maximum 0 \
+  --max-repeated-added-behaviors 0 --max-block-decisions-per-run 0 \
+  --max-critical-risk-observations-per-run 0
+```
+
+Repeat each run flag once per repetition, in order. The five limits are
+required and none has a default, as in a scenario file. Task 106's three
+limits are optional, with `--max-calls-per-run <target>=<max>` repeated once
+per target. The command prints the response body unchanged in both output
+modes, `sameness` and `warnings` included. Like `eval compare`, it reads only
+`gate.verdict`, for its exit status: `0` PASS, `1` FAIL, `2` usage, `3` an API
+failure or a verdict it does not recognize.
+
+Sameness here comes from the executions that recorded the runs: each side
+states a value only when every one of its runs was recorded with the same one
+(see [Provenance](#provenance-what-each-side-ran)).
 
 ### Following a finding to its evidence
 
@@ -773,8 +810,97 @@ Gate (k = 1, j = 0)
 
 **`--json`** writes the result document: the scenario name and `runs`, the
 execution id, both producer versions (`cli_version`, `control_plane_version`),
-and the server's repeated result under `comparison`. With `--reference` it also
-carries `reference`: the mode asked for and the execution that was reused.
+`provenance` as the control plane recorded it (task 086), and the server's
+repeated result under `comparison`. With `--reference` it also carries
+`reference`: the mode asked for and the execution that was reused.
+
+### Provenance: what each side ran
+
+"Did I change the model, the prompt, the scenario or the inputs?" is answered
+on the comparison itself (task 086,
+[ADR 0067](adr/0067-scenario-provenance-is-recorded-per-execution-side.md)).
+Every execution records, per side, a scenario digest, an input digest and the
+model and prompt reference the side declared. Every comparison then says
+whether the two sides were the same.
+
+Optional fields in the scenario file:
+
+```yaml
+inputs: [fixtures/tickets.json, fixtures/accounts.csv]   # relative to this file
+reference:
+  model: llama3.2                   # stated, or
+candidate:
+  model_env: OLLAMA_MODEL           # read from the side's environment
+  prompt_ref: {name: support/system@v14, digest: "sha256:<64 hex>"}
+  # or prompt_ref_env: SUPPORT_PROMPT_REF, holding <name>@sha256:<64 hex>
+```
+
+- **What moves `scenario_digest`:** any value of the definition — name,
+  `runs`, scope, commands, env *keys*, input paths and **every gate limit**, so
+  a changed threshold alone reads `same_scenario: "false"` with a
+  `scenario_differs` warning. What does not: env *values*, input contents
+  (those are `input_digest`), the model and the prompt reference.
+- **`scenario_digest`** is `sha256:` and the hex SHA-256 of the validated
+  scenario re-encoded as canonical JSON. The encoding has a fixed field order,
+  `env` reduced to its sorted keys, `inputs` as sorted clean paths,
+  `max_calls_per_run` sorted by target, and an omitted optional limit as
+  `null`. Comments, formatting and key order change nothing; any value does.
+  Environment *values* are never digested: they often hold secrets, and a
+  digest of a short secret can be brute-forced. `model`, `model_env`,
+  `prompt_ref` and `prompt_ref_env` are excluded too. They are compared on
+  their own, so a run that changed only its model has the same scenario
+  digest.
+- **`input_digest`** is `sha256:` over the canonical JSON list of
+  `{"path", "sha256"}`. The list is sorted by path. Each path is written with
+  `/`, lexically clean and relative to the scenario file, and `sha256` is the
+  hex digest of the file's exact bytes, so a changed line ending is a changed
+  input. Each input must be a regular file of at most 64 MiB inside the
+  repository: the nearest directory above the scenario holding `.git`, after
+  symbolic links. A scenario may list at most 64 inputs. With no `inputs:`,
+  nothing is declared, and the execution records `not_declared`, not the
+  digest of an empty list. The runner does not pass inputs to the workload;
+  `command` still decides what it reads.
+- **`model` and `prompt_ref`** are declarations, never observations and never
+  content. Each side states one in the file, or names a variable of the
+  environment its workload runs with (the process environment plus the side's
+  `env`). An unset or empty variable declares nothing. A model and a prompt
+  name are 1 to 128 characters with no whitespace, so neither can hold prompt
+  text; a prompt digest is `sha256:` and 64 lowercase hex. Refusing is not
+  proof that a value is not text: the format rule guards against pasting a
+  prompt by accident, and is not a privacy guarantee. Put only a name and a
+  digest there. A value that does
+  not fit is exit `2` before anything runs. With `--reference`, the reused
+  reference side keeps the declarations of the execution that ran it.
+
+The CLI computes both digests and sends them with the declarations when the
+execution begins. The control plane checks their format and stores them; it
+cannot recompute them, so a digest is exactly as trustworthy as the client
+that sent it. `eval run` prints the recorded digests on stderr as the execution
+begins. The human result prints what was recorded and the `sameness` block:
+
+```text
+Recorded
+  reference: scenario sha256:f9a2…0e8d   inputs not_declared   model llama3.2   prompt_ref not_recorded
+  candidate: scenario sha256:f9a2…0e8d   inputs not_declared   model gemma3:4b   prompt_ref not_recorded
+
+Sameness
+  same_scenario    true
+  same_inputs      true
+  same_model       false
+  same_prompt_ref  not_recorded
+  …
+  warning model_differs: The reference and candidate sides declared different models.
+```
+
+Each answer is `true`, `false` or `not_recorded`. A value missing on either
+side is `not_recorded`, never `false`. That covers an execution from before
+schema 12, a client that sent no provenance, and a side that declared no
+model. Each `false` adds a warning (`scenario_differs`, `inputs_differ`,
+`model_differs`, `prompt_ref_differs`). Warnings state a fact and give no
+advice: a changed model is often the point of the comparison. **No check reads
+sameness or warnings, and neither changes the verdict.**
+
+**Upgrade the control plane before the CLI.** A control plane older than task 086 refuses the `provenance` field that `trustvian eval run` sends when it begins a scenario execution, and the run fails with `400` before any workload starts. `trustvian dev` itself sends no provenance and is unaffected.
 
 ### Calibrating `N`, `k` and `j`
 

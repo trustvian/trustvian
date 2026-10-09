@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -43,7 +44,9 @@ var task106Members = []string{
 // TestCompareRepeatedAtNEqualsOneIsUnchanged is task 106's technical
 // requirement 3: at N = 1 with none of the new limits, the response is the one
 // the control plane returned before 106 (captured from main at 946a4fc), byte
-// for byte, once the added reporting members are removed.
+// for byte, once the added reporting members are removed — 106's, and since
+// task 086 its sameness and warnings, which TestCompareRepeatedIsUnchangedBut
+// ForSameness holds to main at a1ee3fd.
 func TestCompareRepeatedAtNEqualsOneIsUnchanged(t *testing.T) {
 	before, err := os.ReadFile(filepath.Join("testdata", "compare-repeated-n1-before-106.json"))
 	if err != nil {
@@ -65,7 +68,7 @@ func TestCompareRepeatedAtNEqualsOneIsUnchanged(t *testing.T) {
 		`{"name":"max_calls_per_run","state":"not_evaluated"}]`; !bytes.Contains(got, []byte(want)) {
 		t.Errorf("frequency checks with the limits omitted:\n%s", got)
 	}
-	for _, member := range task106Members {
+	for _, member := range append(slices.Clone(task106Members), task086Members...) {
 		if !bytes.Contains(got, []byte(`"`+member+`":`)) {
 			t.Errorf("the response does not carry %s", member)
 		}

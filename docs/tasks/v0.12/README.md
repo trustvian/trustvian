@@ -11,7 +11,7 @@ Their specifications live here because this is the milestone that builds them.
 | [105 — Pipeline status surface](105-pipeline-status-surface.md) | Implemented |
 | [087 — Performance and cost evidence](087-performance-and-cost-evidence.md) | Implemented |
 | [106 — Frequency evidence](106-frequency-evidence.md) | Implemented |
-| [086 — Scenario and input versioning](086-scenario-and-input-versioning.md) | Specified |
+| [086 — Scenario and input versioning](086-scenario-and-input-versioning.md) | Implemented |
 | [081 — Persisted per-behavior fidelity](081-persisted-behavior-fidelity.md) | Specified |
 | [107 — Change Impact view and Model Change Report](107-change-impact-view-and-report.md) | Specified |
 
@@ -27,7 +27,7 @@ it reads (decision D3).
 
 **Schema steps.** 087, 086, 081 and 107 (the gate-result snapshot on an
 execution) each add one forward-only step on both backends, numbered in the
-order they land. 105 and 106 add none: 105's state is ephemeral, and 106 reads
+order they land: 087 took v11 and 086 took v12. 105 and 106 add none: 105's state is ephemeral, and 106 reads
 evidence that is already persisted.
 
 Every task here keeps the milestone's constraints:

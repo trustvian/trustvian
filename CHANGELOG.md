@@ -79,6 +79,26 @@ actually depend on.
     scope-less `status_changed` realtime event that reaches only unfiltered
     streams. There is no polling.
 
+- **Scenario, input and prompt provenance** (task 086,
+  [ADR 0067](docs/adr/0067-scenario-provenance-is-recorded-per-execution-side.md)).
+  A repeated comparison now says whether both sides ran the same scenario, the
+  same inputs, the same model and the same prompt.
+  - A scenario file may list `inputs:` (up to 64 files, each up to 64 MiB,
+    inside the repository). Each side may declare a `model` (or `model_env`,
+    a variable of its environment) and a `prompt_ref` with a name and a digest
+    (or `prompt_ref_env`). Each declaration is an identifier with no
+    whitespace, never prompt text.
+  - `trustvian eval run` sends three things when it begins an execution:
+    `scenario_digest` (canonical JSON of the file, env values excluded),
+    `input_digest` (the declared files, byte for byte) and the declarations.
+    It prints what was recorded. Each execution side persists them at platform
+    schema 12, and executions from before the step read *not recorded*.
+  - Every repeated comparison carries `sameness`: `same_scenario`,
+    `same_inputs`, `same_model` and `same_prompt_ref`, each `true`, `false` or
+    `not_recorded`, with both sides' values. Each `false` adds a `warnings[]`
+    entry. No check reads either, and the verdict is unchanged.
+  - New `trustvian eval compare-repeated` prints the repeated comparison of
+    any runs, body unchanged.
 - **Frequency evidence** (task 106,
   [ADR 0066](docs/adr/0066-a-per-target-call-limit-is-one-named-check-over-a-bounded-list.md)).
   A repeated comparison now says how often, not only whether.
@@ -118,6 +138,10 @@ actually depend on.
   - `trustvian-local --pricing <file>` adds a `cost` section in integer
     micro-units, with the table's version, source and digest on every figure.
     Trustvian ships no prices. There is no cost gate.
+
+### Changed
+
+- **Upgrade the control plane before the CLI.** A control plane older than task 086 refuses the `provenance` field that `trustvian eval run` sends when it begins a scenario execution, and the run fails with `400` before any workload starts. `trustvian dev` itself sends no provenance and is unaffected.
 
 ## v0.11.0 — webui feature
 

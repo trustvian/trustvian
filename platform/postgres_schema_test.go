@@ -117,6 +117,14 @@ func statementVersion(stmt string) (int, bool) {
 	if strings.HasPrefix(trimmed, `ALTER TABLE `+tablePromotions+` ADD COLUMN `) {
 		return schemaVersionV8, true
 	}
+	// v12: task 086's scenario provenance columns, ALTER statements on a
+	// fresh database too. Checked before v10, which adds a column to the same
+	// table.
+	for _, column := range scenarioProvenanceColumns() {
+		if trimmed == `ALTER TABLE `+tableScenarioExecutions+` ADD COLUMN `+column+` TEXT` {
+			return schemaVersionV12, true
+		}
+	}
 	// v10: task 101's recency keys, ALTER statements on a fresh database too.
 	if strings.HasPrefix(trimmed, `ALTER TABLE `+tableRuns+` ADD COLUMN `) ||
 		strings.HasPrefix(trimmed, `ALTER TABLE `+tableScenarioExecutions+` ADD COLUMN `) {

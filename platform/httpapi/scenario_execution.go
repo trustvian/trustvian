@@ -33,6 +33,9 @@ type beginScenarioExecutionRequest struct {
 	AgentID      string                `json:"agent_id"`
 	Environment  string                `json:"environment"`
 	Reference    *scenarioReferenceDTO `json:"reference,omitempty"`
+
+	// Provenance is task 086's: optional, and nothing is recorded without it.
+	Provenance *executionProvenanceDTO `json:"provenance,omitempty"`
 }
 
 type completeScenarioExecutionRequest struct {
@@ -64,6 +67,10 @@ type scenarioExecutionDTO struct {
 	CompletionSequence   string                  `json:"completion_sequence,omitempty"`
 	Verdict              string                  `json:"verdict,omitempty"`
 	Repetitions          []scenarioRepetitionDTO `json:"repetitions"`
+
+	// Provenance is what each side ran (task 086). A reused reference side
+	// carries the referenced execution's.
+	Provenance executionProvenanceResponseDTO `json:"provenance"`
 }
 
 type scenarioExecutionResponse struct {
@@ -130,8 +137,9 @@ func (h *Handler) beginScenarioExecution(w http.ResponseWriter, r *http.Request)
 				AgentID:     platform.AgentID(request.AgentID),
 				Environment: platform.EnvironmentRef(request.Environment),
 			},
-			Reference: reference,
-			At:        h.now(),
+			Reference:  reference,
+			At:         h.now(),
+			Provenance: request.Provenance.decode(),
 		})
 	if err != nil {
 		h.writeError(w, err)
@@ -235,6 +243,7 @@ func newScenarioExecutionDTO(e platform.ScenarioExecution) scenarioExecutionDTO 
 		CompletionSequence:   sequence,
 		Verdict:              string(e.Verdict()),
 		Repetitions:          repetitions,
+		Provenance:           newExecutionProvenanceDTO(e),
 	}
 }
 

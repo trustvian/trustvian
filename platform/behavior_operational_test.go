@@ -28,6 +28,7 @@ func behaviorOperationalColumns() []string { return []string{columnOperationalCo
 // gone, version 10 stamped. exec runs one statement against it.
 func downgradeToV10(t testing.TB, exec func(string) error) {
 	t.Helper()
+	downgradeToV11(t, exec)
 	for _, column := range behaviorOperationalColumns() {
 		if err := exec(`ALTER TABLE ` + tableEntries + ` DROP COLUMN ` + column); err != nil {
 			t.Fatalf("drop v11 column %s: %v", column, err)

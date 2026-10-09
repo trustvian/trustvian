@@ -42,6 +42,11 @@ type BeginScenarioExecutionRequest struct {
 	Scope        ScenarioScope
 	Reference    ScenarioReference
 	At           time.Time
+
+	// Provenance is what the client recorded about the scenario it runs
+	// (task 086). The zero value records nothing, which is what a client
+	// predating it sends.
+	Provenance ExecutionProvenance
 }
 
 // CompleteScenarioExecutionRequest finishes one execution.
@@ -99,6 +104,15 @@ func (c *ControlPlane) BeginScenarioExecution(
 		request.Runs, request.Reference.ExecutionID, request.At); err != nil {
 		return ScenarioExecution{}, ScenarioExecution{}, err
 	}
+	if err := request.Provenance.validate(); err != nil {
+		return ScenarioExecution{}, ScenarioExecution{}, err
+	}
+	if request.Reference.Recorded() && request.Provenance.Reference != (SideDeclaration{}) {
+		return ScenarioExecution{}, ScenarioExecution{}, fmt.Errorf(
+			"%w: a reused reference side ran under the referenced execution, whose model and prompt "+
+				"reference are already recorded; this execution declares only its candidate side",
+			ErrInvalidRepeatedRequest)
+	}
 
 	var reference ScenarioExecution
 	if request.Reference.Recorded() {
@@ -117,6 +131,17 @@ func (c *ControlPlane) BeginScenarioExecution(
 
 	execution, err := NewScenarioExecution(request.ID, request.ScenarioName, request.Scope,
 		request.Runs, reference.ID(), request.At)
+	if err != nil {
+		return ScenarioExecution{}, ScenarioExecution{}, err
+	}
+	// The reference side's provenance is whoever ran its runs: this
+	// execution, or — reused — the referenced execution's reference side,
+	// copied, so a chain of reuse keeps naming the execution that ran them.
+	referenceSide := request.Provenance.side(request.Provenance.Reference)
+	if request.Reference.Recorded() {
+		referenceSide = reference.Provenance(SideReference)
+	}
+	execution, err = execution.withProvenance(referenceSide, request.Provenance.side(request.Provenance.Candidate))
 	if err != nil {
 		return ScenarioExecution{}, ScenarioExecution{}, err
 	}
@@ -244,7 +269,8 @@ func (c *ControlPlane) requireRunInScope(
 
 // CompleteScenarioExecution evaluates an execution and records it completed.
 //
-// The verdict is CompareRepeatedEvaluations', called once and unchanged: every
+// The verdict is CompareRepeatedEvaluations' comparison, called once and
+// unchanged; only its sameness is this execution's own record. Every
 // rule that holds for a self-contained comparison — isolation across all 2N
 // profiles, one environment, one-to-one identity, complete evidence, the six
 // checks — holds for one that reuses a recorded reference, because it is the
@@ -328,7 +354,7 @@ func (c *ControlPlane) CompleteScenarioExecution(
 		}
 	}
 
-	comparison, err := c.CompareRepeatedEvaluations(ctx, RepeatedEvaluationRequest{
+	comparison, err := c.compareRepeated(ctx, RepeatedEvaluationRequest{
 		ReferenceRunIDs: referenceIDs,
 		CandidateRunIDs: request.CandidateRunIDs,
 		Limits:          request.Limits,
@@ -336,6 +362,11 @@ func (c *ControlPlane) CompleteScenarioExecution(
 	if err != nil {
 		return none(err)
 	}
+	// This execution's own record, not a lookup by run: its candidate runs
+	// are associated only once it completes, and its reference side carries
+	// whichever execution ran those runs.
+	comparison.Sameness, comparison.Warnings = newComparisonSameness(
+		execution.Provenance(SideReference), execution.Provenance(SideCandidate))
 
 	repetitions := make([]ScenarioRepetition, 0, len(comparison.Repetitions))
 	for _, r := range comparison.Repetitions {

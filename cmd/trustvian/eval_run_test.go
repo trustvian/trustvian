@@ -115,6 +115,9 @@ type scenarioAPI struct {
 	beginError, completeError   string
 	verdict                     string
 	reference                   string
+	// beginProvenance, when set, is the execution's provenance in the begin
+	// reply; sameness, when set, is added to the comparison (task 086).
+	beginProvenance, sameness string
 	// Per-execution overrides, keyed by execution id, for suites.
 	verdicts          map[string]string
 	completeStatusFor map[string]int
@@ -148,8 +151,13 @@ func newScenarioAPI(t *testing.T, verdict string) *scenarioAPI {
 			if len(body.Reference) > 0 {
 				reference = fmt.Sprintf(`,"reference_execution":{"id":%q,"status":"completed"}`, api.reference)
 			}
+			provenance := ""
+			if api.beginProvenance != "" {
+				provenance = `,"provenance":` + api.beginProvenance
+			}
 			w.WriteHeader(201)
-			fmt.Fprintf(w, `{"version":"1","execution":{"id":%q,"status":"running"}%s}`, body.ID, reference)
+			fmt.Fprintf(w, `{"version":"1","execution":{"id":%q,"status":"running"%s}%s}`, body.ID, provenance,
+				reference)
 		case strings.HasSuffix(r.URL.Path, "/complete"):
 			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/scenario-executions/"), "/complete")
 			if status, ok := api.completeStatusFor[id]; ok && status != 200 {
@@ -166,9 +174,13 @@ func newScenarioAPI(t *testing.T, verdict string) *scenarioAPI {
 			if v, ok := api.verdicts[id]; ok {
 				verdict = v
 			}
+			comparison := repeatedReply(verdict)
+			if api.sameness != "" {
+				comparison = strings.TrimSuffix(comparison, "}") + "," + api.sameness + "}"
+			}
 			w.WriteHeader(200)
 			fmt.Fprintf(w, `{"version":"1","execution":{"id":%q,"status":"completed"},"comparison":%s}`,
-				id, repeatedReply(verdict))
+				id, comparison)
 		case strings.HasSuffix(r.URL.Path, "/fail"):
 			w.WriteHeader(200)
 			fmt.Fprint(w, `{"version":"1","execution":{"id":"scn-test","status":"failed"}}`)

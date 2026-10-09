@@ -221,7 +221,45 @@ type compareRepeatedResponse struct {
 	Suggestions          []suggestionDTO `json:"suggestions"`
 	SuggestionsTruncated bool            `json:"suggestions_truncated"`
 
+	// Task 086: whether both sides ran the same scenario, inputs, model and
+	// prompt, and a warning per difference. Beside the gate; no check reads
+	// either.
+	Sameness samenessDTO  `json:"sameness"`
+	Warnings []warningDTO `json:"warnings"`
+
 	Producer producerDTO `json:"producer"`
+}
+
+// samenessDTO is each answer — "true", "false" or "not_recorded", always a
+// string — and both sides' recorded values.
+type samenessDTO struct {
+	SameScenario  string            `json:"same_scenario"`
+	SameInputs    string            `json:"same_inputs"`
+	SameModel     string            `json:"same_model"`
+	SamePromptRef string            `json:"same_prompt_ref"`
+	Reference     sideProvenanceDTO `json:"reference"`
+	Candidate     sideProvenanceDTO `json:"candidate"`
+}
+
+type warningDTO struct {
+	Code string `json:"code"`
+	Text string `json:"text"`
+}
+
+func newSamenessDTO(s platform.ComparisonSameness) samenessDTO {
+	return samenessDTO{
+		SameScenario: string(s.SameScenario), SameInputs: string(s.SameInputs),
+		SameModel: string(s.SameModel), SamePromptRef: string(s.SamePromptRef),
+		Reference: newSideProvenanceDTO(s.Reference), Candidate: newSideProvenanceDTO(s.Candidate),
+	}
+}
+
+func newWarningDTOs(warnings []platform.ComparisonWarning) []warningDTO {
+	out := make([]warningDTO, 0, len(warnings))
+	for _, w := range warnings {
+		out = append(out, warningDTO{Code: w.Code, Text: w.Text})
+	}
+	return out
 }
 
 func (h *Handler) compareRepeated(w http.ResponseWriter, r *http.Request) {
@@ -392,6 +430,8 @@ func newCompareRepeatedResponse(
 		LostTransitions:      c.LostTransitions,
 		Suggestions:          newSuggestionDTOs(c.Suggestions),
 		SuggestionsTruncated: c.SuggestionsTruncated,
+		Sameness:             newSamenessDTO(c.Sameness),
+		Warnings:             newWarningDTOs(c.Warnings),
 		Operational:          newOperationalSectionsDTO(c.Operational, c.Cost),
 		Gate: repeatedGateDTO{Checks: checks, Verdict: string(c.Gate.Verdict()),
 			FrequencyChecks: newFrequencyCheckDTOs(c.Gate.FrequencyChecks())},

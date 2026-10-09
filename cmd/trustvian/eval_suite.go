@@ -193,7 +193,13 @@ func (r scenarioRunner) suiteMain(s streams, common commonFlags, opts suiteOptio
 			}
 			return emitError(s, *common.json, err)
 		}
-		files = append(files, suiteFile{name: name, job: scenarioJob{scenario: scenario, scope: scope}})
+		provenance, err := scenarioProvenance(scenario, filepath.Join(opts.directory, name), opts.collectorBin,
+			opts.referenceSet)
+		if err != nil {
+			return usage(usageErrorf("%s: %v", name, err))
+		}
+		files = append(files, suiteFile{name: name,
+			job: scenarioJob{scenario: scenario, scope: scope, provenance: provenance}})
 	}
 
 	client, err := resolveAPIURL(*common.apiURL, common.apiURLSet(), httpTimeout)

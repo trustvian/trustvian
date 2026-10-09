@@ -46,12 +46,26 @@ and every cell is a field of a `/v1` response:
 
 | Section | Source | Columns |
 |---|---|---|
-| Sameness | 086 `sameness`, `warnings[]` | scenario, inputs, model, prompt: same / different / not stated, with digests |
-| Behaviors | 078 presence + 106 frequency + 081 fidelity | behavior · k/N reference · k/N candidate · calls/run (min–max, mean) per side · classification · fidelity (with `mixed`) |
+| Sameness | 086 `sameness`, `warnings[]` | scenario, inputs, model, prompt: `true` / `false` / `not_recorded` as the strings 086 returns, with both sides' recorded values (digests, `inputs` state, model, prompt name and digest) |
+| Behaviors | 078 presence + 106 frequency + 081 fidelity | behavior · k/N reference · k/N candidate · calls/run (min–max, mean) per side · classification · lost · fidelity (with `mixed`) |
 | Targets | 106 per-target + 087 operational | target · calls total per side · ratio ‰ · latency buckets per side · status classes · 429s |
 | Tokens and cost | 087 `tokens`, cost with provenance | per side; cost only with `pricing_version` and `source` |
-| Gate | 056/078/106 checks | every check, including `not_evaluated` and `deferred` |
+| Gate | 056/078 `gate.checks` + 106 `gate.frequency_checks` | every check from both arrays, read together: the six `checks`, then the three `frequency_checks` with their `state` (`not_evaluated`, `evaluated`, `deferred`), per-target rows for `max_calls_per_run`, and `missing_evidence` when deferred |
 | Suggestions | 105/106 `suggestions[]` | `rule`, `text`, evidence |
+
+**Amends this table (spec maintenance after 106 and 086 landed).** 106
+shipped `lost` as a boolean beside `classification`, not as a fourth
+classification value, and its three checks in `gate.frequency_checks`, not in
+`gate.checks`. Both choices keep 079's closed vocabulary and its exactly-six
+checks. Change Impact and the shared renderer therefore:
+
+- read `gate.checks` and `gate.frequency_checks` together, as one gate;
+- render the boolean `lost` as its own column;
+- never expect `lost` among `classification`'s values, or a seventh entry in
+  `gate.checks`.
+
+086's sameness answers are the strings `"true"`, `"false"` and
+`"not_recorded"`, not booleans and not `not_stated`.
 
 **k/N is rendered by the control plane.** Each behavior row carries
 `runs_present` and N. The response gains a display string `"8/10"` that the
@@ -79,7 +93,9 @@ The JSON is the **result document, version 2**. It is version 1 (078 § *Result
 document*) plus the 086, 087, 106 and 081 sections and `suggestions[]`, all
 additive. `cmd/trustvian-ci-render` gains the new sections, keeps rendering
 version 1 documents byte-identically (the existing golden files stay as they
-are), and has new golden files for version 2.
+are), and has new golden files for version 2. Its gate section renders
+`gate.checks` and `gate.frequency_checks` together, and its behavior table
+renders the boolean `lost`, as § 1 amends.
 
 **The Markdown is identical to the 079 comment because it is produced by the
 same code.** There is one renderer. Reaching identical output by maintaining
@@ -135,6 +151,16 @@ Overview, Runs and promotions open Compare with sides preselected (task 099,
 execution, Change Impact shows the single-run comparison's sections and marks
 frequency, sameness and repeated fidelity *not applicable — not a scenario
 execution*.
+
+### Open decision: sameness on the single-run comparison
+
+Task 086 puts `sameness` and `warnings[]` on the repeated comparison only.
+`POST /v1/evaluations/compare` does not carry them, and the entry-points
+paragraph above marks sameness *not applicable* for a pair of runs outside an
+execution. This task decides whether that stays, or whether the single-run
+comparison gains the same block, looked up through the executions that
+recorded each run, as compare-repeated already does. Either way the answer is
+additive and no check reads it.
 
 ## Non-goals
 

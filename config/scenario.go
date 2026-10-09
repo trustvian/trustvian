@@ -76,6 +76,12 @@ type ScenarioConfig struct {
 	Environment     string `yaml:"environment"`
 	Instrumentation string `yaml:"instrumentation"`
 
+	// Inputs optionally declares the files that make up the scenario's input
+	// set (task 086): paths relative to the scenario file, digested into
+	// input_digest. The runner never passes them to the workload — command
+	// still decides what the workload reads.
+	Inputs []string `yaml:"inputs"`
+
 	Reference ScenarioSide `yaml:"reference"`
 	Candidate ScenarioSide `yaml:"candidate"`
 	Gate      ScenarioGate `yaml:"gate"`
@@ -88,6 +94,16 @@ type ScenarioSide struct {
 	// Candidate optionally names the candidate this side evaluates; omitted,
 	// `trustvian dev` derives it from the repository as it always does.
 	Candidate string `yaml:"candidate"`
+
+	// Task 086's optional provenance: which model and which prompt this
+	// side's workload used, declared rather than observed. Each is stated in
+	// the file or named as a variable of the side's environment, never both,
+	// and absent when neither is given. Neither is part of scenario_digest.
+	// See scenario_provenance.go.
+	Model        string             `yaml:"model"`
+	ModelEnv     string             `yaml:"model_env"`
+	PromptRef    *ScenarioPromptRef `yaml:"prompt_ref"`
+	PromptRefEnv string             `yaml:"prompt_ref_env"`
 }
 
 // ScenarioGate holds the five required thresholds. Pointers, so each omission
@@ -159,6 +175,9 @@ func (c ScenarioConfig) Validate() error {
 			return err
 		}
 	}
+	if err := validateScenarioInputs(c.Inputs); err != nil {
+		return err
+	}
 	return c.Gate.validate(uint64(*c.Runs))
 }
 
@@ -185,7 +204,7 @@ func (s ScenarioSide) validate(name string) error {
 			return scenarioError("%s.env.%s is longer than %d bytes", name, key, maxScenarioValueLen)
 		}
 	}
-	return nil
+	return s.validateProvenance(name)
 }
 
 func (g ScenarioGate) validate(runs uint64) error {
