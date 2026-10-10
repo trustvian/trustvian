@@ -47,7 +47,7 @@ func runEvalCompareRepeated(s streams, args []string, timeout time.Duration) int
 	var references, candidates runIDList
 	fs.Var(&references, "reference-run", "reference evaluation run (required; repeat once per repetition)")
 	fs.Var(&candidates, "candidate-run", "candidate evaluation run (required; repeat once per repetition)")
-	var k, j, added, block, critical, minFrequency, maxLost optionalUint64
+	var k, j, added, block, critical, minFrequency, maxLost, maxLLM optionalUint64
 	fs.Var(&k, "added-candidate-presence-minimum", "k (required)")
 	fs.Var(&j, "added-reference-presence-maximum", "j (required)")
 	fs.Var(&added, "max-repeated-added-behaviors", "maximum repeatedly added behaviors (required)")
@@ -56,6 +56,8 @@ func runEvalCompareRepeated(s streams, args []string, timeout time.Duration) int
 		"maximum critical-risk observations in any candidate run (required)")
 	fs.Var(&minFrequency, "min-candidate-frequency", "optional; omitted, the check is not evaluated")
 	fs.Var(&maxLost, "max-lost-behaviors", "optional; omitted, the check is not evaluated")
+	fs.Var(&maxLLM, "max-llm-calls-per-run",
+		"optional; model-layer calls in any one candidate run. Deferred unless every candidate run has a semantically named observation")
 	var calls targetLimitList
 	fs.Var(&calls, "max-calls-per-run", "optional <target>=<max>; repeat once per target")
 
@@ -93,6 +95,7 @@ func runEvalCompareRepeated(s streams, args []string, timeout time.Duration) int
 			MaxCriticalRiskObservationsPerRun: critical.canonical(),
 			MinCandidateFrequency:             minFrequency.optional(),
 			MaxLostBehaviors:                  maxLost.optional(),
+			MaxLLMCallsPerRun:                 maxLLM.optional(),
 			MaxCallsPerRun:                    calls,
 		},
 	}

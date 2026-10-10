@@ -177,6 +177,10 @@ jobs:
       # The upgrade source. A real release, built from its tag below — never
       # a fabricated fixture. Advance it when a newer release exists.
       UPGRADE_FROM: v0.8.0
+      # The platform drill's upgrade source: the release whose control plane
+      # wrote schema 10, what v0.11.0 users hold (task 081). Advance it with
+      # each release that ships a platform schema step.
+      PLATFORM_UPGRADE_FROM: v0.11.0
 
     steps:
       - uses: actions/checkout@v7
@@ -218,6 +222,26 @@ jobs:
           TRUSTVIAN_TEST_UPGRADE_FROM_BINARY="$RUNNER_TEMP/trustvian-$UPGRADE_FROM" \
           TRUSTVIAN_TEST_UPGRADE_FROM_VERSION="$UPGRADE_FROM" \
             go test -race -count=1 -v -run 'Backup|Restore|Upgrade' ./scripts/
+
+      - name: Build the previous release control plane from its tag
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/platform-upgrade-from" "$PLATFORM_UPGRADE_FROM"
+          (cd "$RUNNER_TEMP/platform-upgrade-from/platform" && \
+            GOWORK=off go build -o "$RUNNER_TEMP/trustvian-local-$PLATFORM_UPGRADE_FROM" ./cmd/trustvian-local)
+
+      - name: Platform recovery drill
+        # The platform database's backup, restore and upgrade, on both
+        # backends: a v10 backup from the previous release and a v12 one
+        # migrate to the current schema, and a backup at the current schema
+        # restores with every invariant. pg_dump and pg_restore are the tools
+        # installed above.
+        working-directory: platform
+        env:
+          TRUSTVIAN_TEST_PLATFORM_DRILL: "1"
+          TRUSTVIAN_TEST_POSTGRES_DSN: postgres://trustvian:tv-ci-backup-restore-pw@localhost:5432/trustvian_test?sslmode=disable
+        run: |
+          TRUSTVIAN_TEST_PLATFORM_UPGRADE_FROM_BINARY="$RUNNER_TEMP/trustvian-local-$PLATFORM_UPGRADE_FROM" \
+            GOWORK=off go test -race -count=1 -v -run 'TestPlatformDrill' .
 
   # ---------------------------------------------------------------------
   # Processor module: a separate Go module that resolves the core module

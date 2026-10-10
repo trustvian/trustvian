@@ -392,6 +392,11 @@ type behaviorDeltaDTO struct {
 	Behavior              behaviorDescriptorDTO `json:"behavior"`
 	ReferenceObservations string                `json:"reference_observations"`
 	CandidateObservations string                `json:"candidate_observations"`
+
+	// Task 081: each side's fidelity, absent on a side that did not observe
+	// the behavior.
+	ReferenceFidelity *behaviorFidelityDTO `json:"reference_fidelity,omitempty"`
+	CandidateFidelity *behaviorFidelityDTO `json:"candidate_fidelity,omitempty"`
 }
 
 // behaviorChangeDTO is one counted behavioral change and the identities that

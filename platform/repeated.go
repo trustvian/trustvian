@@ -101,9 +101,12 @@ type RepeatedEvaluationGateLimits struct {
 	//	MaxLostBehaviors       at most this many behaviors are lost
 	//	MaxCallsPerRun         per named target, at most this many calls in any
 	//	                       one candidate run; nil is omitted (ADR 0066)
+	//	MaxLLMCallsPerRun      at most this many model-layer calls in any one
+	//	                       candidate run (task 081, decision D8)
 	MinCandidateFrequency OptionalGateLimit
 	MaxLostBehaviors      OptionalGateLimit
 	MaxCallsPerRun        []TargetCallLimit
+	MaxLLMCallsPerRun     OptionalGateLimit
 }
 
 // RepeatedEvaluationRequest names the 2N repetitions and the limits.
@@ -196,6 +199,10 @@ type RepeatedBehaviorPresence struct {
 	// renderer among them — refuse to extend, and a document they cannot read
 	// would render no verdict at all. A behavior can be both removed and lost.
 	Lost bool
+
+	// Task 081: each side's fidelity and layer counts, summed over its
+	// completed repetitions before the disagreement rule is applied.
+	ReferenceFidelity, CandidateFidelity BehaviorFidelity
 }
 
 // RepeatedCheckName is one of the six checks, spelled as the wire spells it.
@@ -240,12 +247,13 @@ type RepeatedEvaluationGateResult struct {
 	checks  [6]RepeatedGateCheck
 	verdict GateVerdict
 
-	// frequency is task 106's three optional checks, always all three, in
-	// their stable order — not_evaluated when the limit was omitted.
-	frequency [3]FrequencyGateCheck
+	// frequency is the optional frequency checks, always all four, in their
+	// stable order — task 106's three, then task 081's max_llm_calls_per_run —
+	// not_evaluated when the limit was omitted.
+	frequency [FrequencyCheckCount]FrequencyGateCheck
 }
 
-// FrequencyChecks returns task 106's three checks in their stable order.
+// FrequencyChecks returns the four optional checks in their stable order.
 func (r RepeatedEvaluationGateResult) FrequencyChecks() []FrequencyGateCheck {
 	out := slices.Clone(r.frequency[:])
 	for i := range out {
@@ -327,6 +335,8 @@ func reduceRepeated(
 	type tally struct {
 		behavior             trustvian.StableFeatures
 		reference, candidate uint64
+
+		referenceFidelity, candidateFidelity BehaviorFidelity
 	}
 	seen := make(map[string]*tally)
 	// The reverse direction of the identity contract. A descriptor that
@@ -341,6 +351,9 @@ func reduceRepeated(
 		worstBlock, worstCR uint64
 	)
 	repetitions := make([]RepetitionEvidence, 0, len(inputs))
+	// Task 081: per completed candidate run, whether any observation was
+	// semantically named and how many were model-layer calls.
+	var candidateLayers []runLayerEvidence
 	operational := map[ComparisonSide]*operationalSide{
 		SideReference: {}, SideCandidate: {},
 	}
@@ -365,6 +378,11 @@ func reduceRepeated(
 		if in.evidence.Side == SideCandidate {
 			worstBlock = max(worstBlock, in.evidence.BlockDecisions)
 			worstCR = max(worstCR, in.evidence.CriticalRiskObservations)
+			layers, err := layerEvidenceOf(in.evidence.RunID, in.entries)
+			if err != nil {
+				return RepeatedEvaluationComparison{}, err
+			}
+			candidateLayers = append(candidateLayers, layers)
 		}
 		for _, entry := range in.entries {
 			if entry.Observations == 0 {
@@ -395,10 +413,16 @@ func reduceRepeated(
 					preview(other), preview(entry.FingerprintID))
 			}
 			fingerprintOf[entry.Behavior] = entry.FingerprintID
+			var err error
 			if in.evidence.Side == SideReference {
 				t.reference++
+				t.referenceFidelity, err = t.referenceFidelity.Add(entry.Fidelity)
 			} else {
 				t.candidate++
+				t.candidateFidelity, err = t.candidateFidelity.Add(entry.Fidelity)
+			}
+			if err != nil {
+				return RepeatedEvaluationComparison{}, err
 			}
 		}
 	}
@@ -425,6 +449,8 @@ func reduceRepeated(
 			Classification: class,
 			Reference:      ref, Candidate: cand,
 			Lost: isLost(t.reference, t.candidate, uint64(runs)),
+
+			ReferenceFidelity: t.referenceFidelity, CandidateFidelity: t.candidateFidelity,
 		})
 	}
 	targets, err := targetFrequencies(frequency[SideReference], frequency[SideCandidate])
@@ -458,6 +484,7 @@ func reduceRepeated(
 		runs: n, referenceRuns: completed[SideReference], candidateRuns: completed[SideCandidate],
 		behaviors:       behaviors,
 		referenceByName: frequency[SideReference].byName, candidByName: frequency[SideCandidate].byName,
+		candidateLayers: candidateLayers,
 	})
 	verdict := GateVerdictPass
 	for _, c := range checks {

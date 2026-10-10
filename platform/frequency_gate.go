@@ -1,6 +1,7 @@
 package platform
 
-// Task 106's three optional frequency gates (ADR 0029 § 7, ADR 0066).
+// The optional frequency gates: task 106's three (ADR 0029 § 7, ADR 0066), and
+// task 081's max_llm_calls_per_run, which reads the layer counts 081 persists.
 //
 // Each follows issue 131's OptionalGateLimit precedent: omitted means
 // not_evaluated, and the verdict is then exactly what it was without the limit.
@@ -35,7 +36,11 @@ const (
 	CheckMinCandidateFrequency FrequencyCheckName = "min_candidate_frequency"
 	CheckMaxLostBehaviors      FrequencyCheckName = "max_lost_behaviors"
 	CheckMaxCallsPerRun        FrequencyCheckName = "max_calls_per_run"
+	CheckMaxLLMCallsPerRun     FrequencyCheckName = "max_llm_calls_per_run"
 )
+
+// FrequencyCheckCount is how many optional checks a gate always reports.
+const FrequencyCheckCount = 4
 
 // RuleAtLeast is a check passing when its actual value is at least its bound.
 const RuleAtLeast RepeatedCheckRule = "at_least"
@@ -135,9 +140,34 @@ type frequencyGateInputs struct {
 	referenceRuns, candidateRuns  uint64
 	behaviors                     []RepeatedBehaviorPresence
 	referenceByName, candidByName map[string]*frequencyAccumulator
+
+	// candidateLayers is one entry per completed candidate run, in order.
+	candidateLayers []runLayerEvidence
 }
 
-func evaluateFrequencyGates(l RepeatedEvaluationGateLimits, in frequencyGateInputs) [3]FrequencyGateCheck {
+// runLayerEvidence is what max_llm_calls_per_run reads from one completed
+// candidate run.
+type runLayerEvidence struct {
+	runID EvaluationRunID
+	// semantic reports whether any observation was semantically named.
+	semantic bool
+	// modelCalls is the run's model-layer observations.
+	modelCalls uint64
+}
+
+// layerEvidenceOf sums one run's entries. Overflow is an error.
+func layerEvidenceOf(runID EvaluationRunID, entries []BehaviorEntry) (runLayerEvidence, error) {
+	out := runLayerEvidence{runID: runID}
+	for _, e := range entries {
+		out.semantic = out.semantic || e.Fidelity.Semantic > 0
+		if err := addCount(&out.modelCalls, e.Fidelity.LayerModel, "model calls in one run"); err != nil {
+			return runLayerEvidence{}, err
+		}
+	}
+	return out, nil
+}
+
+func evaluateFrequencyGates(l RepeatedEvaluationGateLimits, in frequencyGateInputs) [FrequencyCheckCount]FrequencyGateCheck {
 	missingSide := func() string {
 		switch {
 		case in.referenceRuns == 0 && in.candidateRuns == 0:
@@ -150,10 +180,11 @@ func evaluateFrequencyGates(l RepeatedEvaluationGateLimits, in frequencyGateInpu
 		return ""
 	}
 
-	checks := [3]FrequencyGateCheck{
+	checks := [FrequencyCheckCount]FrequencyGateCheck{
 		{Name: CheckMinCandidateFrequency, State: GateCheckNotEvaluated},
 		{Name: CheckMaxLostBehaviors, State: GateCheckNotEvaluated},
 		{Name: CheckMaxCallsPerRun, State: GateCheckNotEvaluated},
+		{Name: CheckMaxLLMCallsPerRun, State: GateCheckNotEvaluated},
 	}
 
 	if minimum, set := l.MinCandidateFrequency.Maximum(); set {
@@ -222,6 +253,48 @@ func evaluateFrequencyGates(l RepeatedEvaluationGateLimits, in frequencyGateInpu
 				}
 				c.Targets = append(c.Targets, check)
 			}
+		}
+	}
+	// max_llm_calls_per_run (task 081, decision D8): the most model-layer
+	// calls any one candidate run made. Deferred unless every candidate run
+	// has at least one semantically named observation. A run without one —
+	// a producer with no GenAI or OpenInference instrumentation, or a run
+	// recorded before schema 13 — cannot show its model calls at all, and
+	// reading its 0 as "no model calls" would pass vacuously. With semantic
+	// evidence in the run, 0 is a real 0.
+	if maximum, set := l.MaxLLMCallsPerRun.Maximum(); set {
+		c := &checks[3]
+		var (
+			worst   uint64
+			lacking uint64
+			first   EvaluationRunID
+		)
+		for _, run := range in.candidateLayers {
+			if !run.semantic {
+				// The lowest identifier, not the first in request order:
+				// the evidence a check names must not depend on how the
+				// runs were listed.
+				if lacking == 0 || run.runID < first {
+					first = run.runID
+				}
+				lacking++
+				continue
+			}
+			worst = max(worst, run.modelCalls)
+		}
+		switch {
+		case lacking > 0:
+			c.State = GateCheckDeferred
+			c.MissingEvidence = "run " + preview(string(first)) +
+				" has no semantically named observation; model calls cannot be counted"
+			if lacking > 1 {
+				c.MissingEvidence += fmt.Sprintf(" (%d of %d candidate runs have none)", lacking, len(in.candidateLayers))
+			}
+		case in.candidateRuns == 0:
+			c.State, c.MissingEvidence = GateCheckDeferred, "no completed candidate repetition"
+		default:
+			c.State, c.Rule, c.Actual, c.Bound = GateCheckEvaluated, RuleAtMost, worst, maximum
+			c.Passed = worst <= maximum
 		}
 	}
 	return checks

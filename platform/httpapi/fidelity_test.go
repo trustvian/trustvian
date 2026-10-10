@@ -2,6 +2,7 @@ package httpapi_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -187,31 +188,168 @@ func TestFidelityDoesNotEnterBehavioralIdentity(t *testing.T) {
 	}
 }
 
-// TestFidelityIsNotPersistedYet records a limitation rather than hiding it.
-//
-// The compare response's behavior deltas carry no fidelity, because a delta is
-// built from persisted behavioral evidence and fidelity is not stored per
-// behavior — that needs a schema step, which is called out in this task's report
-// rather than smuggled into it.
-//
-// The test exists so the gap is visible in the suite instead of being discovered
-// by whoever first looks for the field. It fails, deliberately, the moment
-// fidelity IS persisted — at which point it should be replaced by the positive
-// assertion rather than deleted.
-func TestFidelityIsNotPersistedYet(t *testing.T) {
-	a := newAPI(t)
-	a.completeRun("run-ref", "cand-1", []string{"read"})
+// observedOp is one ingested record of operation op, with the envelope's
+// fidelity and layer ("" for absent).
+type observedOp struct{ op, fidelity, layer string }
 
+// completeRunWithFidelity creates, fills and completes one isolated run whose
+// records carry the given envelope fidelity and layer.
+func (a *api) completeRunWithFidelity(runID string, ops []observedOp) {
+	a.t.Helper()
+	a.seedHierarchy()
+	profile := runID + "-profile"
+	a.mustStatus(a.do("POST", "/v1/evaluation-runs", map[string]string{
+		"id": runID, "candidate_id": "cand-1", "environment": testEnvironment, "behavioral_profile": profile,
+	}), 201, "create run")
+	a.mustStatus(a.do("POST", "/v1/evaluation-runs/"+runID+"/start", nil), 200, "start")
+	for i, o := range ops {
+		body := envelope(uint64(i+1), apiRecord(fmt.Sprintf("%s-e%d", runID, i), "fp-"+o.op, o.op))
+		body["behavioral_profile"] = profile
+		if o.fidelity != "" {
+			body["fidelity"] = o.fidelity
+		}
+		if o.layer != "" {
+			body["behavior_layer"] = o.layer
+		}
+		a.mustStatus(a.do("POST", "/v1/evaluation-runs/"+runID+"/records", body), 200, "ingest")
+	}
+	a.mustStatus(a.do("POST", "/v1/evaluation-runs/"+runID+"/complete", nil), 200, "complete")
+}
+
+// deltaMember is one delta's member, compact, by fingerprint.
+func deltaMember(t *testing.T, body []byte, path []string, fingerprint, member string) string {
+	t.Helper()
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(body, &doc); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(body)
+	for _, p := range path {
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		raw = doc[p]
+	}
+	var rows []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if string(row["fingerprint_id"]) == `"`+fingerprint+`"` {
+			return string(row[member])
+		}
+	}
+	t.Fatalf("no row for %s", fingerprint)
+	return ""
+}
+
+// TestComparisonsReportPersistedFidelity replaces TestFidelityIsNotPersistedYet
+// with the positive assertion it asked for: a delta reports each side's
+// fidelity, by the disagreement rule, with the counts that decided it — and a
+// side that never observed the behavior reports none. The repeated comparison
+// sums each side's runs first.
+func TestComparisonsReportPersistedFidelity(t *testing.T) {
+	a := newAPI(t)
+	a.completeRunWithFidelity("run-ref", []observedOp{
+		{"read", "semantic", "tool"}, {"read", "semantic", "tool"},
+	})
+	a.completeRunWithFidelity("run-cand", []observedOp{
+		{"read", "semantic", "tool"}, {"read", "semantic", "tool"}, {"read", "transport", "transport"},
+		{"chat", "semantic", "model"}, {"legacy", "", ""},
+	})
 	response := a.do("POST", "/v1/evaluations/compare", map[string]any{
-		"reference_run_id": "run-ref",
-		"candidate_run_id": "run-ref",
-		"gate_limits":      limitsBody("0", "0", "0"),
+		"reference_run_id": "run-ref", "candidate_run_id": "run-cand",
+		"gate_limits": limitsBody("10", "10", "10"),
 	})
 	a.mustStatus(response, 200, "compare")
+	body := response.Body.Bytes()
+	path := []string{"behavior_diff", "deltas"}
+	for _, tt := range []struct{ fingerprint, member, want string }{
+		{"fp-read", "reference_fidelity", `{"level":"semantic","mixed":false,"semantic":"2","transport":"0",` +
+			`"unrecorded":"0","layer":{"model":"0","tool":"2","retrieval":"0","transport":"0",` +
+			`"unclassified":"0","unrecorded":"0"}}`},
+		// One transport observation makes the behavior transport, and mixed.
+		{"fp-read", "candidate_fidelity", `{"level":"transport","mixed":true,"semantic":"2","transport":"1",` +
+			`"unrecorded":"0","layer":{"model":"0","tool":"2","retrieval":"0","transport":"1",` +
+			`"unclassified":"0","unrecorded":"0"}}`},
+		{"fp-chat", "candidate_fidelity", `{"level":"semantic","mixed":false,"semantic":"1","transport":"0",` +
+			`"unrecorded":"0","layer":{"model":"1","tool":"0","retrieval":"0","transport":"0",` +
+			`"unclassified":"0","unrecorded":"0"}}`},
+		{"fp-chat", "reference_fidelity", ``},
+		{"fp-legacy", "candidate_fidelity", `{"level":"unrecorded","mixed":false,"semantic":"0","transport":"0",` +
+			`"unrecorded":"1","layer":{"model":"0","tool":"0","retrieval":"0","transport":"0",` +
+			`"unclassified":"0","unrecorded":"1"}}`},
+	} {
+		if got := deltaMember(t, body, path, tt.fingerprint, tt.member); got != tt.want {
+			t.Errorf("%s %s =\n%s\nwant\n%s", tt.fingerprint, tt.member, got, tt.want)
+		}
+	}
 
-	if strings.Contains(response.Body.String(), `"fidelity"`) {
-		t.Error("the compare response now carries fidelity — persisted per-behavior " +
-			"fidelity has landed, so replace this test with the positive assertion " +
-			"that a delta reports it")
+	// Repeated: two candidate runs, each pure, sum to one mixed side.
+	a.completeRunWithFidelity("rep-ref-1", []observedOp{{"read", "semantic", "tool"}})
+	a.completeRunWithFidelity("rep-ref-2", []observedOp{{"read", "semantic", "tool"}})
+	a.completeRunWithFidelity("rep-cand-1", []observedOp{{"read", "semantic", "tool"}})
+	a.completeRunWithFidelity("rep-cand-2", []observedOp{{"read", "transport", "transport"}})
+	repeated := a.do("POST", "/v1/evaluations/compare-repeated", map[string]any{
+		"reference_run_ids": []string{"rep-ref-1", "rep-ref-2"},
+		"candidate_run_ids": []string{"rep-cand-1", "rep-cand-2"},
+		"gate_limits":       repeatedLimitsBody("1", "0"),
+	})
+	a.mustStatus(repeated, 200, "compare-repeated")
+	rbody := repeated.Body.Bytes()
+	if got, want := deltaMember(t, rbody, []string{"behaviors"}, "fp-read", "candidate_fidelity"),
+		`{"level":"transport","mixed":true,"semantic":"1","transport":"1","unrecorded":"0",`+
+			`"layer":{"model":"0","tool":"1","retrieval":"0","transport":"1","unclassified":"0","unrecorded":"0"}}`; got != want {
+		t.Errorf("repeated candidate fidelity =\n%s\nwant\n%s", got, want)
+	}
+	if got := deltaMember(t, rbody, []string{"behaviors"}, "fp-read", "reference_fidelity"); !strings.Contains(got, `"level":"semantic","mixed":false,"semantic":"2"`) {
+		t.Errorf("repeated reference fidelity = %s", got)
+	}
+}
+
+// TestMaxLLMCallsPerRunOverHTTP: the limit is accepted, echoed and evaluated
+// from the persisted layer counts, and a candidate run with no semantically
+// named observation defers it (decision D8).
+func TestMaxLLMCallsPerRunOverHTTP(t *testing.T) {
+	a := newAPI(t)
+	a.completeRunWithFidelity("llm-ref", []observedOp{{"chat", "semantic", "model"}})
+	a.completeRunWithFidelity("llm-cand-1", []observedOp{
+		{"chat", "semantic", "model"}, {"chat", "semantic", "model"}, {"read", "semantic", "tool"}})
+	a.completeRunWithFidelity("llm-cand-plain", []observedOp{{"chat", "transport", "transport"}})
+	compare := func(candidate, limit string) map[string]any {
+		limits := repeatedLimitsBody("1", "0")
+		limits["max_llm_calls_per_run"] = limit
+		r := a.do("POST", "/v1/evaluations/compare-repeated", map[string]any{
+			"reference_run_ids": []string{"llm-ref"}, "candidate_run_ids": []string{candidate},
+			"gate_limits": limits,
+		})
+		a.mustStatus(r, 200, "compare-repeated")
+		var body struct {
+			GateLimits map[string]any `json:"gate_limits"`
+			Gate       struct {
+				Verdict         string           `json:"verdict"`
+				FrequencyChecks []map[string]any `json:"frequency_checks"`
+			} `json:"gate"`
+		}
+		if err := json.Unmarshal(r.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.GateLimits["max_llm_calls_per_run"] != limit || len(body.Gate.FrequencyChecks) != 4 {
+			t.Fatalf("echo %v, checks %v", body.GateLimits, body.Gate.FrequencyChecks)
+		}
+		check := body.Gate.FrequencyChecks[3]
+		check["verdict"] = body.Gate.Verdict
+		return check
+	}
+	if c := compare("llm-cand-1", "2"); c["name"] != "max_llm_calls_per_run" || c["state"] != "evaluated" ||
+		c["actual"] != "2" || c["bound"] != "2" || c["passed"] != true {
+		t.Errorf("evaluated check = %v", c)
+	}
+	if c := compare("llm-cand-1", "1"); c["passed"] != false || c["verdict"] != "fail" {
+		t.Errorf("violated check = %v", c)
+	}
+	if c := compare("llm-cand-plain", "100"); c["state"] != "deferred" || c["verdict"] != "fail" ||
+		!strings.Contains(c["missing_evidence"].(string), "no semantically named observation") {
+		t.Errorf("deferred check = %v", c)
 	}
 }

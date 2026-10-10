@@ -239,8 +239,9 @@ func TestSchemaV4MigratesForwardAddingOnlyTheIntendedSchema(t *testing.T) {
 			// v10, task 101: the recency key.
 			wantColumns = []string{"created_order"}
 		case tableEntries:
-			// v11, task 087: the per-behavior operational evidence.
-			wantColumns = behaviorOperationalColumns()
+			// v11, task 087: the per-behavior operational evidence; v13,
+			// task 081: the fidelity counts.
+			wantColumns = append(behaviorOperationalColumns(), columnFidelityCounts)
 			slices.Sort(wantColumns)
 		}
 		if !slices.Equal(addedColumns, wantColumns) {

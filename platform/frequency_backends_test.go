@@ -62,8 +62,15 @@ func driveFrequencyFixture(t *testing.T, store Store) RepeatedEvaluationComparis
 				record.FingerprintID = "fp-" + op
 				record.Behavior.OperationName = op
 				record.Behavior.TargetName = op + ".internal"
+				// Task 081: crm is a named tool, send a transport call, and
+				// can-1's first crm call arrived without its convention.
+				fidelity, layer := event.FidelitySemantic, event.LayerTool
+				if op == "send" || (r.id == "can-1" && sequence == 1) {
+					fidelity, layer = event.FidelityTransport, event.LayerTransport
+				}
 				if _, err := plane.IngestDecisionRecord(ctx, IngestRequest{
 					RunID: r.id, Sequence: sequence, BehavioralProfile: started.BehavioralProfile(), Record: record,
+					Fidelity: fidelity, BehaviorLayer: layer,
 				}); err != nil {
 					t.Fatal(err)
 				}
@@ -99,6 +106,25 @@ func assertFrequencyGolden(t *testing.T, c RepeatedEvaluationComparison) {
 	}
 	if r := targetOf(t, c, "send.internal"); !r.RatioAvailable || r.CallRatioPermille != 500 {
 		t.Errorf("send.internal = %+v", r)
+	}
+	// Task 081: summed per side, then classified.
+	for _, tt := range []struct {
+		name      string
+		got, want BehaviorFidelity
+		level     FidelityLevel
+		mixed     bool
+	}{
+		{"crm reference", crm.ReferenceFidelity, BehaviorFidelity{Semantic: 6, LayerTool: 6}, FidelityLevelSemantic, false},
+		{"crm candidate", crm.CandidateFidelity, BehaviorFidelity{Semantic: 14, Transport: 1, LayerTool: 14, LayerTransport: 1},
+			FidelityLevelTransport, true},
+		{"send candidate", send.CandidateFidelity, BehaviorFidelity{Transport: 1, LayerTransport: 1},
+			FidelityLevelTransport, false},
+	} {
+		level, mixed := tt.got.Reported()
+		if tt.got != tt.want || level != tt.level || mixed != tt.mixed {
+			t.Errorf("%s = %+v (%s, mixed %v); want %+v (%s, mixed %v)",
+				tt.name, tt.got, level, mixed, tt.want, tt.level, tt.mixed)
+		}
 	}
 }
 

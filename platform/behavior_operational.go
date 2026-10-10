@@ -122,12 +122,29 @@ type OperationalFacts struct {
 	HTTPStatusCode uint16
 
 	Usage event.Usage
+
+	// Fidelity and Layer are what the envelope stated about how the record's
+	// behavior was named (tasks 075 and 083), counted per behavior since task
+	// 081. Both zero means the envelope stated neither, which is counted
+	// unrecorded — never transport.
+	Fidelity event.Fidelity
+	Layer    event.Layer
 }
 
 // Validate refuses facts no adapter following the contract produces — reported
 // as an invalid record, since they arrive with one — a status
 // code outside 100-599, or a total reported beside an input or output part.
 func (f OperationalFacts) Validate() error {
+	if f.Fidelity != "" && !f.Fidelity.Valid() {
+		return fmt.Errorf("%w: fidelity %q is not transport or semantic", ErrInvalidDecisionRecord, f.Fidelity)
+	}
+	if f.Layer != event.LayerUnspecified && !f.Layer.Valid() {
+		return fmt.Errorf("%w: behavior layer %q is not model, tool, retrieval or transport",
+			ErrInvalidDecisionRecord, f.Layer)
+	}
+	if err := validateFidelityPair(f.Fidelity, f.Layer); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidDecisionRecord, err)
+	}
 	if f.HTTPStatusCode != 0 && (f.HTTPStatusCode < 100 || f.HTTPStatusCode > 599) {
 		return fmt.Errorf("%w: http status code %d is outside 100-599", ErrInvalidDecisionRecord, f.HTTPStatusCode)
 	}

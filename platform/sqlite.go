@@ -35,7 +35,7 @@ import (
 // schema version. They change for different reasons, and coupling them would
 // force a migration on an unrelated release or hide a real one behind an
 // unchanged number.
-const SchemaVersion = 12
+const SchemaVersion = 13
 
 // Table names. Compile-time constants: these are the only identifiers that
 // ever appear in assembled SQL. Every caller-supplied value is a bound
@@ -123,7 +123,7 @@ const (
 // schemaTables is every table this schema owns, and the allowlist a test
 // asserts against so an event, scorecard, or gate-result table cannot appear
 // without something failing.
-var schemaTables = schemaTablesV12
+var schemaTables = schemaTablesV13
 
 // SQLiteStore is the local persistence adapter.
 //
@@ -261,13 +261,21 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 	case SchemaVersion:
 		return s.requireTables(ctx, SchemaVersion, schemaTables)
 
+	case schemaVersionV12:
+		// Task 086's schema, before task 081's fidelity counts. v13 adds a
+		// column only, so the table set is the current one.
+		if err := s.requireTables(ctx, schemaVersionV12, schemaTablesV12); err != nil {
+			return err
+		}
+		return s.migrateV12ToV13(ctx)
+
 	case schemaVersionV11:
 		// Task 087's schema, before task 086's scenario provenance columns.
 		// v12 adds columns only, so the table set is the current one.
 		if err := s.requireTables(ctx, schemaVersionV11, schemaTablesV11); err != nil {
 			return err
 		}
-		return s.migrateV11ToV12(ctx)
+		return s.migrateV11ToCurrent(ctx)
 
 	case schemaVersionV10:
 		// Task 101's schema, before task 087's per-behavior operational
@@ -851,7 +859,15 @@ func (s *SQLiteStore) migrateV10ToCurrent(ctx context.Context) error {
 	if err := s.migrateV10ToV11(ctx); err != nil {
 		return err
 	}
-	return s.migrateV11ToV12(ctx)
+	return s.migrateV11ToCurrent(ctx)
+}
+
+// migrateV11ToCurrent is every step from v11 forward.
+func (s *SQLiteStore) migrateV11ToCurrent(ctx context.Context) error {
+	if err := s.migrateV11ToV12(ctx); err != nil {
+		return err
+	}
+	return s.migrateV12ToV13(ctx)
 }
 
 func (s *SQLiteStore) migrateV8ToV9(ctx context.Context) error {
@@ -979,7 +995,7 @@ func (s *SQLiteStore) migrateV10ToV11Once(ctx context.Context) error {
 // begun before them — never an empty digest.
 func (s *SQLiteStore) migrateV11ToV12(ctx context.Context) error {
 	if err := s.migrateV11ToV12Once(ctx); err != nil {
-		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+		if s.migrationRaceRecovered(ctx, schemaVersionV12) {
 			return nil
 		}
 		return err
@@ -999,13 +1015,53 @@ func (s *SQLiteStore) migrateV11ToV12Once(ctx context.Context) error {
 			return fmt.Errorf("platform: migrate schema v11 to v12: %w", err)
 		}
 	}
+	// Literal schemaVersionV12: v13's fidelity counts follow in their own step.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
-		SchemaVersion); err != nil {
+		schemaVersionV12); err != nil {
 		return fmt.Errorf("platform: migrate schema v11 to v12: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("platform: migrate schema v11 to v12: %w", err)
+	}
+	return nil
+}
+
+// migrateV12ToV13 adds task 081's per-behavior fidelity counts and marks every
+// existing behavior's fidelity and layer as unrecorded: neither was stored
+// when it was observed, and nothing retained them since.
+func (s *SQLiteStore) migrateV12ToV13(ctx context.Context) error {
+	if err := s.migrateV12ToV13Once(ctx); err != nil {
+		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateV12ToV13Once(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: migrate schema v12 to v13: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, statement := range behaviorFidelitySchemaStatements("TEXT") {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("platform: migrate schema v12 to v13: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, behaviorFidelityBackfillStatement()); err != nil {
+		return fmt.Errorf("platform: migrate schema v12 to v13: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
+		SchemaVersion); err != nil {
+		return fmt.Errorf("platform: migrate schema v12 to v13: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: migrate schema v12 to v13: %w", err)
 	}
 	return nil
 }
@@ -1247,6 +1303,10 @@ var schemaTablesV11 = schemaTablesV10
 // v12 added columns to the scenario execution table only (task 086).
 var schemaTablesV12 = schemaTablesV11
 
+// schemaTablesV13 is what a complete v13 database holds: v12's tables, because
+// v13 added a column to the behavior entry table only (task 081).
+var schemaTablesV13 = schemaTablesV12
+
 // schemaTablesByVersion maps every schema version this binary can recognize to
 // the tables a complete database at that version holds.
 //
@@ -1274,6 +1334,7 @@ var schemaTablesByVersion = map[int][]string{
 	schemaVersionV9:  schemaTablesV9,
 	schemaVersionV10: schemaTablesV10,
 	schemaVersionV11: schemaTablesV11,
+	schemaVersionV12: schemaTablesV12,
 	SchemaVersion:    schemaTables,
 }
 
@@ -1502,7 +1563,9 @@ func schemaStatements() []string {
 					// the statements the v10 -> v11 migration applies.
 					append(behaviorOperationalSchemaStatements("TEXT"),
 						// v12: task 086's scenario provenance columns.
-						scenarioProvenanceSchemaStatements()...)...)...)...)...)...)
+						append(scenarioProvenanceSchemaStatements(),
+							// v13: task 081's per-behavior fidelity counts.
+							behaviorFidelitySchemaStatements("TEXT")...)...)...)...)...)...)...)
 }
 
 // observationSchemaStatements is schema v7's whole addition, written once so
@@ -3154,7 +3217,7 @@ func loadBehaviorEntries(ctx context.Context, q evidenceQuerier, id EvaluationRu
 	rows, err := q.query(ctx, q.rebind(
 		`SELECT fingerprint_id, actor_type, operation_category, operation_name,
 		        target_name, target_category, environment, observations, `+
-			columnOperationalCounts+`
+			columnOperationalCounts+`, `+columnFidelityCounts+`
 		 FROM `+tableEntries+` WHERE run_id = ? ORDER BY fingerprint_id ASC`), string(id))
 	if err != nil {
 		return nil, fmt.Errorf("platform: load behavior entries: %w", err)
@@ -3162,13 +3225,20 @@ func loadBehaviorEntries(ctx context.Context, q evidenceQuerier, id EvaluationRu
 	defer rows.Close()
 
 	var entries []BehaviorEntry
+	// The scan targets live outside the loop. Scan takes their addresses, so
+	// declared inside it each would escape to the heap once per row — every
+	// ingest reads a run's entries back several times, and task 081's column
+	// would otherwise have added one more allocation per row to that.
+	var (
+		entry                                                      BehaviorEntry
+		actorType, operationCategory, targetCategory, observations string
+		operational, fidelity                                      string
+	)
 	for rows.Next() {
-		var entry BehaviorEntry
-		var actorType, operationCategory, targetCategory, observations, operational string
-
+		entry = BehaviorEntry{}
 		if err := rows.Scan(&entry.FingerprintID, &actorType, &operationCategory,
 			&entry.Behavior.OperationName, &entry.Behavior.TargetName,
-			&targetCategory, &entry.Behavior.Environment, &observations, &operational); err != nil {
+			&targetCategory, &entry.Behavior.Environment, &observations, &operational, &fidelity); err != nil {
 			return nil, fmt.Errorf("platform: load behavior entries: %w", err)
 		}
 
@@ -3180,6 +3250,9 @@ func loadBehaviorEntries(ctx context.Context, q evidenceQuerier, id EvaluationRu
 			return nil, err
 		}
 		if entry.Operational, err = decodeOperationalCounts(operational); err != nil {
+			return nil, err
+		}
+		if entry.Fidelity, err = decodeFidelityCounts(fidelity); err != nil {
 			return nil, err
 		}
 		entries = append(entries, entry)
@@ -3226,6 +3299,10 @@ func validateRestoredSnapshot(s BehaviorSnapshot, storedDistinctCount int) error
 		// Task 087's invariants, the same ones observe keeps on write.
 		if err := validateOperationalSummary(entry.Operational, entry.Observations); err != nil {
 			return fmt.Errorf("entry %s operational evidence: %w", preview(entry.FingerprintID), err)
+		}
+		// Task 081's invariants, the same ones the fold keeps on write.
+		if err := validateBehaviorFidelity(entry.Fidelity, entry.Observations); err != nil {
+			return fmt.Errorf("entry %s fidelity evidence: %w", preview(entry.FingerprintID), err)
 		}
 		// An entry describing a different environment than the snapshot it
 		// belongs to is evidence from two runs stitched together.

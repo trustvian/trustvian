@@ -1309,6 +1309,40 @@ Storage grows by ten nullable TEXT columns per execution. Per side that is at
 most three 71-byte digests (scenario, inputs, prompt) and a model and a prompt
 name of at most 128 bytes each: 469 bytes a side, 938 an execution.
 
+### v0.12 task 081 (Persisted Per-Behavior Fidelity)
+
+Task 081 adds one column to the behavior entry table, so every ingest, which
+rewrites a run's entries and reads them back, pays for one more column.
+
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| `IngestDecisionRecord`, before (`main` at `8d89421`) | 1,898,520–1,985,078 | ~789,800 | ~10,510 |
+| `IngestDecisionRecord`, after | 1,991,134–2,090,047 | ~785,600 | ~9,680 |
+| `IngestWithOperationalFacts`, before | 1,938,924–1,975,380 | ~805,000 | ~10,572 |
+| `IngestWithOperationalFacts`, after | 2,013,585–2,034,938 | ~801,500 | ~9,751 |
+
+Six runs each, darwin/arm64, Apple M3 Pro, Go 1.27, file-backed SQLite, 64
+behaviors.
+
+**Time:** about 4% more. That is the SQLite driver decoding one more TEXT column
+on every read-back.
+
+**Allocations:** about 830 fewer per ingest. The column first added about 860:
+- the driver's column decode and row iteration, 471;
+- encoding and binding the value, 118;
+- 235 in `loadBehaviorEntries`, whose scan targets were declared inside the
+  row loop and escaped to the heap once per row.
+
+Hoisting those targets out of the loop removed that last cost, and the
+existing per-row escapes with it. The fold and the decode allocate nothing,
+which is asserted.
+
+**Storage:** at most 188 bytes per behavior, nine counters of at most 20 digits
+and eight commas. One run of 512 behaviors, one observation each, grew from
+499,712 to 512,000 bytes after `VACUUM`. Its entry table grew from 69,632 to
+81,920 bytes, about 24 bytes a behavior. The bound is about 96 KB per
+512-behavior run.
+
 ## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —

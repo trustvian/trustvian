@@ -376,6 +376,9 @@ func TestSQLiteSchemaV10MigratesToV11MarkingBehaviorsNotRecorded(t *testing.T) {
 		t.Fatalf("version after migration = %d, want %d", version, SchemaVersion)
 	}
 	assertMigratedEntriesUnavailable(t, migrated, run.ID())
+	// The schema v0.11.0 shipped, v10, reaches v13 in one upgrade: v11's
+	// operational counts and v13's fidelity counts both read not recorded.
+	assertMigratedEntriesUnrecorded(t, migrated, run.ID())
 
 	// Evidence keeps folding on top of the migrated state.
 	after, err := NewControlPlane(migrated, migrated, migrated)
@@ -453,6 +456,9 @@ func TestPostgresSchemaV10MigratesToV11MarkingBehaviorsNotRecorded(t *testing.T)
 	}
 	defer migrated.Close()
 	assertMigratedEntriesUnavailable(t, migrated, run.ID())
+	// The schema v0.11.0 shipped, v10, reaches v13 in one upgrade: v11's
+	// operational counts and v13's fidelity counts both read not recorded.
+	assertMigratedEntriesUnrecorded(t, migrated, run.ID())
 }
 
 // TestFreshAndMigratedEntryTablesAgree: the fresh v11 entry table and a v10

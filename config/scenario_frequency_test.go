@@ -62,8 +62,10 @@ func TestScenarioFrequencyLimitsAreRefusedByName(t *testing.T) {
 		{"a missing max", "  max_calls_per_run:\n    - {target: a}\n", "max"},
 		{"a fractional max", "  max_calls_per_run:\n    - {target: a, max: 1.5}\n", "max"},
 		{"an unknown entry key", "  max_calls_per_run:\n    - {target: a, max: 1, per: run}\n", "per"},
-		// D3: not part of task 106, so still an unknown field.
-		{"max_llm_calls_per_run", "  max_llm_calls_per_run: 12\n", "max_llm_calls_per_run"},
+		// Task 081 (D3): accepted now, with 106's parse-time validation.
+		{"llm calls as a float", "  max_llm_calls_per_run: 1.5\n", "max_llm_calls_per_run"},
+		{"llm calls negative", "  max_llm_calls_per_run: -1\n", "cannot unmarshal"},
+		{"llm calls as a string", "  max_llm_calls_per_run: \"3\"\n", "cannot unmarshal"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -75,6 +77,7 @@ func TestScenarioFrequencyLimitsAreRefusedByName(t *testing.T) {
 	}
 	// The bounds themselves load.
 	for _, extra := range []string{"  min_candidate_frequency: 5\n", targets(16),
+		"  max_llm_calls_per_run: 0\n", "  max_llm_calls_per_run: 18446744073709551615\n",
 		"  max_calls_per_run:\n    - {target: " + strings.Repeat("a", 255) + ", max: 0}\n"} {
 		if _, err := LoadScenario([]byte(validScenario + extra)); err != nil {
 			t.Errorf("a boundary value was refused: %v\n%s", err, extra)

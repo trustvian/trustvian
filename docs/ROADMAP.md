@@ -516,8 +516,8 @@ per observation (076). Each is stated on screen where it applies.
 ## v0.12.0 — Change Impact
 
 **PLANNED.** Tasks 081, 086, 087 and 105–107 are specified in
-[`tasks/v0.12/`](tasks/v0.12/README.md). 105, 087, 106 and 086 are
-implemented; the rest are not. The engine is
+[`tasks/v0.12/`](tasks/v0.12/README.md). 105, 087, 106, 086 and 081 are
+implemented; 107 is not. The engine is
 unchanged. The platform gains:
 
 - one ephemeral status surface (105);
@@ -573,7 +573,7 @@ post the same report on the pull request, byte for byte
 | 087 | **Implemented** | [Performance and cost evidence](tasks/v0.12/087-performance-and-cost-evidence.md): per-behavior duration buckets, status classes and 429s, token counts from `gen_ai.usage.*` / `llm.token_count.*`, and an optional versioned pricing table with provenance on every cost figure. No cost gate. Schema 11 |
 | 106 | **Implemented** | [Frequency evidence](tasks/v0.12/106-frequency-evidence.md): calls per run, per-target call ratio in integer permille, a `lost` classification, three optional named gate limits ([ADR 0066](adr/0066-a-per-target-call-limit-is-one-named-check-over-a-bounded-list.md); `max_llm_calls_per_run` moved to 081), and a comparison rule table. No schema step |
 | 086 | **Implemented** | [Scenario and input versioning](tasks/v0.12/086-scenario-and-input-versioning.md): `scenario_digest` and `input_digest` on each execution side, a declared model and `prompt_ref` per side ([ADR 0067](adr/0067-scenario-provenance-is-recorded-per-execution-side.md)), sameness on every repeated comparison with warnings outside the gate, and `trustvian eval compare-repeated`. Schema 12 |
-| 081 | Specified | [Persisted per-behavior fidelity](tasks/v0.12/081-persisted-behavior-fidelity.md): fidelity (and, proposed, layer) counts per behavior on both backends, reported as the lowest level seen; `TestFidelityIsNotPersistedYet` inverted |
+| 081 | **Implemented** | [Persisted per-behavior fidelity](tasks/v0.12/081-persisted-behavior-fidelity.md): fidelity and layer counts per behavior on both backends ([ADR 0068](adr/0068-fidelity-and-layer-are-persisted-as-per-behavior-counts.md)), reported per side as the lowest level seen with `mixed`, and `max_llm_calls_per_run` as a fourth frequency check, deferred without semantic evidence (D8). Schema 13 |
 | 107 | Specified | [Change Impact view and Model Change Report](tasks/v0.12/107-change-impact-view-and-report.md): Compare becomes Change Impact, the result document goes to version 2, `trustvian eval report`, one shared renderer for the CLI and the PR comment, and an Overview panel |
 | 080 | Specified — **parallel measurement, gates nothing** | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md), run and published under `docs/results/`. It changes no code outside `examples/` and `docs/` |
 
@@ -1287,7 +1287,7 @@ The **Gate** column says which rows the release actually depends on.
 | 078 | [Behavioral scenario suites](tasks/v1.0/078-behavioral-scenario-suites.md) — run the same scenario N times per side, diff the behavior, gate the difference over k-of-N evidence | **Implemented** — repeated evaluation, recorded references and suites; criteria 9 and 11 amended to what the evidence supports, and met | `v1.0` |
 | 079 | [CI integration: a GitHub Action](tasks/v1.0/079-ci-integration-github-action.md) — the 078 verdict rendered on the pull request, exit codes passed through, no `pull_request_target` with an untrusted checkout | **Implemented** — the run action, the offline renderer and the comment action in a separate job | preview only |
 | 080 | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md) — precision, recall and false-positive rate for the existing signals against a public agent prompt-injection benchmark | Specified | neither |
-| 081 | [Persist behavior fidelity](tasks/v0.12/081-persisted-behavior-fidelity.md), so a comparison delta reports whether a behavior was named by telemetry or inferred from transport — a forward-only schema step in both backends, deferred from 075 | Specified (`v0.12.0`) | neither |
+| 081 | [Persist behavior fidelity](tasks/v0.12/081-persisted-behavior-fidelity.md), so a comparison delta reports whether a behavior was named by telemetry or inferred from transport — a forward-only schema step in both backends, deferred from 075 | Implemented (`v0.12.0`) | neither |
 | 082 | [Agent inspection and evaluation depth](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md) — the planning task for the six-step developer workflow: what is implemented, what is missing, and what a decision would cost. Documentation only | Specified | neither |
 | 083 | [Behavioral layer identity and display classification](tasks/v1.0/083-behavioral-layer-classification.md) — an explicit rule for when a tool span and the HTTP request beneath it are one behavior, and a non-identity label so a model call, a tool call and an outbound request are distinguishable without changing what a fingerprint is | **Implemented.** Classification and rendering shipped first; the counting correction folds on 084's parent identity ([ADR 0047](adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md), [ADR 0052](adr/0052-a-counted-behavioral-change-is-an-added-identity-with-no-added-parent.md)). The optional gate limit over the new unit, `max_added_behavior_changes`, is built too (issue 131): omitted, it is not evaluated; schema 8 persists its promotion evidence without rewriting historical decisions | `v1.0` |
 | 084 | [Correlation and operational evidence on the record boundary](tasks/v1.0/084-correlation-operational-evidence.md) — parent span identity, duration and error status promoted from volatile feature inputs to recorded evidence, additively | **Implemented** — carried, aggregated per run and persisted at schema 6; per-observation history is 067's and is now implemented | `v1.0` |
@@ -1326,8 +1326,8 @@ persisted per behavior, which is a forward-only schema step in both SQLite and
 PostgreSQL plus the backup/restore/upgrade path. It was separated deliberately: a
 migration bug damages a user's database, and the rule for a behavior whose
 observations disagree about fidelity is a decision that should be made rather than
-arrived at. `TestFidelityIsNotPersistedYet` records the gap in the suite and fails
-the moment it closes. See
+arrived at. `TestFidelityIsNotPersistedYet` recorded the gap in the suite until task
+081 closed it at schema 13; `TestComparisonsReportPersistedFidelity` replaces it. See
 [ADR 0045](adr/0045-conventions-are-read-frameworks-are-not.md)'s consequences.
 
 ### Agent inspection and evaluation depth

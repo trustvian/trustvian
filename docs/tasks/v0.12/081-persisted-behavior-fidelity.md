@@ -1,6 +1,6 @@
 # 081 — Persisted Per-Behavior Fidelity
 
-Status: Specified; not implemented
+Status: Implemented — see [What shipped](#what-shipped)
 Milestone: [`v0.12.0`](../../ROADMAP.md#v0120--change-impact)
 Depends on: [075](../v1.0/075-ai-semantic-telemetry-normalization.md) (implemented),
 [083](../v1.0/083-behavioral-layer-classification.md) (implemented)
@@ -229,3 +229,157 @@ takes the next free version when it lands: **v13**.
 - **"Lowest seen" will sometimes surprise.** A behavior that was semantic 999
   times and transport once reads `transport, mixed`. That is correct, and the
   counts show why.
+
+## What shipped
+
+Branch `feat/081-persisted-behavior-fidelity`, alone in its pull request.
+Schema **v13**. The engine, `DecisionRecord`, `StableFeatures`, fingerprints
+and baseline keys are unchanged.
+
+### Maintainer decisions applied
+
+- **D6 — layer is persisted with fidelity, in the same step.**
+  [ADR 0068](../../adr/0068-fidelity-and-layer-are-persisted-as-per-behavior-counts.md)
+  amends ADR 0047 § 2 from "never persisted" to "persisted as per-behavior
+  counts". The layer is still never fingerprinted, never a baseline key, and
+  there is no `model` category. ADR 0047 carries a pointer, not a rewrite.
+- **D7 — schema v13**, the next free version (087 took 11, 086 took 12).
+- **D8 — `max_llm_calls_per_run` is deferred unless every candidate run has
+  at least one observation with fidelity `semantic`.** With semantic evidence,
+  the check value is that run's `layer_model` observations, its per-run
+  maximum over candidate runs.
+
+### Departures from the specification
+
+| Specified | Shipped | Why |
+|---|---|---|
+| "A malformed value is refused" | The pair is checked as well as each value. **Contradictory** pairs are now refused with `400`: `transport` with `model`, `tool` or `retrieval`, and `semantic` with `transport`. **Partial** pairs (one field without the other) are accepted and counted `unrecorded` in both groups | The invariants `layer_transport == fidelity_transport` and `model+tool+retrieval+unclassified == semantic` cannot hold if every pair the contract accepts is counted as stated. Refusing partial pairs would break the published envelope contract, under which both fields are independently optional, and four existing contract tests send them. **Decision for a human: see below** |
+| Delta carries "the reported level, mixed, and the three counts" | The same, and the six layer counts beside them, in one per-side `reference_fidelity` / `candidate_fidelity` object | `max_llm_calls_per_run` reads the layer counts, and a reader checking a deferred or evaluated check needs to see them. The brief's measurement asks for them on a comparison |
+| Per-side fidelity on every delta | Omitted on a side that did not observe the behavior | A side with no observation has no fidelity. Rendering `unrecorded` there would claim an observation that never happened |
+| Deferred "names the missing evidence" | Names the lowest run identifier lacking semantic evidence, and how many lack it | Order independence: the result must not depend on how the runs were listed |
+| — | `scenario_digest` changed once for every scenario | 086's canonical gate encodes every optional limit, `null` when omitted. Adding `max_llm_calls_per_run` the same way, as instructed, moves every digest. Pinned by `TestTask081MovedEveryScenarioDigestOnce` |
+| "The automated recovery drill is extended" | Platform drill tests, `TestPlatformDrillSQLite` and `TestPlatformDrillPostgres`, run in the *Backup, restore & upgrade* CI job | `scripts/backup-postgres.sh` and its drill cover only the runtime's baseline tables, and nothing drilled the platform database before. The v10 leg uses the real v0.11.0 `trustvian-local`, which CI builds from its tag. The v12 leg is a downgraded database, because no release ships v12 |
+| One column or two (the brief's question) | One: `fidelity_counts`, nine counters | The two groups are one fact, the pair an envelope stated, and three invariants span them, so one decode validates them together. 087 measured that each extra column costs every ingest in the SQLite driver, and nothing reads these in SQL |
+
+The disagreement rule is implemented once, as `BehaviorFidelity.Reported` in
+`platform/behavior_fidelity.go`. It landed with the counters in the first
+commit, not in a layer of its own.
+
+### The invariant, checked against every envelope the code produces
+
+`TestEveryEnvelopeStatesACountablePair` drives nine span shapes through the
+Collector:
+- a named tool, a model and a retrieval;
+- plain HTTP, and a span with no attributes;
+- a GenAI operation outside the enum, and a tool with no name;
+- an OpenInference CHAIN, and an LLM span.
+
+Every envelope is `(transport, transport)` or semantic with model, tool,
+retrieval or no layer. The same holds for every released Collector: 075 and
+083 shipped together in v0.10.0, and v0.9.0 had no platform ingest at all.
+`trustvian eval ingest` sends neither field.
+
+So **the invariant holds for every envelope Trustvian produces**. It would not
+hold for every envelope the control plane accepts, which is why partial and
+contradictory pairs are handled as above.
+
+### Measured
+
+**Ingest.** `BenchmarkIngestDecisionRecord` at 64 behaviors, six runs, against
+`main` at `8d89421`:
+
+| | Time | Bytes | Allocations |
+|---|---|---|---|
+| before | 1.93 ms | 790 KB | 10,510 |
+| after | 2.00 ms | 786 KB | 9,684 |
+
+The column first added about 860 allocations per ingest; see
+[PERFORMANCE.md](../../PERFORMANCE.md) for where. Hoisting
+`loadBehaviorEntries`' scan targets out of its row loop left fewer than before.
+
+**Storage.** One 512-behavior run grew by 12,288 bytes after `VACUUM`. That is
+at most 188 bytes per behavior.
+
+**The demo agent on Ollama.** `trustvian-python-agent-demo`,
+`opentelemetry-instrument`, `gemma3:4b`, `runs: 2`, the same agent on both
+sides, `max_llm_calls_per_run: 50`. Quoted from the `--json` documents:
+
+1. **Fully instrumented**, execution
+   `scn-fidelity-081-full-20261009T234919-153cf6db`. The demo names its tools.
+   A measurement-only harness outside the demo repository also names each
+   Ollama request as a GenAI `chat` span, with names only. PASS.
+   - `external/gemma3:4b` on each side: `semantic`, not mixed, 40
+     observations, `layer.model` 40.
+   - Each tool (`crm_lookup`, `knowledge_search`, `send_email`, …):
+     `semantic`, `layer.tool` equal to its observations.
+   - Each HTTP behavior, including `POST → ollama.localhost` (40):
+     `transport`.
+   - `max_llm_calls_per_run`: `{"state": "evaluated", "rule": "at_most",
+     "actual": "20", "bound": "50", "passed": true}`. That is 20 model calls in
+     the busier candidate run.
+2. **No GenAI or OpenInference instrumentation**, execution
+   `scn-fidelity-081-plain-20261009T235416-97558e8b`. FAIL, exit 1.
+   - Every behavior `transport`, not mixed. `POST → ollama.localhost`
+     transport 40.
+   - `max_llm_calls_per_run`: `{"state": "deferred", "missing_evidence":
+     "run \"scn-fidelity-081-plain-20261009T235416-97558e8b-candidate-1\" has no
+     semantically named observation; model calls cannot be counted (2 of 2
+     candidate runs have none)"}`. The verdict FAIL is that deferral (D1).
+3. **The demo as shipped**, execution
+   `scn-fidelity-081-shipped-20261009T235849-76ae1b7a`. Tools are named, model
+   calls are plain HTTP. PASS.
+   - `max_llm_calls_per_run`: `{"state": "evaluated", "rule": "at_most", "actual":
+     "0", "bound": "50", "passed": true}`. Yet `POST → ollama.localhost` was observed 40
+     times a side.
+   - **D8 does not close this case.** The tool spans are semantic evidence, so
+     the check evaluates, and model calls the producer never named read 0.
+
+### Proven by test
+
+- The fold, the disagreement rule and the invariants:
+  - all-semantic, all-transport, mixed, unrecorded and migrated entries;
+  - one transport observation in a thousand reads `transport, mixed`;
+  - runs summed, then classified;
+  - every invariant refuses a violation;
+  - the stored form round-trips, refuses damage, and decodes without
+    allocating.
+- The migration:
+  - v12 → v13 on both backends;
+  - v10 → v13 in one upgrade on both, asserted in the v10 tests;
+  - fresh and migrated tables have the same columns;
+  - the SQL backfill equals the Go value;
+  - six damaged rows are refused as corrupt.
+- Ingest:
+  - every pair the envelope can spell, counted or refused as above;
+  - the counts survive a restart;
+  - a refused pair writes nothing;
+  - the in-process path stays unrecorded.
+- Surfaces:
+  - `TestComparisonsReportPersistedFidelity` replaces
+    `TestFidelityIsNotPersistedYet`;
+  - the byte-identity tests against `946a4fc` and `a1ee3fd` hold once the
+    added members are removed;
+  - SQLite and PostgreSQL agree on 106's golden, which now ingests real pairs;
+  - the 079 renderer renders the fail, pass and suite documents carrying the
+    new fields byte for byte.
+- `max_llm_calls_per_run`:
+  - omitted, satisfied, violated, a real 0, transport-only deferred, migrated
+    deferred, and one run lacking evidence deferring the whole check;
+  - deferral is order-independent and fails the verdict;
+  - the scenario field validates and moves the digest.
+- The drill: v10 (from v0.11.0) and v12 backups migrate, and a v13 backup
+  restores with its counts, on SQLite and PostgreSQL.
+- Identity: the same record under every countable pair keeps its fingerprint
+  and entry, and the identity pin names 081.
+
+### Current state rows found stale on `main` (`8d89421`)
+
+| Row | Then (`d1ad5f6`) | Now |
+|---|---|---|
+| Fidelity's closed set | `fidelity.go:26-30` | `internal/semconv/fidelity.go:23-32` |
+| The envelope | `client.go:255-279` | `processor/internal/evaluation/client.go:258-279` (`fidelity` at 273, `behavior_layer` at 279) |
+| A behavior entry | `platform/behavior.go:90-101` | `90-107`; 087 added `Operational` |
+| `platform_behavior_entries` | `platform/sqlite.go:1332-1352` | `platform/sqlite.go:1461-1472`, plus v11's `operational_counts` as an ALTER |
+| Schema version | 10, `sqlite.go:38` and `postgres_schema.go:5` | 12 on `main`, 13 here. The constant is only in `sqlite.go:38`; `postgres_schema.go:5` is a comment |
+| `TestFidelityIsNotPersistedYet` | `fidelity_test.go:190-217` | Held; replaced here |
+| `TestLayerIsClaimedExactlyWhenFidelityIsSemantic` | — | `internal/semconv/layer_test.go:44`. Note it asserts semantic ⇔ `Layer.Valid()` on `Normalize`'s output, where a no-convention span has *no* layer. The Collector's `layerFor` then writes `transport`, so the pair the envelope carries is `(transport, transport)` |

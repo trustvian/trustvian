@@ -230,6 +230,7 @@ func (c ScenarioConfig) Digest() string {
 		MinCandidateFreq *uint64                `json:"min_candidate_frequency"`
 		MaxLostBehaviors *uint64                `json:"max_lost_behaviors"`
 		MaxCallsPerRun   []canonicalTargetLimit `json:"max_calls_per_run"`
+		MaxLLMCalls      *uint64                `json:"max_llm_calls_per_run"`
 	}
 	inputs := make([]string, 0, len(c.Inputs))
 	for _, p := range c.Inputs {
@@ -257,7 +258,7 @@ func (c ScenarioConfig) Digest() string {
 		Gate: canonicalGate{
 			*g.AddedCandidatePresenceMinimum, *g.AddedReferencePresenceMaximum, *g.MaxRepeatedAddedBehaviors,
 			*g.MaxBlockDecisionsPerRun, *g.MaxCriticalRiskObservationsPerRun,
-			g.MinCandidateFrequency, g.MaxLostBehaviors, calls,
+			g.MinCandidateFrequency, g.MaxLostBehaviors, calls, g.MaxLLMCallsPerRun,
 		},
 	})
 	if err != nil {

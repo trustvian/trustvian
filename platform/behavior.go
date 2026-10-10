@@ -104,6 +104,11 @@ type BehaviorEntry struct {
 	// Observations, so evidence that was not reported reads as unobserved or
 	// unavailable rather than zero.
 	Operational OperationalSummary
+
+	// Fidelity counts those observations by the fidelity and layer their
+	// envelopes stated (task 081). Both groups partition Observations, so an
+	// observation that stated neither reads unrecorded rather than transport.
+	Fidelity BehaviorFidelity
 }
 
 // BehaviorCollector reduces a stream of DecisionRecords into the bounded set
@@ -308,12 +313,17 @@ func (c *BehaviorCollector) ObserveOperational(record trustvian.DecisionRecord, 
 	if err != nil {
 		return err
 	}
+	fidelity, err := existing.Fidelity.observe(facts.Fidelity, facts.Layer)
+	if err != nil {
+		return err
+	}
 
 	// Past this point nothing can fail.
 	c.observations++
 	if known {
 		existing.Observations++
 		existing.Operational = operational
+		existing.Fidelity = fidelity
 		c.entries[record.FingerprintID] = existing
 	} else {
 		// The only place an entry is created, so the two indexes are written
@@ -325,6 +335,7 @@ func (c *BehaviorCollector) ObserveOperational(record trustvian.DecisionRecord, 
 			Behavior:      record.Behavior,
 			Observations:  1,
 			Operational:   operational,
+			Fidelity:      fidelity,
 		}
 		c.byBehavior[record.Behavior] = record.FingerprintID
 	}
@@ -444,6 +455,11 @@ type BehaviorDelta struct {
 	ReferenceRate float64
 	CandidateRate float64
 	RateDelta     float64
+
+	// ReferenceFidelity and CandidateFidelity are each side's fidelity and
+	// layer counts for this behavior (task 081); zero on a side that did not
+	// observe it. Reported() is the level a reader is shown.
+	ReferenceFidelity, CandidateFidelity BehaviorFidelity
 }
 
 // BehaviorDiff is the factual comparison of two behavioral snapshots.
@@ -650,12 +666,15 @@ func CompareBehaviorSnapshots(reference, candidate BehaviorSnapshot) (BehaviorDi
 			Behavior:       cand.Behavior,
 			Presence:       BehaviorAdded,
 			CandidateCount: cand.Observations,
+
+			CandidateFidelity: cand.Fidelity,
 		}
 		// Consistency was established above, so a shared fingerprint is
 		// known to describe the same behavior on both sides.
 		if ref, ok := refByID[cand.FingerprintID]; ok {
 			delta.Presence = BehaviorShared
 			delta.ReferenceCount = ref.Observations
+			delta.ReferenceFidelity = ref.Fidelity
 		}
 		deltas = append(deltas, delta)
 	}
@@ -674,6 +693,8 @@ func CompareBehaviorSnapshots(reference, candidate BehaviorSnapshot) (BehaviorDi
 			Behavior:       ref.Behavior,
 			Presence:       BehaviorRemoved,
 			ReferenceCount: ref.Observations,
+
+			ReferenceFidelity: ref.Fidelity,
 		})
 	}
 

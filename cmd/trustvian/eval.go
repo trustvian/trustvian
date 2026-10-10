@@ -63,6 +63,7 @@ const evalUsage = `usage:
                               --max-critical-risk-observations-per-run <n>
                               [--min-candidate-frequency <n>] [--max-lost-behaviors <n>]
                               [--max-calls-per-run <target>=<max> ...]
+                              [--max-llm-calls-per-run <n>]
                               [--api-url <url>] [--json]
   trustvian eval run          --scenario <file> [--collector-bin <path>]
                               [--api-url <url>] [--json]

@@ -995,7 +995,11 @@ func (c *ControlPlane) applyRecord(
 	// Checked first, not left to the collector: a saturated collector refuses
 	// before it reads anything, and invalid facts must be refused whatever
 	// state the run's behavioral evidence is in.
-	if err := request.Operational.Validate(); err != nil {
+	// The envelope's fidelity and layer travel to the fold with 087's facts:
+	// one value, validated once, counted in the same transaction.
+	facts := request.Operational
+	facts.Fidelity, facts.Layer = request.Fidelity, request.BehaviorLayer
+	if err := facts.Validate(); err != nil {
 		return IngestResult{}, err
 	}
 
@@ -1022,7 +1026,7 @@ func (c *ControlPlane) applyRecord(
 	//
 	// Every other collector error — environment mismatch, fingerprint
 	// conflict, invalid identity, overflow — rejects the whole ingest.
-	if err := collector.ObserveOperational(request.Record, request.Operational); err != nil &&
+	if err := collector.ObserveOperational(request.Record, facts); err != nil &&
 		!errors.Is(err, ErrBehaviorCapacity) {
 		return IngestResult{}, err
 	}

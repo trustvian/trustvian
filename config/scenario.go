@@ -115,18 +115,16 @@ type ScenarioGate struct {
 	MaxBlockDecisionsPerRun           *uint64 `yaml:"max_block_decisions_per_run"`
 	MaxCriticalRiskObservationsPerRun *uint64 `yaml:"max_critical_risk_observations_per_run"`
 
-	// Task 106's optional frequency limits. Unlike the five above, each may be
-	// omitted, and omitted means the control plane does not evaluate it — it
-	// is never defaulted. Present, each is validated here exactly as the
-	// control plane will validate it, so a scenario that cannot run fails
-	// before anything starts.
-	//
-	// max_llm_calls_per_run is deliberately not a field: it needs per-behavior
-	// layer evidence that task 081 has not persisted yet, so it stays an
-	// unknown field and is refused.
+	// The optional frequency limits: task 106's three and task 081's
+	// max_llm_calls_per_run. Unlike the five above, each may be omitted, and
+	// omitted means the control plane does not evaluate it — it is never
+	// defaulted. Present, each is validated here exactly as the control plane
+	// will validate it, so a scenario that cannot run fails before anything
+	// starts.
 	MinCandidateFrequency *uint64               `yaml:"min_candidate_frequency"`
 	MaxLostBehaviors      *uint64               `yaml:"max_lost_behaviors"`
 	MaxCallsPerRun        []ScenarioTargetLimit `yaml:"max_calls_per_run"`
+	MaxLLMCallsPerRun     *uint64               `yaml:"max_llm_calls_per_run"`
 }
 
 // ScenarioTargetLimit is one max_calls_per_run entry: the most calls one
@@ -340,6 +338,7 @@ func requireIntegerCounts(data []byte) error {
 			MaxCriticalRiskObservationsPerRun any `yaml:"max_critical_risk_observations_per_run"`
 			MinCandidateFrequency             any `yaml:"min_candidate_frequency"`
 			MaxLostBehaviors                  any `yaml:"max_lost_behaviors"`
+			MaxLLMCallsPerRun                 any `yaml:"max_llm_calls_per_run"`
 			MaxCallsPerRun                    []struct {
 				Max any `yaml:"max"`
 			} `yaml:"max_calls_per_run"`
@@ -360,6 +359,7 @@ func requireIntegerCounts(data []byte) error {
 		{"gate.max_critical_risk_observations_per_run", counts.Gate.MaxCriticalRiskObservationsPerRun},
 		{"gate.min_candidate_frequency", counts.Gate.MinCandidateFrequency},
 		{"gate.max_lost_behaviors", counts.Gate.MaxLostBehaviors},
+		{"gate.max_llm_calls_per_run", counts.Gate.MaxLLMCallsPerRun},
 	} {
 		switch field.value.(type) {
 		case nil, int, int64, uint64:
