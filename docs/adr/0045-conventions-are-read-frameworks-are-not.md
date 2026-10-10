@@ -281,7 +281,9 @@ per-dimension matrix is a third shape nobody asked for.
   user's database, and the summarisation rule for a behavior whose observations
   disagree about fidelity is a decision that should be made rather than arrived at.
   `TestFidelityIsNotPersistedYet` records the gap in the suite and fails the moment
-  it closes.
+  it closes. *Closed by task 081
+  ([ADR 0068](0068-fidelity-and-layer-are-persisted-as-per-behavior-counts.md)):
+  that test is replaced by `TestComparisonsReportPersistedFidelity`.*
 - Task 075's own *What is read* table listed `gen_ai.system` as the provider
   signal. That was accurate when written and is now stale; the task has been
   corrected in the same change as this record.

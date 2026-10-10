@@ -79,7 +79,27 @@ actually depend on.
     scope-less `status_changed` realtime event that reaches only unfiltered
     streams. There is no polling.
 
-- **Scenario, input and prompt provenance** (task 086,
+- **Persisted per-behavior fidelity and layer** (task 081,
+  [ADR 0068](docs/adr/0068-fidelity-and-layer-are-persisted-as-per-behavior-counts.md)).
+  A comparison now says whether each behavior was named by telemetry or
+  inferred from transport.
+  - Each behavior counts its observations by fidelity and by layer, at platform
+    schema 13 on SQLite and PostgreSQL:
+    - fidelity: semantic, transport or unrecorded;
+    - layer: model, tool, retrieval, transport, unclassified or unrecorded.
+
+    Existing behaviors read unrecorded.
+  - Comparison deltas and repeated-comparison rows carry `reference_fidelity`
+    and `candidate_fidelity`. Each has the lowest level seen, `mixed`, and the
+    counts beside it.
+  - `gate.max_llm_calls_per_run`: the most model-layer calls in one candidate
+    run. It is optional, a fourth `gate.frequency_checks` entry, and on
+    `eval compare-repeated --max-llm-calls-per-run`. It is deferred, failing the
+    verdict, unless every candidate run has a semantically named observation.
+  - The platform recovery drill covers backup, restore and upgrade on both
+    backends. It includes a v10 backup written by v0.11.0's own
+    `trustvian-local`.
+
   [ADR 0067](docs/adr/0067-scenario-provenance-is-recorded-per-execution-side.md)).
   A repeated comparison now says whether both sides ran the same scenario, the
   same inputs, the same model and the same prompt.
@@ -141,6 +161,15 @@ actually depend on.
 
 ### Changed
 
+- **A contradictory fidelity/layer pair is refused at ingest** (task 081). An
+  envelope stating `transport` with a `model`, `tool` or `retrieval` layer, or
+  `semantic` with `transport`, now gets `400`. No Trustvian producer sends one.
+  A partial pair, one field without the other, is still accepted and is counted
+  unrecorded.
+- **Every scenario's `scenario_digest` changed once** (task 081). The digested
+  gate gained `max_llm_calls_per_run`, `null` when omitted. Against an
+  execution recorded by an earlier CLI, an unchanged scenario reads
+  `same_scenario: "false"`.
 - **Upgrade the control plane before the CLI.** A control plane older than task 086 refuses the `provenance` field that `trustvian eval run` sends when it begins a scenario execution, and the run fails with `400` before any workload starts. `trustvian dev` itself sends no provenance and is unaffected.
 
 ## v0.11.0 — webui feature
@@ -1303,6 +1332,7 @@ Entries are grouped by capability. Within a group, `Added` comes first, then
   One piece is deferred as task 081: fidelity is not persisted per behavior, so a
   comparison delta does not carry it — that needs a forward-only schema step in
   both backends, and `TestFidelityIsNotPersistedYet` fails the moment it lands.
+  (Since closed by task 081, under Unreleased.)
 
 - **Trustvian says which instrumentation layer a behavior came from** (task 083,
   partial). A model call, a named tool call, a retrieval and a plain transport

@@ -1,6 +1,8 @@
 # 0047 — Behavioral identity is per observation; counting is a control-plane policy
 
-**Status:** Accepted
+**Status:** Accepted. § 2's "never persisted" is amended by
+[ADR 0068](0068-fidelity-and-layer-are-persisted-as-per-behavior-counts.md):
+the layer is persisted as per-behavior counts. Everything else here stands.
 
 ## Context
 

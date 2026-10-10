@@ -120,6 +120,7 @@ trustvian eval compare-repeated
                             --max-critical-risk-observations-per-run <n>
                             [--min-candidate-frequency <n>] [--max-lost-behaviors <n>]
                             [--max-calls-per-run <target>=<max> ...]
+                            [--max-llm-calls-per-run <n>]
 
 trustvian env create   --project-id <id> --ref <ref> --name <name> [--rank <n>]
 trustvian env get      --project-id <id> --ref <ref>
@@ -301,6 +302,30 @@ failure or a verdict it does not recognize.
 Sameness here comes from the executions that recorded the runs: each side
 states a value only when every one of its runs was recorded with the same one
 (see [Provenance](#provenance-what-each-side-ran)).
+
+### Fidelity on a comparison
+
+Since task 081 every behavior row of `eval compare` (`behavior_diff.deltas[]`)
+and of the repeated comparison carries `reference_fidelity` and
+`candidate_fidelity`, printed unchanged by `--json`:
+
+```json
+"candidate_fidelity": {"level": "transport", "mixed": true,
+  "semantic": "2", "transport": "1", "unrecorded": "0",
+  "layer": {"model": "0", "tool": "2", "retrieval": "0", "transport": "1",
+            "unclassified": "0", "unrecorded": "0"}}
+```
+
+- **`level`** is the lowest fidelity any observation had: `transport` if one
+  was transport, else `semantic` if one was semantic, else `unrecorded`.
+- **`mixed`** says the observations disagreed. One transport observation in a
+  thousand makes the behavior `transport, mixed`, because "named by telemetry"
+  must hold for every observation it covers.
+- **The counts** say how it split. A repeated comparison sums each side's runs
+  first, then derives the level.
+- **A missing side:** a side that never observed the behavior has neither
+  field.
+- **Before schema 13:** behaviors recorded then read `unrecorded`.
 
 ### Following a finding to its evidence
 
@@ -721,15 +746,28 @@ trustvian eval run --scenario scenarios/support-login.yaml --json > result.json
     max_lost_behaviors: 0             # behaviors in every reference run and missing from a candidate run
     max_calls_per_run:                # per target name, the most calls any one candidate run makes
       - {target: crm.internal, max: 6}
+    max_llm_calls_per_run: 40         # the most model-layer calls any one candidate run makes (task 081)
   ```
 
   `min_candidate_frequency` is at most `runs`. `max_calls_per_run` lists 1 to 16
   unique targets of at most 255 bytes. A target neither side ever called is
   reported `not_observed` and fails the check, so a typo cannot pass. A
   configured limit whose evidence is absent is `deferred` and fails the
-  verdict, naming what was missing. `max_llm_calls_per_run` is not accepted yet:
-  it waits for task 081. Exit codes are unchanged, and a FAIL from one of these
-  is a gate FAIL, exit `1`.
+  verdict, naming what was missing. Exit codes are unchanged, and a FAIL from
+  one of these is a gate FAIL, exit `1`.
+- `max_llm_calls_per_run` (task 081) counts the behaviors whose envelopes named
+  a model call: GenAI `chat`, `text_completion`, `embeddings` and the like, or an
+  OpenInference `LLM` or `EMBEDDING` span. It is **deferred unless every
+  candidate run has at least one semantically named observation**. A producer
+  with no GenAI or OpenInference instrumentation sees every call as transport,
+  including its model calls, so reading its 0 as "no model calls" would pass
+  without evidence. Only an instrumented run's 0 is a real 0. The deferred
+  check names the run that lacked the evidence. A model call that reaches the
+  model server as a plain HTTP request is counted under that host by
+  `max_calls_per_run`, not here. **Known gap:** a run that names its tool calls
+  but not its model calls has semantic evidence, so the check evaluates, and its
+  model calls read 0. Task 081 measured exactly this with the demo agent
+  as shipped.
 - `k = 1, j = 0` is the documented guidance for a workload whose variance you
   have not measured. It is set semantics — "in at least one candidate run and no
   reference run" — at every N. It is guidance, not a default, and the
@@ -839,7 +877,10 @@ candidate:
   `runs`, scope, commands, env *keys*, input paths and **every gate limit**, so
   a changed threshold alone reads `same_scenario: "false"` with a
   `scenario_differs` warning. What does not: env *values*, input contents
-  (those are `input_digest`), the model and the prompt reference.
+  (those are `input_digest`), the model and the prompt reference. Task 081
+  added `max_llm_calls_per_run` to the digested gate, `null` when omitted, so
+  each scenario's digest changed once. An execution recorded by an earlier CLI
+  then reads `same_scenario: "false"` against one recorded by this one.
 - **`scenario_digest`** is `sha256:` and the hex SHA-256 of the validated
   scenario re-encoded as canonical JSON. The encoding has a fixed field order,
   `env` reduced to its sorted keys, `inputs` as sorted clean paths,

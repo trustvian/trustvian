@@ -112,7 +112,7 @@ description of it.
 | Agent-oriented conventions read (GenAI, OpenInference) | **Implemented** | `internal/semconv`, task 075 |
 | Tool calls named as tool calls; graceful degradation to transport | **Implemented** | `internal/semconv/genai.go`, `openinference.go`, `degradation_test.go` |
 | Fidelity reported on span, ingest envelope, realtime observation, WebUI | **Implemented** | task 075; the Collector-path envelope gap was fixed separately |
-| Fidelity persisted per behavior, so a comparison delta carries it | **Planned, unspecified** | task 081; `TestFidelityIsNotPersistedYet` |
+| Fidelity persisted per behavior, so a comparison delta carries it | **Implemented** (task 081, schema 13) | `TestComparisonsReportPersistedFidelity`, which replaced `TestFidelityIsNotPersistedYet` |
 | Content refused at every durable and published surface | **Implemented** | 22 attributes in `internal/semconv/content.go`, read by nothing |
 | Model calls distinguishable from tool calls | **Implemented, coarsely** | a model call is `external`, named by `gen_ai.request.model` — but `retrieval` is `external` too |
 | A dedicated `model` operation category | **Absent** | `event.OperationCategory` is `http`, `db`, `rpc`, `tool`, `external` (`event/event.go`) |

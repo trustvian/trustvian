@@ -400,7 +400,10 @@ sixth value would re-fingerprint every model call a producer had already been
 emitting and discard those baselines, to improve a label. See
 [ADR 0047](adr/0047-behavioral-identity-is-per-observation-counting-is-a-policy.md).
 
-Like fidelity, it is **not persisted**, so a comparison delta carries no layer.
+Since task 081 it is **persisted as per-behavior counts** beside fidelity (schema
+13, [ADR 0068](adr/0068-fidelity-and-layer-are-persisted-as-per-behavior-counts.md)),
+and a comparison delta carries them. It is still never fingerprinted and never a
+baseline key.
 
 ### What one act counts as
 
@@ -604,9 +607,21 @@ unrecognized value on the ingest envelope is refused with `400` rather than
 degraded, because this vocabulary is Trustvian's own closed set rather than an
 external convention.
 
-**Not yet persisted per behavior**, so the comparison response's behavior deltas
-do not carry it — that needs a schema step and is deferred as its own task. See
-[ADR 0045](adr/0045-conventions-are-read-frameworks-are-not.md)'s consequences.
+**Persisted per behavior since task 081** (schema 13,
+[ADR 0068](adr/0068-fidelity-and-layer-are-persisted-as-per-behavior-counts.md)).
+Each behavior counts its observations by fidelity:
+- semantic, transport, or unrecorded (the envelope stated no pair);
+
+and by layer:
+- model, tool, retrieval, transport, unclassified, or unrecorded.
+
+A comparison reports each side's level by one rule, applied on the control
+plane: the lowest level seen, `transport` if any observation was transport,
+with `mixed` when two counters are non-zero. The counts are shown beside the
+level. An envelope pair is counted as stated only when the layer rule allows it
+(`transport` with `transport`, `semantic` with a semantic layer or none). A
+contradictory pair is refused with `400`, and a partial one is counted
+unrecorded. Behaviors recorded before schema 13 read `unrecorded`.
 
 ### No framework is named
 
