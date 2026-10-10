@@ -758,16 +758,15 @@ trustvian eval run --scenario scenarios/support-login.yaml --json > result.json
 - `max_llm_calls_per_run` (task 081) counts the behaviors whose envelopes named
   a model call: GenAI `chat`, `text_completion`, `embeddings` and the like, or an
   OpenInference `LLM` or `EMBEDDING` span. It is **deferred unless every
-  candidate run has at least one semantically named observation**. A producer
-  with no GenAI or OpenInference instrumentation sees every call as transport,
-  including its model calls, so reading its 0 as "no model calls" would pass
-  without evidence. Only an instrumented run's 0 is a real 0. The deferred
-  check names the run that lacked the evidence. A model call that reaches the
-  model server as a plain HTTP request is counted under that host by
-  `max_calls_per_run`, not here. **Known gap:** a run that names its tool calls
-  but not its model calls has semantic evidence, so the check evaluates, and its
-  model calls read 0. Task 081 measured exactly this with the demo agent
-  as shipped.
+  candidate run has at least one model-layer observation**. A run with none
+  cannot be told apart from one whose model calls were invisible: a producer
+  with no GenAI or OpenInference instrumentation, or one that names its tools
+  but sends its model calls as plain HTTP, sees those calls as transport. So
+  when the check evaluates, its value is at least 1; it never reports 0. The
+  deferred check names the run that lacked the evidence (the lowest run
+  identifier) and, when more than one did, how many. A model call that reaches
+  the model server as a plain HTTP request is counted under that host by
+  `max_calls_per_run`, not here.
 - `k = 1, j = 0` is the documented guidance for a workload whose variance you
   have not measured. It is set semantics — "in at least one candidate run and no
   reference run" — at every N. It is guidance, not a default, and the

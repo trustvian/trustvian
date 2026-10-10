@@ -57,7 +57,7 @@ func runEvalCompareRepeated(s streams, args []string, timeout time.Duration) int
 	fs.Var(&minFrequency, "min-candidate-frequency", "optional; omitted, the check is not evaluated")
 	fs.Var(&maxLost, "max-lost-behaviors", "optional; omitted, the check is not evaluated")
 	fs.Var(&maxLLM, "max-llm-calls-per-run",
-		"optional; model-layer calls in any one candidate run. Deferred unless every candidate run has a semantically named observation")
+		"optional; model-layer calls in any one candidate run. Deferred unless every candidate run has a model-layer observation")
 	var calls targetLimitList
 	fs.Var(&calls, "max-calls-per-run", "optional <target>=<max>; repeat once per target")
 
