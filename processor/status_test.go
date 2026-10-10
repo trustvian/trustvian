@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -265,8 +266,21 @@ func TestStatusReportCountsActorBindingAndLearning(t *testing.T) {
 	if err := proc.ConsumeTraces(context.Background(), td); err != nil {
 		t.Fatal(err)
 	}
+	// received == "4" alone is not enough: the reporter ticks concurrently
+	// with ConsumeTraces, and processSpan counts a span as received before it
+	// counts its actor binding, outcome and learning. A report snapshotted
+	// while the last span is in flight says received 4 with that span counted
+	// nowhere else. Wait for a report in which every counter has caught up.
 	report, _ := plane.waitFor(t, func(r map[string]any) bool {
-		return r["spans"].(map[string]any)["received"] == "4"
+		n := func(m any, k string) int {
+			v, _ := strconv.Atoi(m.(map[string]any)[k].(string))
+			return v
+		}
+		spans, actors, learning := r["spans"], r["actors"], r["learning"]
+		return n(spans, "received") == 4 &&
+			n(actors, "bound_by_override")+n(actors, "bound_by_service_name")+n(actors, "unbound") == 4 &&
+			n(spans, "evaluated")+n(spans, "invalid")+n(spans, "analyze_errors") == 4 &&
+			n(learning, "learned")+n(learning, "not_learned")+n(learning, "observe_errors") == n(spans, "evaluated")
 	})
 	actors, _ := json.Marshal(report["actors"])
 	if want := `{"bound_by_override":"1","bound_by_service_name":"1","unbound":"2"}`; string(actors) != want {
