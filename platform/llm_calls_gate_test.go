@@ -1,6 +1,6 @@
 package platform
 
-// Task 081's max_llm_calls_per_run, over values: every state, decision D8's
+// Task 081's max_llm_calls_per_run, over values: every state, decision D9's
 // evidence rule, and order independence.
 
 import (
@@ -60,13 +60,22 @@ func TestMaxLLMCallsPerRunStates(t *testing.T) {
 	modelRun := func(index int, calls uint64) repetitionInput {
 		return withFidelity(runWith(SideCandidate, index, map[string]uint64{"chat": calls}), "model")
 	}
-	mixedRun := func(index int) repetitionInput {
-		// A semantic tool call and a transport call: semantic evidence, no
-		// model call — a real 0.
+	// toolsNamedRun is the demo as 081's third measured run found it: tools
+	// named, model calls plain HTTP. Semantic evidence, no model layer.
+	toolsNamedRun := func(index int) repetitionInput {
 		tool := withFidelity(runWith(SideCandidate, index, map[string]uint64{"read": 2}), "tool")
-		http := withFidelity(runWith(SideCandidate, index, map[string]uint64{"get": 1}), "transport")
+		http := withFidelity(runWith(SideCandidate, index, map[string]uint64{"post": 20}), "transport")
 		tool.entries = append(tool.entries, http.entries...)
 		return tool
+	}
+	// fullRun has a model call beside a named tool and a transport call.
+	fullRun := func(index int, calls uint64) repetitionInput {
+		run := modelRun(index, calls)
+		tool := withFidelity(runWith(SideCandidate, index, map[string]uint64{"read": 2}), "tool")
+		http := withFidelity(runWith(SideCandidate, index, map[string]uint64{"post": 9}), "transport")
+		run.entries = append(run.entries, tool.entries...)
+		run.entries = append(run.entries, http.entries...)
+		return run
 	}
 	for _, tt := range []struct {
 		name     string
@@ -80,20 +89,26 @@ func TestMaxLLMCallsPerRunStates(t *testing.T) {
 		{"omitted", nil, []repetitionInput{ref, modelRun(1, 9)}, GateCheckNotEvaluated, 0, false, ""},
 		{"satisfied", uptr(5), []repetitionInput{ref, modelRun(1, 3), modelRun(2, 5)}, GateCheckEvaluated, 5, true, ""},
 		{"violated", uptr(4), []repetitionInput{ref, modelRun(1, 3), modelRun(2, 5)}, GateCheckEvaluated, 5, false, ""},
-		{"semantic evidence and no model call is a real 0", uptr(0), []repetitionInput{ref, mixedRun(1)},
-			GateCheckEvaluated, 0, true, ""},
-		// D8: a producer with no GenAI or OpenInference instrumentation — every
-		// behavior transport — cannot show model calls, so 0 would be vacuous.
+		// Every run has model-layer evidence: the real maximum, counting only
+		// model-layer observations, not the tool or transport ones beside them.
+		{"every run with model-layer evidence reads its real maximum", uptr(6),
+			[]repetitionInput{ref, fullRun(1, 1), fullRun(2, 7), fullRun(3, 4)}, GateCheckEvaluated, 7, false, ""},
+		// D9: tools named and model calls transport. D8 evaluated this to a
+		// vacuous 0; semantic evidence without a model layer is not enough.
+		{"tools named and model calls transport", uptr(50), []repetitionInput{ref, toolsNamedRun(1)},
+			GateCheckDeferred, 0, false, `run "candidate-1" has no model-layer observation; model calls cannot be counted`},
+		// A producer with no GenAI or OpenInference instrumentation — every
+		// behavior transport — cannot show model calls either.
 		{"transport only", uptr(100), []repetitionInput{ref,
 			withFidelity(runWith(SideCandidate, 1, map[string]uint64{"post": 7}), "transport")},
-			GateCheckDeferred, 0, false, "has no semantically named observation; model calls cannot be counted"},
+			GateCheckDeferred, 0, false, "has no model-layer observation; model calls cannot be counted"},
 		// A run recorded before schema 13 reads deferred, never 0.
 		{"migrated", uptr(100), []repetitionInput{ref,
 			withFidelity(runWith(SideCandidate, 1, map[string]uint64{"chat": 3}), "")},
-			GateCheckDeferred, 0, false, "no semantically named observation"},
-		{"one run without semantic evidence defers the whole check", uptr(100), []repetitionInput{ref,
-			modelRun(1, 2), withFidelity(runWith(SideCandidate, 2, map[string]uint64{"post": 1}), "transport")},
-			GateCheckDeferred, 0, false, `run "candidate-2"`},
+			GateCheckDeferred, 0, false, "no model-layer observation"},
+		{"one run of N without model-layer evidence defers the whole check", uptr(100), []repetitionInput{ref,
+			modelRun(1, 2), toolsNamedRun(2), modelRun(3, 4)},
+			GateCheckDeferred, 0, false, `run "candidate-2" has no model-layer observation; model calls cannot be counted`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			check, verdict := llmCheck(t, tt.limit, tt.inputs...)
@@ -102,6 +117,10 @@ func TestMaxLLMCallsPerRunStates(t *testing.T) {
 			}
 			switch tt.state {
 			case GateCheckEvaluated:
+				// D9: an evaluated check has seen a model call in every run.
+				if check.Actual == 0 {
+					t.Fatalf("an evaluated check reports 0: %+v", check)
+				}
 				if check.Actual != tt.actual || check.Passed != tt.passed || check.Bound != *tt.limit ||
 					check.Rule != RuleAtMost {
 					t.Fatalf("check = %+v, want actual %d passed %v", check, tt.actual, tt.passed)

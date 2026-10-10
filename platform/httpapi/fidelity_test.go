@@ -308,14 +308,15 @@ func TestComparisonsReportPersistedFidelity(t *testing.T) {
 }
 
 // TestMaxLLMCallsPerRunOverHTTP: the limit is accepted, echoed and evaluated
-// from the persisted layer counts, and a candidate run with no semantically
-// named observation defers it (decision D8).
+// from the persisted layer counts, and a candidate run with no model-layer
+// observation defers it (decision D9) — including one whose tools are named.
 func TestMaxLLMCallsPerRunOverHTTP(t *testing.T) {
 	a := newAPI(t)
 	a.completeRunWithFidelity("llm-ref", []observedOp{{"chat", "semantic", "model"}})
 	a.completeRunWithFidelity("llm-cand-1", []observedOp{
 		{"chat", "semantic", "model"}, {"chat", "semantic", "model"}, {"read", "semantic", "tool"}})
 	a.completeRunWithFidelity("llm-cand-plain", []observedOp{{"chat", "transport", "transport"}})
+	a.completeRunWithFidelity("llm-cand-tools", []observedOp{{"read", "semantic", "tool"}, {"chat", "transport", "transport"}})
 	compare := func(candidate, limit string) map[string]any {
 		limits := repeatedLimitsBody("1", "0")
 		limits["max_llm_calls_per_run"] = limit
@@ -348,8 +349,11 @@ func TestMaxLLMCallsPerRunOverHTTP(t *testing.T) {
 	if c := compare("llm-cand-1", "1"); c["passed"] != false || c["verdict"] != "fail" {
 		t.Errorf("violated check = %v", c)
 	}
-	if c := compare("llm-cand-plain", "100"); c["state"] != "deferred" || c["verdict"] != "fail" ||
-		!strings.Contains(c["missing_evidence"].(string), "no semantically named observation") {
-		t.Errorf("deferred check = %v", c)
+	for _, candidate := range []string{"llm-cand-plain", "llm-cand-tools"} {
+		want := `run "` + candidate + `" has no model-layer observation; model calls cannot be counted`
+		if c := compare(candidate, "100"); c["state"] != "deferred" || c["verdict"] != "fail" ||
+			c["missing_evidence"] != want {
+			t.Errorf("%s: deferred check = %v, want missing evidence %q", candidate, c, want)
+		}
 	}
 }

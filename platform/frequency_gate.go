@@ -149,8 +149,6 @@ type frequencyGateInputs struct {
 // candidate run.
 type runLayerEvidence struct {
 	runID EvaluationRunID
-	// semantic reports whether any observation was semantically named.
-	semantic bool
 	// modelCalls is the run's model-layer observations.
 	modelCalls uint64
 }
@@ -159,7 +157,6 @@ type runLayerEvidence struct {
 func layerEvidenceOf(runID EvaluationRunID, entries []BehaviorEntry) (runLayerEvidence, error) {
 	out := runLayerEvidence{runID: runID}
 	for _, e := range entries {
-		out.semantic = out.semantic || e.Fidelity.Semantic > 0
 		if err := addCount(&out.modelCalls, e.Fidelity.LayerModel, "model calls in one run"); err != nil {
 			return runLayerEvidence{}, err
 		}
@@ -255,13 +252,15 @@ func evaluateFrequencyGates(l RepeatedEvaluationGateLimits, in frequencyGateInpu
 			}
 		}
 	}
-	// max_llm_calls_per_run (task 081, decision D8): the most model-layer
-	// calls any one candidate run made. Deferred unless every candidate run
-	// has at least one semantically named observation. A run without one —
-	// a producer with no GenAI or OpenInference instrumentation, or a run
-	// recorded before schema 13 — cannot show its model calls at all, and
-	// reading its 0 as "no model calls" would pass vacuously. With semantic
-	// evidence in the run, 0 is a real 0.
+	// max_llm_calls_per_run (task 081, decisions D8 and D9): the most
+	// model-layer calls any one candidate run made. Deferred unless every
+	// candidate run has at least one model-layer observation. D8 asked only
+	// for semantic evidence, and 081's third measured run showed why that is
+	// not enough: a producer that names its tools but sends model calls as
+	// plain HTTP has semantic evidence and no model layer, and the check
+	// passed at 0 while the agent made 20 model calls a run. A run with no
+	// model-layer observation cannot be told apart from one whose model calls
+	// were invisible, so an evaluated value is always at least 1.
 	if maximum, set := l.MaxLLMCallsPerRun.Maximum(); set {
 		c := &checks[3]
 		var (
@@ -270,7 +269,7 @@ func evaluateFrequencyGates(l RepeatedEvaluationGateLimits, in frequencyGateInpu
 			first   EvaluationRunID
 		)
 		for _, run := range in.candidateLayers {
-			if !run.semantic {
+			if run.modelCalls == 0 {
 				// The lowest identifier, not the first in request order:
 				// the evidence a check names must not depend on how the
 				// runs were listed.
@@ -286,7 +285,7 @@ func evaluateFrequencyGates(l RepeatedEvaluationGateLimits, in frequencyGateInpu
 		case lacking > 0:
 			c.State = GateCheckDeferred
 			c.MissingEvidence = "run " + preview(string(first)) +
-				" has no semantically named observation; model calls cannot be counted"
+				" has no model-layer observation; model calls cannot be counted"
 			if lacking > 1 {
 				c.MissingEvidence += fmt.Sprintf(" (%d of %d candidate runs have none)", lacking, len(in.candidateLayers))
 			}

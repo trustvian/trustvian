@@ -1135,7 +1135,7 @@ func TestRenderAcceptsTask081Fields(t *testing.T) {
 					map[string]any{"name": "max_lost_behaviors", "state": "not_evaluated"},
 					map[string]any{"name": "max_calls_per_run", "state": "not_evaluated"},
 					map[string]any{"name": "max_llm_calls_per_run", "state": "deferred",
-						"missing_evidence": "run \"r\" has no semantically named observation; model calls cannot be counted"},
+						"missing_evidence": "run \"r\" has no model-layer observation; model calls cannot be counted"},
 				}
 				for i := range c["behaviors"].([]any) {
 					b := obj(c, "behaviors", i)
