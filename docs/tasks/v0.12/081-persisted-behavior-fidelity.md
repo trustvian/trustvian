@@ -247,7 +247,16 @@ and baseline keys are unchanged.
 - **D8 — `max_llm_calls_per_run` is deferred unless every candidate run has
   at least one observation with fidelity `semantic`.** With semantic evidence,
   the check value is that run's `layer_model` observations, its per-run
-  maximum over candidate runs.
+  maximum over candidate runs. *Superseded by D9.*
+- **D9 — `max_llm_calls_per_run` is deferred unless every completed candidate
+  run has at least one model-layer observation** (follow-up, after the third
+  measured run below). A run with no model-layer observation cannot be told
+  apart from one whose model calls were invisible: with tools named and model
+  calls as plain HTTP, D8 evaluated the check to `0` and passed while the agent
+  made 20 model calls a run. When the check evaluates, its value is therefore
+  at least `1`; a reported `0` can no longer occur. The deferred output names
+  the run as D8's did: the lowest identifier, and the count of runs lacking the
+  evidence.
 
 ### Departures from the specification
 
@@ -256,7 +265,7 @@ and baseline keys are unchanged.
 | "A malformed value is refused" | The pair is checked as well as each value. **Contradictory** pairs are now refused with `400`: `transport` with `model`, `tool` or `retrieval`, and `semantic` with `transport`. **Partial** pairs (one field without the other) are accepted and counted `unrecorded` in both groups | The invariants `layer_transport == fidelity_transport` and `model+tool+retrieval+unclassified == semantic` cannot hold if every pair the contract accepts is counted as stated. Refusing partial pairs would break the published envelope contract, under which both fields are independently optional, and four existing contract tests send them. **Decision for a human: see below** |
 | Delta carries "the reported level, mixed, and the three counts" | The same, and the six layer counts beside them, in one per-side `reference_fidelity` / `candidate_fidelity` object | `max_llm_calls_per_run` reads the layer counts, and a reader checking a deferred or evaluated check needs to see them. The brief's measurement asks for them on a comparison |
 | Per-side fidelity on every delta | Omitted on a side that did not observe the behavior | A side with no observation has no fidelity. Rendering `unrecorded` there would claim an observation that never happened |
-| Deferred "names the missing evidence" | Names the lowest run identifier lacking semantic evidence, and how many lack it | Order independence: the result must not depend on how the runs were listed |
+| Deferred "names the missing evidence" | Names the lowest run identifier lacking model-layer evidence (D9; semantic evidence under D8), and how many lack it | Order independence: the result must not depend on how the runs were listed |
 | — | `scenario_digest` changed once for every scenario | 086's canonical gate encodes every optional limit, `null` when omitted. Adding `max_llm_calls_per_run` the same way, as instructed, moves every digest. Pinned by `TestTask081MovedEveryScenarioDigestOnce` |
 | "The automated recovery drill is extended" | Platform drill tests, `TestPlatformDrillSQLite` and `TestPlatformDrillPostgres`, run in the *Backup, restore & upgrade* CI job | `scripts/backup-postgres.sh` and its drill cover only the runtime's baseline tables, and nothing drilled the platform database before. The v10 leg uses the real v0.11.0 `trustvian-local`, which CI builds from its tag. The v12 leg is a downgraded database, because no release ships v12 |
 | One column or two (the brief's question) | One: `fidelity_counts`, nine counters | The two groups are one fact, the pair an envelope stated, and three invariants span them, so one decode validates them together. 087 measured that each extra column costs every ingest in the SQLite driver, and nothing reads these in SQL |
@@ -333,6 +342,11 @@ sides, `max_llm_calls_per_run: 50`. Quoted from the `--json` documents:
      times a side.
    - **D8 does not close this case.** The tool spans are semantic evidence, so
      the check evaluates, and model calls the producer never named read 0.
+   - **D9 closes it.** The check now requires a model-layer observation in
+     every candidate run, so this execution would read `deferred`, naming
+     the candidate run with the lowest identifier, and fail. Execution 2's
+     message now reads "has no model-layer observation". The runs above were
+     not repeated after D9; the case is proven by test (below).
 
 ### Proven by test
 
@@ -363,8 +377,12 @@ sides, `max_llm_calls_per_run: 50`. Quoted from the `--json` documents:
   - the 079 renderer renders the fail, pass and suite documents carrying the
     new fields byte for byte.
 - `max_llm_calls_per_run`:
-  - omitted, satisfied, violated, a real 0, transport-only deferred, migrated
-    deferred, and one run lacking evidence deferring the whole check;
+  - omitted, satisfied, violated, the real maximum when every run has
+    model-layer evidence, tools named with model calls as transport deferred
+    (D9, `TestMaxLLMCallsPerRunStates` and `TestMaxLLMCallsPerRunOverHTTP`),
+    transport-only deferred, migrated deferred, and one run of N lacking
+    evidence deferring the whole check;
+  - an evaluated check never reports 0 (D9);
   - deferral is order-independent and fails the verdict;
   - the scenario field validates and moves the digest.
 - The drill: v10 (from v0.11.0) and v12 backups migrate, and a v13 backup

@@ -351,8 +351,8 @@ func reduceRepeated(
 		worstBlock, worstCR uint64
 	)
 	repetitions := make([]RepetitionEvidence, 0, len(inputs))
-	// Task 081: per completed candidate run, whether any observation was
-	// semantically named and how many were model-layer calls.
+	// Task 081: per completed candidate run, how many observations were
+	// model-layer calls.
 	var candidateLayers []runLayerEvidence
 	operational := map[ComparisonSide]*operationalSide{
 		SideReference: {}, SideCandidate: {},

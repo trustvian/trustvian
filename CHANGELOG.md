@@ -95,7 +95,9 @@ actually depend on.
   - `gate.max_llm_calls_per_run`: the most model-layer calls in one candidate
     run. It is optional, a fourth `gate.frequency_checks` entry, and on
     `eval compare-repeated --max-llm-calls-per-run`. It is deferred, failing the
-    verdict, unless every candidate run has a semantically named observation.
+    verdict, unless every candidate run has at least one model-layer
+    observation (D9). A run that names its tools but sends its model calls as
+    plain HTTP is deferred, not evaluated to 0.
   - The platform recovery drill covers backup, restore and upgrade on both
     backends. It includes a v10 backup written by v0.11.0's own
     `trustvian-local`.
