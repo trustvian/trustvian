@@ -12,7 +12,7 @@ implementation's details — package structure, dependency direction,
 domain model, security model, measured performance, and why
 significant decisions were made — see `docs/` (`ARCHITECTURE.md`,
 `DOMAIN.md`, `SECURITY.md`, `PERFORMANCE.md`, `ROADMAP.md`, `adr/`,
-`tasks/`) and `.claude/rules/`. `docs/tasks/NNN-*.md` are the current,
+`tasks/`) and `.claude/rules/`. `docs/tasks/<version>/NNN-*.md` (and the unversioned `docs/tasks/NNN-*.md`) are the current,
 independently-scoped implementation tasks — check there before
 starting new work to see if it's already planned and scoped. Keep
 `docs/` in sync with the code: when an
@@ -44,6 +44,11 @@ Avoid:
 - Reflection unless justified
 - Framework-heavy design
 - Premature microservices
+
+The core pipeline lives in the root module. `platform/` (control plane:
+SQLite/Postgres, HTTP API, web UI; boundary in ADR 0022, checked by
+`make check-platform-boundary`) and `processor/` (OTel Collector
+processor) are separate modules layered on top of it.
 
 ## Core Pipeline
 
@@ -99,11 +104,20 @@ Prefer:
 - Integration tests where necessary
 - Benchmarks for hot paths
 
-Run:
+Run `go test ./...` before considering a task complete — but note it
+only covers the root module. `platform/`, `processor/` and `examples/`
+are separate modules: test the one you touched with
+`cd <module> && GOWORK=off go test ./...`. `go.work` is gitignored and CI
+runs every module with `GOWORK=off`. A workspace-resolved result can
+disagree with CI, so match CI.
 
-go test ./...
-
-before considering a task complete.
+`make check` (fmt-check, vet, build, race) is root-module only.
+`make vulncheck` scans all four modules. Postgres-backed tests in every
+module skip — and still pass — unless `TRUSTVIAN_TEST_POSTGRES_DSN` is set
+(`make integration-postgres` sets it up). `TRUSTVIAN_PLATFORM_POSTGRES_DSN`
+is `trustvian-local`'s runtime setting, not a test gate. Editing
+`docs/release-runbook.md` or `docs/releasing-with-claude-code.md` can
+break the doc-drift tests in `go test ./scripts`.
 
 ## Git
 

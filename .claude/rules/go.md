@@ -19,11 +19,13 @@ style.
 
 ## Package shape
 
-- The root `trustvian` package and the `event` package are the *only*
-  two packages an external module can import — everything else lives
-  under `internal/`, which Go's compiler enforces. See
+- The root `trustvian` package, `event`, `alert` and `config` are the
+  only library packages an external module can import — everything
+  else lives under `internal/`, which Go's compiler enforces. See
   `.claude/rules/architecture.md` for why `event` specifically had to
-  move out of `internal/` in Slice 8.
+  move out of `internal/` in Slice 8. Note `config` imports
+  `internal/store/postgres` (`config/compile.go`), so it carries pgx
+  into its build — the zero-pgx guarantee below does not cover it.
 - No `pkg/` directory. `internal/` is the encapsulation mechanism; a
   parallel `pkg/` layer would just be Java/.NET ceremony CLAUDE.md
   explicitly says to avoid.
@@ -57,16 +59,18 @@ style.
 
 ## What to avoid
 
-- No reflection. No code generation. Three third-party dependencies, and
-  each is **confined to exactly one package**:
+- No reflection. No code generation. Root-module third-party
+  dependencies are each **confined to exactly one package**:
 
   | Dependency | Only importable from | Why the confinement |
   |---|---|---|
   | `go.opentelemetry.io/otel{,/sdk,/trace}` | `internal/otel` | Keeps the core engine OTel-independent (a CLAUDE.md requirement, not a preference) |
   | `go.yaml.in/yaml/v3` | `config` (and the test-only `scripts` package, which parses workflow YAML) | Config parsing is an adapter; no domain package knows YAML exists |
   | `github.com/jackc/pgx/v5` | `internal/store/postgres` | Keeps the driver out of the build of `internal/store` and every core package (`v0.8` task 035) |
+  | `github.com/charmbracelet/bubbletea` | `cmd/trustvian` | The TUI is a CLI concern; no library package renders a terminal |
+  | `golang.org/x/sys` | `cmd/trustvian` | Unix process handling for `trustvian dev` only |
 
-  The confinement is the rule, not the count. Adding a fourth means
+  The confinement is the rule, not the count. Adding another means
   naming the single package that may import it and saying why nothing
   else may — and verifying it with `go list -deps`, which today reports
   zero pgx and zero OTel packages in the dependency graph of `event`,
