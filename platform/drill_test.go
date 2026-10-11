@@ -1,13 +1,18 @@
 package platform
 
-// Task 081's recovery drill for the platform database, in both directions the
-// schema step supports, on both backends:
+// The recovery drill for the platform database, in both directions each
+// schema step supports, on both backends. Task 081 built it for v13; task 107
+// extends it to v14's gate snapshot:
 //
 //   - upgrade: a backup taken at v10 — by the real v0.11.0 trustvian-local,
-//     the schema v0.11.0 users hold — and one taken at v12 restore into this
-//     binary and migrate to v13, every behavior reading unrecorded;
-//   - restore at the new version: a backup taken at v13 restores and passes
-//     the restore-time invariant checks with every count intact.
+//     the schema v0.11.0 users hold — and ones taken at v12 and v13 restore
+//     into this binary and migrate to v14, every behavior reading unrecorded
+//     (v13's step) and the completed execution reading its gate not recorded
+//     (v14's step);
+//   - restore at the new version: a backup taken at v14 restores and passes
+//     the restore-time invariant checks with every count intact, and its
+//     execution's gate snapshot decodes and re-proves every invariant, equal
+//     to what the completion recorded.
 //
 // A backup is what an operator takes: VACUUM INTO for SQLite, pg_dump and
 // pg_restore for PostgreSQL. Gated on TRUSTVIAN_TEST_PLATFORM_DRILL, because
@@ -28,6 +33,7 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -43,6 +49,9 @@ const (
 	drillUpgradeFromEnv  = "TRUSTVIAN_TEST_PLATFORM_UPGRADE_FROM_BINARY"
 	drillRunID           = "drill-run"
 	drillProfile         = "drill-profile"
+	drillCandidateRunID  = "drill-run-candidate"
+	drillCandidateProf   = "drill-profile-candidate"
+	drillExecutionID     = "drill-exec"
 	drillEnvironment     = "staging"
 	drillRecordsPerShape = 3
 )
@@ -95,16 +104,32 @@ func seedOverHTTP(t *testing.T, base string) {
 	post("/v1/agents", map[string]string{"id": "agent-1", "project_id": "proj-1", "name": "Agent"}, 201)
 	post("/v1/candidates", map[string]any{"id": "cand-1", "agent_id": "agent-1"}, 201)
 	post("/v1/environments", map[string]any{"project_id": "proj-1", "ref": drillEnvironment, "name": "Staging"}, 201)
-	post("/v1/evaluation-runs", map[string]string{"id": drillRunID, "candidate_id": "cand-1",
-		"environment": drillEnvironment, "behavioral_profile": drillProfile}, 201)
-	post("/v1/evaluation-runs/"+drillRunID+"/start", nil, 200)
-	for i := range drillRecordsPerShape {
-		post("/v1/evaluation-runs/"+drillRunID+"/records", map[string]any{
-			"version": "1", "sequence": FormatSequence(uint64(i + 1)), "behavioral_profile": drillProfile,
-			"fidelity": "semantic", "behavior_layer": "model", "record": drillRecord(i),
-		}, 200)
+	for _, run := range []struct{ id, profile string }{
+		{drillRunID, drillProfile}, {drillCandidateRunID, drillCandidateProf},
+	} {
+		post("/v1/evaluation-runs", map[string]string{"id": run.id, "candidate_id": "cand-1",
+			"environment": drillEnvironment, "behavioral_profile": run.profile}, 201)
+		post("/v1/evaluation-runs/"+run.id+"/start", nil, 200)
+		for i := range drillRecordsPerShape {
+			post("/v1/evaluation-runs/"+run.id+"/records", map[string]any{
+				"version": "1", "sequence": FormatSequence(uint64(i + 1)), "behavioral_profile": run.profile,
+				"fidelity": "semantic", "behavior_layer": "model", "record": drillRecord(i),
+			}, 200)
+		}
+		post("/v1/evaluation-runs/"+run.id+"/complete", nil, 200)
 	}
-	post("/v1/evaluation-runs/"+drillRunID+"/complete", nil, 200)
+	// One completed scenario execution over the two runs, as `eval run`
+	// records it: what a v14 binary must read with its gate not recorded.
+	post("/v1/scenario-executions", map[string]any{"id": drillExecutionID, "scenario_name": "drill",
+		"runs": 1, "project_id": "proj-1", "agent_id": "agent-1", "environment": drillEnvironment}, 201)
+	post("/v1/scenario-executions/"+drillExecutionID+"/complete", map[string]any{
+		"reference_run_ids": []string{drillRunID}, "candidate_run_ids": []string{drillCandidateRunID},
+		"gate_limits": map[string]string{
+			"added_candidate_presence_minimum": "1", "added_reference_presence_maximum": "0",
+			"max_repeated_added_behaviors": "0", "max_block_decisions_per_run": "0",
+			"max_critical_risk_observations_per_run": "0",
+		},
+	}, 200)
 }
 
 // runOldControlPlane runs the previous release's trustvian-local until seed
@@ -166,9 +191,12 @@ func runOldControlPlane(t *testing.T, stateDir string, env []string, seed func(b
 	stop()
 }
 
-// seedCurrent completes the same run through this binary's control plane,
-// with the same envelope facts. The caller closes the store.
-func seedCurrent(t *testing.T, store Store) {
+// seedCurrent completes the same runs and execution through this binary's
+// control plane, with the same envelope facts, and returns the completed
+// execution. Its limits include every optional one, so the recorded gate
+// carries evaluated per-target and model-layer checks. The caller closes the
+// store.
+func seedCurrent(t *testing.T, store Store) ScenarioExecution {
 	t.Helper()
 	ctx := context.Background()
 	seedParents(t, store)
@@ -178,30 +206,102 @@ func seedCurrent(t *testing.T, store Store) {
 		t.Fatal(err)
 	}
 	epoch := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
-	run, err := NewEvaluationRun(drillRunID, "cand-1", drillEnvironment, drillProfile, epoch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CreateEvaluationRun(ctx, run); err != nil {
-		t.Fatal(err)
-	}
-	started, err := run.Start(epoch.Add(time.Second))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.UpdateEvaluationRun(ctx, run, started); err != nil {
-		t.Fatal(err)
-	}
-	for i := range drillRecordsPerShape {
-		if _, err := plane.IngestDecisionRecord(ctx, IngestRequest{
-			RunID: drillRunID, Sequence: uint64(i + 1), BehavioralProfile: drillProfile,
-			Fidelity: event.FidelitySemantic, BehaviorLayer: event.LayerModel, Record: drillRecord(i),
-		}); err != nil {
+	for _, r := range []struct {
+		id      EvaluationRunID
+		profile BehavioralProfileRef
+	}{{drillRunID, drillProfile}, {drillCandidateRunID, drillCandidateProf}} {
+		run, err := NewEvaluationRun(r.id, "cand-1", drillEnvironment, r.profile, epoch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.CreateEvaluationRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		started, err := run.Start(epoch.Add(time.Second))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.UpdateEvaluationRun(ctx, run, started); err != nil {
+			t.Fatal(err)
+		}
+		for i := range drillRecordsPerShape {
+			if _, err := plane.IngestDecisionRecord(ctx, IngestRequest{
+				RunID: r.id, Sequence: uint64(i + 1), BehavioralProfile: r.profile,
+				Fidelity: event.FidelitySemantic, BehaviorLayer: event.LayerModel, Record: drillRecord(i),
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := plane.CompleteEvaluationRun(ctx, r.id, epoch.Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := plane.CompleteEvaluationRun(ctx, drillRunID, epoch.Add(time.Hour)); err != nil {
+	scope := ScenarioScope{ProjectID: "proj-1", AgentID: "agent-1", Environment: drillEnvironment}
+	if _, _, err := plane.BeginScenarioExecution(ctx, BeginScenarioExecutionRequest{
+		ID: drillExecutionID, ScenarioName: "drill", Runs: 1, Scope: scope, At: epoch.Add(2 * time.Hour),
+	}); err != nil {
 		t.Fatal(err)
+	}
+	execution, _, err := plane.CompleteScenarioExecution(ctx, CompleteScenarioExecutionRequest{
+		ID: drillExecutionID, ReferenceRunIDs: []EvaluationRunID{drillRunID},
+		CandidateRunIDs: []EvaluationRunID{drillCandidateRunID},
+		Limits: RepeatedEvaluationGateLimits{
+			AddedCandidatePresenceMinimum: 1,
+			MinCandidateFrequency:         NewOptionalGateLimit(1),
+			MaxLostBehaviors:              NewOptionalGateLimit(0),
+			MaxCallsPerRun:                []TargetCallLimit{{Target: "ollama.localhost", Max: drillRecordsPerShape}},
+			MaxLLMCallsPerRun:             NewOptionalGateLimit(drillRecordsPerShape),
+		},
+		At: epoch.Add(3 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !execution.GateRecord().Recorded() || execution.Verdict() != GateVerdictPass {
+		t.Fatalf("seeded execution %s: verdict %s, gate recorded %v", execution.ID(), execution.Verdict(),
+			execution.GateRecord().Recorded())
+	}
+	return execution
+}
+
+// assertDrillExecution: the execution survives as completed PASS. want is the
+// value the completion returned when the gate must be restored equal to it,
+// or the zero value when the backup predates schema 14 and the gate must read
+// not recorded.
+func assertDrillExecution(t *testing.T, store Store, want ScenarioExecution) {
+	t.Helper()
+	got, err := store.ScenarioExecution(context.Background(), drillExecutionID)
+	if err != nil {
+		t.Fatalf("ScenarioExecution() after restore error = %v", err)
+	}
+	if got.Status() != ScenarioExecutionCompleted || got.Verdict() != GateVerdictPass ||
+		len(got.Repetitions()) != 2 {
+		t.Fatalf("restored execution %+v", got)
+	}
+	if want.ID() == "" {
+		if got.GateRecord().Recorded() {
+			t.Fatal("an execution completed before schema 14 restored with a gate record")
+		}
+		return
+	}
+	record := got.GateRecord()
+	if !record.Recorded() || !reflect.DeepEqual(record, want.GateRecord()) {
+		t.Fatalf("restored gate %+v\nwant          %+v", record, want.GateRecord())
+	}
+	// Re-proved, not only read: the record's own invariants, against the N
+	// it was recorded for, through the stored text.
+	text, err := encodeScenarioGateRecord(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeScenarioGateRecord(text, got.Runs()); err != nil {
+		t.Fatalf("restored gate breaks an invariant: %v", err)
+	}
+	frequency := record.Gate().FrequencyChecks()
+	for _, c := range frequency {
+		if c.State != GateCheckEvaluated {
+			t.Fatalf("drill fixture: %s is %s, want every optional check evaluated", c.Name, c.State)
+		}
 	}
 }
 
@@ -263,34 +363,57 @@ func TestPlatformDrillSQLite(t *testing.T) {
 			t.Fatalf("version = %d, want %d", v, SchemaVersion)
 		}
 		assertDrillEntry(t, restored, unrecordedFidelity(drillRecordsPerShape))
+		assertDrillExecution(t, restored, ScenarioExecution{})
 	})
-	t.Run("v12 backup restores and migrates", func(t *testing.T) {
+	for _, leg := range []struct {
+		name      string
+		stamp     int
+		downgrade func(testing.TB, func(string) error)
+		fidelity  BehaviorFidelity
+	}{
+		{"v12", schemaVersionV12, downgradeToV12, unrecordedFidelity(drillRecordsPerShape)},
+		{"v13", schemaVersionV13, downgradeToV13, semanticDrill},
+	} {
+		t.Run(leg.name+" backup restores and migrates", func(t *testing.T) {
+			store, path := testStore(t)
+			seedCurrent(t, store)
+			store.Close()
+			raw, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			leg.downgrade(t, func(s string) error { _, err := raw.Exec(s); return err })
+			raw.Close()
+			backup := sqliteBackup(t, path)
+			raw, err = sql.Open("sqlite", backup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertStamp(t, raw.QueryRow(`SELECT version FROM `+tableSchemaVersion+` WHERE id = 1`), leg.stamp)
+			raw.Close()
+			restored, err := OpenSQLiteStore(t.Context(), backup)
+			if err != nil {
+				t.Fatalf("opening a %s backup: %v", leg.name, err)
+			}
+			defer restored.Close()
+			if v, _ := restored.storedSchemaVersion(t.Context()); v != SchemaVersion {
+				t.Fatalf("version = %d, want %d", v, SchemaVersion)
+			}
+			assertDrillEntry(t, restored, leg.fidelity)
+			assertDrillExecution(t, restored, ScenarioExecution{})
+		})
+	}
+	t.Run("v14 backup restores with every count and invariant", func(t *testing.T) {
 		store, path := testStore(t)
-		seedCurrent(t, store)
+		completed := seedCurrent(t, store)
 		store.Close()
-		raw, err := sql.Open("sqlite", path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		downgradeToV12(t, func(s string) error { _, err := raw.Exec(s); return err })
-		raw.Close()
 		restored, err := OpenSQLiteStore(t.Context(), sqliteBackup(t, path))
 		if err != nil {
-			t.Fatalf("opening a v12 backup: %v", err)
-		}
-		defer restored.Close()
-		assertDrillEntry(t, restored, unrecordedFidelity(drillRecordsPerShape))
-	})
-	t.Run("v13 backup restores with every count and invariant", func(t *testing.T) {
-		store, path := testStore(t)
-		seedCurrent(t, store)
-		store.Close()
-		restored, err := OpenSQLiteStore(t.Context(), sqliteBackup(t, path))
-		if err != nil {
-			t.Fatalf("opening a v13 backup: %v", err)
+			t.Fatalf("opening a v14 backup: %v", err)
 		}
 		defer restored.Close()
 		assertDrillEntry(t, restored, semanticDrill)
+		assertDrillExecution(t, restored, completed)
 	})
 }
 
@@ -395,41 +518,61 @@ func TestPlatformDrillPostgres(t *testing.T) {
 		}
 		defer restored.Close()
 		assertDrillEntry(t, restored, unrecordedFidelity(drillRecordsPerShape))
+		assertDrillExecution(t, restored, ScenarioExecution{})
 	})
-	t.Run("v12 backup restores and migrates", func(t *testing.T) {
+	for _, leg := range []struct {
+		name      string
+		stamp     int
+		downgrade func(testing.TB, func(string) error)
+		fidelity  BehaviorFidelity
+	}{
+		{"v12", schemaVersionV12, downgradeToV12, unrecordedFidelity(drillRecordsPerShape)},
+		{"v13", schemaVersionV13, downgradeToV13, semanticDrill},
+	} {
+		t.Run(leg.name+" backup restores and migrates", func(t *testing.T) {
+			dsn := isolatedSchemaDSN(t, postgresDSN(t))
+			store, err := OpenPostgresStore(ctx, PostgresConfig{DSN: dsn})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seedCurrent(t, store)
+			store.Close()
+			pool, err := pgxpool.New(ctx, dsn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			leg.downgrade(t, func(s string) error { _, err := pool.Exec(ctx, s); return err })
+			pool.Close()
+			backup := pgDumpRestore(t, dsn)
+			pool, err = pgxpool.New(ctx, backup)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertStamp(t, pool.QueryRow(ctx, `SELECT version FROM `+tableSchemaVersion+` WHERE id = 1`), leg.stamp)
+			pool.Close()
+			restored, err := OpenPostgresStore(ctx, PostgresConfig{DSN: backup})
+			if err != nil {
+				t.Fatalf("opening a %s backup: %v", leg.name, err)
+			}
+			defer restored.Close()
+			assertDrillEntry(t, restored, leg.fidelity)
+			assertDrillExecution(t, restored, ScenarioExecution{})
+		})
+	}
+	t.Run("v14 backup restores with every count and invariant", func(t *testing.T) {
 		dsn := isolatedSchemaDSN(t, postgresDSN(t))
 		store, err := OpenPostgresStore(ctx, PostgresConfig{DSN: dsn})
 		if err != nil {
 			t.Fatal(err)
 		}
-		seedCurrent(t, store)
-		store.Close()
-		pool, err := pgxpool.New(ctx, dsn)
-		if err != nil {
-			t.Fatal(err)
-		}
-		downgradeToV12(t, func(s string) error { _, err := pool.Exec(ctx, s); return err })
-		pool.Close()
-		restored, err := OpenPostgresStore(ctx, PostgresConfig{DSN: pgDumpRestore(t, dsn)})
-		if err != nil {
-			t.Fatalf("opening a v12 backup: %v", err)
-		}
-		defer restored.Close()
-		assertDrillEntry(t, restored, unrecordedFidelity(drillRecordsPerShape))
-	})
-	t.Run("v13 backup restores with every count and invariant", func(t *testing.T) {
-		dsn := isolatedSchemaDSN(t, postgresDSN(t))
-		store, err := OpenPostgresStore(ctx, PostgresConfig{DSN: dsn})
-		if err != nil {
-			t.Fatal(err)
-		}
-		seedCurrent(t, store)
+		completed := seedCurrent(t, store)
 		store.Close()
 		restored, err := OpenPostgresStore(ctx, PostgresConfig{DSN: pgDumpRestore(t, dsn)})
 		if err != nil {
-			t.Fatalf("opening a v13 backup: %v", err)
+			t.Fatalf("opening a v14 backup: %v", err)
 		}
 		defer restored.Close()
 		assertDrillEntry(t, restored, semanticDrill)
+		assertDrillExecution(t, restored, completed)
 	})
 }
