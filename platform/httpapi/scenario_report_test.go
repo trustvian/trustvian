@@ -324,3 +324,135 @@ func isolatedSchema(t *testing.T, dsn string) string {
 	}
 	return dsn + separator + "search_path=" + schema
 }
+
+type reportRowsBody struct {
+	Comparison struct {
+		Runs        int `json:"runs"`
+		Repetitions []struct {
+			Side  string `json:"side"`
+			Index int    `json:"index"`
+			RunID string `json:"run_id"`
+		} `json:"repetitions"`
+		Behaviors []struct {
+			FingerprintID        string `json:"fingerprint_id"`
+			ReferenceRunsPresent string `json:"reference_runs_present"`
+			CandidateRunsPresent string `json:"candidate_runs_present"`
+			ReferenceFrequency   struct {
+				Runs                 string  `json:"runs"`
+				CallsPerRunMin       *string `json:"calls_per_run_min"`
+				CallsPerRunMax       *string `json:"calls_per_run_max"`
+				CallsPerRunMeanMilli *string `json:"calls_per_run_mean_milli"`
+			} `json:"reference_frequency"`
+			Display   map[string]string `json:"display"`
+			PresentIn map[string][]struct {
+				Index int    `json:"index"`
+				RunID string `json:"run_id"`
+			} `json:"present_in"`
+		} `json:"behaviors"`
+		Targets []struct {
+			TargetName         string            `json:"target_name"`
+			CallRatioAvailable bool              `json:"call_ratio_available"`
+			CallRatioPermille  *string           `json:"call_ratio_permille"`
+			Display            map[string]string `json:"display"`
+		} `json:"targets"`
+	} `json:"comparison"`
+}
+
+// TestReportRowsCarryTheirDisplayStringsBesideTheIntegers: every string is
+// the formatting of an integer the row carries, which stays beside it.
+func TestReportRowsCarryTheirDisplayStringsBesideTheIntegers(t *testing.T) {
+	a := newAPI(t)
+	a.completeReportExecution("e1")
+	var body reportRowsBody
+	if err := json.Unmarshal(a.report("e1"), &body); err != nil {
+		t.Fatal(err)
+	}
+	c := body.Comparison
+	if len(c.Behaviors) != 3 || len(c.Targets) == 0 {
+		t.Fatalf("fixture has %d behaviors, %d targets", len(c.Behaviors), len(c.Targets))
+	}
+	for _, b := range c.Behaviors {
+		if b.Display["reference_presence"] != fmt.Sprintf("%s/%d", b.ReferenceRunsPresent, c.Runs) ||
+			b.Display["candidate_presence"] != fmt.Sprintf("%s/%d", b.CandidateRunsPresent, c.Runs) {
+			t.Errorf("%s presence display %v", b.FingerprintID, b.Display)
+		}
+		f := b.ReferenceFrequency
+		if want := *f.CallsPerRunMin + "–" + *f.CallsPerRunMax; b.Display["reference_calls_per_run"] != want {
+			t.Errorf("%s calls per run %q, want %q", b.FingerprintID, b.Display["reference_calls_per_run"], want)
+		}
+		if len(b.Display) != 6 || b.Display["reference_calls_per_run_mean"] == "" {
+			t.Errorf("%s display %v", b.FingerprintID, b.Display)
+		}
+		if b.ReferenceRunsPresent == "0" && b.Display["reference_calls_per_run"] != "0–0" {
+			t.Errorf("an absent behavior's range is not 0–0: %v", b.Display)
+		}
+	}
+	for _, target := range c.Targets {
+		want := "not available"
+		if target.CallRatioAvailable {
+			want = platform.RenderRatio(mustUint(t, *target.CallRatioPermille))
+		}
+		if target.Display["call_ratio"] != want {
+			t.Errorf("%s ratio %q, want %q", target.TargetName, target.Display["call_ratio"], want)
+		}
+	}
+}
+
+func mustUint(t *testing.T, s string) uint64 {
+	t.Helper()
+	var v uint64
+	if _, err := fmt.Sscan(s, &v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// TestEveryReportRowResolvesThroughEvidence: present_in names, per side, as
+// many repetitions as the presence count, with their runs, and the
+// behavior's observations resolve through task 085 from any of them.
+func TestEveryReportRowResolvesThroughEvidence(t *testing.T) {
+	a := newAPI(t)
+	a.completeReportExecution("e1")
+	var body reportRowsBody
+	if err := json.Unmarshal(a.report("e1"), &body); err != nil {
+		t.Fatal(err)
+	}
+	c := body.Comparison
+	runOf := map[string]string{}
+	first := map[string]string{}
+	for _, r := range c.Repetitions {
+		runOf[fmt.Sprintf("%s/%d", r.Side, r.Index)] = r.RunID
+		if _, ok := first[r.Side]; !ok {
+			first[r.Side] = r.RunID
+		}
+	}
+	for _, b := range c.Behaviors {
+		for side, count := range map[string]string{"reference": b.ReferenceRunsPresent, "candidate": b.CandidateRunsPresent} {
+			present := b.PresentIn[side]
+			if fmt.Sprint(len(present)) != count {
+				t.Fatalf("%s %s: present_in %v, count %s", b.FingerprintID, side, present, count)
+			}
+			for _, p := range present {
+				if runOf[fmt.Sprintf("%s/%d", side, p.Index)] != p.RunID {
+					t.Fatalf("%s %s: repetition %d is not run %s", b.FingerprintID, side, p.Index, p.RunID)
+				}
+				pair := map[string]string{"reference": first["reference"], "candidate": first["candidate"]}
+				pair[side] = p.RunID
+				r := a.do("GET", fmt.Sprintf("/v1/evidence/observations?reference_run_id=%s&candidate_run_id=%s&behavior=%s&side=%s",
+					pair["reference"], pair["candidate"], b.FingerprintID, side), nil)
+				a.mustStatus(r, 200, "resolve "+b.FingerprintID)
+				var resolved struct {
+					Observations []struct {
+						FingerprintID string `json:"fingerprint_id"`
+					} `json:"observations"`
+				}
+				if err := json.Unmarshal(r.Body.Bytes(), &resolved); err != nil {
+					t.Fatal(err)
+				}
+				if len(resolved.Observations) == 0 || resolved.Observations[0].FingerprintID != b.FingerprintID {
+					t.Fatalf("%s %s repetition %d resolved %+v", b.FingerprintID, side, p.Index, resolved)
+				}
+			}
+		}
+	}
+}

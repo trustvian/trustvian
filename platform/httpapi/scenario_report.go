@@ -95,12 +95,53 @@ type reportComparisonDTO struct {
 // recorded, because classifying needs the k and j that were not kept.
 type reportBehaviorDTO struct {
 	repeatedBehaviorDTO
+	Display   behaviorDisplayDTO `json:"display"`
+	PresentIn presentInDTO       `json:"present_in"`
+}
+
+// behaviorDisplayDTO is the row's numbers as text, produced here so no adapter
+// divides, rounds or formats a fraction. Each string formats integers the row
+// already carries, which stay beside it. A side with no completed repetition
+// reads "not available" for its per-run figures.
+type behaviorDisplayDTO struct {
+	ReferencePresence        string `json:"reference_presence"`
+	CandidatePresence        string `json:"candidate_presence"`
+	ReferenceCallsPerRun     string `json:"reference_calls_per_run"`
+	CandidateCallsPerRun     string `json:"candidate_calls_per_run"`
+	ReferenceCallsPerRunMean string `json:"reference_calls_per_run_mean"`
+	CandidateCallsPerRunMean string `json:"candidate_calls_per_run_mean"`
+}
+
+// presentInDTO is the repetitions that observed the behavior, each side in
+// index order, with their runs: any reference run and candidate run named here
+// resolve the behavior through GET /v1/evidence (task 085). The reader chooses
+// the pair; nothing here picks a representative run.
+type presentInDTO struct {
+	Reference []presentRepetitionDTO `json:"reference"`
+	Candidate []presentRepetitionDTO `json:"candidate"`
+}
+
+type presentRepetitionDTO struct {
+	Index int    `json:"index"`
+	RunID string `json:"run_id"`
 }
 
 // reportTargetDTO is one target row: version 1's fields, and version 2's
 // beside them.
 type reportTargetDTO struct {
 	targetFrequencyDTO
+	Display targetDisplayDTO `json:"display"`
+}
+
+// targetDisplayDTO is the target row's numbers as text. call_ratio is "2.4×"
+// from call_ratio_permille, or "not available" when the reference never called
+// the target.
+type targetDisplayDTO struct {
+	ReferenceCallsPerRun     string `json:"reference_calls_per_run"`
+	CandidateCallsPerRun     string `json:"candidate_calls_per_run"`
+	ReferenceCallsPerRunMean string `json:"reference_calls_per_run_mean"`
+	CandidateCallsPerRunMean string `json:"candidate_calls_per_run_mean"`
+	CallRatio                string `json:"call_ratio"`
 }
 
 // reportGateDTO is the gate the execution recorded when it completed: its six
@@ -162,14 +203,36 @@ func newScenarioReportResponse(report platform.ScenarioExecutionReport, producer
 	if c.Cost == nil {
 		comparison.Operational.CostReason = costReasonNoPricing
 	}
-	for _, b := range v1.Behaviors {
+	for i, b := range v1.Behaviors {
 		if !recorded {
 			b.Classification = notRecorded
 		}
-		comparison.Behaviors = append(comparison.Behaviors, reportBehaviorDTO{repeatedBehaviorDTO: b})
+		behavior := c.Behaviors[i]
+		comparison.Behaviors = append(comparison.Behaviors, reportBehaviorDTO{
+			repeatedBehaviorDTO: b,
+			Display: behaviorDisplayDTO{
+				ReferencePresence:        platform.RenderPresence(behavior.ReferenceRunsPresent, c.Runs),
+				CandidatePresence:        platform.RenderPresence(behavior.CandidateRunsPresent, c.Runs),
+				ReferenceCallsPerRun:     platform.RenderCallsPerRun(behavior.Reference),
+				CandidateCallsPerRun:     platform.RenderCallsPerRun(behavior.Candidate),
+				ReferenceCallsPerRunMean: platform.RenderCallsPerRunMean(behavior.Reference),
+				CandidateCallsPerRunMean: platform.RenderCallsPerRunMean(behavior.Candidate),
+			},
+			PresentIn: newPresentInDTO(report.PresentIn[i]),
+		})
 	}
-	for _, t := range v1.Targets {
-		comparison.Targets = append(comparison.Targets, reportTargetDTO{targetFrequencyDTO: t})
+	for i, t := range v1.Targets {
+		target := c.Targets[i]
+		comparison.Targets = append(comparison.Targets, reportTargetDTO{
+			targetFrequencyDTO: t,
+			Display: targetDisplayDTO{
+				ReferenceCallsPerRun:     platform.RenderCallsPerRun(target.Reference),
+				CandidateCallsPerRun:     platform.RenderCallsPerRun(target.Candidate),
+				ReferenceCallsPerRunMean: platform.RenderCallsPerRunMean(target.Reference),
+				CandidateCallsPerRunMean: platform.RenderCallsPerRunMean(target.Candidate),
+				CallRatio:                platform.RenderCallRatio(target),
+			},
+		})
 	}
 
 	var reference *reportReferenceDTO
@@ -185,4 +248,15 @@ func newScenarioReportResponse(report platform.ScenarioExecutionReport, producer
 		Provenance:  newExecutionProvenanceDTO(e),
 		Comparison:  comparison,
 	}
+}
+
+func newPresentInDTO(p platform.BehaviorPresentIn) presentInDTO {
+	side := func(repetitions []platform.ScenarioRepetition) []presentRepetitionDTO {
+		out := make([]presentRepetitionDTO, 0, len(repetitions))
+		for _, r := range repetitions {
+			out = append(out, presentRepetitionDTO{Index: r.Index, RunID: string(r.RunID)})
+		}
+		return out
+	}
+	return presentInDTO{Reference: side(p.Reference), Candidate: side(p.Candidate)}
 }

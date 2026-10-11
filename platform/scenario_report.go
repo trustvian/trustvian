@@ -11,11 +11,15 @@ package platform
 // code.
 //
 // Presentation only. Nothing here is new evidence: the comparison is the
-// reduction every completion already runs.
+// reduction every completion already runs, present_in lists the repetitions
+// that reduction counted, and the display strings format integers the
+// comparison already holds.
 
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // ScenarioExecutionReport is one completed execution's evidence, as its report
@@ -29,6 +33,15 @@ type ScenarioExecutionReport struct {
 	// is false) they are the zero value and every behavior's Classification is
 	// empty: classification needs k and j, which were not kept.
 	Comparison RepeatedEvaluationComparison
+
+	// PresentIn is, for each entry of Comparison.Behaviors in the same order,
+	// the repetitions that observed it, each side in index order.
+	PresentIn []BehaviorPresentIn
+}
+
+// BehaviorPresentIn is the repetitions one behavior was observed in.
+type BehaviorPresentIn struct {
+	Reference, Candidate []ScenarioRepetition
 }
 
 // ScenarioExecutionReport assembles the report of one completed execution.
@@ -62,7 +75,7 @@ func (c *ControlPlane) ScenarioExecutionReport(
 		request.Limits = RepeatedEvaluationGateLimits{AddedCandidatePresenceMinimum: 1}
 	}
 
-	comparison, err := c.compareRepeated(ctx, request)
+	comparison, inputs, err := c.compareRepeatedWithInputs(ctx, request)
 	if err != nil {
 		return ScenarioExecutionReport{}, err
 	}
@@ -77,5 +90,87 @@ func (c *ControlPlane) ScenarioExecutionReport(
 			comparison.Behaviors[i].Classification = ""
 		}
 	}
-	return ScenarioExecutionReport{Execution: execution, Comparison: comparison}, nil
+	return ScenarioExecutionReport{
+		Execution: execution, Comparison: comparison,
+		PresentIn: presentIn(comparison.Behaviors, inputs),
+	}, nil
+}
+
+// presentIn lists, per behavior, the completed repetitions whose snapshot
+// observed it — the same entries the presence counts were summed from.
+func presentIn(behaviors []RepeatedBehaviorPresence, inputs []repetitionInput) []BehaviorPresentIn {
+	index := make(map[string]int, len(behaviors))
+	out := make([]BehaviorPresentIn, len(behaviors))
+	for i, b := range behaviors {
+		index[b.FingerprintID] = i
+	}
+	for _, in := range inputs {
+		if !in.evidence.Completed() {
+			continue
+		}
+		at := ScenarioRepetition{Side: in.evidence.Side, Index: in.evidence.Index,
+			RunID: in.evidence.RunID, BehavioralProfile: in.evidence.BehavioralProfile}
+		for _, entry := range in.entries {
+			i, ok := index[entry.FingerprintID]
+			if !ok || entry.Observations == 0 {
+				continue
+			}
+			if at.Side == SideReference {
+				out[i].Reference = append(out[i].Reference, at)
+			} else {
+				out[i].Candidate = append(out[i].Candidate, at)
+			}
+		}
+	}
+	return out
+}
+
+// NotAvailableText is what a display string reads when the evidence behind it
+// is absent: a side with no completed repetition, or a ratio over a reference
+// that never called the target.
+const NotAvailableText = "not available"
+
+// RenderPresence renders a presence count over N as "k/N".
+func RenderPresence(present uint64, runs int) string {
+	return strconv.FormatUint(present, 10) + "/" + strconv.Itoa(runs)
+}
+
+// RenderCallsPerRun renders a side's per-run call range as "min–max", or
+// NotAvailableText with no completed repetition.
+func RenderCallsPerRun(s FrequencyStats) string {
+	if !s.Available() {
+		return NotAvailableText
+	}
+	return strconv.FormatUint(s.CallsPerRunMin, 10) + "–" + strconv.FormatUint(s.CallsPerRunMax, 10)
+}
+
+// RenderMilli renders an integer count of thousandths as a decimal, exactly:
+// 2400 → "2.4", 2456 → "2.456", 3000 → "3". No digit is rounded away, so the
+// string says what the integer says.
+func RenderMilli(milli uint64) string {
+	whole, fraction := milli/1000, milli%1000
+	if fraction == 0 {
+		return strconv.FormatUint(whole, 10)
+	}
+	digits := strings.TrimRight(fmt.Sprintf("%03d", fraction), "0")
+	return strconv.FormatUint(whole, 10) + "." + digits
+}
+
+// RenderCallsPerRunMean renders a side's mean calls per run from its
+// thousandths, or NotAvailableText with no completed repetition.
+func RenderCallsPerRunMean(s FrequencyStats) string {
+	if !s.Available() {
+		return NotAvailableText
+	}
+	return RenderMilli(s.CallsPerRunMeanMilli)
+}
+
+// RenderCallRatio renders a target's candidate-to-reference call ratio from
+// its permille as RenderRatio does, or NotAvailableText when the reference
+// never called the target.
+func RenderCallRatio(t RepeatedTargetFrequency) string {
+	if !t.RatioAvailable {
+		return NotAvailableText
+	}
+	return RenderRatio(t.CallRatioPermille)
 }
