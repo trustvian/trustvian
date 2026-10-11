@@ -6,6 +6,7 @@ package platform
 import (
 	"database/sql"
 	"errors"
+	"math"
 	"reflect"
 	"strings"
 	"testing"
@@ -294,5 +295,60 @@ func TestStoredGateRecordIsHeldToItsExecution(t *testing.T) {
 				t.Fatalf("load error = %v, want ErrStoreCorrupt", err)
 			}
 		})
+	}
+}
+
+// TestGateRecordSizeIsBounded: the largest record a completion can write —
+// sixteen targets of 255 bytes, every optional check, a deferral naming a
+// maximal run identifier — stays within a few KiB per execution.
+func TestGateRecordSizeIsBounded(t *testing.T) {
+	small, err := encodeScenarioGateRecord(recordedGate(MaxRepetitions, GateVerdictPass))
+	if err != nil {
+		t.Fatal(err)
+	}
+	limits := RepeatedEvaluationGateLimits{
+		AddedCandidatePresenceMinimum: MaxRepetitions, AddedReferencePresenceMaximum: MaxRepetitions - 1,
+		MaxRepeatedAddedBehaviors: math.MaxUint64, MaxBlockDecisionsPerRun: math.MaxUint64,
+		MaxCriticalRiskObservationsPerRun: math.MaxUint64,
+		MinCandidateFrequency:             NewOptionalGateLimit(MaxRepetitions),
+		MaxLostBehaviors:                  NewOptionalGateLimit(math.MaxUint64),
+		MaxLLMCallsPerRun:                 NewOptionalGateLimit(math.MaxUint64),
+	}
+	var targets []TargetCallCheck
+	for i := range MaxCallsPerRunTargets {
+		name := strings.Repeat(string(rune('a'+i)), maxCallTargetLength)
+		limits.MaxCallsPerRun = append(limits.MaxCallsPerRun, TargetCallLimit{Target: name, Max: math.MaxUint64 - 1})
+		targets = append(targets, TargetCallCheck{Target: name, Actual: math.MaxUint64, Max: math.MaxUint64 - 1,
+			Outcome: TargetCallFail})
+	}
+	n := uint64(MaxRepetitions)
+	frequency := []FrequencyGateCheck{
+		{Name: CheckMinCandidateFrequency, State: GateCheckEvaluated, Rule: RuleAtLeast, Actual: n, Bound: n, Passed: true},
+		{Name: CheckMaxLostBehaviors, State: GateCheckEvaluated, Rule: RuleAtMost, Actual: math.MaxUint64,
+			Bound: math.MaxUint64, Passed: true},
+		{Name: CheckMaxCallsPerRun, State: GateCheckEvaluated, Rule: RuleAtMost, Targets: targets},
+		{Name: CheckMaxLLMCallsPerRun, State: GateCheckDeferred, MissingEvidence: "run " +
+			preview(strings.Repeat("r", maxIdentifierLength)) +
+			" has no model-layer observation; model calls cannot be counted (64 of 64 candidate runs have none)"},
+	}
+	checks := []RepeatedGateCheck{
+		equalsCheck(CheckReferenceRepetitionsCompleted, n, n),
+		equalsCheck(CheckCandidateRepetitionsCompleted, n, n),
+		atMostCheck(CheckRepetitionsFailingMinimum, 0, 0, ""),
+		atMostCheck(CheckRepeatedlyAddedBehaviors, math.MaxUint64, math.MaxUint64, ""),
+		atMostCheck(CheckWorstCandidateBlockDecisions, math.MaxUint64, math.MaxUint64, AdvisoryFreshScope),
+		atMostCheck(CheckWorstCandidateCriticalRiskCount, math.MaxUint64, math.MaxUint64, AdvisoryFreshScope),
+	}
+	record, err := NewScenarioGateRecord(MaxRepetitions, limits, checks, frequency, GateVerdictFail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	large, err := encodeScenarioGateRecord(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("gate_snapshot: %d bytes with no optional limit, %d bytes at every bound", len(small), len(large))
+	if len(large) > 16<<10 {
+		t.Fatalf("the largest record is %d bytes", len(large))
 	}
 }
