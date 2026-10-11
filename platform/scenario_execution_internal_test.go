@@ -88,7 +88,7 @@ func TestAReferenceWithIncompleteEvidenceIsRefusedAtResolution(t *testing.T) {
 	if _, err := store.CompleteScenarioExecution(ctx, "e-sat", []ScenarioRepetition{
 		{Side: SideReference, Index: 1, RunID: run.ID(), BehavioralProfile: run.BehavioralProfile()},
 		{Side: SideCandidate, Index: 1, RunID: "cand-run", BehavioralProfile: "cand-p"},
-	}, GateVerdictFail, scenarioEpoch.Add(time.Hour)); err != nil {
+	}, recordedGate(1, GateVerdictFail), scenarioEpoch.Add(time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -115,7 +115,7 @@ func TestRestoredScenarioExecutionRefusesImpossibleShapes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		done, err := e.complete(associations("x", 2), GateVerdictPass, 1, scenarioEpoch.Add(time.Minute))
+		done, err := e.complete(associations("x", 2), recordedGate(2, GateVerdictPass), 1, scenarioEpoch.Add(time.Minute))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -138,9 +138,14 @@ func TestRestoredScenarioExecutionRefusesImpossibleShapes(t *testing.T) {
 		"running with associations": func(e *ScenarioExecution) {
 			e.status, e.finishedAt = ScenarioExecutionRunning, time.Time{}
 		},
-		"finished before started": func(e *ScenarioExecution) { e.finishedAt = scenarioEpoch.Add(-time.Hour) },
-		"runs out of range":       func(e *ScenarioExecution) { e.runs = MaxRepetitions + 1 },
-		"self reference":          func(e *ScenarioExecution) { e.reference = e.id },
+		"finished before started":     func(e *ScenarioExecution) { e.finishedAt = scenarioEpoch.Add(-time.Hour) },
+		"runs out of range":           func(e *ScenarioExecution) { e.runs = MaxRepetitions + 1 },
+		"self reference":              func(e *ScenarioExecution) { e.reference = e.id },
+		"gate disagrees with verdict": func(e *ScenarioExecution) { e.verdict = GateVerdictFail },
+		"gate recorded for another N": func(e *ScenarioExecution) { e.gate = recordedGate(3, GateVerdictPass) },
+		"failed with a gate": func(e *ScenarioExecution) {
+			e.status, e.completionSequence, e.verdict, e.repetitions = ScenarioExecutionFailed, 0, "", nil
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := base()

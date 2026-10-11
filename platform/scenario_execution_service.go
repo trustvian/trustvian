@@ -267,7 +267,8 @@ func (c *ControlPlane) requireRunInScope(
 	return nil
 }
 
-// CompleteScenarioExecution evaluates an execution and records it completed.
+// CompleteScenarioExecution evaluates an execution and records it completed,
+// with the gate result its verdict came from.
 //
 // The verdict is CompareRepeatedEvaluations' comparison, called once and
 // unchanged; only its sameness is this execution's own record. Every
@@ -374,8 +375,14 @@ func (c *ControlPlane) CompleteScenarioExecution(
 			Side: r.Side, Index: r.Index, RunID: r.RunID, BehavioralProfile: r.BehavioralProfile,
 		})
 	}
-	completed, err := store.CompleteScenarioExecution(ctx, request.ID, repetitions,
-		comparison.Gate.Verdict(), request.At)
+	// The decision keeps the gate evidence it consumed (ADR 0069): the limits,
+	// every check and the verdict, recorded with the completion so a report
+	// of this execution never re-evaluates it.
+	gate, err := comparison.gateRecord()
+	if err != nil {
+		return none(err)
+	}
+	completed, err := store.CompleteScenarioExecution(ctx, request.ID, repetitions, gate, request.At)
 	if err != nil {
 		return none(err)
 	}

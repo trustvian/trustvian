@@ -1315,7 +1315,7 @@ func (s *PostgresStore) ScenarioExecution(ctx context.Context, id ScenarioExecut
 // project serialize and completions in different projects do not wait.
 func (s *PostgresStore) CompleteScenarioExecution(
 	ctx context.Context, id ScenarioExecutionID,
-	repetitions []ScenarioRepetition, verdict GateVerdict, at time.Time,
+	repetitions []ScenarioRepetition, gate ScenarioGateRecord, at time.Time,
 ) (ScenarioExecution, error) {
 	if id == "" {
 		return ScenarioExecution{}, fmt.Errorf("%w: scenario execution id is empty", ErrInvalidID)
@@ -1323,7 +1323,7 @@ func (s *PostgresStore) CompleteScenarioExecution(
 	var out ScenarioExecution
 	err := s.withTx(ctx, func(tx pgx.Tx) error {
 		var err error
-		out, err = completeScenarioExecutionTx(ctx, pgxTxQuerier{tx}, id, repetitions, verdict, at)
+		out, err = completeScenarioExecutionTx(ctx, pgxTxQuerier{tx}, id, repetitions, gate, at)
 		return err
 	})
 	return out, err

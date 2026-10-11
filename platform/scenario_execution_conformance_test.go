@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -80,7 +81,7 @@ func conformScenarioExecutions(t *testing.T, open func(testing.TB) Store) {
 	// A completed FAIL is a completed execution.
 	finished := scenarioEpoch.Add(time.Minute)
 	completed, err := store.CompleteScenarioExecution(ctx, "exec-1", associations("e1", 2),
-		GateVerdictFail, finished)
+		recordedGate(2, GateVerdictFail), finished)
 	if err != nil {
 		t.Fatalf("CompleteScenarioExecution() error = %v", err)
 	}
@@ -95,6 +96,11 @@ func conformScenarioExecutions(t *testing.T, open func(testing.TB) Store) {
 	if fmt.Sprint(reloaded) != fmt.Sprint(completed) {
 		t.Fatalf("reloaded %+v\nwant     %+v", reloaded, completed)
 	}
+	// The gate result is stored with the completion and restored whole
+	// (schema 14).
+	if !reloaded.GateRecord().Recorded() || !reflect.DeepEqual(reloaded.GateRecord(), completed.GateRecord()) {
+		t.Fatalf("reloaded gate %+v\nwant          %+v", reloaded.GateRecord(), completed.GateRecord())
+	}
 	latest, err := store.LatestCompletedScenarioExecution(ctx, "support", scope)
 	if err != nil || latest.ID() != "exec-1" {
 		t.Fatalf("latest = %v, %v; want exec-1", latest.ID(), err)
@@ -102,7 +108,7 @@ func conformScenarioExecutions(t *testing.T, open func(testing.TB) Store) {
 
 	// No second completion, and no second set of associations.
 	if _, err := store.CompleteScenarioExecution(ctx, "exec-1", associations("again", 2),
-		GateVerdictPass, finished); !errors.Is(err, ErrScenarioExecutionState) {
+		recordedGate(2, GateVerdictPass), finished); !errors.Is(err, ErrScenarioExecutionState) {
 		t.Fatalf("second completion error = %v, want ErrScenarioExecutionState", err)
 	}
 	if _, err := store.FailScenarioExecution(ctx, "exec-1", finished); !errors.Is(err, ErrScenarioExecutionState) {
@@ -126,7 +132,7 @@ func conformScenarioExecutions(t *testing.T, open func(testing.TB) Store) {
 		t.Fatalf("retried fail = %+v, %v; want the stored failure unchanged", retried, err)
 	}
 	if _, err := store.CompleteScenarioExecution(ctx, "exec-failed", associations("f", 2),
-		GateVerdictPass, finished); !errors.Is(err, ErrScenarioExecutionState) {
+		recordedGate(2, GateVerdictPass), finished); !errors.Is(err, ErrScenarioExecutionState) {
 		t.Fatalf("completing a failed execution: error = %v", err)
 	}
 
@@ -136,7 +142,7 @@ func conformScenarioExecutions(t *testing.T, open func(testing.TB) Store) {
 		t.Fatal(err)
 	}
 	if _, err := store.CompleteScenarioExecution(ctx, "exec-malformed", associations("m", 1),
-		GateVerdictPass, finished); err == nil {
+		recordedGate(1, GateVerdictPass), finished); err == nil {
 		t.Fatal("a completion with N = 1 associations for runs 2 was accepted")
 	}
 	if still, _ := store.ScenarioExecution(ctx, "exec-malformed"); still.Status() != ScenarioExecutionRunning {
@@ -144,7 +150,7 @@ func conformScenarioExecutions(t *testing.T, open func(testing.TB) Store) {
 	}
 
 	if _, err := store.CompleteScenarioExecution(ctx, "no-such", associations("n", 2),
-		GateVerdictPass, finished); !errors.Is(err, ErrStoreNotFound) {
+		recordedGate(2, GateVerdictPass), finished); !errors.Is(err, ErrStoreNotFound) {
 		t.Fatalf("completing a missing execution: error = %v, want ErrStoreNotFound", err)
 	}
 	if _, err := store.ScenarioExecution(ctx, "no-such"); !errors.Is(err, ErrStoreNotFound) {
@@ -185,7 +191,7 @@ func conformScenarioExecutionOrdering(t *testing.T, open func(testing.TB) Store)
 	}
 	for _, id := range []string{"z-first", "a-second"} {
 		if _, err := store.CompleteScenarioExecution(ctx, ScenarioExecutionID(id),
-			associations(id, 1), GateVerdictPass, finishes[id]); err != nil {
+			associations(id, 1), recordedGate(1, GateVerdictPass), finishes[id]); err != nil {
 			t.Fatalf("complete %s: %v", id, err)
 		}
 	}
@@ -212,7 +218,7 @@ func conformScenarioExecutionOrdering(t *testing.T, open func(testing.TB) Store)
 			t.Fatal(err)
 		}
 		done, err := store.CompleteScenarioExecution(ctx, ScenarioExecutionID(c.id),
-			associations(c.id, 1), GateVerdictPass, scenarioEpoch.Add(10*time.Hour))
+			associations(c.id, 1), recordedGate(1, GateVerdictPass), scenarioEpoch.Add(10*time.Hour))
 		if err != nil {
 			t.Fatalf("complete %s: %v", c.id, err)
 		}
@@ -250,7 +256,7 @@ func conformScenarioExecutionContention(t *testing.T, open func(testing.TB) Stor
 			defer wg.Done()
 			id := fmt.Sprintf("exec-%d", i)
 			results[i], errs[i] = store.CompleteScenarioExecution(ctx, ScenarioExecutionID(id),
-				associations(id, 1), GateVerdictPass, scenarioEpoch.Add(time.Minute))
+				associations(id, 1), recordedGate(1, GateVerdictPass), scenarioEpoch.Add(time.Minute))
 		}(i)
 	}
 	wg.Wait()
@@ -279,7 +285,7 @@ func conformScenarioExecutionContention(t *testing.T, open func(testing.TB) Stor
 		go func(i int) {
 			defer wg.Done()
 			_, err := store.CompleteScenarioExecution(ctx, "contended",
-				associations(fmt.Sprintf("c%d", i), 1), GateVerdictPass, scenarioEpoch.Add(time.Minute))
+				associations(fmt.Sprintf("c%d", i), 1), recordedGate(1, GateVerdictPass), scenarioEpoch.Add(time.Minute))
 			mu.Lock()
 			defer mu.Unlock()
 			switch {
@@ -347,7 +353,7 @@ func TestSQLiteScenarioExecutionReadsAreConsistentWithConcurrentCompletion(t *te
 			defer wg.Done()
 			<-start
 			if _, err := store.CompleteScenarioExecution(ctx, id, associations(string(id), 2),
-				GateVerdictPass, scenarioEpoch.Add(time.Minute)); err != nil {
+				recordedGate(2, GateVerdictPass), scenarioEpoch.Add(time.Minute)); err != nil {
 				report("complete %s: %v", id, err)
 			}
 		}()

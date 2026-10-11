@@ -146,7 +146,14 @@ func (r RepeatedEvaluationRequest) Validate() error {
 		}
 		seen[id] = struct{}{}
 	}
-	k, j := r.Limits.AddedCandidatePresenceMinimum, r.Limits.AddedReferencePresenceMaximum
+	return validateRepeatedLimits(r.Limits, n)
+}
+
+// validateRepeatedLimits refuses limits that could never be evaluated at N
+// runs per side: k outside 1..N, j not below k, or a frequency limit task 106
+// refuses.
+func validateRepeatedLimits(l RepeatedEvaluationGateLimits, n int) error {
+	k, j := l.AddedCandidatePresenceMinimum, l.AddedReferencePresenceMaximum
 	if k < 1 || k > uint64(n) {
 		return fmt.Errorf("%w: added_candidate_presence_minimum (k) is %d; it must be "+
 			"within 1..%d", ErrInvalidRepeatedRequest, k, n)
@@ -156,7 +163,7 @@ func (r RepeatedEvaluationRequest) Validate() error {
 			"below k (%d), or a behavior equally present on both sides would be added",
 			ErrInvalidRepeatedRequest, j, k)
 	}
-	return validateFrequencyLimits(r.Limits, n)
+	return validateFrequencyLimits(l, n)
 }
 
 // RepetitionEvidence is one repetition as the control plane found it.

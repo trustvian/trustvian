@@ -35,7 +35,7 @@ import (
 // schema version. They change for different reasons, and coupling them would
 // force a migration on an unrelated release or hide a real one behind an
 // unchanged number.
-const SchemaVersion = 13
+const SchemaVersion = 14
 
 // Table names. Compile-time constants: these are the only identifiers that
 // ever appear in assembled SQL. Every caller-supplied value is a bound
@@ -123,7 +123,7 @@ const (
 // schemaTables is every table this schema owns, and the allowlist a test
 // asserts against so an event, scorecard, or gate-result table cannot appear
 // without something failing.
-var schemaTables = schemaTablesV13
+var schemaTables = schemaTablesV14
 
 // SQLiteStore is the local persistence adapter.
 //
@@ -261,13 +261,21 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 	case SchemaVersion:
 		return s.requireTables(ctx, SchemaVersion, schemaTables)
 
+	case schemaVersionV13:
+		// Task 081's schema, before task 107's gate snapshot. v14 adds a
+		// column only, so the table set is the current one.
+		if err := s.requireTables(ctx, schemaVersionV13, schemaTablesV13); err != nil {
+			return err
+		}
+		return s.migrateV13ToV14(ctx)
+
 	case schemaVersionV12:
 		// Task 086's schema, before task 081's fidelity counts. v13 adds a
 		// column only, so the table set is the current one.
 		if err := s.requireTables(ctx, schemaVersionV12, schemaTablesV12); err != nil {
 			return err
 		}
-		return s.migrateV12ToV13(ctx)
+		return s.migrateV12ToCurrent(ctx)
 
 	case schemaVersionV11:
 		// Task 087's schema, before task 086's scenario provenance columns.
@@ -867,7 +875,15 @@ func (s *SQLiteStore) migrateV11ToCurrent(ctx context.Context) error {
 	if err := s.migrateV11ToV12(ctx); err != nil {
 		return err
 	}
-	return s.migrateV12ToV13(ctx)
+	return s.migrateV12ToCurrent(ctx)
+}
+
+// migrateV12ToCurrent is every step from v12 forward.
+func (s *SQLiteStore) migrateV12ToCurrent(ctx context.Context) error {
+	if err := s.migrateV12ToV13(ctx); err != nil {
+		return err
+	}
+	return s.migrateV13ToV14(ctx)
 }
 
 func (s *SQLiteStore) migrateV8ToV9(ctx context.Context) error {
@@ -1032,7 +1048,7 @@ func (s *SQLiteStore) migrateV11ToV12Once(ctx context.Context) error {
 // when it was observed, and nothing retained them since.
 func (s *SQLiteStore) migrateV12ToV13(ctx context.Context) error {
 	if err := s.migrateV12ToV13Once(ctx); err != nil {
-		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+		if s.migrationRaceRecovered(ctx, schemaVersionV13) {
 			return nil
 		}
 		return err
@@ -1055,13 +1071,50 @@ func (s *SQLiteStore) migrateV12ToV13Once(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, behaviorFidelityBackfillStatement()); err != nil {
 		return fmt.Errorf("platform: migrate schema v12 to v13: %w", err)
 	}
+	// Literal schemaVersionV13: v14's gate snapshot follows in its own step.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
-		SchemaVersion); err != nil {
+		schemaVersionV13); err != nil {
 		return fmt.Errorf("platform: migrate schema v12 to v13: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("platform: migrate schema v12 to v13: %w", err)
+	}
+	return nil
+}
+
+// migrateV13ToV14 adds task 107's gate snapshot column and backfills nothing:
+// an execution completed before it reads not_recorded, because no gate result
+// was kept when it completed and none can be re-derived honestly now.
+func (s *SQLiteStore) migrateV13ToV14(ctx context.Context) error {
+	if err := s.migrateV13ToV14Once(ctx); err != nil {
+		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateV13ToV14Once(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: migrate schema v13 to v14: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, statement := range scenarioGateSchemaStatements() {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("platform: migrate schema v13 to v14: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
+		SchemaVersion); err != nil {
+		return fmt.Errorf("platform: migrate schema v13 to v14: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: migrate schema v13 to v14: %w", err)
 	}
 	return nil
 }
@@ -1307,6 +1360,10 @@ var schemaTablesV12 = schemaTablesV11
 // v13 added a column to the behavior entry table only (task 081).
 var schemaTablesV13 = schemaTablesV12
 
+// schemaTablesV14 is what a complete v14 database holds: v13's tables, because
+// v14 added a column to the scenario execution table only (task 107).
+var schemaTablesV14 = schemaTablesV13
+
 // schemaTablesByVersion maps every schema version this binary can recognize to
 // the tables a complete database at that version holds.
 //
@@ -1335,6 +1392,7 @@ var schemaTablesByVersion = map[int][]string{
 	schemaVersionV10: schemaTablesV10,
 	schemaVersionV11: schemaTablesV11,
 	schemaVersionV12: schemaTablesV12,
+	schemaVersionV13: schemaTablesV13,
 	SchemaVersion:    schemaTables,
 }
 
@@ -1565,7 +1623,9 @@ func schemaStatements() []string {
 						// v12: task 086's scenario provenance columns.
 						append(scenarioProvenanceSchemaStatements(),
 							// v13: task 081's per-behavior fidelity counts.
-							behaviorFidelitySchemaStatements("TEXT")...)...)...)...)...)...)...)
+							append(behaviorFidelitySchemaStatements("TEXT"),
+								// v14: task 107's gate snapshot.
+								scenarioGateSchemaStatements()...)...)...)...)...)...)...)...)
 }
 
 // observationSchemaStatements is schema v7's whole addition, written once so
@@ -3833,7 +3893,7 @@ func (s *SQLiteStore) readScenarioExecutions(ctx context.Context, fn func(q sqlQ
 // IMMEDIATE equivalent CreateEnvironment uses.
 func (s *SQLiteStore) CompleteScenarioExecution(
 	ctx context.Context, id ScenarioExecutionID,
-	repetitions []ScenarioRepetition, verdict GateVerdict, at time.Time,
+	repetitions []ScenarioRepetition, gate ScenarioGateRecord, at time.Time,
 ) (ScenarioExecution, error) {
 	if id == "" {
 		return ScenarioExecution{}, fmt.Errorf("%w: scenario execution id is empty", ErrInvalidID)
@@ -3844,7 +3904,7 @@ func (s *SQLiteStore) CompleteScenarioExecution(
 	}
 	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
 
-	completed, err := completeScenarioExecutionTx(ctx, sqlExecQuerier{tx}, id, repetitions, verdict, at)
+	completed, err := completeScenarioExecutionTx(ctx, sqlExecQuerier{tx}, id, repetitions, gate, at)
 	if err != nil {
 		return ScenarioExecution{}, err
 	}

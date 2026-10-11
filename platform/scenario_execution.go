@@ -9,8 +9,11 @@ package platform
 //
 // Metadata only. An execution records identity, scope, N, the ordered
 // run/profile associations, where its reference came from, its lifecycle and
-// its verdict. It holds no scenario command, no environment value, no limit a
-// later execution could inherit, and no content of any kind.
+// its verdict — and, since schema 14, the gate evidence that verdict consumed
+// (ADR 0069). It holds no scenario command, no environment value, no limit a
+// later execution could inherit, and no content of any kind. The recorded
+// limits describe this execution's own decision; a later execution never reads
+// them (ADR 0054 § 4 still holds for references).
 
 import (
 	"errors"
@@ -133,6 +136,11 @@ type ScenarioExecution struct {
 	// reference side carries the referenced execution's reference-side
 	// provenance, copied, because those are the runs it reuses.
 	provenance [2]SideProvenance
+
+	// gate is the gate result the verdict came from (task 107, D10): recorded
+	// by every completion since schema 14, not recorded for an execution
+	// completed before it, and never for one that is not completed.
+	gate ScenarioGateRecord
 }
 
 // NewScenarioExecution returns a running execution. reference is empty for an
@@ -183,6 +191,11 @@ func (e ScenarioExecution) CompletionSequence() uint64 { return e.completionSequ
 // Verdict returns the recorded gate verdict; empty unless completed.
 func (e ScenarioExecution) Verdict() GateVerdict { return e.verdict }
 
+// GateRecord returns the gate result the execution recorded when it
+// completed. Not Recorded unless completed, and for an execution completed
+// before schema 14.
+func (e ScenarioExecution) GateRecord() ScenarioGateRecord { return e.gate }
+
 // Repetitions returns the ordered associations, reference side first; empty
 // unless completed. The slice is a copy.
 func (e ScenarioExecution) Repetitions() []ScenarioRepetition {
@@ -219,10 +232,10 @@ func (e ScenarioExecution) withProvenance(reference, candidate SideProvenance) (
 	return next, nil
 }
 
-// complete returns the completed execution. The sequence is assigned by the
-// store, inside the transaction that commits it.
+// complete returns the completed execution, its verdict the gate's. The
+// sequence is assigned by the store, inside the transaction that commits it.
 func (e ScenarioExecution) complete(
-	repetitions []ScenarioRepetition, verdict GateVerdict, sequence uint64, at time.Time,
+	repetitions []ScenarioRepetition, gate ScenarioGateRecord, sequence uint64, at time.Time,
 ) (ScenarioExecution, error) {
 	if e.status != ScenarioExecutionRunning {
 		return ScenarioExecution{}, fmt.Errorf("%w: execution %s is %s, not running",
@@ -230,8 +243,13 @@ func (e ScenarioExecution) complete(
 	}
 	next := e
 	next.status = ScenarioExecutionCompleted
+	if !gate.Recorded() {
+		return ScenarioExecution{}, fmt.Errorf("%w: execution %s completes without its gate result",
+			ErrScenarioExecutionState, preview(string(e.id)))
+	}
 	next.repetitions = append([]ScenarioRepetition(nil), repetitions...)
-	next.verdict = verdict
+	next.verdict = gate.Gate().Verdict()
+	next.gate = gate
 	next.completionSequence = sequence
 	next.finishedAt = at
 	if err := next.validate(); err != nil {
@@ -307,7 +325,7 @@ func (e ScenarioExecution) validate() error {
 		return fmt.Errorf("%w: scenario execution finished before it started", ErrInvalidTimestamp)
 	}
 	if !completed {
-		if e.completionSequence != 0 || e.verdict != "" || len(e.repetitions) != 0 {
+		if e.completionSequence != 0 || e.verdict != "" || len(e.repetitions) != 0 || e.gate.Recorded() {
 			return fmt.Errorf("%w: a %s scenario execution carries a completion",
 				ErrScenarioExecutionState, e.status)
 		}
@@ -319,6 +337,15 @@ func (e ScenarioExecution) validate() error {
 	}
 	if e.verdict != GateVerdictPass && e.verdict != GateVerdictFail {
 		return fmt.Errorf("%w: scenario execution verdict %q", ErrInvalidID, e.verdict)
+	}
+	if e.gate.Recorded() {
+		if err := e.gate.validate(e.runs); err != nil {
+			return err
+		}
+		if e.gate.Gate().Verdict() != e.verdict {
+			return fmt.Errorf("%w: scenario execution verdict %s; its recorded gate says %s",
+				ErrInvalidRepeatedRequest, e.verdict, e.gate.Gate().Verdict())
+		}
 	}
 	return validateScenarioRepetitions(e.repetitions, e.runs)
 }

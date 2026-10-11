@@ -117,6 +117,11 @@ func statementVersion(stmt string) (int, bool) {
 	if strings.HasPrefix(trimmed, `ALTER TABLE `+tablePromotions+` ADD COLUMN `) {
 		return schemaVersionV8, true
 	}
+	// v14: task 107's gate snapshot, an ALTER statement on a fresh database
+	// too. Checked before v10, which adds a column to the same table.
+	if trimmed == `ALTER TABLE `+tableScenarioExecutions+` ADD COLUMN `+columnGateSnapshot+` TEXT` {
+		return schemaVersionV14, true
+	}
 	// v12: task 086's scenario provenance columns, ALTER statements on a
 	// fresh database too. Checked before v10, which adds a column to the same
 	// table.
