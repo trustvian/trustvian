@@ -227,6 +227,8 @@ func newCompareResponse(c platform.EvaluationComparison) compareResponse {
 		Diff:      newBehaviorDiffDTO(c.Diff),
 		Scorecard: newScorecardDTO(c.Scorecard, c.Cost),
 		Gate:      newGateResultDTO(c.Gate),
+		Sameness:  newSamenessDTO(c.Sameness),
+		Warnings:  newWarningDTOs(c.Warnings),
 	}
 }
 

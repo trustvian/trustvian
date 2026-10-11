@@ -1458,6 +1458,13 @@ type EvaluationComparison struct {
 
 	// Cost is task 087's cost section, nil when no pricing is configured.
 	Cost *CostComparison
+
+	// Sameness is task 086's, each run looked up through the executions
+	// that recorded it, exactly as compare-repeated does (task 107, D12): a
+	// run no execution recorded reads not_recorded. Warnings state each
+	// difference. Beside the gate, read by nothing.
+	Sameness ComparisonSameness
+	Warnings []ComparisonWarning
 }
 
 // CompareEvaluations derives diff, scorecard and gate result for two runs.
@@ -1558,6 +1565,13 @@ func (c *ControlPlane) CompareEvaluations(
 	}
 	if priced {
 		comparison.Cost = &cost
+	}
+	// Last, after the verdict: no check reads it and it refuses nothing.
+	comparison.Sameness, comparison.Warnings, err = c.samenessOfRuns(ctx, RepeatedEvaluationRequest{
+		ReferenceRunIDs: []EvaluationRunID{referenceRunID}, CandidateRunIDs: []EvaluationRunID{candidateRunID},
+	})
+	if err != nil {
+		return EvaluationComparison{}, err
 	}
 	return comparison, nil
 }

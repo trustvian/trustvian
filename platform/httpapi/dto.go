@@ -605,6 +605,13 @@ type compareResponse struct {
 	Diff      behaviorDiffDTO `json:"behavior_diff"`
 	Scorecard scorecardDTO    `json:"scorecard"`
 	Gate      gateResultDTO   `json:"gate"`
+
+	// Task 086's sameness and warnings, as compare-repeated carries them
+	// (task 107, D12). Each run is looked up through the executions that
+	// recorded it; one no execution recorded reads not_recorded. No check
+	// reads either.
+	Sameness samenessDTO  `json:"sameness"`
+	Warnings []warningDTO `json:"warnings"`
 }
 
 // ---------------------------------------------------------------------
