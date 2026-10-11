@@ -98,12 +98,14 @@ reconstructed later. Everything else in this table is already released.
 | Resolution `recorded_count` | STABLE | What the recorded evidence holds — the gate's own actual. **Not a count of the returned rows**, and never reconciled with one: a check counts every record the run ingested while retained history is bounded | — | Major |
 | Resolution `exhaustive` | STABLE | True only when the side's retained history is complete. A full set of matches drawn from partial history is a sample and is never labelled exhaustive | — | Major |
 | `POST /v1/evaluations/compare-repeated` | STABLE | Task 078's repeated evaluation ([ADR 0053](adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md)). Body: `reference_run_ids` and `candidate_run_ids` (equal length, `1..64`, every id distinct) and `gate_limits` with all five of `added_candidate_presence_minimum` (k), `added_reference_presence_maximum` (j), `max_repeated_added_behaviors`, `max_block_decisions_per_run`, `max_critical_risk_observations_per_run` as canonical decimal strings — none optional, `0 <= j < k <= N`. `400` for a malformed request, repetitions sharing a behavioral profile, repetitions in more than one environment, or fingerprint identity that is not one-to-one across repetitions, `404` for a missing run, `409 incomplete_evidence` for saturated evidence. Response: `runs`, the echoed `gate_limits`, every `repetitions[]` entry (side, index, run, status, profile, record, block and critical-risk counts), every observed `behaviors[]` entry with `reference_runs_present`, `candidate_runs_present` and `classification` (`added`, `removed`, `neither`), `gate.checks[]` — exactly six in a stable order, each with `name`, `actual`, `rule` (`equals`, `at_most`), `bound`, `passed`, and `advisory: "fresh_scope"` on the last two when `runs > 1` — `gate.verdict`, and `producer.control_plane_version`. Behavior descriptors are producer-supplied strings. **Task 106, additive:** every behavior carries `reference_frequency` and `candidate_frequency` (`runs`, `calls_total`, and `calls_per_run_min`/`_max`/`_mean_milli` only when `runs` is not `"0"`) and `lost` (a boolean beside `classification`, whose vocabulary is unchanged); `targets[]` (by category then name, each with both frequencies, `call_ratio_available` and `call_ratio_permille` only when available); `lost_transitions: "not_recorded"`; `gate.frequency_checks[]`, in a stable order (`min_candidate_frequency`, `max_lost_behaviors`, `max_calls_per_run`, and since task 081 `max_llm_calls_per_run`, four in all), each with `state` `not_evaluated`, `evaluated` or `deferred`, outcome fields only when evaluated, `targets[]` (`target`, `actual`, `max`, `outcome` `pass`/`fail`/`not_observed`) for `max_calls_per_run`, and `missing_evidence` only when deferred; `suggestions[]` (`rule`, `rule_version`, `evidence[]`, `text`) and `suggestions_truncated`. The request's `gate_limits` accepts the three as optional (`min_candidate_frequency` and `max_lost_behaviors` canonical decimal strings, `max_calls_per_run` a 1..16 list of `{target, max}`), echoed only when supplied. The verdict is PASS only when the six checks pass and no frequency check failed or was deferred; with all three omitted it is the six checks' alone. **Task 086, additive:** `sameness` (`same_scenario`, `same_inputs`, `same_model`, `same_prompt_ref`, each the string `true`, `false` or `not_recorded`; `reference` and `candidate`, each side's recorded `scenario_digest`, `inputs` — `declared`, `not_declared` or `not_recorded` — `input_digest`, `model` and `prompt_ref` {`name`, `digest`}, each value absent when not recorded) and `warnings[]` (`code` — `scenario_differs`, `inputs_differ`, `model_differs`, `prompt_ref_differs` — and a fixed `text`), one per `false`. Here a side's values come from the executions that recorded its runs, and are stated only when every run agrees. No check reads either, and neither changes the verdict. **Task 081, additive:** every behavior carries `reference_fidelity` and `candidate_fidelity` (task 081): `level` (`semantic`, `transport`, `unrecorded` — the lowest seen), `mixed`, the counts `semantic`, `transport`, `unrecorded`, and `layer` {`model`, `tool`, `retrieval`, `transport`, `unclassified`, `unrecorded`}, all canonical decimal strings; absent on a side that did not observe the behavior, each side's repetitions summed before the level is derived. `gate_limits` accepts an optional `max_llm_calls_per_run`, echoed only when supplied: the most model-layer calls in any one candidate run, `deferred` unless every completed candidate run has at least one model-layer observation (task 081, D9), which then fails the verdict; an evaluated value is therefore at least `1` | New response fields, new check names only with a major version | Major |
+| `POST /v1/evaluations/compare` sameness | STABLE | Task 107, decision D12, additive. The response gains `sameness` and `warnings[]` in compare-repeated's shape (task 086): each run is looked up through the executions that recorded it, and a run no execution recorded reads `not_recorded` on every answer, with no warning. No check reads either, and the verdict is unchanged | New fields | Major |
 | `POST /v1/evaluations/compare` behavior deltas | STABLE | Since task 081 each `behavior_diff.deltas[]` entry carries `reference_fidelity` and `candidate_fidelity` (task 081): `level` (`semantic`, `transport`, `unrecorded` — the lowest seen), `mixed`, the counts `semantic`, `transport`, `unrecorded`, and `layer` {`model`, `tool`, `retrieval`, `transport`, `unclassified`, `unrecorded`}, all canonical decimal strings; absent on a side that did not observe the behavior | New fields | Major |
 | `max_repeated_added_behaviors` unit | STABLE | Counts repeatedly added behavioral **identities**, the unit of `max_added_behaviors`: at `runs: 1, k: 1, j: 0` the repeated verdict equals the single-run gate's. Not counted changes | A separate optional limit with its own unit | Major to redefine |
 | Scenario file (`config.LoadScenario`) | STABLE | Schema `version: v1`; `name`, `runs`, `reference`/`candidate` `command` and the five `gate` fields required, no defaults, unknown fields refused; the optional `gate.min_candidate_frequency` (at most `runs`), `gate.max_lost_behaviors` and `gate.max_calls_per_run` (1..16 unique `{target, max}`, targets at most 255 bytes) since task 106, with `max_llm_calls_per_run` optional since task 081 (a YAML integer); optional `project`, `agent`, `environment`, `instrumentation`, per-side `env` and `candidate` passed through to `trustvian dev`; since task 086, optional `inputs` (at most 64 paths relative to the file, `/`-separated, each a regular file of at most 64 MiB inside the repository) and per side `model` or `model_env`, and `prompt_ref` (`name`, `digest`) or `prompt_ref_env`, never both forms. `scenario_digest` is `sha256:` over canonical JSON of the validated file — `env` values, input contents and the four provenance fields excluded — and `input_digest` is `sha256:` over the sorted `{path, sha256}` list. Task 081 added `max_llm_calls_per_run` to the canonical gate (`null` when omitted), so every scenario's `scenario_digest` changed once: an execution recorded by an earlier CLI reads `same_scenario: "false"` against one recorded by this one ([`platform-cli.md`](platform-cli.md#provenance-what-each-side-ran)) | New optional fields | Major |
 | `trustvian eval run` result document (`--json`) | STABLE | `version`, `scenario` (`name`, `runs`), `execution_id` (always this invocation's own execution), `producers` (`cli_version`, `control_plane_version`), and `comparison` — the server's repeated result, content unchanged. With `--reference`, also `reference` (`mode`: `execution` or `last`; `execution_id`: the execution whose reference side was reused); absent otherwise. Since task 086, `provenance` — the execution's recorded provenance exactly as `GET /v1/scenario-executions/{id}` returns it; absent from a control plane that predates it | New fields | Major |
 | `trustvian eval run --reference <execution-id>\|last` | STABLE | Reuses one recorded execution's reference side, whole, and runs only the N candidate repetitions. `last` is the most recently completed execution of the same scenario name, project, agent and environment. The reference is resolved by the control plane before any workload runs; one that is missing, unfinished, of another N, outside the project or environment, or with incomplete evidence is exit `3`. The current scenario's gate limits apply. The scenario file is validated whole either way, `reference.command` included | New reference modes | Major |
 | `trustvian eval operational` | STABLE | Prints `GET /v1/evaluations/operational`'s body unchanged in both output modes. `--reference-run` and `--candidate-run` repeat once per run; `--after` and `--limit` pass through. Exit `0`, `2` usage, `3` API failure | New flags | Major |
+| `trustvian eval report <execution-id>` | STABLE | Task 107. Reads `GET /v1/scenario-executions/{execution_id}/report` and prints the result document version 2 unchanged in both output modes; the human mode adds nothing computed. The execution id is the one positional argument, before or after `--api-url` and `--json`. Exit `0` when the report was read, whatever its recorded verdict; `2` usage (no id, a second positional argument, an unknown flag); `3` API, network or server failure — `404` for an unknown execution, `409` for one not completed — with nothing on stdout | New flags | Major |
 | `trustvian eval compare-repeated` | STABLE | Task 086. Posts to `POST /v1/evaluations/compare-repeated`: `--reference-run` and `--candidate-run` repeat once per repetition, in order; the five limits are required flags named as their wire fields; `--min-candidate-frequency`, `--max-lost-behaviors`, repeatable `--max-calls-per-run <target>=<max>` and (task 081) `--max-llm-calls-per-run` are optional. Prints the response body unchanged in both output modes. Exit `0` PASS, `1` FAIL, `2` usage, `3` API failure or an unrecognized verdict, with nothing on stdout | New flags | Major |
 | Pricing table (`config.LoadPricing`, `trustvian-local --pricing`) | STABLE | Task 087. `version: 1`; `pricing_version`, `source`, a three-letter upper-case `currency`, and `models[]` of `model` with `input_micros_per_million_tokens` and `output_micros_per_million_tokens` — every field required, prices YAML integers, unknown fields refused, at most 256 models. `pricing_digest` is `sha256:` over a canonical JSON encoding with models sorted by name, so formatting and order do not change it | New optional fields | Major, or a new `version` |
 | `trustvian eval run --suite <dir>` | STABLE | Members are the directory's immediate regular `.yaml`/`.yml` files in name byte order; symlinks, an empty suite, duplicate scenario names, more than 64 scenarios or more than 4096 directory entries are usage errors (`2`) before anything runs, as is any invalid member. A preflight failure of the environment (working directory, repository inspection, locating the control plane) is `3`; neither starts a workload or makes a request. Requires `--scenario-timeout` (1s to 24h) per scenario; `--fail-fast` stops scheduling after the first non-PASS; `--reference` accepts only `last`, resolved per member. Members run sequentially through the single-scenario path; nothing is pooled or recomputed ([ADR 0055](adr/0055-a-scenario-suite-is-a-bounded-schedule-and-a-report-not-an-evaluation.md)) | New optional flags | Major |
@@ -129,6 +131,7 @@ reconstructed later. Everything else in this table is already released.
 | `POST /v1/collectors/{collector_id}/status` | STABLE | Task 105 ([ADR 0065](adr/0065-collectors-report-pipeline-status-the-control-plane-holds-it-in-memory.md)): a Collector's status report, version `1`, body at most 256 KiB. `collector_id` must match the route; `instance` is 16 lowercase hex characters; counters are canonical decimal strings. Unknown fields are tolerated, so a newer Collector is heard on everything this build understands. The sections `models`, `fidelity`, `transport_targets`, `actors` and `learning` are optional, and an absent one is published as not reported. `200` with `disposition` `accepted` or `ignored` (an older sequence from the same process); `400` for a malformed or out-of-bound report; `409` at 16 held Collectors. Held in memory only | New optional report sections and fields | Major |
 | `GET /v1/status` | STABLE | Task 105: the pipeline status document. Fields: `read_at`, `held_since`, `last_ingest_at` (omitted when the control plane has committed no ingest record since it started), `landing` (`live` or `status`), `collectors[]` (each with `state` `reporting` or `stale`, times on the control plane's clock, every reported section, and `reported: false` for one a Collector did not send), `engine` (`state`, `reason`), `bounds`, `suggestions[]` (`rule`, `rule_version`, `evidence[]` of `name`/`value`, `text`) and `suggestions_truncated`. A suggestion's `rule` is stable and its `text` may change with its `rule_version`. Branch on `rule`, never on `text` ([ADR 0064](adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md)) | New fields, new rules, new section states | Major |
 | `GET /v1/projects/{project_id}/scenario-executions` | STABLE | Task 102: recorded executions newest first by start time (ADR 0063), ties by identifier, optional equality filters `agent_id`, `environment`, `scenario`; each entry the by-id shape without `repetitions`. `order` is `started_at_desc`, same cursor and bounds as the recent-runs route. An unknown project is an empty page: executions record their scope before anything is provisioned | New response fields | Major, or a new path version |
+| `GET /v1/scenario-executions/{execution_id}/report` | STABLE | Task 107 (decisions D10, D11). JSON only; there is no `format` parameter. `200` with [result document version 2](#result-document-version-2) for a completed execution; `404` for an unknown one; `409 conflict` for one that is running or failed. The gate is the one the execution recorded when it completed, never re-evaluated; an execution completed before schema 14 reports it `not_recorded`. SQLite and PostgreSQL return byte-identical documents | New fields | Major, or a new path version |
 | `GET /v1/scenario-executions/{execution_id}/reference-check` | STABLE | Task 102: whether `eval run --reference <id>` would accept the execution, by the control plane's own validation, for a scenario with the execution's `runs`, `project_id` and `environment` (echoed). `usable`, and the validation's `reason` when not. A read; `404` for an unknown execution | New response fields | Major |
 | Retained observation identity and order | STABLE | An observation is `(run_id, sequence)` and pages in ascending sequence — the order the platform accepted records. **Never ordered by timestamp**, which ties, and never keyed on a span id, which is unique only inside its trace | — | Major |
 | Observation page consistency | STABLE | One page is read from one database snapshot. An ingest committing during a read yields the state before it or after it, never a mixture of the two | — | Major |
@@ -481,7 +484,7 @@ of the contracts above.
 |---|---|---|---|---|
 | Backend selection names (`sqlite`, `postgres`) | OPERATIONALLY STABLE | The accepted values and that omitting one means SQLite | New backend names | Major |
 | `TRUSTVIAN_PLATFORM_POSTGRES_DSN` | OPERATIONALLY STABLE | `trustvian-local` reads the PostgreSQL DSN from it | An additional configuration source | Major |
-| `platform.SchemaVersion` | INTERNAL | One logical version governs both physical schemas; currently **13** (task 081 added `fidelity_counts` to the behavior entry table; existing behaviors read unrecorded) | Incremented with a migration on **both** backends | n/a |
+| `platform.SchemaVersion` | INTERNAL | One logical version governs both physical schemas; currently **14** (task 107 added `gate_snapshot` to the scenario execution table; executions completed earlier read `not_recorded`) | Incremented with a migration on **both** backends | n/a |
 | Physical SQLite schema | OPERATIONALLY STABLE | Migrated forward only; a newer schema fails closed | Additive tables and columns via a version bump | Major |
 | Physical PostgreSQL schema | OPERATIONALLY STABLE | Same | Same | Major |
 
@@ -505,6 +508,19 @@ columns are derived, never caller-supplied, and are verified against their value
 on read. **Any future lookup through one of these indexes must compare the
 original value as well as the key**, because a digest narrows rather than
 identifies.
+
+**Schema 14 (task 107) records the gate each completed execution consumed,
+and invents none.** One nullable column, `gate_snapshot`, on
+`platform_scenario_executions`, on both backends, forward-only, no backfill
+([ADR 0069](adr/0069-a-completed-execution-records-the-gate-it-consumed.md)).
+Every completion writes it in the same statement as the verdict: the limits,
+all six `gate.checks`, all four `gate.frequency_checks` and the verdict, as
+fixed-shape canonical text. Restore decodes it strictly and re-proves it
+against itself, the verdict column and N; anything else is refused as corrupt.
+An execution completed before schema 14 has none: its report says
+`not_recorded` and nothing re-derives a gate for it. The chained upgrade from
+v10 (v0.11.0) reaches v14 in one start on both backends. A binary that knows
+only schema 13 refuses a schema-14 database.
 
 **Schema 9 (task 078) adds persisted scenario executions and invents none.**
 Two tables on both backends, forward-only: `platform_scenario_executions`
@@ -813,6 +829,802 @@ The run job's summary carries no verdict. The rendering — in the comment job's
 summary and in the comment — is OBSERVATIONAL, like CLI human-readable output:
 anyone parsing it is parsing the wrong thing, and the result document is right
 there.
+
+## Result document version 2
+
+Task 107 (decisions D10, D11). `GET /v1/scenario-executions/{execution_id}/report`
+serves it and `trustvian eval report` prints it. It is the report of one
+completed scenario execution: version 1 — the document `trustvian eval run
+--json` writes — member for member, plus the additions below, all additive.
+A consumer branches on `version` first; one that reads only version 1 must
+refuse `"2"` rather than guess, as `cmd/trustvian-ci-render` does today. The
+shared renderer of task 107-B is held to this section.
+
+**Class: STABLE.** Members keep their names, types and meanings; new members
+may appear and consumers must tolerate them; a value outside a closed
+vocabulary is refused, not rendered.
+
+### The version 1 subset
+
+Every member version 1 defines is present with the same name, type and value
+for the same execution, with exactly these differences:
+
+| Member | Version 1 | Version 2 |
+|---|---|---|
+| `version` | `"1"` | `"2"` |
+| `producers.cli_version` | the CLI that ran the execution | `"not_recorded"`: never persisted, and the report is produced by the control plane |
+| `reference.mode` | `execution` or `last` | `"not_recorded"`: whether the runner asked for `last` was never persisted. `reference.execution_id` is the reused execution, as in version 1; `reference` is absent for a self-contained execution |
+| `producers.control_plane_version`, `comparison.producer.control_plane_version` | the control plane that completed the execution | the control plane that produced the report |
+| `comparison.gate`, `comparison.gate_limits` | evaluated at completion | **the record the execution kept when it completed** (schema 14), never re-evaluated |
+
+A test proves the subset equal to the document `eval run` builds from the
+completion response
+(`platform/httpapi/scenario_report_test.go`, `TestReportCarriesVersionOneUnchanged`).
+
+### Members
+
+Top level, in order: `version` (string, `"2"`), `scenario` (`name` string,
+`runs` integer 1..64), `execution_id` (string), `reference` (object, absent
+for a self-contained execution), `producers` (`cli_version`,
+`control_plane_version`, strings), `provenance` (exactly as `GET
+/v1/scenario-executions/{id}` returns it), `comparison` (below).
+
+`comparison` is compare-repeated's response shape, member for member and in its
+order, with these states and additions. Every count is a canonical decimal
+string, as everywhere on `/v1`.
+
+| Member | Type | Present | Absent or unavailable |
+|---|---|---|---|
+| `version`, `runs` | string, integer | always | — |
+| `gate_limits` | object | the five required limits, and each optional one that was supplied | the whole object is absent when the gate was not recorded; an omitted optional limit is absent |
+| `repetitions[]` | array | reference 1..N, then candidate 1..N, each run as the control plane holds it now | — |
+| `behaviors[]` | array | every behavior any repetition observed, by `fingerprint_id` | — |
+| `behaviors[].classification` | string | `added`, `removed`, `neither` | `not_recorded` when the gate was not recorded: classifying needs k and j |
+| `behaviors[].reference_frequency`, `candidate_frequency` | object | task 106: `runs`, `calls_total`, `calls_per_run_min`, `calls_per_run_max`, `calls_per_run_mean_milli` | the three per-run members are absent on a side with no completed repetition |
+| `behaviors[].lost` | boolean | task 106 | — |
+| `behaviors[].reference_fidelity`, `candidate_fidelity` | object | task 081: `level`, `mixed`, `semantic`, `transport`, `unrecorded`, `layer{…}` | absent on a side that never observed the behavior |
+| `behaviors[].display` | object of strings | **new.** `reference_presence`, `candidate_presence` (`"k/N"`); `reference_calls_per_run`, `candidate_calls_per_run` (`"min–max"`, an en dash); `reference_calls_per_run_mean`, `candidate_calls_per_run_mean` (the mean from `calls_per_run_mean_milli`, exact: `2400` → `"2.4"`, `2456` → `"2.456"`, `3000` → `"3"`) | a per-run string reads `"not available"` on a side with no completed repetition |
+| `behaviors[].present_in` | object | **new.** `reference`, `candidate`: arrays of `{index, run_id}`, the repetitions whose snapshot observed the behavior, in index order. Each array's length equals the side's presence count. Any run named there resolves the behavior through `GET /v1/evidence/observations` (task 085); the reader picks the pair | an empty array on a side that never observed it |
+| `gate` | object | `checks[]` (all six), `verdict`, `frequency_checks[]` (all four, task 106's three then task 081's `max_llm_calls_per_run`), and **new** `state: "recorded"` | `{"state": "not_recorded"}` and nothing else, for an execution completed before schema 14 |
+| `operational` | object | task 087's `latency`, `errors`, `tokens`; each has `comparable` and, when comparable, `delta` | a section that is not comparable has `reason` (`reference_unavailable`, `candidate_unavailable`, `both_unavailable`) and **no `delta` member** |
+| `operational.cost` | object | task 087, only with a pricing table, always with `pricing_version`, `pricing_digest`, `source` and `currency` | absent without pricing, and then **new** `operational.cost_reason: "pricing_not_configured"`; a side that reported no tokens has no `cost_micros`, and an incomparable cost no `delta` |
+| `targets[]` | array | task 106 per-target frequency; `call_ratio_permille` when `call_ratio_available` | `call_ratio_permille` absent when the reference never called the target |
+| `targets[].display` | object of strings | **new.** per-side `…_calls_per_run`, `…_calls_per_run_mean` as above, and `call_ratio` (`"2.4×"`, from the permille, one decimal, truncated — the rendering suggestion texts use) | `"not available"` as above, and for `call_ratio` when the reference never called the target |
+| `lost_transitions` | string | always `not_recorded` (task 106) | — |
+| `suggestions[]`, `suggestions_truncated` | array, boolean | ADR 0064 rule outputs, beside the evidence | — |
+| `sameness`, `warnings[]` | object, array | task 086, from the execution's own recorded provenance | each answer `true`, `false` or `not_recorded` |
+| `producer` | object | `control_plane_version` | — |
+
+Nothing in the document is an aggregate verdict or an impact score, and the
+display strings are formatting of the integers beside them: no member is
+computed from another adapter-side.
+
+### Example
+
+The route's output for a two-repetition execution, with a pricing table
+configured and the producer version replaced. Pinned by
+`TestReportVersion2ExampleIsPinned`, which fails if this block and the route's
+output differ.
+
+<details>
+<summary>Result document version 2, in full</summary>
+
+<!-- result-document-v2-example: platform/httpapi/testdata/report-v2-example.json -->
+
+```json
+{
+  "version": "2",
+  "scenario": {
+    "name": "support",
+    "runs": 2
+  },
+  "execution_id": "e1",
+  "producers": {
+    "cli_version": "not_recorded",
+    "control_plane_version": "v0.12.0"
+  },
+  "provenance": {
+    "reference": {
+      "inputs": "not_recorded"
+    },
+    "candidate": {
+      "inputs": "not_recorded"
+    }
+  },
+  "comparison": {
+    "version": "1",
+    "runs": 2,
+    "gate_limits": {
+      "added_candidate_presence_minimum": "2",
+      "added_reference_presence_maximum": "0",
+      "max_repeated_added_behaviors": "0",
+      "max_block_decisions_per_run": "0",
+      "max_critical_risk_observations_per_run": "0",
+      "min_candidate_frequency": "1",
+      "max_lost_behaviors": "0",
+      "max_calls_per_run": [
+        {
+          "target": "api.example",
+          "max": "5"
+        }
+      ],
+      "max_llm_calls_per_run": "3"
+    },
+    "repetitions": [
+      {
+        "side": "reference",
+        "index": 1,
+        "run_id": "e1-reference-1",
+        "status": "completed",
+        "behavioral_profile": "e1-reference-1-profile",
+        "record_count": "2",
+        "distinct_behavior_count": 2,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "reference",
+        "index": 2,
+        "run_id": "e1-reference-2",
+        "status": "completed",
+        "behavioral_profile": "e1-reference-2-profile",
+        "record_count": "2",
+        "distinct_behavior_count": 2,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "candidate",
+        "index": 1,
+        "run_id": "e1-candidate-1",
+        "status": "completed",
+        "behavioral_profile": "e1-candidate-1-profile",
+        "record_count": "3",
+        "distinct_behavior_count": 3,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "candidate",
+        "index": 2,
+        "run_id": "e1-candidate-2",
+        "status": "completed",
+        "behavioral_profile": "e1-candidate-2-profile",
+        "record_count": "2",
+        "distinct_behavior_count": 2,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      }
+    ],
+    "behaviors": [
+      {
+        "fingerprint_id": "fp-export",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "tool",
+          "operation_name": "export",
+          "target_name": "build-host",
+          "target_category": "external",
+          "environment": "staging"
+        },
+        "reference_runs_present": "0",
+        "candidate_runs_present": "2",
+        "classification": "added",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "0",
+          "calls_per_run_min": "0",
+          "calls_per_run_max": "0",
+          "calls_per_run_mean_milli": "0"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "lost": false,
+        "candidate_fidelity": {
+          "level": "unrecorded",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "0",
+          "unrecorded": "2",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "2"
+          }
+        },
+        "display": {
+          "reference_presence": "0/2",
+          "candidate_presence": "2/2",
+          "reference_calls_per_run": "0–0",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "0",
+          "candidate_calls_per_run_mean": "1"
+        },
+        "present_in": {
+          "reference": [],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "e1-candidate-1"
+            },
+            {
+              "index": 2,
+              "run_id": "e1-candidate-2"
+            }
+          ]
+        }
+      },
+      {
+        "fingerprint_id": "fp-lookup",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "tool",
+          "operation_name": "lookup",
+          "target_name": "build-host",
+          "target_category": "external",
+          "environment": "staging"
+        },
+        "reference_runs_present": "2",
+        "candidate_runs_present": "1",
+        "classification": "neither",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "1",
+          "calls_per_run_min": "0",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "500"
+        },
+        "lost": true,
+        "reference_fidelity": {
+          "level": "unrecorded",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "0",
+          "unrecorded": "2",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "2"
+          }
+        },
+        "candidate_fidelity": {
+          "level": "unrecorded",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "0",
+          "unrecorded": "1",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "1"
+          }
+        },
+        "display": {
+          "reference_presence": "2/2",
+          "candidate_presence": "1/2",
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "0–1",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "0.5"
+        },
+        "present_in": {
+          "reference": [
+            {
+              "index": 1,
+              "run_id": "e1-reference-1"
+            },
+            {
+              "index": 2,
+              "run_id": "e1-reference-2"
+            }
+          ],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "e1-candidate-1"
+            }
+          ]
+        }
+      },
+      {
+        "fingerprint_id": "fp-read",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "tool",
+          "operation_name": "read",
+          "target_name": "build-host",
+          "target_category": "external",
+          "environment": "staging"
+        },
+        "reference_runs_present": "2",
+        "candidate_runs_present": "2",
+        "classification": "neither",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "lost": false,
+        "reference_fidelity": {
+          "level": "unrecorded",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "0",
+          "unrecorded": "2",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "2"
+          }
+        },
+        "candidate_fidelity": {
+          "level": "unrecorded",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "0",
+          "unrecorded": "2",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "2"
+          }
+        },
+        "display": {
+          "reference_presence": "2/2",
+          "candidate_presence": "2/2",
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "1"
+        },
+        "present_in": {
+          "reference": [
+            {
+              "index": 1,
+              "run_id": "e1-reference-1"
+            },
+            {
+              "index": 2,
+              "run_id": "e1-reference-2"
+            }
+          ],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "e1-candidate-1"
+            },
+            {
+              "index": 2,
+              "run_id": "e1-candidate-2"
+            }
+          ]
+        }
+      }
+    ],
+    "gate": {
+      "checks": [
+        {
+          "name": "reference_repetitions_completed",
+          "actual": "2",
+          "rule": "equals",
+          "bound": "2",
+          "passed": true
+        },
+        {
+          "name": "candidate_repetitions_completed",
+          "actual": "2",
+          "rule": "equals",
+          "bound": "2",
+          "passed": true
+        },
+        {
+          "name": "repetitions_failing_minimum_evidence",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true
+        },
+        {
+          "name": "repeatedly_added_behaviors",
+          "actual": "1",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": false
+        },
+        {
+          "name": "worst_candidate_block_decisions",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true,
+          "advisory": "fresh_scope"
+        },
+        {
+          "name": "worst_candidate_critical_risk_observations",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true,
+          "advisory": "fresh_scope"
+        }
+      ],
+      "verdict": "fail",
+      "frequency_checks": [
+        {
+          "name": "min_candidate_frequency",
+          "state": "evaluated",
+          "rule": "at_least",
+          "actual": "1",
+          "bound": "1",
+          "passed": true
+        },
+        {
+          "name": "max_lost_behaviors",
+          "state": "evaluated",
+          "rule": "at_most",
+          "actual": "1",
+          "bound": "0",
+          "passed": false
+        },
+        {
+          "name": "max_calls_per_run",
+          "state": "evaluated",
+          "rule": "at_most",
+          "passed": false,
+          "targets": [
+            {
+              "target": "api.example",
+              "actual": "0",
+              "max": "5",
+              "outcome": "not_observed"
+            }
+          ]
+        },
+        {
+          "name": "max_llm_calls_per_run",
+          "state": "deferred",
+          "missing_evidence": "run \"e1-candidate-1\" has no model-layer observation; model calls cannot be counted (2 of 2 candidate runs have none)"
+        }
+      ],
+      "state": "recorded"
+    },
+    "operational": {
+      "latency": {
+        "comparable": false,
+        "reason": "both_unavailable",
+        "reference": {
+          "runs_with_evidence": "0",
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "0",
+          "unobserved": "4",
+          "sum_nanos": "0"
+        },
+        "candidate": {
+          "runs_with_evidence": "0",
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "0",
+          "unobserved": "5",
+          "sum_nanos": "0"
+        }
+      },
+      "errors": {
+        "comparable": false,
+        "reason": "both_unavailable",
+        "reference": {
+          "runs_with_evidence": "0",
+          "span_status": {
+            "unavailable": "4",
+            "unset": "0",
+            "ok": "0",
+            "error": "0"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "0",
+            "3xx": "0",
+            "4xx": "0",
+            "5xx": "0",
+            "unavailable": "4"
+          },
+          "http_429": "0"
+        },
+        "candidate": {
+          "runs_with_evidence": "0",
+          "span_status": {
+            "unavailable": "5",
+            "unset": "0",
+            "ok": "0",
+            "error": "0"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "0",
+            "3xx": "0",
+            "4xx": "0",
+            "5xx": "0",
+            "unavailable": "5"
+          },
+          "http_429": "0"
+        }
+      },
+      "tokens": {
+        "comparable": false,
+        "reason": "both_unavailable",
+        "reference": {
+          "runs_with_evidence": "0",
+          "input": "0",
+          "output": "0",
+          "unsplit": "0",
+          "observed": "0",
+          "unobserved": "4"
+        },
+        "candidate": {
+          "runs_with_evidence": "0",
+          "input": "0",
+          "output": "0",
+          "unsplit": "0",
+          "observed": "0",
+          "unobserved": "5"
+        }
+      },
+      "cost": {
+        "pricing_version": "team-2026-10",
+        "pricing_digest": "sha256:abababababababababababababababababababababababababababababababab",
+        "source": "test fixture",
+        "currency": "USD",
+        "comparable": false,
+        "reason": "both_unavailable",
+        "reference": {
+          "runs_with_evidence": "0",
+          "priced_tokens": "0",
+          "unpriced_tokens": "0",
+          "token_observations": "0",
+          "observations_without_tokens": "4"
+        },
+        "candidate": {
+          "runs_with_evidence": "0",
+          "priced_tokens": "0",
+          "unpriced_tokens": "0",
+          "token_observations": "0",
+          "observations_without_tokens": "5"
+        }
+      }
+    },
+    "targets": [
+      {
+        "target_name": "build-host",
+        "target_category": "external",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "4",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "5",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "3",
+          "calls_per_run_mean_milli": "2500"
+        },
+        "call_ratio_available": true,
+        "call_ratio_permille": "1250",
+        "display": {
+          "reference_calls_per_run": "2–2",
+          "candidate_calls_per_run": "2–3",
+          "reference_calls_per_run_mean": "2",
+          "candidate_calls_per_run_mean": "2.5",
+          "call_ratio": "1.2×"
+        }
+      }
+    ],
+    "lost_transitions": "not_recorded",
+    "suggestions": [
+      {
+        "rule": "compare.added_in_all_runs",
+        "rule_version": 1,
+        "evidence": [
+          {
+            "name": "fingerprint_id",
+            "value": "fp-export"
+          },
+          {
+            "name": "behavior",
+            "value": "tool/export → build-host"
+          },
+          {
+            "name": "candidate_runs_present",
+            "value": "2"
+          },
+          {
+            "name": "reference_runs_present",
+            "value": "0"
+          },
+          {
+            "name": "runs",
+            "value": "2"
+          }
+        ],
+        "text": "tool/export → build-host was added in 2/2 candidate runs. If this was expected, add it to the scenario; otherwise investigate before promoting."
+      },
+      {
+        "rule": "compare.lost_in_half",
+        "rule_version": 1,
+        "evidence": [
+          {
+            "name": "fingerprint_id",
+            "value": "fp-lookup"
+          },
+          {
+            "name": "behavior",
+            "value": "tool/lookup → build-host"
+          },
+          {
+            "name": "reference_runs_present",
+            "value": "2"
+          },
+          {
+            "name": "candidate_runs_present",
+            "value": "1"
+          },
+          {
+            "name": "runs",
+            "value": "2"
+          }
+        ],
+        "text": "tool/lookup → build-host was in every reference run and is missing from 1 of 2 candidate runs. Task completion may have regressed."
+      }
+    ],
+    "suggestions_truncated": false,
+    "sameness": {
+      "same_scenario": "not_recorded",
+      "same_inputs": "not_recorded",
+      "same_model": "not_recorded",
+      "same_prompt_ref": "not_recorded",
+      "reference": {
+        "inputs": "not_recorded"
+      },
+      "candidate": {
+        "inputs": "not_recorded"
+      }
+    },
+    "warnings": [],
+    "producer": {
+      "control_plane_version": "v0.12.0"
+    }
+  }
+}
+
+```
+
+</details>
 
 ## Behavioral compatibility
 

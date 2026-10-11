@@ -456,3 +456,57 @@ func TestEveryReportRowResolvesThroughEvidence(t *testing.T) {
 		}
 	}
 }
+
+// reportExamplePath is the version 2 example docs/compatibility.md publishes.
+const reportExamplePath = "testdata/report-v2-example.json"
+
+// TestReportVersion2ExampleIsPinned: the example the compatibility contract
+// publishes is this route's output for the fixture execution, with a pricing
+// table configured, byte for byte once indented — and the document quotes it
+// verbatim. Set TRUSTVIAN_UPDATE_GOLDEN=1 to rewrite the testdata file.
+func TestReportVersion2ExampleIsPinned(t *testing.T) {
+	a := newAPI(t)
+	a.completeReportExecution("e1")
+	priced := &api{t: t, server: a.pricedHandler(map[string]platform.ModelPrice{
+		"op-read": {InputMicrosPerMillion: 1, OutputMicrosPerMillion: 1}}), store: a.store}
+	raw := priced.report("e1")
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	// The producer version is the build's; the example names none.
+	version := doc["producers"].(map[string]any)["control_plane_version"].(string)
+	raw = bytes.ReplaceAll(raw, []byte(`"control_plane_version":"`+version+`"`),
+		[]byte(`"control_plane_version":"v0.12.0"`))
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, raw, "", "  "); err != nil {
+		t.Fatal(err)
+	}
+	indented.WriteByte('\n')
+	if os.Getenv("TRUSTVIAN_UPDATE_GOLDEN") == "1" {
+		if err := os.WriteFile(reportExamplePath, indented.Bytes(), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(reportExamplePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(indented.Bytes(), want) {
+		t.Fatalf("the report changed from the published example:\n%s", indented.Bytes())
+	}
+	contract, err := os.ReadFile(filepath.Join("..", "..", "docs", "compatibility.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const marker = "<!-- result-document-v2-example: platform/httpapi/" + reportExamplePath + " -->\n\n```json\n"
+	start := bytes.Index(contract, []byte(marker))
+	if start < 0 {
+		t.Fatal("docs/compatibility.md does not publish the version 2 example")
+	}
+	block := contract[start+len(marker):]
+	end := bytes.Index(block, []byte("```\n"))
+	if end < 0 || !bytes.Equal(block[:end], want) {
+		t.Fatal("docs/compatibility.md's version 2 example differs from " + reportExamplePath)
+	}
+}
