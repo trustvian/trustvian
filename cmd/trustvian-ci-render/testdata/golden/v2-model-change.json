@@ -1,0 +1,1844 @@
+{
+  "version": "2",
+  "scenario": {
+    "name": "support",
+    "runs": 3
+  },
+  "execution_id": "golden-model-change",
+  "producers": {
+    "cli_version": "v0.13.0 3e86f9cead2586e7ee90e14185a8f34074b54240",
+    "control_plane_version": "v0.13.0"
+  },
+  "provenance": {
+    "reference": {
+      "scenario_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "inputs": "declared",
+      "input_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "model": "gemma3:4b",
+      "prompt_ref": {
+        "name": "support-prompt",
+        "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    },
+    "candidate": {
+      "scenario_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "inputs": "declared",
+      "input_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "model": "qwen2.5:3b",
+      "prompt_ref": {
+        "name": "support-prompt",
+        "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    }
+  },
+  "comparison": {
+    "version": "1",
+    "runs": 3,
+    "gate_limits": {
+      "added_candidate_presence_minimum": "2",
+      "added_reference_presence_maximum": "0",
+      "max_repeated_added_behaviors": "0",
+      "max_block_decisions_per_run": "0",
+      "max_critical_risk_observations_per_run": "0",
+      "max_lost_behaviors": "0",
+      "max_calls_per_run": [
+        {
+          "target": "ollama.localhost",
+          "max": "4"
+        }
+      ],
+      "max_llm_calls_per_run": "3"
+    },
+    "repetitions": [
+      {
+        "side": "reference",
+        "index": 1,
+        "run_id": "golden-model-change-reference-1",
+        "status": "completed",
+        "behavioral_profile": "golden-model-change-reference-1-profile",
+        "record_count": "6",
+        "distinct_behavior_count": 4,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "reference",
+        "index": 2,
+        "run_id": "golden-model-change-reference-2",
+        "status": "completed",
+        "behavioral_profile": "golden-model-change-reference-2-profile",
+        "record_count": "6",
+        "distinct_behavior_count": 4,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "reference",
+        "index": 3,
+        "run_id": "golden-model-change-reference-3",
+        "status": "completed",
+        "behavioral_profile": "golden-model-change-reference-3-profile",
+        "record_count": "6",
+        "distinct_behavior_count": 4,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "candidate",
+        "index": 1,
+        "run_id": "golden-model-change-candidate-1",
+        "status": "completed",
+        "behavioral_profile": "golden-model-change-candidate-1-profile",
+        "record_count": "6",
+        "distinct_behavior_count": 4,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "candidate",
+        "index": 2,
+        "run_id": "golden-model-change-candidate-2",
+        "status": "completed",
+        "behavioral_profile": "golden-model-change-candidate-2-profile",
+        "record_count": "6",
+        "distinct_behavior_count": 4,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "candidate",
+        "index": 3,
+        "run_id": "golden-model-change-candidate-3",
+        "status": "completed",
+        "behavioral_profile": "golden-model-change-candidate-3-profile",
+        "record_count": "6",
+        "distinct_behavior_count": 4,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      }
+    ],
+    "behaviors": [
+      {
+        "fingerprint_id": "fp-external-gemma3:4b@ollama",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "external",
+          "operation_name": "gemma3:4b",
+          "target_name": "ollama",
+          "target_category": "external",
+          "environment": "staging"
+        },
+        "reference_runs_present": "3",
+        "candidate_runs_present": "0",
+        "classification": "removed",
+        "reference_frequency": {
+          "runs": "3",
+          "calls_total": "6",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "candidate_frequency": {
+          "runs": "3",
+          "calls_total": "0",
+          "calls_per_run_min": "0",
+          "calls_per_run_max": "0",
+          "calls_per_run_mean_milli": "0"
+        },
+        "lost": true,
+        "reference_fidelity": {
+          "level": "semantic",
+          "mixed": false,
+          "semantic": "6",
+          "transport": "0",
+          "unrecorded": "0",
+          "layer": {
+            "model": "6",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "display": {
+          "reference_presence": "3/3",
+          "candidate_presence": "0/3",
+          "reference_calls_per_run": "2–2",
+          "candidate_calls_per_run": "0–0",
+          "reference_calls_per_run_mean": "2",
+          "candidate_calls_per_run_mean": "0"
+        },
+        "present_in": {
+          "reference": [
+            {
+              "index": 1,
+              "run_id": "golden-model-change-reference-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-model-change-reference-2"
+            },
+            {
+              "index": 3,
+              "run_id": "golden-model-change-reference-3"
+            }
+          ],
+          "candidate": []
+        }
+      },
+      {
+        "fingerprint_id": "fp-external-qwen2.5:3b@ollama",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "external",
+          "operation_name": "qwen2.5:3b",
+          "target_name": "ollama",
+          "target_category": "external",
+          "environment": "staging"
+        },
+        "reference_runs_present": "0",
+        "candidate_runs_present": "3",
+        "classification": "added",
+        "reference_frequency": {
+          "runs": "3",
+          "calls_total": "0",
+          "calls_per_run_min": "0",
+          "calls_per_run_max": "0",
+          "calls_per_run_mean_milli": "0"
+        },
+        "candidate_frequency": {
+          "runs": "3",
+          "calls_total": "6",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "lost": false,
+        "candidate_fidelity": {
+          "level": "semantic",
+          "mixed": false,
+          "semantic": "6",
+          "transport": "0",
+          "unrecorded": "0",
+          "layer": {
+            "model": "6",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "display": {
+          "reference_presence": "0/3",
+          "candidate_presence": "3/3",
+          "reference_calls_per_run": "0–0",
+          "candidate_calls_per_run": "2–2",
+          "reference_calls_per_run_mean": "0",
+          "candidate_calls_per_run_mean": "2"
+        },
+        "present_in": {
+          "reference": [],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "golden-model-change-candidate-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-model-change-candidate-2"
+            },
+            {
+              "index": 3,
+              "run_id": "golden-model-change-candidate-3"
+            }
+          ]
+        }
+      },
+      {
+        "fingerprint_id": "fp-http-POST@ollama.localhost",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "http",
+          "operation_name": "POST",
+          "target_name": "ollama.localhost",
+          "target_category": "external",
+          "environment": "staging"
+        },
+        "reference_runs_present": "3",
+        "candidate_runs_present": "3",
+        "classification": "neither",
+        "reference_frequency": {
+          "runs": "3",
+          "calls_total": "6",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "candidate_frequency": {
+          "runs": "3",
+          "calls_total": "6",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "lost": false,
+        "reference_fidelity": {
+          "level": "transport",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "6",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "6",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "candidate_fidelity": {
+          "level": "transport",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "6",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "6",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "display": {
+          "reference_presence": "3/3",
+          "candidate_presence": "3/3",
+          "reference_calls_per_run": "2–2",
+          "candidate_calls_per_run": "2–2",
+          "reference_calls_per_run_mean": "2",
+          "candidate_calls_per_run_mean": "2"
+        },
+        "present_in": {
+          "reference": [
+            {
+              "index": 1,
+              "run_id": "golden-model-change-reference-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-model-change-reference-2"
+            },
+            {
+              "index": 3,
+              "run_id": "golden-model-change-reference-3"
+            }
+          ],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "golden-model-change-candidate-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-model-change-candidate-2"
+            },
+            {
+              "index": 3,
+              "run_id": "golden-model-change-candidate-3"
+            }
+          ]
+        }
+      },
+      {
+        "fingerprint_id": "fp-tool-export_customer@",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "tool",
+          "operation_name": "export_customer",
+          "environment": "staging"
+        },
+        "reference_runs_present": "0",
+        "candidate_runs_present": "3",
+        "classification": "added",
+        "reference_frequency": {
+          "runs": "3",
+          "calls_total": "0",
+          "calls_per_run_min": "0",
+          "calls_per_run_max": "0",
+          "calls_per_run_mean_milli": "0"
+        },
+        "candidate_frequency": {
+          "runs": "3",
+          "calls_total": "3",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "lost": false,
+        "candidate_fidelity": {
+          "level": "semantic",
+          "mixed": false,
+          "semantic": "3",
+          "transport": "0",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "3",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "display": {
+          "reference_presence": "0/3",
+          "candidate_presence": "3/3",
+          "reference_calls_per_run": "0–0",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "0",
+          "candidate_calls_per_run_mean": "1"
+        },
+        "present_in": {
+          "reference": [],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "golden-model-change-candidate-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-model-change-candidate-2"
+            },
+            {
+              "index": 3,
+              "run_id": "golden-model-change-candidate-3"
+            }
+          ]
+        }
+      },
+      {
+        "fingerprint_id": "fp-tool-lookup_customer@",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "tool",
+          "operation_name": "lookup_customer",
+          "environment": "staging"
+        },
+        "reference_runs_present": "3",
+        "candidate_runs_present": "3",
+        "classification": "neither",
+        "reference_frequency": {
+          "runs": "3",
+          "calls_total": "3",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "3",
+          "calls_total": "3",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "lost": false,
+        "reference_fidelity": {
+          "level": "semantic",
+          "mixed": false,
+          "semantic": "3",
+          "transport": "0",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "3",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "candidate_fidelity": {
+          "level": "semantic",
+          "mixed": false,
+          "semantic": "3",
+          "transport": "0",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "3",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "display": {
+          "reference_presence": "3/3",
+          "candidate_presence": "3/3",
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "1"
+        },
+        "present_in": {
+          "reference": [
+            {
+              "index": 1,
+              "run_id": "golden-model-change-reference-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-model-change-reference-2"
+            },
+            {
+              "index": 3,
+              "run_id": "golden-model-change-reference-3"
+            }
+          ],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "golden-model-change-candidate-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-model-change-candidate-2"
+            },
+            {
+              "index": 3,
+              "run_id": "golden-model-change-candidate-3"
+            }
+          ]
+        }
+      },
+      {
+        "fingerprint_id": "fp-tool-send_reply@",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "tool",
+          "operation_name": "send_reply",
+          "environment": "staging"
+        },
+        "reference_runs_present": "3",
+        "candidate_runs_present": "0",
+        "classification": "removed",
+        "reference_frequency": {
+          "runs": "3",
+          "calls_total": "3",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "3",
+          "calls_total": "0",
+          "calls_per_run_min": "0",
+          "calls_per_run_max": "0",
+          "calls_per_run_mean_milli": "0"
+        },
+        "lost": true,
+        "reference_fidelity": {
+          "level": "semantic",
+          "mixed": false,
+          "semantic": "3",
+          "transport": "0",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "3",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "display": {
+          "reference_presence": "3/3",
+          "candidate_presence": "0/3",
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "0–0",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "0"
+        },
+        "present_in": {
+          "reference": [
+            {
+              "index": 1,
+              "run_id": "golden-model-change-reference-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-model-change-reference-2"
+            },
+            {
+              "index": 3,
+              "run_id": "golden-model-change-reference-3"
+            }
+          ],
+          "candidate": []
+        }
+      }
+    ],
+    "gate": {
+      "checks": [
+        {
+          "name": "reference_repetitions_completed",
+          "actual": "3",
+          "rule": "equals",
+          "bound": "3",
+          "passed": true
+        },
+        {
+          "name": "candidate_repetitions_completed",
+          "actual": "3",
+          "rule": "equals",
+          "bound": "3",
+          "passed": true
+        },
+        {
+          "name": "repetitions_failing_minimum_evidence",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true
+        },
+        {
+          "name": "repeatedly_added_behaviors",
+          "actual": "2",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": false
+        },
+        {
+          "name": "worst_candidate_block_decisions",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true,
+          "advisory": "fresh_scope"
+        },
+        {
+          "name": "worst_candidate_critical_risk_observations",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true,
+          "advisory": "fresh_scope"
+        }
+      ],
+      "verdict": "fail",
+      "frequency_checks": [
+        {
+          "name": "min_candidate_frequency",
+          "state": "not_evaluated"
+        },
+        {
+          "name": "max_lost_behaviors",
+          "state": "evaluated",
+          "rule": "at_most",
+          "actual": "2",
+          "bound": "0",
+          "passed": false
+        },
+        {
+          "name": "max_calls_per_run",
+          "state": "evaluated",
+          "rule": "at_most",
+          "passed": true,
+          "targets": [
+            {
+              "target": "ollama.localhost",
+              "actual": "2",
+              "max": "4",
+              "outcome": "pass"
+            }
+          ]
+        },
+        {
+          "name": "max_llm_calls_per_run",
+          "state": "evaluated",
+          "rule": "at_most",
+          "actual": "2",
+          "bound": "3",
+          "passed": true
+        }
+      ],
+      "state": "recorded"
+    },
+    "operational": {
+      "latency": {
+        "comparable": true,
+        "reference": {
+          "runs_with_evidence": "3",
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "6"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "12"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "18",
+          "unobserved": "0",
+          "sum_nanos": "9672000000",
+          "min_nanos": "2000000",
+          "max_nanos": "910000000"
+        },
+        "candidate": {
+          "runs_with_evidence": "3",
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "6"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "12"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "18",
+          "unobserved": "0",
+          "sum_nanos": "14932000000",
+          "min_nanos": "2000000",
+          "max_nanos": "1420000000"
+        },
+        "delta": {
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "-12"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "12"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "0",
+          "unobserved": "0",
+          "sum_nanos": "5260000000",
+          "min_nanos": "0",
+          "max_nanos": "510000000"
+        }
+      },
+      "errors": {
+        "comparable": true,
+        "reference": {
+          "runs_with_evidence": "3",
+          "span_status": {
+            "unavailable": "0",
+            "unset": "0",
+            "ok": "18",
+            "error": "0"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "6",
+            "3xx": "0",
+            "4xx": "0",
+            "5xx": "0",
+            "unavailable": "12"
+          },
+          "http_429": "0"
+        },
+        "candidate": {
+          "runs_with_evidence": "3",
+          "span_status": {
+            "unavailable": "0",
+            "unset": "0",
+            "ok": "17",
+            "error": "1"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "5",
+            "3xx": "0",
+            "4xx": "1",
+            "5xx": "0",
+            "unavailable": "12"
+          },
+          "http_429": "1"
+        },
+        "delta": {
+          "span_status": {
+            "unavailable": "0",
+            "unset": "0",
+            "ok": "-1",
+            "error": "1"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "-1",
+            "3xx": "0",
+            "4xx": "1",
+            "5xx": "0",
+            "unavailable": "0"
+          },
+          "http_429": "1"
+        }
+      },
+      "tokens": {
+        "comparable": true,
+        "reference": {
+          "runs_with_evidence": "3",
+          "input": "8100",
+          "output": "1551",
+          "unsplit": "0",
+          "observed": "6",
+          "unobserved": "12"
+        },
+        "candidate": {
+          "runs_with_evidence": "3",
+          "input": "8970",
+          "output": "2337",
+          "unsplit": "0",
+          "observed": "6",
+          "unobserved": "12"
+        },
+        "delta": {
+          "input": "870",
+          "output": "786",
+          "unsplit": "0",
+          "observed": "0",
+          "unobserved": "0"
+        }
+      },
+      "cost": {
+        "pricing_version": "golden-2026-10",
+        "pricing_digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "source": "golden fixture prices, not real ones",
+        "currency": "USD",
+        "comparable": true,
+        "reference": {
+          "runs_with_evidence": "3",
+          "cost_micros": "1120",
+          "priced_tokens": "9651",
+          "unpriced_tokens": "0",
+          "token_observations": "6",
+          "observations_without_tokens": "12"
+        },
+        "candidate": {
+          "runs_with_evidence": "3",
+          "cost_micros": "1091",
+          "priced_tokens": "11307",
+          "unpriced_tokens": "0",
+          "token_observations": "6",
+          "observations_without_tokens": "12"
+        },
+        "delta": {
+          "cost_micros": "-29"
+        }
+      }
+    },
+    "targets": [
+      {
+        "target_name": "",
+        "target_category": "",
+        "reference_frequency": {
+          "runs": "3",
+          "calls_total": "6",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "candidate_frequency": {
+          "runs": "3",
+          "calls_total": "6",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "call_ratio_available": true,
+        "call_ratio_permille": "1000",
+        "display": {
+          "reference_calls_per_run": "2–2",
+          "candidate_calls_per_run": "2–2",
+          "reference_calls_per_run_mean": "2",
+          "candidate_calls_per_run_mean": "2",
+          "call_ratio": "1.0×"
+        },
+        "operational": {
+          "latency": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "3",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "6"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "6",
+              "unobserved": "0",
+              "sum_nanos": "12000000",
+              "min_nanos": "2000000",
+              "max_nanos": "2000000"
+            },
+            "candidate": {
+              "runs_with_evidence": "3",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "6"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "6",
+              "unobserved": "0",
+              "sum_nanos": "12000000",
+              "min_nanos": "2000000",
+              "max_nanos": "2000000"
+            },
+            "delta": {
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "0",
+              "unobserved": "0",
+              "sum_nanos": "0",
+              "min_nanos": "0",
+              "max_nanos": "0"
+            }
+          },
+          "errors": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "3",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "6",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "6"
+              },
+              "http_429": "0"
+            },
+            "candidate": {
+              "runs_with_evidence": "3",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "6",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "6"
+              },
+              "http_429": "0"
+            },
+            "delta": {
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "0",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "0"
+              },
+              "http_429": "0"
+            }
+          }
+        }
+      },
+      {
+        "target_name": "ollama",
+        "target_category": "external",
+        "reference_frequency": {
+          "runs": "3",
+          "calls_total": "6",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "candidate_frequency": {
+          "runs": "3",
+          "calls_total": "6",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "call_ratio_available": true,
+        "call_ratio_permille": "1000",
+        "display": {
+          "reference_calls_per_run": "2–2",
+          "candidate_calls_per_run": "2–2",
+          "reference_calls_per_run_mean": "2",
+          "candidate_calls_per_run_mean": "2",
+          "call_ratio": "1.0×"
+        },
+        "operational": {
+          "latency": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "3",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "6"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "6",
+              "unobserved": "0",
+              "sum_nanos": "4800000000",
+              "min_nanos": "700000000",
+              "max_nanos": "900000000"
+            },
+            "candidate": {
+              "runs_with_evidence": "3",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "6"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "6",
+              "unobserved": "0",
+              "sum_nanos": "7400000000",
+              "min_nanos": "1100000000",
+              "max_nanos": "1400000000"
+            },
+            "delta": {
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "-6"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "6"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "0",
+              "unobserved": "0",
+              "sum_nanos": "2600000000",
+              "min_nanos": "400000000",
+              "max_nanos": "500000000"
+            }
+          },
+          "errors": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "3",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "6",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "6"
+              },
+              "http_429": "0"
+            },
+            "candidate": {
+              "runs_with_evidence": "3",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "6",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "6"
+              },
+              "http_429": "0"
+            },
+            "delta": {
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "0",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "0"
+              },
+              "http_429": "0"
+            }
+          }
+        }
+      },
+      {
+        "target_name": "ollama.localhost",
+        "target_category": "external",
+        "reference_frequency": {
+          "runs": "3",
+          "calls_total": "6",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "candidate_frequency": {
+          "runs": "3",
+          "calls_total": "6",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "call_ratio_available": true,
+        "call_ratio_permille": "1000",
+        "display": {
+          "reference_calls_per_run": "2–2",
+          "candidate_calls_per_run": "2–2",
+          "reference_calls_per_run_mean": "2",
+          "candidate_calls_per_run_mean": "2",
+          "call_ratio": "1.0×"
+        },
+        "operational": {
+          "latency": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "3",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "6"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "6",
+              "unobserved": "0",
+              "sum_nanos": "4860000000",
+              "min_nanos": "710000000",
+              "max_nanos": "910000000"
+            },
+            "candidate": {
+              "runs_with_evidence": "3",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "6"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "6",
+              "unobserved": "0",
+              "sum_nanos": "7520000000",
+              "min_nanos": "1120000000",
+              "max_nanos": "1420000000"
+            },
+            "delta": {
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "-6"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "6"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "0",
+              "unobserved": "0",
+              "sum_nanos": "2660000000",
+              "min_nanos": "410000000",
+              "max_nanos": "510000000"
+            }
+          },
+          "errors": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "3",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "6",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "6",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "0"
+              },
+              "http_429": "0"
+            },
+            "candidate": {
+              "runs_with_evidence": "3",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "5",
+                "error": "1"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "5",
+                "3xx": "0",
+                "4xx": "1",
+                "5xx": "0",
+                "unavailable": "0"
+              },
+              "http_429": "1"
+            },
+            "delta": {
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "-1",
+                "error": "1"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "-1",
+                "3xx": "0",
+                "4xx": "1",
+                "5xx": "0",
+                "unavailable": "0"
+              },
+              "http_429": "1"
+            }
+          }
+        }
+      }
+    ],
+    "lost_transitions": "not_recorded",
+    "suggestions": [
+      {
+        "rule": "compare.added_in_all_runs",
+        "rule_version": 1,
+        "evidence": [
+          {
+            "name": "fingerprint_id",
+            "value": "fp-external-qwen2.5:3b@ollama"
+          },
+          {
+            "name": "behavior",
+            "value": "external/qwen2.5:3b → ollama"
+          },
+          {
+            "name": "candidate_runs_present",
+            "value": "3"
+          },
+          {
+            "name": "reference_runs_present",
+            "value": "0"
+          },
+          {
+            "name": "runs",
+            "value": "3"
+          }
+        ],
+        "text": "external/qwen2.5:3b → ollama was added in 3/3 candidate runs. If this was expected, add it to the scenario; otherwise investigate before promoting."
+      },
+      {
+        "rule": "compare.added_in_all_runs",
+        "rule_version": 1,
+        "evidence": [
+          {
+            "name": "fingerprint_id",
+            "value": "fp-tool-export_customer@"
+          },
+          {
+            "name": "behavior",
+            "value": "tool/export_customer"
+          },
+          {
+            "name": "candidate_runs_present",
+            "value": "3"
+          },
+          {
+            "name": "reference_runs_present",
+            "value": "0"
+          },
+          {
+            "name": "runs",
+            "value": "3"
+          }
+        ],
+        "text": "tool/export_customer was added in 3/3 candidate runs. If this was expected, add it to the scenario; otherwise investigate before promoting."
+      },
+      {
+        "rule": "compare.lost_in_half",
+        "rule_version": 1,
+        "evidence": [
+          {
+            "name": "fingerprint_id",
+            "value": "fp-external-gemma3:4b@ollama"
+          },
+          {
+            "name": "behavior",
+            "value": "external/gemma3:4b → ollama"
+          },
+          {
+            "name": "reference_runs_present",
+            "value": "3"
+          },
+          {
+            "name": "candidate_runs_present",
+            "value": "0"
+          },
+          {
+            "name": "runs",
+            "value": "3"
+          }
+        ],
+        "text": "external/gemma3:4b → ollama was in every reference run and is missing from 3 of 3 candidate runs. Task completion may have regressed."
+      },
+      {
+        "rule": "compare.lost_in_half",
+        "rule_version": 1,
+        "evidence": [
+          {
+            "name": "fingerprint_id",
+            "value": "fp-tool-send_reply@"
+          },
+          {
+            "name": "behavior",
+            "value": "tool/send_reply"
+          },
+          {
+            "name": "reference_runs_present",
+            "value": "3"
+          },
+          {
+            "name": "candidate_runs_present",
+            "value": "0"
+          },
+          {
+            "name": "runs",
+            "value": "3"
+          }
+        ],
+        "text": "tool/send_reply was in every reference run and is missing from 3 of 3 candidate runs. Task completion may have regressed."
+      }
+    ],
+    "suggestions_truncated": false,
+    "sameness": {
+      "same_scenario": "true",
+      "same_inputs": "true",
+      "same_model": "false",
+      "same_prompt_ref": "true",
+      "reference": {
+        "scenario_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "inputs": "declared",
+        "input_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "model": "gemma3:4b",
+        "prompt_ref": {
+          "name": "support-prompt",
+          "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      },
+      "candidate": {
+        "scenario_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "inputs": "declared",
+        "input_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "model": "qwen2.5:3b",
+        "prompt_ref": {
+          "name": "support-prompt",
+          "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      }
+    },
+    "warnings": [
+      {
+        "code": "model_differs",
+        "text": "The reference and candidate sides declared different models."
+      }
+    ],
+    "producer": {
+      "control_plane_version": "v0.13.0"
+    }
+  }
+}
+

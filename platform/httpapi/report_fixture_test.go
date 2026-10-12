@@ -24,6 +24,8 @@ type reportStep struct {
 	// envelope holds the envelope's optional facts: http_status_code,
 	// tokens_*, fidelity, behavior_layer.
 	envelope map[string]string
+	// noTarget keeps the target empty, as a tool span names none.
+	noTarget bool
 }
 
 // reportFixture is one execution: its begin body's extra members, each
@@ -45,6 +47,9 @@ func fingerprintOf(s reportStep) string {
 func (s reportStep) withDefaults() reportStep {
 	if s.category == "" {
 		s.category = event.OperationCategoryTool
+	}
+	if s.noTarget {
+		return s
 	}
 	if s.target == "" {
 		s.target = "build-host"

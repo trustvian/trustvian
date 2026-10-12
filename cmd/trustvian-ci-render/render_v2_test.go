@@ -404,3 +404,62 @@ func TestRenderSuiteWithReportMembers(t *testing.T) {
 		t.Errorf("the failing member's heading is missing:\n%s", out.Markdown)
 	}
 }
+
+// The golden version 2 documents — each the report route's output for a
+// fixture execution (platform/httpapi's TestGoldenReportDocuments) — render
+// to the golden Markdown beside them.
+func TestRenderGoldenReports(t *testing.T) {
+	documents, err := filepath.Glob(filepath.Join("testdata", "golden", "v2-*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(documents) != 6 {
+		t.Fatalf("%d golden version 2 documents, want 6: %v", len(documents), documents)
+	}
+	for _, document := range documents {
+		name := strings.TrimSuffix(filepath.Base(document), ".json")
+		t.Run(name, func(t *testing.T) {
+			raw, err := os.ReadFile(document)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := cirender.RenderDocument(raw, cirender.DefaultLimits)
+			if out.State != cirender.StateVerdict || out.Rejected != nil {
+				t.Fatalf("state %s: %s", out.State, out.Reason)
+			}
+			assertInert(t, out.Markdown)
+			golden := strings.TrimSuffix(document, ".json") + ".md"
+			if *update {
+				if err := os.WriteFile(golden, []byte(out.Markdown), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want, err := os.ReadFile(golden)
+			if err != nil {
+				t.Fatalf("%v (run with -update to create it)", err)
+			}
+			if out.Markdown != string(want) {
+				t.Errorf("rendering differs from %s:\n%s", golden, out.Markdown)
+			}
+		})
+	}
+}
+
+// Every golden Markdown file has its source: a real artifact for version 1,
+// a route-produced document for version 2. None is orphaned or hand-written.
+func TestEveryGoldenFileHasItsSource(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("testdata", "golden", "*.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		name := strings.TrimSuffix(filepath.Base(file), ".md")
+		source := filepath.Join("testdata", "artifacts", name)
+		if strings.HasPrefix(name, "v2-") {
+			source = filepath.Join("testdata", "golden", name+".json")
+		}
+		if _, err := os.Stat(source); err != nil {
+			t.Errorf("%s has no source: %v", file, err)
+		}
+	}
+}

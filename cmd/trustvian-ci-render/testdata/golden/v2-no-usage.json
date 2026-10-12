@@ -1,0 +1,1473 @@
+{
+  "version": "2",
+  "scenario": {
+    "name": "support",
+    "runs": 2
+  },
+  "execution_id": "golden-no-usage",
+  "producers": {
+    "cli_version": "v0.13.0 3e86f9cead2586e7ee90e14185a8f34074b54240",
+    "control_plane_version": "v0.13.0"
+  },
+  "provenance": {
+    "reference": {
+      "scenario_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "inputs": "declared",
+      "input_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "model": "gemma3:4b",
+      "prompt_ref": {
+        "name": "support-prompt",
+        "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    },
+    "candidate": {
+      "scenario_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "inputs": "declared",
+      "input_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "model": "gemma3:4b",
+      "prompt_ref": {
+        "name": "support-prompt",
+        "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    }
+  },
+  "comparison": {
+    "version": "1",
+    "runs": 2,
+    "gate_limits": {
+      "added_candidate_presence_minimum": "2",
+      "added_reference_presence_maximum": "0",
+      "max_repeated_added_behaviors": "0",
+      "max_block_decisions_per_run": "0",
+      "max_critical_risk_observations_per_run": "0"
+    },
+    "repetitions": [
+      {
+        "side": "reference",
+        "index": 1,
+        "run_id": "golden-no-usage-reference-1",
+        "status": "completed",
+        "behavioral_profile": "golden-no-usage-reference-1-profile",
+        "record_count": "3",
+        "distinct_behavior_count": 3,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "reference",
+        "index": 2,
+        "run_id": "golden-no-usage-reference-2",
+        "status": "completed",
+        "behavioral_profile": "golden-no-usage-reference-2-profile",
+        "record_count": "3",
+        "distinct_behavior_count": 3,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "candidate",
+        "index": 1,
+        "run_id": "golden-no-usage-candidate-1",
+        "status": "completed",
+        "behavioral_profile": "golden-no-usage-candidate-1-profile",
+        "record_count": "3",
+        "distinct_behavior_count": 3,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "candidate",
+        "index": 2,
+        "run_id": "golden-no-usage-candidate-2",
+        "status": "completed",
+        "behavioral_profile": "golden-no-usage-candidate-2-profile",
+        "record_count": "3",
+        "distinct_behavior_count": 3,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      }
+    ],
+    "behaviors": [
+      {
+        "fingerprint_id": "fp-external-gemma3:4b@ollama",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "external",
+          "operation_name": "gemma3:4b",
+          "target_name": "ollama",
+          "target_category": "external",
+          "environment": "staging"
+        },
+        "reference_runs_present": "2",
+        "candidate_runs_present": "2",
+        "classification": "neither",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "lost": false,
+        "reference_fidelity": {
+          "level": "semantic",
+          "mixed": false,
+          "semantic": "2",
+          "transport": "0",
+          "unrecorded": "0",
+          "layer": {
+            "model": "2",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "candidate_fidelity": {
+          "level": "semantic",
+          "mixed": false,
+          "semantic": "2",
+          "transport": "0",
+          "unrecorded": "0",
+          "layer": {
+            "model": "2",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "display": {
+          "reference_presence": "2/2",
+          "candidate_presence": "2/2",
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "1"
+        },
+        "present_in": {
+          "reference": [
+            {
+              "index": 1,
+              "run_id": "golden-no-usage-reference-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-no-usage-reference-2"
+            }
+          ],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "golden-no-usage-candidate-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-no-usage-candidate-2"
+            }
+          ]
+        }
+      },
+      {
+        "fingerprint_id": "fp-http-POST@ollama.localhost",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "http",
+          "operation_name": "POST",
+          "target_name": "ollama.localhost",
+          "target_category": "external",
+          "environment": "staging"
+        },
+        "reference_runs_present": "2",
+        "candidate_runs_present": "2",
+        "classification": "neither",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "lost": false,
+        "reference_fidelity": {
+          "level": "transport",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "2",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "2",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "candidate_fidelity": {
+          "level": "transport",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "2",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "2",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "display": {
+          "reference_presence": "2/2",
+          "candidate_presence": "2/2",
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "1"
+        },
+        "present_in": {
+          "reference": [
+            {
+              "index": 1,
+              "run_id": "golden-no-usage-reference-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-no-usage-reference-2"
+            }
+          ],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "golden-no-usage-candidate-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-no-usage-candidate-2"
+            }
+          ]
+        }
+      },
+      {
+        "fingerprint_id": "fp-tool-lookup_customer@",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "tool",
+          "operation_name": "lookup_customer",
+          "environment": "staging"
+        },
+        "reference_runs_present": "2",
+        "candidate_runs_present": "2",
+        "classification": "neither",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "lost": false,
+        "reference_fidelity": {
+          "level": "semantic",
+          "mixed": false,
+          "semantic": "2",
+          "transport": "0",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "2",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "candidate_fidelity": {
+          "level": "semantic",
+          "mixed": false,
+          "semantic": "2",
+          "transport": "0",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "2",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "display": {
+          "reference_presence": "2/2",
+          "candidate_presence": "2/2",
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "1"
+        },
+        "present_in": {
+          "reference": [
+            {
+              "index": 1,
+              "run_id": "golden-no-usage-reference-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-no-usage-reference-2"
+            }
+          ],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "golden-no-usage-candidate-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-no-usage-candidate-2"
+            }
+          ]
+        }
+      }
+    ],
+    "gate": {
+      "checks": [
+        {
+          "name": "reference_repetitions_completed",
+          "actual": "2",
+          "rule": "equals",
+          "bound": "2",
+          "passed": true
+        },
+        {
+          "name": "candidate_repetitions_completed",
+          "actual": "2",
+          "rule": "equals",
+          "bound": "2",
+          "passed": true
+        },
+        {
+          "name": "repetitions_failing_minimum_evidence",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true
+        },
+        {
+          "name": "repeatedly_added_behaviors",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true
+        },
+        {
+          "name": "worst_candidate_block_decisions",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true,
+          "advisory": "fresh_scope"
+        },
+        {
+          "name": "worst_candidate_critical_risk_observations",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true,
+          "advisory": "fresh_scope"
+        }
+      ],
+      "verdict": "pass",
+      "frequency_checks": [
+        {
+          "name": "min_candidate_frequency",
+          "state": "not_evaluated"
+        },
+        {
+          "name": "max_lost_behaviors",
+          "state": "not_evaluated"
+        },
+        {
+          "name": "max_calls_per_run",
+          "state": "not_evaluated"
+        },
+        {
+          "name": "max_llm_calls_per_run",
+          "state": "not_evaluated"
+        }
+      ],
+      "state": "recorded"
+    },
+    "operational": {
+      "latency": {
+        "comparable": true,
+        "reference": {
+          "runs_with_evidence": "2",
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "2"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "4"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "6",
+          "unobserved": "0",
+          "sum_nanos": "3624000000",
+          "min_nanos": "2000000",
+          "max_nanos": "910000000"
+        },
+        "candidate": {
+          "runs_with_evidence": "2",
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "2"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "4"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "6",
+          "unobserved": "0",
+          "sum_nanos": "3624000000",
+          "min_nanos": "2000000",
+          "max_nanos": "910000000"
+        },
+        "delta": {
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "0",
+          "unobserved": "0",
+          "sum_nanos": "0",
+          "min_nanos": "0",
+          "max_nanos": "0"
+        }
+      },
+      "errors": {
+        "comparable": true,
+        "reference": {
+          "runs_with_evidence": "2",
+          "span_status": {
+            "unavailable": "0",
+            "unset": "0",
+            "ok": "6",
+            "error": "0"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "2",
+            "3xx": "0",
+            "4xx": "0",
+            "5xx": "0",
+            "unavailable": "4"
+          },
+          "http_429": "0"
+        },
+        "candidate": {
+          "runs_with_evidence": "2",
+          "span_status": {
+            "unavailable": "0",
+            "unset": "0",
+            "ok": "6",
+            "error": "0"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "2",
+            "3xx": "0",
+            "4xx": "0",
+            "5xx": "0",
+            "unavailable": "4"
+          },
+          "http_429": "0"
+        },
+        "delta": {
+          "span_status": {
+            "unavailable": "0",
+            "unset": "0",
+            "ok": "0",
+            "error": "0"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "0",
+            "3xx": "0",
+            "4xx": "0",
+            "5xx": "0",
+            "unavailable": "0"
+          },
+          "http_429": "0"
+        }
+      },
+      "tokens": {
+        "comparable": false,
+        "reason": "both_unavailable",
+        "reference": {
+          "runs_with_evidence": "0",
+          "input": "0",
+          "output": "0",
+          "unsplit": "0",
+          "observed": "0",
+          "unobserved": "6"
+        },
+        "candidate": {
+          "runs_with_evidence": "0",
+          "input": "0",
+          "output": "0",
+          "unsplit": "0",
+          "observed": "0",
+          "unobserved": "6"
+        }
+      },
+      "cost": {
+        "pricing_version": "golden-2026-10",
+        "pricing_digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "source": "golden fixture prices, not real ones",
+        "currency": "USD",
+        "comparable": false,
+        "reason": "both_unavailable",
+        "reference": {
+          "runs_with_evidence": "0",
+          "priced_tokens": "0",
+          "unpriced_tokens": "0",
+          "token_observations": "0",
+          "observations_without_tokens": "6"
+        },
+        "candidate": {
+          "runs_with_evidence": "0",
+          "priced_tokens": "0",
+          "unpriced_tokens": "0",
+          "token_observations": "0",
+          "observations_without_tokens": "6"
+        }
+      }
+    },
+    "targets": [
+      {
+        "target_name": "",
+        "target_category": "",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "call_ratio_available": true,
+        "call_ratio_permille": "1000",
+        "display": {
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "1",
+          "call_ratio": "1.0×"
+        },
+        "operational": {
+          "latency": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "2",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "2"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "2",
+              "unobserved": "0",
+              "sum_nanos": "4000000",
+              "min_nanos": "2000000",
+              "max_nanos": "2000000"
+            },
+            "candidate": {
+              "runs_with_evidence": "2",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "2"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "2",
+              "unobserved": "0",
+              "sum_nanos": "4000000",
+              "min_nanos": "2000000",
+              "max_nanos": "2000000"
+            },
+            "delta": {
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "0",
+              "unobserved": "0",
+              "sum_nanos": "0",
+              "min_nanos": "0",
+              "max_nanos": "0"
+            }
+          },
+          "errors": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "2",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "2",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "2"
+              },
+              "http_429": "0"
+            },
+            "candidate": {
+              "runs_with_evidence": "2",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "2",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "2"
+              },
+              "http_429": "0"
+            },
+            "delta": {
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "0",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "0"
+              },
+              "http_429": "0"
+            }
+          }
+        }
+      },
+      {
+        "target_name": "ollama",
+        "target_category": "external",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "call_ratio_available": true,
+        "call_ratio_permille": "1000",
+        "display": {
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "1",
+          "call_ratio": "1.0×"
+        },
+        "operational": {
+          "latency": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "2",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "2"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "2",
+              "unobserved": "0",
+              "sum_nanos": "1800000000",
+              "min_nanos": "900000000",
+              "max_nanos": "900000000"
+            },
+            "candidate": {
+              "runs_with_evidence": "2",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "2"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "2",
+              "unobserved": "0",
+              "sum_nanos": "1800000000",
+              "min_nanos": "900000000",
+              "max_nanos": "900000000"
+            },
+            "delta": {
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "0",
+              "unobserved": "0",
+              "sum_nanos": "0",
+              "min_nanos": "0",
+              "max_nanos": "0"
+            }
+          },
+          "errors": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "2",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "2",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "2"
+              },
+              "http_429": "0"
+            },
+            "candidate": {
+              "runs_with_evidence": "2",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "2",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "2"
+              },
+              "http_429": "0"
+            },
+            "delta": {
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "0",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "0"
+              },
+              "http_429": "0"
+            }
+          }
+        }
+      },
+      {
+        "target_name": "ollama.localhost",
+        "target_category": "external",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "call_ratio_available": true,
+        "call_ratio_permille": "1000",
+        "display": {
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "1",
+          "call_ratio": "1.0×"
+        },
+        "operational": {
+          "latency": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "2",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "2"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "2",
+              "unobserved": "0",
+              "sum_nanos": "1820000000",
+              "min_nanos": "910000000",
+              "max_nanos": "910000000"
+            },
+            "candidate": {
+              "runs_with_evidence": "2",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "2"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "2",
+              "unobserved": "0",
+              "sum_nanos": "1820000000",
+              "min_nanos": "910000000",
+              "max_nanos": "910000000"
+            },
+            "delta": {
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "0",
+              "unobserved": "0",
+              "sum_nanos": "0",
+              "min_nanos": "0",
+              "max_nanos": "0"
+            }
+          },
+          "errors": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "2",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "2",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "2",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "0"
+              },
+              "http_429": "0"
+            },
+            "candidate": {
+              "runs_with_evidence": "2",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "2",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "2",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "0"
+              },
+              "http_429": "0"
+            },
+            "delta": {
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "0",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "0"
+              },
+              "http_429": "0"
+            }
+          }
+        }
+      }
+    ],
+    "lost_transitions": "not_recorded",
+    "suggestions": [],
+    "suggestions_truncated": false,
+    "sameness": {
+      "same_scenario": "true",
+      "same_inputs": "true",
+      "same_model": "true",
+      "same_prompt_ref": "true",
+      "reference": {
+        "scenario_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "inputs": "declared",
+        "input_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "model": "gemma3:4b",
+        "prompt_ref": {
+          "name": "support-prompt",
+          "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      },
+      "candidate": {
+        "scenario_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "inputs": "declared",
+        "input_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "model": "gemma3:4b",
+        "prompt_ref": {
+          "name": "support-prompt",
+          "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      }
+    },
+    "warnings": [],
+    "producer": {
+      "control_plane_version": "v0.13.0"
+    }
+  }
+}
+
