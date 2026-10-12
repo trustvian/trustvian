@@ -389,6 +389,19 @@ export function createScenarios(deps) {
     }
     body.append(repGroup);
 
+    // A completed execution has a report (task 107-C); the link reads it in
+    // Change Impact. Whether one exists is the status the server returned.
+    if (e.status === "completed" && nav && typeof nav.openReport === "function") {
+      const reportGroup = element("div", "detail-group");
+      reportGroup.append(element("p", "detail-group-title", "Report"));
+      const open = element("button", "btn-quiet", "Open in Change Impact");
+      open.type = "button";
+      open.setAttribute("aria-label", `Open the report of execution ${e.id} in Change Impact`);
+      open.addEventListener("click", () => nav.openReport(e.id));
+      reportGroup.append(open);
+      body.append(reportGroup);
+    }
+
     // The reference check: the server's answer, asked for explicitly.
     const refGroup = element("div", "detail-group reference-check");
     refGroup.append(element("p", "detail-group-title", "Reuse as a reference"));

@@ -682,6 +682,11 @@ export const listScenarioExecutions = (projectID, filter, after) => {
 export const getScenarioExecution = (id) =>
   request("GET", `/v1/scenario-executions/${segment(id)}`);
 
+// getScenarioReport reads one completed execution's report — result document
+// version 2, task 107 — as the control plane serves it.
+export const getScenarioReport = (id) =>
+  request("GET", `/v1/scenario-executions/${segment(id)}/report`);
+
 // checkScenarioReference asks the control plane whether an execution would
 // be accepted as a reference. A read: the server runs its own validation and
 // records nothing. The browser never decides this.

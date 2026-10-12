@@ -35,6 +35,7 @@ import { createOverview } from "./views/overview.js";
 import { createStatus } from "./views/status.js";
 import { createTraces } from "./views/traces.js";
 import { createScenarios } from "./views/scenarios.js";
+import { createChangeImpact } from "./views/change-impact.js";
 import { createSelector } from "./ui/selector.js";
 
 const byID = (id) => document.getElementById(id);
@@ -136,7 +137,7 @@ const PAGE_TITLES = Object.freeze([
   Object.freeze({ view: "view-runs", title: "Evaluation runs" }),
   Object.freeze({ view: "view-traces", title: "Traces" }),
   Object.freeze({ view: "view-run", title: "Run" }),
-  Object.freeze({ view: "view-compare", title: "Compare runs" }),
+  Object.freeze({ view: "view-compare", title: "Change Impact" }),
   Object.freeze({ view: "view-evidence", title: "Evidence" }),
   Object.freeze({ view: "view-promotion", title: "Promotions" }),
   Object.freeze({ view: "view-manage", title: "Manage" }),
@@ -192,6 +193,10 @@ let overview = null;
 let status = null;
 let traces = null;
 let scenarios = null;
+let changeImpact = null;
+// changeImpactReport is the report Change Impact is showing, for the
+// repetition links that resolve its behaviors' evidence.
+let changeImpactReport = null;
 const views = Array.from(document.querySelectorAll(".view"));
 let currentView = "view-live";
 
@@ -202,6 +207,9 @@ function openView(viewID) {
   }
   if (currentView === "view-traces" && viewID !== "view-traces" && traces !== null) {
     traces.leave();
+  }
+  if (currentView === "view-compare" && viewID !== "view-compare" && changeImpact !== null) {
+    changeImpact.leave();
   }
   if (currentView === "view-evidence" && viewID !== "view-evidence" && scenarios !== null) {
     scenarios.leave();
@@ -2046,6 +2054,9 @@ function onEnterView(viewID) {
   // they are scoped to — identity, not a loaded flag. A boolean stayed true
   // across a project change, so the destination kept the previous project's
   // records and fetched nothing.
+  if (viewID === "view-compare" && changeImpact !== null) {
+    changeImpact.enter();
+  }
   if (viewID === "view-compare" && projectScope.needsCompare()) {
     void openCompareLevel("agents", () => compareHierarchy.loadAgents(openedProject, ""));
   }
@@ -3393,8 +3404,51 @@ scenarios = createScenarios({
   now: () => Date.now(),
   nav: {
     openRun: (runID) => { void openRunDetail(runID); },
+    openReport: (id) => { openReportInChangeImpact(id); },
   },
 });
+
+// Change Impact (task 107-C): a recorded execution's report, from the same
+// document the pull request comment renders.
+changeImpact = createChangeImpact({
+  selection,
+  hosts: { list: byID("impact-executions"), report: byID("impact-report") },
+  listExecutions: (projectID, filter, after) => api.listScenarioExecutions(projectID, filter, after),
+  getReport: (id) => api.getScenarioReport(id),
+  now: () => Date.now(),
+  controls: {
+    // One repetition's observations of one behavior, through task 085: the
+    // run pair is that repetition's, on both sides, as the report lists them.
+    // The reader chose the repetition; nothing here picks a representative.
+    openRepetition(row, side, entry) {
+      const report = changeImpactReport;
+      const repetitions = report && Array.isArray(report.comparison.repetitions)
+        ? report.comparison.repetitions : [];
+      const runOf = (which) => {
+        const found = repetitions.find((r) => r.side === which && r.index === entry.index);
+        return found === undefined ? "" : found.run_id;
+      };
+      openEvidence("evidence-finding");
+      void evidenceSurface.openFinding({
+        referenceRunID: runOf("reference"),
+        candidateRunID: runOf("candidate"),
+        behavior: row.fingerprint_id,
+        side,
+      }, "observations");
+    },
+  },
+  onReport: (report) => { changeImpactReport = report; },
+});
+
+byID("impact-refresh").addEventListener("click", () => changeImpact.refresh());
+
+// openReportInChangeImpact opens one execution's report from anywhere a link
+// to it is offered.
+function openReportInChangeImpact(id) {
+  openView("view-compare");
+  onEnterView("view-compare");
+  changeImpact.open(id);
+}
 
 // openTracesFor opens the Traces destination on one run, and optionally one
 // trace in it. The run becomes the context's run first — adopted with its
@@ -3607,6 +3661,12 @@ void api.getStatus().then((document) => {
 // because of a URL would start network activity nobody asked for.
 const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ""));
 const initialRun = fragment.get("run");
+// A report named in the fragment is opened: one read, of one document, that
+// the link asked for (task 107-C).
+const initialExecution = fragment.get("execution");
+if (initialExecution !== null && initialExecution !== "") {
+  openReportInChangeImpact(initialExecution);
+}
 if (initialRun !== null && initialRun !== "") {
   byID("watch-run-id").value = initialRun;
   byID("open-run-id").value = initialRun;
