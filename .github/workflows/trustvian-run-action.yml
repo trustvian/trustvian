@@ -18,7 +18,13 @@
 # renderer is held to what the pinned runtime actually produces rather than
 # only to its checked-in fixtures.
 #
-# A third job posts a real gate comment on this repository's own pull request
+# A third job runs the action's run script with this commit's own runtime —
+# the pinned one predates result document version 2 — and renders what it
+# uploads: the report the control plane serves (task 107, D15), rendered as
+# version 2, which is the comment the pinned actions post once the pin moves
+# to a commit carrying it.
+#
+# A fourth job posts a real gate comment on this repository's own pull request
 # through the comment action, reads it back, and then replaces it with a
 # no-verdict rendering — the failure task 079 names the worst, on the real
 # API. It is the only job here holding a write scope, and why it may run a
@@ -320,6 +326,83 @@ jobs:
           render operational "$OPERATIONAL_CODE" 1 ""
           render usage "$USAGE_CODE" 1 ""
           exit "$failed"
+
+  # This commit's runtime, through the action's own run script (task 107-B,
+  # D15). The pinned runtime the run job builds predates the report, so its
+  # artifacts are version 1; this job proves what this commit uploads — the
+  # execution's report, unchanged — and that the comment for it is the
+  # version 2 rendering: the bare rendering `trustvian eval report --format md`
+  # prints, framed by the commit, the run link and the exit code.
+  head-runtime:
+    name: This commit's report as the artifact, rendered as version 2
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
+
+      - name: Build this commit's runtime, renderer and workload
+        env:
+          GOWORK: "off"
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/head-bin"
+          mkdir -p "$bin"
+          go build -o "$bin/trustvian" ./cmd/trustvian
+          go build -o "$RUNNER_TEMP/trustvian-ci-render" ./cmd/trustvian-ci-render
+          (cd platform && go build -o "$bin/trustvian-local" ./cmd/trustvian-local)
+          (cd processor && go build -o "$bin/trustvian-collector" ./cmd/trustvian-collector)
+          (cd processor && go build -o "$RUNNER_TEMP/agent-producer" ./cmd/agent-producer)
+
+      - name: Run the action's run script with them
+        id: head
+        env:
+          INPUT_SCENARIO: scripts/testdata/trustvian-run/pass.yaml
+          INPUT_WORKING_DIRECTORY: .
+          INPUT_FAIL_FAST: "false"
+          INPUT_ARTIFACT_NAME: trustvian-run-head
+        run: |
+          set -euo pipefail
+          TRUSTVIAN_RUN_BIN_DIR="$RUNNER_TEMP/head-bin" TRUSTVIAN_RUN_RUNTIME_COMMIT="$GITHUB_SHA" \
+            TRUSTVIAN_RUN_GO_VERSION="$(go env GOVERSION)" bash .github/actions/trustvian-run/run.sh
+
+      - name: The artifact is the report, and the comment renders version 2
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXIT_CODE: ${{ steps.head.outputs.exit-code }}
+          ARTIFACT_DIR: ${{ steps.head.outputs.artifact-dir }}
+        run: |
+          set -euo pipefail
+          [ "$EXIT_CODE" = 0 ] || { echo "::error::the PASS scenario exited $EXIT_CODE"; exit 1; }
+          jq -e '.version == "2" and .comparison.gate.state == "recorded" and .comparison.gate.verdict == "pass"
+            and (.producers.cli_version | type) == "string" and .producers.cli_version != "not_recorded"' \
+            "$ARTIFACT_DIR/result.json" >/dev/null ||
+            { echo "::error::result.json is not this execution's report"; jq . "$ARTIFACT_DIR/result.json"; exit 1; }
+          comment="$RUNNER_TEMP/head-comment.md" bare="$RUNNER_TEMP/head-bare.md"
+          "$RUNNER_TEMP/trustvian-ci-render" --artifact-dir "$ARTIFACT_DIR" --head-sha "$EXPECTED_HEAD" \
+            --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --exit-code "$EXIT_CODE" >"$comment"
+          "$RUNNER_TEMP/trustvian-ci-render" --document "$ARTIFACT_DIR/result.json" >"$bare"
+          for want in "### Trustvian behavioral gate — PASS" "#### Sameness" "#### Targets" \
+            "#### Tokens and cost" "**Verdict: PASS**, as the execution recorded it"; do
+            grep -qF -- "$want" "$comment" || { echo "::error::the comment lacks '$want'"; cat "$comment"; exit 1; }
+          done
+          # The comment is the bare rendering with the frame after its heading.
+          [ "$(head -n 1 "$comment")" = "$(head -n 1 "$bare")" ] &&
+            diff <(tail -n +7 "$comment") <(tail -n +3 "$bare") ||
+            { echo "::error::the comment is not the bare rendering, framed"; exit 1; }
+          cat "$comment" >>"$GITHUB_STEP_SUMMARY"
+          echo "ok: the artifact is the version 2 report and the comment renders it"
 
   # The real gate comment, on this repository's own pull requests
   # (ADR 0058 § 7).
