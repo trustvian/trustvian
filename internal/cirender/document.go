@@ -1,4 +1,4 @@
-package main
+package cirender
 
 // The result documents `trustvian eval run --json` writes (task 078; the
 // contract is docs/compatibility.md), validated into the fields this renderer

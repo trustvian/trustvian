@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/trustvian/trustvian/internal/cirender"
 )
 
 var update = flag.Bool("update", false, "rewrite testdata/golden from the current rendering")
@@ -20,10 +22,10 @@ var update = flag.Bool("update", false, "rewrite testdata/golden from the curren
 // (testdata/generate.sh).
 const fixtureHead = "0123456789abcdef0123456789abcdef01234567"
 
-func expected(code int) expectedContext {
-	return expectedContext{
-		headSHA: fixtureHead, repository: "trustvian/trustvian", runID: "1000000001",
-		runAttempt: "1", serverURL: "https://github.com", exitCode: &code,
+func expected(code int) cirender.Frame {
+	return cirender.Frame{
+		HeadSHA: fixtureHead, Repository: "trustvian/trustvian", RunID: "1000000001",
+		RunAttempt: "1", ServerURL: "https://github.com", ExitCode: &code,
 	}
 }
 
@@ -134,37 +136,37 @@ func TestRenderRealArtifacts(t *testing.T) {
 	tests := []struct {
 		name string
 		code int
-		want state
+		want cirender.State
 	}{
-		{"pass", 0, stateVerdict},
-		{"pass-started", 0, stateVerdict},
-		{"pass-reused", 0, stateVerdict},
-		{"fail", 1, stateVerdict},
-		{"removed", 0, stateVerdict},
-		{"single-run", 1, stateVerdict},
-		{"operational", 3, stateNoVerdict},
-		{"usage", 2, stateNoVerdict},
-		{"suite", 1, stateReport},
-		{"suite-fail-fast", 1, stateReport},
-		{"suite-error", 3, stateReport},
+		{"pass", 0, cirender.StateVerdict},
+		{"pass-started", 0, cirender.StateVerdict},
+		{"pass-reused", 0, cirender.StateVerdict},
+		{"fail", 1, cirender.StateVerdict},
+		{"removed", 0, cirender.StateVerdict},
+		{"single-run", 1, cirender.StateVerdict},
+		{"operational", 3, cirender.StateNoVerdict},
+		{"usage", 2, cirender.StateNoVerdict},
+		{"suite", 1, cirender.StateReport},
+		{"suite-fail-fast", 1, cirender.StateReport},
+		{"suite-error", 3, cirender.StateReport},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := filepath.Join("testdata", "artifacts", tt.name)
-			got := render(dir, expected(tt.code), defaultLimits)
-			if got.state != tt.want {
-				t.Fatalf("state %s, want %s (reason %q)", got.state, tt.want, got.reason)
+			got := render(dir, expected(tt.code), cirender.DefaultLimits)
+			if got.State != tt.want {
+				t.Fatalf("state %s, want %s (reason %q)", got.State, tt.want, got.Reason)
 			}
-			if got.rejected != nil {
-				t.Fatalf("a real artifact was rejected: %v", got.rejected)
+			if got.Rejected != nil {
+				t.Fatalf("a real artifact was rejected: %v", got.Rejected)
 			}
-			if again := render(dir, expected(tt.code), defaultLimits); again.markdown != got.markdown {
+			if again := render(dir, expected(tt.code), cirender.DefaultLimits); again.Markdown != got.Markdown {
 				t.Fatal("two renderings of one artifact differ")
 			}
-			assertInert(t, got.markdown)
+			assertInert(t, got.Markdown)
 			golden := filepath.Join("testdata", "golden", tt.name+".md")
 			if *update {
-				if err := os.WriteFile(golden, []byte(got.markdown), 0o644); err != nil {
+				if err := os.WriteFile(golden, []byte(got.Markdown), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -172,8 +174,8 @@ func TestRenderRealArtifacts(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%v (run with -update to create it)", err)
 			}
-			if got.markdown != string(want) {
-				t.Errorf("rendering differs from %s:\n%s", golden, got.markdown)
+			if got.Markdown != string(want) {
+				t.Errorf("rendering differs from %s:\n%s", golden, got.Markdown)
 			}
 		})
 	}
@@ -183,11 +185,11 @@ func TestRenderRealArtifacts(t *testing.T) {
 func TestRenderTranscribesTheVerdict(t *testing.T) {
 	get := func(name string, code int) string {
 		t.Helper()
-		out := render(filepath.Join("testdata", "artifacts", name), expected(code), defaultLimits)
-		if out.state != stateVerdict {
-			t.Fatalf("%s: state %s (%s)", name, out.state, out.reason)
+		out := render(filepath.Join("testdata", "artifacts", name), expected(code), cirender.DefaultLimits)
+		if out.State != cirender.StateVerdict {
+			t.Fatalf("%s: state %s (%s)", name, out.State, out.Reason)
 		}
-		return out.markdown
+		return out.Markdown
 	}
 	fail := get("fail", 1)
 	for _, want := range []string{
@@ -210,8 +212,12 @@ func TestRenderTranscribesTheVerdict(t *testing.T) {
 	}
 	// Every check, passing ones included, in the stable order.
 	last := -1
-	for _, name := range checkOrder {
-		at := strings.Index(fail, "| "+checkLabel[name]+" |")
+	for _, name := range []string{
+		"reference repetitions completed", "candidate repetitions completed",
+		"repetitions failing minimum evidence", "repeatedly added behaviors",
+		"worst candidate block decisions per run", "worst candidate critical-risk observations per run",
+	} {
+		at := strings.Index(fail, "| "+name+" |")
 		if at < 0 || at < last {
 			t.Errorf("check %s is missing or out of order", name)
 		}
@@ -250,11 +256,11 @@ func TestRenderTranscribesTheVerdict(t *testing.T) {
 func TestRenderSuites(t *testing.T) {
 	get := func(name string, code int) string {
 		t.Helper()
-		out := render(filepath.Join("testdata", "artifacts", name), expected(code), defaultLimits)
-		if out.state != stateReport {
-			t.Fatalf("%s: state %s (%s)", name, out.state, out.reason)
+		out := render(filepath.Join("testdata", "artifacts", name), expected(code), cirender.DefaultLimits)
+		if out.State != cirender.StateReport {
+			t.Fatalf("%s: state %s (%s)", name, out.State, out.Reason)
 		}
-		return out.markdown
+		return out.Markdown
 	}
 	suite := get("suite", 1)
 	for _, want := range []string{
@@ -328,13 +334,13 @@ func TestRenderIncompleteSuiteIsNoVerdict(t *testing.T) {
 		}
 		doc["error"] = map[string]any{"code": "output_too_large", "message": "over the limit"}
 	})
-	out := render(dir, expected(3), defaultLimits)
-	if out.state != stateNoVerdict || out.rejected != nil {
-		t.Fatalf("state %s, rejected %v", out.state, out.rejected)
+	out := render(dir, expected(3), cirender.DefaultLimits)
+	if out.State != cirender.StateNoVerdict || out.Rejected != nil {
+		t.Fatalf("state %s, rejected %v", out.State, out.Rejected)
 	}
-	assertNoEvidence(t, out.markdown)
-	if !strings.Contains(out.reason, "incomplete") {
-		t.Errorf("reason %q does not say the suite was incomplete", out.reason)
+	assertNoEvidence(t, out.Markdown)
+	if !strings.Contains(out.Reason, "incomplete") {
+		t.Errorf("reason %q does not say the suite was incomplete", out.Reason)
 	}
 }
 
@@ -424,21 +430,21 @@ func TestRenderNoVerdict(t *testing.T) {
 				tt.prepare(t, dir)
 			}
 			want := expected(0)
-			want.exitCode = tt.code
-			out := render(dir, want, defaultLimits)
-			if out.state != stateNoVerdict {
-				t.Fatalf("state %s, want no verdict", out.state)
+			want.ExitCode = tt.code
+			out := render(dir, want, cirender.DefaultLimits)
+			if out.State != cirender.StateNoVerdict {
+				t.Fatalf("state %s, want no verdict", out.State)
 			}
-			if (out.rejected != nil) != tt.rejected {
-				t.Errorf("rejected = %v, want rejected %v", out.rejected, tt.rejected)
+			if (out.Rejected != nil) != tt.rejected {
+				t.Errorf("rejected = %v, want rejected %v", out.Rejected, tt.rejected)
 			}
-			if out.rejected != nil && !errors.Is(out.rejected, errRejected) {
-				t.Errorf("a rejection does not wrap errRejected: %v", out.rejected)
+			if out.Rejected != nil && !errors.Is(out.Rejected, cirender.ErrRejected) {
+				t.Errorf("a rejection does not wrap ErrRejected: %v", out.Rejected)
 			}
-			if !strings.Contains(out.reason, tt.reason) {
-				t.Errorf("reason %q lacks %q", out.reason, tt.reason)
+			if !strings.Contains(out.Reason, tt.reason) {
+				t.Errorf("reason %q lacks %q", out.Reason, tt.reason)
 			}
-			assertNoEvidence(t, out.markdown)
+			assertNoEvidence(t, out.Markdown)
 		})
 	}
 }
@@ -488,14 +494,14 @@ func TestRenderRejectsMetadataMismatches(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := artifact(t, "pass")
 			mutateMetadata(t, dir, tt.edit)
-			out := render(dir, expected(0), defaultLimits)
-			if out.state != stateNoVerdict || out.rejected == nil {
-				t.Fatalf("state %s, rejected %v: a mismatched artifact was accepted", out.state, out.rejected)
+			out := render(dir, expected(0), cirender.DefaultLimits)
+			if out.State != cirender.StateNoVerdict || out.Rejected == nil {
+				t.Fatalf("state %s, rejected %v: a mismatched artifact was accepted", out.State, out.Rejected)
 			}
-			if !strings.Contains(out.reason, tt.field) {
-				t.Errorf("reason %q does not name %s", out.reason, tt.field)
+			if !strings.Contains(out.Reason, tt.field) {
+				t.Errorf("reason %q does not name %s", out.Reason, tt.field)
 			}
-			assertNoEvidence(t, out.markdown)
+			assertNoEvidence(t, out.Markdown)
 		})
 	}
 }
@@ -510,9 +516,9 @@ func TestRenderRejectsDigestAndSizeMismatches(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, resultFile), raw, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		out := render(dir, expected(0), defaultLimits)
-		if out.rejected == nil || !strings.Contains(out.reason, "SHA-256") {
-			t.Fatalf("a modified result was accepted: %s", out.reason)
+		out := render(dir, expected(0), cirender.DefaultLimits)
+		if out.Rejected == nil || !strings.Contains(out.Reason, "SHA-256") {
+			t.Fatalf("a modified result was accepted: %s", out.Reason)
 		}
 	})
 	t.Run("a changed size", func(t *testing.T) {
@@ -521,9 +527,9 @@ func TestRenderRejectsDigestAndSizeMismatches(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, resultFile), append(raw, ' '), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		out := render(dir, expected(0), defaultLimits)
-		if out.rejected == nil || !strings.Contains(out.reason, "size") {
-			t.Fatalf("a resized result was accepted: %s", out.reason)
+		out := render(dir, expected(0), cirender.DefaultLimits)
+		if out.Rejected == nil || !strings.Contains(out.Reason, "size") {
+			t.Fatalf("a resized result was accepted: %s", out.Reason)
 		}
 	})
 	t.Run("a result over the bound", func(t *testing.T) {
@@ -536,17 +542,17 @@ func TestRenderRejectsDigestAndSizeMismatches(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.Close()
-		out := render(dir, expected(0), defaultLimits)
-		if out.rejected == nil || !strings.Contains(out.reason, "larger than") {
-			t.Fatalf("an oversized result was read: %s", out.reason)
+		out := render(dir, expected(0), cirender.DefaultLimits)
+		if out.Rejected == nil || !strings.Contains(out.Reason, "larger than") {
+			t.Fatalf("an oversized result was read: %s", out.Reason)
 		}
 	})
 	t.Run("metadata over the bound", func(t *testing.T) {
 		dir := artifact(t, "pass")
 		mutateMetadata(t, dir, func(m map[string]any) { m["padding"] = strings.Repeat("x", maxMetadataBytes) })
-		out := render(dir, expected(0), defaultLimits)
-		if out.rejected == nil || !strings.Contains(out.reason, "larger than") {
-			t.Fatalf("oversized metadata was read: %s", out.reason)
+		out := render(dir, expected(0), cirender.DefaultLimits)
+		if out.Rejected == nil || !strings.Contains(out.Reason, "larger than") {
+			t.Fatalf("oversized metadata was read: %s", out.Reason)
 		}
 	})
 }
@@ -566,9 +572,9 @@ func TestRenderRefusesLinksAndNonFiles(t *testing.T) {
 			if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
 				t.Fatal(err)
 			}
-			out := render(dir, expected(0), defaultLimits)
-			if out.rejected == nil || !strings.Contains(out.reason, "not a regular file") {
-				t.Fatalf("a symbolic link was followed: %s", out.reason)
+			out := render(dir, expected(0), cirender.DefaultLimits)
+			if out.Rejected == nil || !strings.Contains(out.Reason, "not a regular file") {
+				t.Fatalf("a symbolic link was followed: %s", out.Reason)
 			}
 		})
 	}
@@ -578,8 +584,8 @@ func TestRenderRefusesLinksAndNonFiles(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(dir, resultFile), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		out := render(dir, expected(0), defaultLimits)
-		if out.rejected == nil {
+		out := render(dir, expected(0), cirender.DefaultLimits)
+		if out.Rejected == nil {
 			t.Fatal("a directory was read as the result")
 		}
 	})
@@ -591,7 +597,7 @@ func TestRenderRejectsMalformedJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deep := strings.Repeat(`{"a":`, maxJSONDepth+2) + "1" + strings.Repeat("}", maxJSONDepth+2)
+	deep := strings.Repeat(`{"a":`, cirender.MaxJSONDepth+2) + "1" + strings.Repeat("}", cirender.MaxJSONDepth+2)
 	tests := []struct {
 		name string
 		raw  []byte
@@ -605,7 +611,7 @@ func TestRenderRejectsMalformedJSON(t *testing.T) {
 		{"a duplicate key in an unknown field", bytes.Replace(valid, []byte(`{"version":"1",`), []byte(`{"x":{"y":1,"y":2},"version":"1",`), 1), "duplicate"},
 		{"invalid UTF-8", bytes.Replace(valid, []byte(`render-pass`), []byte("render-\xffass"), 1), "UTF-8"},
 		{"nested too deep", []byte(deep), "nested deeper"},
-		{"too many values", []byte("[" + strings.Repeat("1,", maxJSONNodes) + "1]"), "more than"},
+		{"too many values", []byte("[" + strings.Repeat("1,", cirender.MaxJSONNodes) + "1]"), "more than"},
 		{"an array, not an object", []byte(`[]`), "not an object"},
 		{"an empty file, refused by its recorded size", []byte(``), "result.bytes"},
 		{"whitespace only", []byte("  \n "), "malformed"},
@@ -615,14 +621,14 @@ func TestRenderRejectsMalformedJSON(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := artifact(t, "pass")
 			setResult(t, dir, tt.raw)
-			out := render(dir, expected(0), defaultLimits)
-			if out.rejected == nil {
-				t.Fatalf("malformed JSON was accepted (state %s)", out.state)
+			out := render(dir, expected(0), cirender.DefaultLimits)
+			if out.Rejected == nil {
+				t.Fatalf("malformed JSON was accepted (state %s)", out.State)
 			}
-			if !strings.Contains(out.reason, tt.want) {
-				t.Errorf("reason %q lacks %q", out.reason, tt.want)
+			if !strings.Contains(out.Reason, tt.want) {
+				t.Errorf("reason %q lacks %q", out.Reason, tt.want)
 			}
-			assertNoEvidence(t, out.markdown)
+			assertNoEvidence(t, out.Markdown)
 		})
 	}
 	t.Run("a duplicate key in the metadata", func(t *testing.T) {
@@ -632,8 +638,8 @@ func TestRenderRejectsMalformedJSON(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(dir, metadataFile), raw, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if out := render(dir, expected(0), defaultLimits); out.rejected == nil || !strings.Contains(out.reason, "duplicate") {
-			t.Fatalf("a duplicated metadata key was accepted: %s", out.reason)
+		if out := render(dir, expected(0), cirender.DefaultLimits); out.Rejected == nil || !strings.Contains(out.Reason, "duplicate") {
+			t.Fatalf("a duplicated metadata key was accepted: %s", out.Reason)
 		}
 	})
 }
@@ -695,12 +701,12 @@ func TestRenderDistinguishesAbsentFromZeroAndFalse(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := artifact(t, "pass")
 			mutateResult(t, dir, tt.edit)
-			out := render(dir, expected(0), defaultLimits)
-			if out.rejected == nil {
-				t.Fatalf("accepted (state %s)", out.state)
+			out := render(dir, expected(0), cirender.DefaultLimits)
+			if out.Rejected == nil {
+				t.Fatalf("accepted (state %s)", out.State)
 			}
-			if !strings.Contains(out.reason, tt.field) {
-				t.Errorf("reason %q does not name %s", out.reason, tt.field)
+			if !strings.Contains(out.Reason, tt.field) {
+				t.Errorf("reason %q does not name %s", out.Reason, tt.field)
 			}
 		})
 	}
@@ -728,12 +734,12 @@ func TestRenderDistinguishesAbsentFromZeroAndFalse(t *testing.T) {
 			if tt.edit != nil {
 				mutateResult(t, dir, tt.edit)
 			}
-			out := render(dir, expected(tt.code), defaultLimits)
-			if out.state == stateNoVerdict {
-				t.Fatalf("a valid value was refused: %s", out.reason)
+			out := render(dir, expected(tt.code), cirender.DefaultLimits)
+			if out.State == cirender.StateNoVerdict {
+				t.Fatalf("a valid value was refused: %s", out.Reason)
 			}
-			if !strings.Contains(out.markdown, tt.want) {
-				t.Errorf("rendering lacks %q:\n%s", tt.want, out.markdown)
+			if !strings.Contains(out.Markdown, tt.want) {
+				t.Errorf("rendering lacks %q:\n%s", tt.want, out.Markdown)
 			}
 		})
 	}
@@ -741,17 +747,17 @@ func TestRenderDistinguishesAbsentFromZeroAndFalse(t *testing.T) {
 	t.Run("an absent fail_fast", func(t *testing.T) {
 		dir := artifact(t, "suite-error")
 		mutateResult(t, dir, func(d map[string]any) { delete(obj(d, "options"), "fail_fast") })
-		if out := render(dir, expected(3), defaultLimits); out.rejected == nil ||
-			!strings.Contains(out.reason, "options.fail_fast") {
-			t.Fatalf("an absent false was accepted: %s", out.reason)
+		if out := render(dir, expected(3), cirender.DefaultLimits); out.Rejected == nil ||
+			!strings.Contains(out.Reason, "options.fail_fast") {
+			t.Fatalf("an absent false was accepted: %s", out.Reason)
 		}
 	})
 	t.Run("an absent zero exit code", func(t *testing.T) {
 		dir := artifact(t, "suite-error")
 		mutateResult(t, dir, func(d map[string]any) { delete(obj(d, "members", 0), "exit_code") })
-		if out := render(dir, expected(3), defaultLimits); out.rejected == nil ||
-			!strings.Contains(out.reason, "members[0].exit_code") {
-			t.Fatalf("an absent zero was accepted: %s", out.reason)
+		if out := render(dir, expected(3), cirender.DefaultLimits); out.Rejected == nil ||
+			!strings.Contains(out.Reason, "members[0].exit_code") {
+			t.Fatalf("an absent zero was accepted: %s", out.Reason)
 		}
 	})
 }
@@ -812,14 +818,14 @@ func TestRenderRejectsOutOfContractValues(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := artifact(t, "pass")
 			mutateResult(t, dir, tt.edit)
-			out := render(dir, expected(0), defaultLimits)
-			if out.rejected == nil {
-				t.Fatalf("accepted (state %s)", out.state)
+			out := render(dir, expected(0), cirender.DefaultLimits)
+			if out.Rejected == nil {
+				t.Fatalf("accepted (state %s)", out.State)
 			}
-			if !strings.Contains(out.reason, tt.field) {
-				t.Errorf("reason %q does not name %s", out.reason, tt.field)
+			if !strings.Contains(out.Reason, tt.field) {
+				t.Errorf("reason %q does not name %s", out.Reason, tt.field)
 			}
-			assertNoEvidence(t, out.markdown)
+			assertNoEvidence(t, out.Markdown)
 		})
 	}
 
@@ -874,14 +880,14 @@ func TestRenderRejectsOutOfContractValues(t *testing.T) {
 		t.Run("suite/"+tt.name, func(t *testing.T) {
 			dir := artifact(t, "suite-error")
 			mutateResult(t, dir, tt.edit)
-			out := render(dir, expected(3), defaultLimits)
-			if out.rejected == nil {
-				t.Fatalf("accepted (state %s)", out.state)
+			out := render(dir, expected(3), cirender.DefaultLimits)
+			if out.Rejected == nil {
+				t.Fatalf("accepted (state %s)", out.State)
 			}
-			if !strings.Contains(out.reason, tt.field) {
-				t.Errorf("reason %q does not name %s", out.reason, tt.field)
+			if !strings.Contains(out.Reason, tt.field) {
+				t.Errorf("reason %q does not name %s", out.Reason, tt.field)
 			}
-			assertNoEvidence(t, out.markdown)
+			assertNoEvidence(t, out.Markdown)
 		})
 	}
 }
@@ -919,14 +925,14 @@ func TestRenderToleratesButNeverRendersUnknownFields(t *testing.T) {
 					plant(obj(s, "comparison", "behaviors", 0, "behavior"))
 				}
 			})
-			out := render(dir, expected(code), defaultLimits)
-			if out.state == stateNoVerdict {
-				t.Fatalf("unknown fields were refused: %s", out.reason)
+			out := render(dir, expected(code), cirender.DefaultLimits)
+			if out.State == cirender.StateNoVerdict {
+				t.Fatalf("unknown fields were refused: %s", out.Reason)
 			}
-			if strings.Contains(out.markdown, canary) {
-				t.Errorf("an unknown field was rendered:\n%s", out.markdown)
+			if strings.Contains(out.Markdown, canary) {
+				t.Errorf("an unknown field was rendered:\n%s", out.Markdown)
 			}
-			if out.markdown != render(filepath.Join("testdata", "artifacts", name), expected(code), defaultLimits).markdown {
+			if out.Markdown != render(filepath.Join("testdata", "artifacts", name), expected(code), cirender.DefaultLimits).Markdown {
 				t.Error("unknown fields changed the rendering")
 			}
 		})
@@ -984,11 +990,11 @@ func TestRenderAcceptsTask087Sections(t *testing.T) {
 				}
 				obj(d, "comparison")["operational"] = operational
 			})
-			out := render(dir, expected(tt.code), defaultLimits)
-			if out.state == stateNoVerdict {
-				t.Fatalf("a document with task 087's sections was refused: %s", out.reason)
+			out := render(dir, expected(tt.code), cirender.DefaultLimits)
+			if out.State == cirender.StateNoVerdict {
+				t.Fatalf("a document with task 087's sections was refused: %s", out.Reason)
 			}
-			if out.markdown != render(filepath.Join("testdata", "artifacts", tt.name), expected(tt.code), defaultLimits).markdown {
+			if out.Markdown != render(filepath.Join("testdata", "artifacts", tt.name), expected(tt.code), cirender.DefaultLimits).Markdown {
 				t.Error("task 087's sections changed the rendering")
 			}
 		})
@@ -1042,14 +1048,14 @@ func TestRenderAcceptsTask106Fields(t *testing.T) {
 				}
 				plant(obj(d, "comparison"))
 			})
-			out := render(dir, expected(tt.code), defaultLimits)
-			if out.state == stateNoVerdict {
-				t.Fatalf("a document with task 106's fields was refused: %s", out.reason)
+			out := render(dir, expected(tt.code), cirender.DefaultLimits)
+			if out.State == cirender.StateNoVerdict {
+				t.Fatalf("a document with task 106's fields was refused: %s", out.Reason)
 			}
-			if strings.Contains(out.markdown, "SUGGESTION-CANARY") {
+			if strings.Contains(out.Markdown, "SUGGESTION-CANARY") {
 				t.Error("a suggestion was rendered; the renderer renders none")
 			}
-			if out.markdown != render(filepath.Join("testdata", "artifacts", tt.name), expected(tt.code), defaultLimits).markdown {
+			if out.Markdown != render(filepath.Join("testdata", "artifacts", tt.name), expected(tt.code), cirender.DefaultLimits).Markdown {
 				t.Error("task 106's fields changed the rendering")
 			}
 		})
@@ -1101,11 +1107,11 @@ func TestRenderAcceptsTask086Fields(t *testing.T) {
 				d["provenance"] = recorded
 				plant(obj(d, "comparison"))
 			})
-			out := render(dir, expected(tt.code), defaultLimits)
-			if out.state == stateNoVerdict {
-				t.Fatalf("a document with task 086's fields was refused: %s", out.reason)
+			out := render(dir, expected(tt.code), cirender.DefaultLimits)
+			if out.State == cirender.StateNoVerdict {
+				t.Fatalf("a document with task 086's fields was refused: %s", out.Reason)
 			}
-			if out.markdown != render(filepath.Join("testdata", "artifacts", tt.name), expected(tt.code), defaultLimits).markdown {
+			if out.Markdown != render(filepath.Join("testdata", "artifacts", tt.name), expected(tt.code), cirender.DefaultLimits).Markdown {
 				t.Error("task 086's fields changed the rendering")
 			}
 		})
@@ -1154,11 +1160,11 @@ func TestRenderAcceptsTask081Fields(t *testing.T) {
 				}
 				plant(obj(d, "comparison"))
 			})
-			out := render(dir, expected(tt.code), defaultLimits)
-			if out.state == stateNoVerdict {
-				t.Fatalf("a document with task 081's fields was refused: %s", out.reason)
+			out := render(dir, expected(tt.code), cirender.DefaultLimits)
+			if out.State == cirender.StateNoVerdict {
+				t.Fatalf("a document with task 081's fields was refused: %s", out.Reason)
 			}
-			if out.markdown != render(filepath.Join("testdata", "artifacts", tt.name), expected(tt.code), defaultLimits).markdown {
+			if out.Markdown != render(filepath.Join("testdata", "artifacts", tt.name), expected(tt.code), cirender.DefaultLimits).Markdown {
 				t.Error("task 081's fields changed the rendering")
 			}
 		})
@@ -1178,9 +1184,9 @@ func TestRenderNeverRecomputes(t *testing.T) {
 		check["passed"] = true // actual 1, at most 0
 		obj(d, "comparison", "gate")["verdict"] = "pass"
 	})
-	out := render(dir, expected(0), defaultLimits)
-	if out.state != stateVerdict {
-		t.Fatalf("state %s: %s", out.state, out.reason)
+	out := render(dir, expected(0), cirender.DefaultLimits)
+	if out.State != cirender.StateVerdict {
+		t.Fatalf("state %s: %s", out.State, out.Reason)
 	}
 	for _, want := range []string{
 		"### Trustvian behavioral gate — PASS",
@@ -1188,8 +1194,8 @@ func TestRenderNeverRecomputes(t *testing.T) {
 		"`crm_lookup` · `tools.localhost` · `local` | `3e2da711ec218a24` | 2/2 | 2/2 | **− removed** |",
 		"| repeatedly added behaviors | 1 | at most | 0 | pass |",
 	} {
-		if !strings.Contains(out.markdown, want) {
-			t.Errorf("rendering lacks the stored value %q:\n%s", want, out.markdown)
+		if !strings.Contains(out.Markdown, want) {
+			t.Errorf("rendering lacks the stored value %q:\n%s", want, out.Markdown)
 		}
 	}
 
@@ -1197,9 +1203,9 @@ func TestRenderNeverRecomputes(t *testing.T) {
 	mutateResult(t, suite, func(d map[string]any) {
 		d["summary"] = map[string]any{"passed": 7, "failed": 0, "errors": 5, "skipped": 9}
 	})
-	report := render(suite, expected(1), defaultLimits)
-	if !strings.Contains(report.markdown, "**Recorded summary:** passed 7 · failed 0 · errors 5 · skipped 9") {
-		t.Errorf("the recorded summary was not transcribed as recorded:\n%s", report.markdown)
+	report := render(suite, expected(1), cirender.DefaultLimits)
+	if !strings.Contains(report.Markdown, "**Recorded summary:** passed 7 · failed 0 · errors 5 · skipped 9") {
+		t.Errorf("the recorded summary was not transcribed as recorded:\n%s", report.Markdown)
 	}
 }
 
@@ -1254,37 +1260,37 @@ func TestRenderMakesHostileStringsInert(t *testing.T) {
 		obj(d, "producers")["control_plane_version"] = hostile[1]
 		obj(d, "comparison", "producer")["control_plane_version"] = hostile[1]
 	})
-	out := render(dir, expected(1), defaultLimits)
-	if out.state != stateVerdict {
-		t.Fatalf("state %s: %s", out.state, out.reason)
+	out := render(dir, expected(1), cirender.DefaultLimits)
+	if out.State != cirender.StateVerdict {
+		t.Fatalf("state %s: %s", out.State, out.Reason)
 	}
-	assertInert(t, out.markdown)
+	assertInert(t, out.Markdown)
 
 	// One table row per behavior, and the six gate rows, exactly: no value
 	// added a row or a line.
 	rows := 0
-	for _, line := range strings.Split(out.markdown, "\n") {
+	for _, line := range strings.Split(out.Markdown, "\n") {
 		if strings.HasPrefix(line, "| ") && !strings.HasPrefix(line, "| Behavior") && !strings.HasPrefix(line, "| Gate check") {
 			rows++
 		}
 	}
 	if want := len(hostile) + 1 + 6; rows != want {
-		t.Errorf("%d table rows, want %d:\n%s", rows, want, out.markdown)
+		t.Errorf("%d table rows, want %d:\n%s", rows, want, out.Markdown)
 	}
 	// The forged gate row did not land as a row of its own.
-	if strings.Contains(out.markdown, "\n| repeatedly added behaviors | 0 |") {
-		t.Errorf("a forged gate row was rendered:\n%s", out.markdown)
+	if strings.Contains(out.Markdown, "\n| repeatedly added behaviors | 0 |") {
+		t.Errorf("a forged gate row was rendered:\n%s", out.Markdown)
 	}
-	if !strings.Contains(out.markdown, "| repeatedly added behaviors | 1 | at most | 0 | **FAIL** |") {
+	if !strings.Contains(out.Markdown, "| repeatedly added behaviors | 1 | at most | 0 | **FAIL** |") {
 		t.Error("the real failing check is missing")
 	}
 	// The 12,000-byte value is cut, at a rune boundary, within the limit
 	// with its ellipsis, and marked.
-	kept := (defaultLimits.stringBytes - len("…")) / 2
-	if !strings.Contains(out.markdown, "`"+strings.Repeat("é", kept)+"…`"+truncatedMarker) {
+	kept := (cirender.DefaultLimits.StringBytes - len("…")) / 2
+	if !strings.Contains(out.Markdown, "`"+strings.Repeat("é", kept)+"…`"+cirender.TruncatedMarker) {
 		t.Errorf("the long value was not truncated visibly at a rune boundary")
 	}
-	if strings.Contains(out.markdown, strings.Repeat("é", kept+1)) {
+	if strings.Contains(out.Markdown, strings.Repeat("é", kept+1)) {
 		t.Error("the long value exceeds the per-string limit")
 	}
 }
@@ -1359,37 +1365,6 @@ func stripCodeSpans(line string) (string, bool) {
 	return out.String(), true
 }
 
-func TestInert(t *testing.T) {
-	tests := []struct{ in, want string }{
-		{"plain", "`plain`"},
-		{"", "*(empty)*"},
-		{"a|b", "`a\uFF5Cb`"},
-		{`a\|b\`, "`a\\\uFF5Cb\\`"},
-		{"a`b", "``a`b``"},
-		{"`edge`", "`` `edge` ``"},
-		{"a\nb", "`a\uFFFDb`"},
-		{"\u202Eevil", "`\uFFFDevil`"},
-		{"bad\xffbyte", "`bad\uFFFDbyte`"},
-		{"   ", "*(blank)*"},
-		{"\u3164", "`\uFFFD`"},
-		{"a\u2800b", "`a\uFFFDb`"},
-	}
-	for _, tt := range tests {
-		if got := inert(tt.in, 64); got != tt.want {
-			t.Errorf("inert(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-	if got := inert("abcdefgh", 6); got != "`abc…`"+truncatedMarker {
-		t.Errorf("truncation: %q", got)
-	}
-	if got := inert("ééé", 4); got != "`…`"+truncatedMarker { // é would make 5 bytes
-		t.Errorf("truncation splits a rune or exceeds the limit: %q", got)
-	}
-	if got := inert("éééé", 7); got != "`éé…`"+truncatedMarker {
-		t.Errorf("truncation: %q", got)
-	}
-}
-
 // The total limit: unclassified behaviors give way first, visibly; when the
 // evidence a verdict rests on cannot fit, there is no verdict at all.
 func TestRenderOutputLimits(t *testing.T) {
@@ -1406,59 +1381,59 @@ func TestRenderOutputLimits(t *testing.T) {
 		}
 		obj(d, "comparison")["behaviors"] = behaviors
 	})
-	full := render(dir, expected(1), limits{stringBytes: 256, totalBytes: 1 << 20})
-	if full.state != stateVerdict || strings.Contains(full.markdown, "Shortened") {
-		t.Fatalf("an unbounded rendering was shortened: %s", full.reason)
+	full := render(dir, expected(1), cirender.Limits{StringBytes: 256, TotalBytes: 1 << 20})
+	if full.State != cirender.StateVerdict || strings.Contains(full.Markdown, "Shortened") {
+		t.Fatalf("an unbounded rendering was shortened: %s", full.Reason)
 	}
 
-	short := render(dir, expected(1), defaultLimits)
-	if short.state != stateVerdict {
-		t.Fatalf("state %s: %s", short.state, short.reason)
+	short := render(dir, expected(1), cirender.DefaultLimits)
+	if short.State != cirender.StateVerdict {
+		t.Fatalf("state %s: %s", short.State, short.Reason)
 	}
-	if len(short.markdown) > defaultLimits.totalBytes {
-		t.Errorf("%d bytes, over the %d limit", len(short.markdown), defaultLimits.totalBytes)
+	if len(short.Markdown) > cirender.DefaultLimits.TotalBytes {
+		t.Errorf("%d bytes, over the %d limit", len(short.Markdown), cirender.DefaultLimits.TotalBytes)
 	}
 	for _, want := range []string{"> **Shortened:**", "**+ added**", "| repeatedly added behaviors | 1 |",
 		"| worst candidate critical-risk observations per run |", "Produced by"} {
-		if !strings.Contains(short.markdown, want) {
+		if !strings.Contains(short.Markdown, want) {
 			t.Errorf("shortened rendering lacks %q", want)
 		}
 	}
-	if strings.Contains(short.markdown, "unclassified |") {
+	if strings.Contains(short.Markdown, "unclassified |") {
 		t.Error("a shortened rendering kept unclassified rows")
 	}
 
-	tiny := render(dir, expected(1), limits{stringBytes: 256, totalBytes: 1500})
-	if tiny.state != stateNoVerdict || tiny.rejected != nil || !strings.Contains(tiny.reason, "does not fit") {
-		t.Fatalf("evidence that cannot fit was rendered partially: %s %s", tiny.state, tiny.reason)
+	tiny := render(dir, expected(1), cirender.Limits{StringBytes: 256, TotalBytes: 1500})
+	if tiny.State != cirender.StateNoVerdict || tiny.Rejected != nil || !strings.Contains(tiny.Reason, "does not fit") {
+		t.Fatalf("evidence that cannot fit was rendered partially: %s %s", tiny.State, tiny.Reason)
 	}
-	assertNoEvidence(t, tiny.markdown)
+	assertNoEvidence(t, tiny.Markdown)
 
-	suite := render(filepath.Join("testdata", "artifacts", "suite"), expected(1), limits{stringBytes: 256, totalBytes: 2000})
-	if suite.state != stateNoVerdict || !strings.Contains(suite.reason, "does not fit") {
-		t.Fatalf("a suite that cannot fit was rendered partially: %s", suite.state)
+	suite := render(filepath.Join("testdata", "artifacts", "suite"), expected(1), cirender.Limits{StringBytes: 256, TotalBytes: 2000})
+	if suite.State != cirender.StateNoVerdict || !strings.Contains(suite.Reason, "does not fit") {
+		t.Fatalf("a suite that cannot fit was rendered partially: %s", suite.State)
 	}
 }
 
 // A no-verdict rendering keeps nothing from an earlier one: each rendering is
 // built from its own inputs alone.
 func TestRenderNoVerdictRetainsNothing(t *testing.T) {
-	first := render(filepath.Join("testdata", "artifacts", "fail"), expected(1), defaultLimits)
-	if first.state != stateVerdict {
-		t.Fatal(first.reason)
+	first := render(filepath.Join("testdata", "artifacts", "fail"), expected(1), cirender.DefaultLimits)
+	if first.State != cirender.StateVerdict {
+		t.Fatal(first.Reason)
 	}
 	dir := artifact(t, "fail")
 	remove(t, dir, resultFile)
-	second := render(dir, expected(1), defaultLimits)
-	if second.state != stateNoVerdict {
-		t.Fatalf("state %s", second.state)
+	second := render(dir, expected(1), cirender.DefaultLimits)
+	if second.State != cirender.StateNoVerdict {
+		t.Fatalf("state %s", second.State)
 	}
 	for _, s := range []string{"render-fail", "export_customer", "FAIL", "scn-"} {
-		if strings.Contains(second.markdown, s) {
+		if strings.Contains(second.Markdown, s) {
 			t.Errorf("the no-verdict rendering carries %q from an earlier one", s)
 		}
 	}
-	assertNoEvidence(t, second.markdown)
+	assertNoEvidence(t, second.Markdown)
 }
 
 // A repository in the SHA-256 object format has 64-character commits, which
@@ -1468,10 +1443,10 @@ func TestRenderAcceptsASHA256Head(t *testing.T) {
 	dir := artifact(t, "pass")
 	mutateMetadata(t, dir, func(m map[string]any) { obj(m, "head")["sha"] = head })
 	want := expected(0)
-	want.headSHA = head
-	out := render(dir, want, defaultLimits)
-	if out.state != stateVerdict || !strings.Contains(out.markdown, "**Commit** `"+head+"`") {
-		t.Fatalf("state %s: %s", out.state, out.reason)
+	want.HeadSHA = head
+	out := render(dir, want, cirender.DefaultLimits)
+	if out.State != cirender.StateVerdict || !strings.Contains(out.Markdown, "**Commit** `"+head+"`") {
+		t.Fatalf("state %s: %s", out.State, out.Reason)
 	}
 	var stdout bytes.Buffer
 	if got := run(replaceArg(cliArgs(dir, "0"), "--head-sha", head), &stdout, &bytes.Buffer{}); got != exitRendered {

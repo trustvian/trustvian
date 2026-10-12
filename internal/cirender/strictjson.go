@@ -1,4 +1,4 @@
-package main
+package cirender
 
 // A strict JSON reader for untrusted artifact files.
 //

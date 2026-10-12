@@ -107,18 +107,28 @@ func replaceArg(args []string, flag, value string) []string {
 	return out
 }
 
+// rendererDirs are the renderer's two halves: this command, which reads the
+// artifact, and internal/cirender, which renders the document.
+var rendererDirs = []string{".", filepath.Join("..", "..", "internal", "cirender")}
+
 // The renderer can execute nothing and reach nothing: its sources import no
 // process, network, plugin or unsafe package, and it is built from the
-// standard library alone.
+// standard library and internal/cirender alone — which is itself built from
+// the standard library alone.
 func TestRendererImportsOnlyWhatItNeeds(t *testing.T) {
 	allowed := map[string]bool{
 		"bytes": true, "crypto/sha256": true, "encoding/hex": true, "encoding/json": true, "errors": true,
 		"flag": true, "fmt": true, "io": true, "io/fs": true, "os": true, "path/filepath": true,
 		"regexp": true, "strconv": true, "strings": true, "unicode": true, "unicode/utf8": true,
+		"github.com/trustvian/trustvian/internal/cirender": true,
 	}
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	var files []string
+	for _, dir := range rendererDirs {
+		matched, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, matched...)
 	}
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") {
@@ -141,24 +151,29 @@ func TestRendererImportsOnlyWhatItNeeds(t *testing.T) {
 		t.Fatalf("go list: %v", err)
 	}
 	for _, line := range strings.Fields(string(out)) {
-		if line != "github.com/trustvian/trustvian/cmd/trustvian-ci-render" {
+		if line != "github.com/trustvian/trustvian/cmd/trustvian-ci-render" &&
+			line != "github.com/trustvian/trustvian/internal/cirender" {
 			t.Errorf("the renderer depends on %s, which is not the standard library", line)
 		}
 	}
 }
 
 // Counts, limits and thresholds are text from the document, never numbers
-// this renderer computes with. The test scans every non-test source file
-// except main.go — which parses only the caller's --exit-code — for
+// this renderer computes with. The test scans every non-test source file of
+// both halves except main.go — which parses only the caller's --exit-code — for
 // "strconv.", "Sscan", "ParseUint", "ParseInt" and "Atoi", the ways Go turns
 // text into a number. JSON integers (runs, exit codes, the suite summary,
 // scenario_count) are read through json.Number.Int64, range-checked and
 // re-printed in canonical form; that is not a text conversion this scan
 // covers, and the renderer does no arithmetic with them.
 func TestRendererParsesNoCount(t *testing.T) {
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	var files []string
+	for _, dir := range rendererDirs {
+		matched, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, matched...)
 	}
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") || file == "main.go" {

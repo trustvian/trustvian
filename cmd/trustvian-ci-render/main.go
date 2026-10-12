@@ -30,6 +30,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/trustvian/trustvian/internal/cirender"
 )
 
 const usageText = `usage:
@@ -90,22 +92,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	want := expectedContext{
-		headSHA: *head, repository: *repository, runID: *runID, runAttempt: *attempt,
-		serverURL: *serverURL,
+	want := cirender.Frame{
+		HeadSHA: *head, Repository: *repository, RunID: *runID, RunAttempt: *attempt,
+		ServerURL: *serverURL,
 	}
 	switch {
 	case *dir == "":
 		return usage("--artifact-dir is empty")
-	case !shaText.MatchString(want.headSHA):
+	case !shaText.MatchString(want.HeadSHA):
 		return usage("--head-sha must be a lowercase hexadecimal commit SHA, 40 or 64 characters")
-	case !repositoryText.MatchString(want.repository) || hasDotSegment(want.repository):
+	case !repositoryText.MatchString(want.Repository) || hasDotSegment(want.Repository):
 		return usage("--repository must be owner/name")
-	case !runNumberText.MatchString(want.runID):
+	case !runNumberText.MatchString(want.RunID):
 		return usage("--run-id must be a positive decimal number")
-	case !runNumberText.MatchString(want.runAttempt):
+	case !runNumberText.MatchString(want.RunAttempt):
 		return usage("--run-attempt must be a positive decimal number")
-	case !serverURLText.MatchString(want.serverURL):
+	case !serverURLText.MatchString(want.ServerURL):
 		return usage("--server-url must be https://host, with no path")
 	}
 	if *exitCode != "" {
@@ -116,22 +118,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if err != nil || code > 255 {
 			return usage("--exit-code must be empty or a decimal exit status")
 		}
-		want.exitCode = &code
+		want.ExitCode = &code
 	}
 
-	out := render(*dir, want, defaultLimits)
-	if _, err := io.WriteString(stdout, out.markdown); err != nil {
+	out := render(*dir, want, cirender.DefaultLimits)
+	if _, err := io.WriteString(stdout, out.Markdown); err != nil {
 		fmt.Fprintf(stderr, "trustvian-ci-render: writing the rendering: %v\n", err)
 		return exitRejected
 	}
 	switch {
-	case out.state != stateNoVerdict:
+	case out.State != cirender.StateNoVerdict:
 		return exitRendered
-	case out.rejected != nil:
-		fmt.Fprintf(stderr, "trustvian-ci-render: no verdict: %s\n", out.reason)
+	case out.Rejected != nil:
+		fmt.Fprintf(stderr, "trustvian-ci-render: no verdict: %s\n", out.Reason)
 		return exitRejected
 	default:
-		fmt.Fprintf(stderr, "trustvian-ci-render: no verdict: %s\n", out.reason)
+		fmt.Fprintf(stderr, "trustvian-ci-render: no verdict: %s\n", out.Reason)
 		return exitNoVerdict
 	}
 }
