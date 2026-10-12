@@ -3300,7 +3300,10 @@ overview = createOverview({
     evidence: byID("overview-evidence"),
     verdicts: byID("overview-verdicts"),
     environments: byID("overview-environments"),
+    latest: byID("overview-latest"),
   },
+  listExecutions: (projectID, filter, after) => api.listScenarioExecutions(projectID, filter, after),
+  getReport: (id) => api.getScenarioReport(id),
   getProgress: (runID) => api.getProgress(runID),
   runBehaviors: (runID, after) => api.runBehaviors(runID, after),
   listPromotions: (projectID, after) => api.listPromotions(projectID, after),
@@ -3318,6 +3321,7 @@ overview = createOverview({
     },
     useInCompare: (side, run) => { assignSide(side, run); },
     openCompare: () => { openView("view-compare"); onEnterView("view-compare"); },
+    openReport: (id) => { openReportInChangeImpact(id); },
     openRuns: () => { openView("view-runs"); onEnterView("view-runs"); },
     openTraces: (runID) => { openTracesFor(runID, ""); },
     watchRun: (runID) => {
