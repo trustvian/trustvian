@@ -58,6 +58,13 @@ actually depend on.
   - `POST /v1/evaluations/compare` gains `sameness` and `warnings[]`, each run
     looked up through the executions that recorded it. Additive; no check
     reads them.
+- **Change Impact** (task 107-C). The WebUI's Compare destination is now
+  Change Impact: it lists the context's recorded scenario executions and
+  renders one's report in one table per section — sameness, behaviors,
+  targets with latency and status, tokens and cost, the recorded gate and the
+  suggestions — every figure the report's own. A behavior's repetitions open
+  its observations in Evidence. The single-run comparison shows sameness, and
+  Overview gains a Latest comparison panel.
 - **One renderer, and the report the pull request comment shows** (task 107-B,
   decisions D14–D16).
   - `internal/cirender` renders result document version 2: sameness and its

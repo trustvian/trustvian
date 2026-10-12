@@ -1,6 +1,6 @@
 # 107 — Change Impact View and Model Change Report
 
-Status: 107-A implemented (the report's identity and JSON) — see [What shipped (107-A)](#what-shipped-107-a); 107-B implemented (one renderer, and the report the comment shows) — see [What shipped (107-B)](#what-shipped-107-b); 107-C (the WebUI) specified
+Status: 107-A implemented (the report's identity and JSON) — see [What shipped (107-A)](#what-shipped-107-a); 107-B implemented (one renderer, and the report the comment shows) — see [What shipped (107-B)](#what-shipped-107-b); 107-C implemented (Change Impact and the Overview panel) — see [What shipped (107-C)](#what-shipped-107-c)
 Milestone: [`v0.12.0`](../../ROADMAP.md#v0120--change-impact)
 Depends on: [086](086-scenario-and-input-versioning.md),
 [087](087-performance-and-cost-evidence.md), [106](106-frequency-evidence.md),
@@ -572,3 +572,63 @@ Markdown are in [PERFORMANCE](../../PERFORMANCE.md).
 
 `api.js:362-367`, `render.js:769-782`, `evidence.go:90-104` and
 `overview.js:3-11` hold as written.
+
+## What shipped (107-C)
+
+### Delivered
+
+- **Compare became Change Impact.** The destination lists the context's
+  recorded scenario executions, one page at a time, newest first, and renders
+  a completed one's report in one table per section (§ 1). Evidence →
+  Scenarios and the Overview link to it, and `#execution=<id>` opens one
+  report with a single read.
+- **Every figure is the report's own.** Each sits in an element whose
+  `data-source` names the member it came from; a closed-vocabulary label that
+  contains digits carries `data-vocab`.
+- **Every behavior row resolves through 085.** Its `present_in` repetitions are
+  controls; one opens that repetition's observations of the behavior in
+  Evidence, for that repetition's pair of runs.
+- **The single-run comparison** renders D12's sameness and warnings, and says
+  frequency and repeated fidelity are not applicable — not a scenario
+  execution.
+- **Overview's sixth panel, Latest comparison** (§ 3): the newest execution in
+  the context, its recorded verdict or *not recorded*, the four sameness
+  answers, its added, removed and lost behavior rows, the first suggestion and
+  a link to Change Impact; its own read time, Refresh, no timer, a late answer
+  discarded. The "Six panels" comment is now accurate.
+
+### Departures from the specification, and why
+
+- **The Overview's counts are rows of the report**, counted by the
+  classification the report states and labelled so — the precedent of the
+  Gate verdicts panel's tally — because the report carries no total of added,
+  removed or lost behaviors. Repeatedly added behaviors are also the gate's
+  own `repeatedly_added_behaviors` actual, which Change Impact shows.
+- **The browser check is a Chrome test that skips without a browser**, like
+  the PostgreSQL tests without a database: the WebUI has no JavaScript test
+  runner beyond the node driver, and a rendered DOM needs a browser.
+- **A behavior's evidence link pairs runs by repetition index**: repetition *i*
+  resolves against reference *i* and candidate *i*. The reader chooses *i*.
+
+### Proven by test
+
+- In Chrome, for three golden reports (model change, gate not recorded,
+  deferred gate): every sourced figure equals its report member, and no other
+  digit is rendered; every section is present; a gate not recorded shows no
+  check and no verdict.
+- Statically: the module contains no arithmetic or numeric formatting, reads
+  the display strings rather than deriving them, and the existing guards —
+  no uint64 parsed as a number, no markup parsed, every await followed by an
+  ownership check, no timer — hold for the new code.
+- `reportTally` counts rows by the stated classification, `not_recorded`
+  under its own word, and nothing for an absent report.
+
+### Checked by hand
+
+Headless Chrome against the real model-change execution
+(`scn-support-model-change-20261012T154532-3ff6efc3`, served by this branch's
+`trustvian-local`): desktop in the light and dark schemes rendered every
+section; the wide target table scrolls inside its own wrapper. At 390 px,
+Chrome's headless window does not go below its minimum width, so the
+screenshot is a crop of a wider layout — the existing Status view crops the
+same way — and the phone layout was not proven by it.
