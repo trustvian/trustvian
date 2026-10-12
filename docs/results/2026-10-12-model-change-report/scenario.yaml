@@ -1,0 +1,45 @@
+# The measured Model Change Report for v0.12.0: the demo's support agent,
+# reference model llama3.2 against candidate gemma3:4b, chosen through
+# OLLAMA_MODEL. Everything else is the same on both sides.
+#
+# Four of the demo's five tickets (t-1001 to t-1004). With all five, llama3.2
+# at the demo's temperature 0 did not answer its planning request for t-1005
+# within the agent's 180 s timeout, in two runs out of two, so the reference
+# side failed its first repetition and no verdict existed (see README.md).
+version: v1
+name: support-model-change
+runs: 10
+instrumentation: existing
+agent: support-agent
+reference:
+  command: [$DEMO/.demo/venv/bin/opentelemetry-instrument, $DEMO/.demo/venv/bin/python, harness/run_agent.py]
+  candidate: support-llama32
+  model_env: OLLAMA_MODEL
+  env:
+    SUPPORT_AGENT_PORT: "18788"
+    SUPPORT_AGENT_MODE: reference
+    SUPPORT_AGENT_ROUNDS: "4"
+    OLLAMA_MODEL: llama3.2
+candidate:
+  command: [$DEMO/.demo/venv/bin/opentelemetry-instrument, $DEMO/.demo/venv/bin/python, harness/run_agent.py]
+  candidate: support-gemma3
+  model_env: OLLAMA_MODEL
+  env:
+    SUPPORT_AGENT_PORT: "18788"
+    SUPPORT_AGENT_MODE: reference
+    SUPPORT_AGENT_ROUNDS: "4"
+    OLLAMA_MODEL: gemma3:4b
+gate:
+  added_candidate_presence_minimum: 8
+  added_reference_presence_maximum: 2
+  max_repeated_added_behaviors: 0
+  max_block_decisions_per_run: 0
+  max_critical_risk_observations_per_run: 0
+  min_candidate_frequency: 8
+  max_lost_behaviors: 0
+  max_calls_per_run:
+    - target: ollama
+      max: 60
+    - target: ollama.localhost
+      max: 60
+  max_llm_calls_per_run: 60

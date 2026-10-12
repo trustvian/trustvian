@@ -1,0 +1,11 @@
+version: 1
+pricing_version: "illustrative-2026-10"
+source: "illustrative prices, not a provider's"
+currency: USD
+models:
+  - model: llama3.2
+    input_micros_per_million_tokens: 50000
+    output_micros_per_million_tokens: 200000
+  - model: gemma3:4b
+    input_micros_per_million_tokens: 100000
+    output_micros_per_million_tokens: 400000
