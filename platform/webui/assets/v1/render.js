@@ -766,11 +766,36 @@ export function renderScorecard(target, scorecard) {
   }
 }
 
+// renderSameness renders a single-run comparison's sameness (task 107, D12):
+// each run looked up through the execution that recorded it, the answer the
+// control plane gave, and its warnings. A run no execution recorded reads
+// not_recorded; nothing here decides sameness.
+function renderSameness(target, sameness, warnings) {
+  const answer = { true: "same", false: "differs", not_recorded: "not recorded" };
+  const word = (value) => (Object.prototype.hasOwnProperty.call(answer, value) ? answer[value] : display(value));
+  const side = (s, member) => (s && typeof s[member] === "string" ? s[member] : "not recorded");
+  const prompt = (s) => (s && s.prompt_ref ? `${s.prompt_ref.name} ${s.prompt_ref.digest}` : "not recorded");
+  target.append(table(["", "Reference", "Candidate", "Same"], [
+    ["Scenario", side(sameness.reference, "scenario_digest"), side(sameness.candidate, "scenario_digest"), word(sameness.same_scenario)],
+    ["Inputs", side(sameness.reference, "inputs"), side(sameness.candidate, "inputs"), word(sameness.same_inputs)],
+    ["Model", side(sameness.reference, "model"), side(sameness.candidate, "model"), word(sameness.same_model)],
+    ["Prompt reference", prompt(sameness.reference), prompt(sameness.candidate), word(sameness.same_prompt_ref)],
+  ], "Sameness, from the executions that recorded each run"));
+  for (const warning of Array.isArray(warnings) ? warnings : []) {
+    target.append(element("p", "note-inline", `Warning ${display(warning.code)}: ${display(warning.text)}`));
+  }
+  target.append(element("p", "note-inline",
+    "Frequency and repeated fidelity: not applicable — not a scenario execution. A scenario execution's report is under Scenario executions above."));
+}
+
 export function renderComparison(target, response, options = {}) {
   clear(target);
   target.append(
     element("p", "note-inline", `Reference ${display(response.reference_run_id)} → candidate ${display(response.candidate_run_id)}`),
   );
+  if (response.sameness !== undefined && response.sameness !== null) {
+    renderSameness(target, response.sameness, response.warnings);
+  }
   if (response.gate !== undefined && response.gate !== null) {
     renderGate(target, response.gate, options);
   }
