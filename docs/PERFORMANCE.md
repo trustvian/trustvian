@@ -1371,7 +1371,33 @@ additions, most of it `present_in` — up to 2N repetition entries per behavior,
 which is also why its document is three times the size. The time is the
 reduction's: reading 128 runs' snapshots and aggregates.
 
-## Reading the numbers
+### v0.12 task 107-B (One Renderer)
+
+Task 107-B adds nothing to ingest, to the Collector or to the engine. A
+scenario execution's begin writes two more short columns (schema 15), the
+report gains each target's latency and error sections, and `eval run --json`
+makes one more request after a completion: the report.
+
+**The report route at the repetition bound** — the same
+`BenchmarkScenarioExecutionReportAtTheBound` as 107-A, now with the per-target
+sections (D16):
+
+| Request | ns/op | bytes/doc | B/op | allocs/op |
+|---|---|---|---|---|
+| `GET …/report` | 26,506,733–26,575,502 | 157,175 | ~11,285,000 | ~131,160 |
+| `POST /v1/evaluations/compare-repeated`, same runs | 25,905,196–25,917,594 | 53,367 | ~8,347,000 | ~129,675 |
+
+Three runs each, 20 iterations, darwin/arm64, Apple M3 Pro, Go 1.27. Against
+107-A the report is unchanged in time and about 2 MB more allocation: the
+second per-target accumulation over the same 128 runs' entries. Its
+document grew by 1,485 bytes for the fixture's one target.
+
+**Rendering** — `BenchmarkRenderReport` (`internal/cirender`): parse, validate
+and render the golden model-change report (51 KB), 275,328–281,141 ns/op,
+~389,000 B/op, 7,594 allocs/op. The at-bound document above (157,175 bytes)
+renders to 9,234 bytes of Markdown with nothing shed: `present_in`, which is
+most of its size, is not rendered.
+
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —
 that split tells you what's real.** This table was re-measured for

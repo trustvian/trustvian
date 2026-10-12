@@ -58,6 +58,24 @@ actually depend on.
   - `POST /v1/evaluations/compare` gains `sameness` and `warnings[]`, each run
     looked up through the executions that recorded it. Additive; no check
     reads them.
+- **One renderer, and the report the pull request comment shows** (task 107-B,
+  decisions D14–D16).
+  - `internal/cirender` renders result document version 2: sameness and its
+    warnings, every behavior's presence, calls per run, classification, `lost`
+    and fidelity, every target's calls, ratio, latency buckets, status classes
+    and 429s, tokens, cost only with its pricing provenance, the recorded gate
+    with all four frequency checks, and the suggestions. Every figure is a
+    string or integer from the document. `cmd/trustvian-ci-render` calls it;
+    every version 1 rendering is byte-identical.
+  - `trustvian eval report <id> --format md` prints that Markdown, byte for
+    byte what `trustvian-ci-render --document <file>` prints for the same
+    document. The comment is the same rendering with the commit, run link and
+    exit code after its heading.
+  - Each report target carries the latency and error sections
+    `GET /v1/evaluations/operational` states for the same runs (D16).
+  - Platform schema 15 records the CLI version and the reference mode a
+    scenario execution began with, on SQLite and PostgreSQL (D14). The report
+    names them; an execution begun earlier reads `not_recorded`.
 - **Pipeline status surface** (task 105,
   [ADR 0064](docs/adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md),
   [ADR 0065](docs/adr/0065-collectors-report-pipeline-status-the-control-plane-holds-it-in-memory.md)).
@@ -181,6 +199,14 @@ actually depend on.
 
 ### Changed
 
+- **`trustvian eval run --json` prints the execution's report** (task 107-B,
+  D15). After a completion it prints result document version 2, exactly what
+  `trustvian eval report --json` prints, and a suite member embeds its
+  execution's report. Against a control plane without the report route it
+  prints version 1, as before, and says so on stderr. Consumers of the
+  document branch on `version`. `POST /v1/scenario-executions` gains an
+  optional `cli_version`, which a control plane older than 107-B refuses:
+  upgrade the control plane before the CLI.
 - **A contradictory fidelity/layer pair is refused at ingest** (task 081). An
   envelope stating `transport` with a `model`, `tool` or `retrieval` layer, or
   `semantic` with `transport`, now gets `400`. No Trustvian producer sends one.

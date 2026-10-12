@@ -13,7 +13,7 @@ Their specifications live here because this is the milestone that builds them.
 | [106 — Frequency evidence](106-frequency-evidence.md) | Implemented |
 | [086 — Scenario and input versioning](086-scenario-and-input-versioning.md) | Implemented |
 | [081 — Persisted per-behavior fidelity](081-persisted-behavior-fidelity.md) | Implemented |
-| [107 — Change Impact view and Model Change Report](107-change-impact-view-and-report.md) | 107-A implemented (report identity and JSON); 107-B and 107-C specified |
+| [107 — Change Impact view and Model Change Report](107-change-impact-view-and-report.md) | 107-A (report identity and JSON) and 107-B (one renderer, the comment's report) implemented; 107-C specified |
 
 [080 — Metadata-only detection evaluation](../v1.0/080-metadata-only-detection-evaluation.md)
 runs alongside as a measurement. It gates nothing, and its specification stays
@@ -27,7 +27,9 @@ it reads (decision D3).
 
 **Schema steps.** 087, 086, 081 and 107 (the gate-result snapshot on an
 execution) each add one forward-only step on both backends, numbered in the
-order they land: 087 took v11, 086 took v12, 081 took v13 and 107 took v14. 105 and 106 add none: 105's state is ephemeral, and 106 reads
+order they land: 087 took v11, 086 took v12, 081 took v13, and 107 took v14
+(107-A, the gate snapshot) and v15 (107-B, the runner's CLI version and
+reference mode). 105 and 106 add none: 105's state is ephemeral, and 106 reads
 evidence that is already persisted.
 
 Every task here keeps the milestone's constraints:

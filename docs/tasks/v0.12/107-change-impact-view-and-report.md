@@ -1,6 +1,6 @@
 # 107 — Change Impact View and Model Change Report
 
-Status: 107-A implemented (the report's identity and JSON) — see [What shipped (107-A)](#what-shipped-107-a); 107-B (the shared renderer and Markdown) and 107-C (the WebUI) specified
+Status: 107-A implemented (the report's identity and JSON) — see [What shipped (107-A)](#what-shipped-107-a); 107-B implemented (one renderer, and the report the comment shows) — see [What shipped (107-B)](#what-shipped-107-b); 107-C (the WebUI) specified
 Milestone: [`v0.12.0`](../../ROADMAP.md#v0120--change-impact)
 Depends on: [086](086-scenario-and-input-versioning.md),
 [087](087-performance-and-cost-evidence.md), [106](106-frequency-evidence.md),
@@ -50,7 +50,7 @@ and every cell is a field of a `/v1` response:
 | Behaviors | 078 presence + 106 frequency + 081 fidelity | behavior · k/N reference · k/N candidate · calls/run (min–max, mean) per side · classification · lost · fidelity (with `mixed`) |
 | Targets | 106 per-target + 087 operational | target · calls total per side · ratio ‰ · latency buckets per side · status classes · 429s |
 | Tokens and cost | 087 `tokens`, cost with provenance | per side; cost only with `pricing_version` and `source` |
-| Gate | 056/078 `gate.checks` + 106 `gate.frequency_checks` | every check from both arrays, read together: the six `checks`, then the three `frequency_checks` with their `state` (`not_evaluated`, `evaluated`, `deferred`), per-target rows for `max_calls_per_run`, and `missing_evidence` when deferred |
+| Gate | 056/078 `gate.checks` + 106 `gate.frequency_checks` | every check from both arrays, read together: the six `checks`, then the four `frequency_checks` (106's three, then 081's `max_llm_calls_per_run`) with their `state` (`not_evaluated`, `evaluated`, `deferred`), per-target rows for `max_calls_per_run`, and `missing_evidence` when deferred |
 | Suggestions | 105/106 `suggestions[]` | `rule`, `text`, evidence |
 
 **Amends this table (spec maintenance after 106 and 086 landed).** 106
@@ -245,6 +245,28 @@ version, the hardware, and every unavailable section as it rendered.
   recorded it, exactly as compare-repeated does. A run no execution recorded
   reads `not_recorded`. Additive; no check reads it.
 
+- **D14 — Persist what version 1 already promised.** 107-A found two version 1
+  members no execution kept: `producers.cli_version`, and `reference.mode` for
+  a reused reference. One forward-only schema step, v15, adds two nullable
+  columns to `platform_scenario_executions`, set from the begin request
+  `eval run` already sends and validated in format: the version within the
+  shared text bounds, the mode `execution` or `last`. An execution begun before
+  v15 keeps reading `not_recorded`. The chained upgrade from v10 reaches v15 on
+  both backends, and the recovery drill gains a v14 leg and restores at v15.
+- **D15 — The PR comment renders the document `eval report` prints.** After a
+  completion, `trustvian eval run --json` prints the execution's report, the
+  document `GET …/report` serves, unchanged; a suite member embeds its
+  execution's report. Against a control plane without the route (`404`) it
+  prints version 1, as before, and says so on stderr. The 079 action then
+  uploads, and the comment renders, exactly what `eval report --json` returns.
+- **D16 — One report holds the per-target operational evidence.** Each report
+  target carries its latency buckets, status classes and 429s per side, with
+  `runs_with_evidence`, from the computation `GET /v1/evaluations/operational`
+  runs, summed over the execution's runs as that route sums a repeated
+  comparison. A composition of existing evidence; additive in version 2.
+- **D11 stands.** The control plane serves JSON only; the Markdown is rendered
+  only by the one renderer.
+
 The task is delivered in three pull requests: **107-A** (this section's
 decisions, the snapshot, the report route, its display strings, `eval report`
 and D12), **107-B** (the renderer moves to `internal/cirender`, renders version
@@ -425,3 +447,128 @@ was set, `max_calls_per_run` naming both `ollama` and `ollama.localhost`.
 The other rows — `api.js:362-367`, `render.js:769-782`,
 `document.go:3-14`, `evidence.go:90-104` and `overview.js:3-11` (still "Six
 panels" listing five) — hold as written.
+
+## What shipped (107-B)
+
+### Delivered
+
+- **Schema 15 (D14).** `platform_scenario_executions` gains `cli_version` and
+  `reference_mode`, nullable, on both backends, forward-only, no backfill.
+  `POST /v1/scenario-executions` takes an optional `cli_version` (shared text
+  bounds, not blank, not padded); the mode is the one the begin request asked
+  for. Restore refuses an empty value, an unknown mode or a mode without a
+  reference. The report's `producers.cli_version` and `reference.mode` read
+  the recorded values, and `not_recorded` only for an execution begun before
+  v15. `eval run` sends its version on begin. The v10 upgrade chains to v15,
+  and the recovery drill gained a v14 leg and restores at v15.
+- **D16.** Every report target carries `operational.latency` and
+  `operational.errors`, per side with `runs_with_evidence`, from one
+  accumulation (`targetOperationalRows`) that `GET /v1/evaluations/operational`
+  now shares, over the completed repetitions the comparison counts.
+- **One renderer.** `cmd/trustvian-ci-render`'s document half moved, unchanged,
+  to `internal/cirender`; the command keeps reading and validating the
+  artifact. Every version 1 golden file renders byte-identically.
+- **Version 2 rendering** in `internal/cirender`: strict parsing and the
+  sections listed in § 2, with every figure a string or integer from the
+  document, and shedding to the 60,000-byte limit with each shed part named.
+- **Six golden version 2 documents**, each the route's output for a fixture
+  execution recorded through the real routes, and their Markdown.
+- **`trustvian eval report --format md`**, and `trustvian-ci-render --document
+  <file>`, byte-identical for every golden document.
+- **D15.** `eval run --json` prints the execution's report; suite members
+  embed theirs; a control plane without the route keeps version 1, and stderr
+  says so.
+- **Docs:** ADR 0057's pointer, `docs/compatibility.md`, `docs/platform-cli.md`,
+  `docs/ci-github-action.md`, the CHANGELOG, PERFORMANCE, and this section.
+
+### Departures from the specification, and why
+
+- **The comment and `eval report --format md` are not byte-identical; the
+  document rendering is.** The comment names the commit, the run link and the
+  CLI exit code, which `eval report` cannot know. So the comment is the bare
+  rendering with those three lines after its heading, and the bare rendering
+  is what `eval report --format md` and the new `trustvian-ci-render
+  --document` print, byte for byte. Tests pin both halves.
+- **The action's posted comment is still version 1.** The run and comment
+  actions build the commit `runtime.env` pins (ADR 0056, ADR 0058), which must
+  be a commit of `main` and predates this task. Moving the pin is a separate
+  reviewed change once this merges. Until then the end-to-end workflow's new
+  `head-runtime` job runs the action's `run.sh` with this commit's runtime,
+  requires the artifact to be the version 2 report, and requires its comment
+  to be the version 2 rendering, framed.
+- **D15's fallback is wider than `404`.** Any failure to read the report
+  prints version 1 and names why on stderr, because the verdict is already
+  committed and version 1 carries it. A report that contradicts the completion
+  (another execution, version, verdict, or a gate not recorded) is printed
+  nowhere and exits `3`.
+- **The suite document stays version 1.** Its members embed version 1 or 2;
+  the renderer reads either.
+- **Per-target tokens are not on the report.** D16 names latency, status
+  classes and 429s; tokens stay run-level, where cost is computed.
+- **A no-fit report under `eval report --format md` exits `3`**, like a
+  refused one: nothing was rendered.
+
+### Measured
+
+A real model change on Ollama 0.34.4, Apple M3 Pro, the demo agent at
+`7d86e8a`: `gemma3:4b` (reference) against `llama3.2` (candidate), both chosen
+by `model_env: OLLAMA_MODEL`, `runs: 3`, execution
+`scn-support-model-change-20261012T154532-3ff6efc3`. `eval run --json` exited
+`1` (FAIL) and printed a 63,260-byte document; `eval report --json` printed the
+same bytes. `eval report --format md` printed 15,537 bytes, identical to
+`trustvian-ci-render --document` on `eval run --json`'s output.
+
+- **Sameness:** scenario `same`, inputs none declared on both sides, model
+  `gemma3:4b` against `llama3.2` **differs**, prompt reference not recorded;
+  one warning, `model_differs`.
+- **A behavior row:** `tool · billing_lookup` — `0/3` → `3/3`, calls per run
+  `0–0, mean 0` → `2–2, mean 2`, added, not lost, candidate fidelity
+  semantic 6; `present_in` names candidate repetitions 1–3 with their runs.
+- **Targets:** `ollama` 20 → 18 calls per run (`0.9×`); latency `≤2.5 s 3 ·
+  ≤10 s 57` (60 observed) → `≤2.5 s 53 · ≤10 s 1` (54); no HTTP status (the
+  GenAI span states none). `ollama.localhost` the same calls and buckets, with
+  `2xx` 60 → 54 and no 429.
+- **Tokens:** input 39,354 → 24,288, output 8,232 → 5,364. Cost 7,228 → 2,287
+  micro-USD (−4,941) under illustrative prices (`measurement-107b`).
+- **Gate:** FAIL, as recorded — repeatedly added behaviors 3 (≤ 0), minimum
+  candidate presence 0 (≥ 2), lost behaviors 3 (≤ 0); calls per run to
+  `ollama` and `ollama.localhost` 18 (≤ 30); model calls per run 18 (≤ 30).
+- **Recorded facts:** `producers.cli_version` is the CLI's own version string;
+  the execution reused no reference.
+
+The report route at the bound, the renderer's cost and the at-bound document's
+Markdown are in [PERFORMANCE](../../PERFORMANCE.md).
+
+### Proven by test
+
+- D14: the version validation table; a mode only beside a reference; a round
+  trip and five kinds of stored damage; v14 → v15 and v10 → v15 on both
+  backends; fresh and migrated columns agree; the service records the mode
+  asked for; the route refuses a malformed version; the report carries it, and
+  the version 1 subset test now covers `producers` too — only `version`
+  differs.
+- D16: every report target's sections equal the operational route's for the
+  same runs.
+- Rendering: the published example renders every section; out-of-contract
+  values are refused (25 cases); absent, null, zero and false stay distinct;
+  hostile strings stay inert; shedding keeps the gate, lost and classified
+  behaviors and sameness; a gate not recorded shows no check or verdict; the
+  comment is the bare rendering framed; suites embed reports.
+- The goldens: each is the route's output, byte-identical on PostgreSQL, still
+  shows its case, and renders to its Markdown; every golden file has a source.
+- `eval report --format md` equals `trustvian-ci-render --document` for all
+  fifteen golden documents (six version 2, nine version 1).
+- D15: the report is printed unchanged; `404` keeps version 1 and says so; four
+  contradictions exit `3`; suite members embed their reports.
+
+### Current state rows found stale on `main` (`836eb81`)
+
+| Row | On `836eb81` |
+|---|---|
+| Comparisons are not persisted, `platform/controlplane.go:1398-1411` | Still true; `EvaluationComparison` is at 1451 and `CompareEvaluations` at 1476. 1391 is `EvaluationProgressReport` |
+| Overview has five panels, `index.html:221-227` | `platform/webui/assets/index.html:248-252` |
+| Scenario executions persist no gate limits or check results | No longer true since 107-A (D10) |
+| The CI renderer, `document.go:3-14`, `render.go:186-360` | True on `836eb81`; after this task the document and rendering code live in `internal/cirender/document.go` and `render.go` |
+
+`api.js:362-367`, `render.js:769-782`, `evidence.go:90-104` and
+`overview.js:3-11` hold as written.
