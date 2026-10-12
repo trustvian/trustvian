@@ -8,6 +8,8 @@ actually depend on.
 
 ## Unreleased
 
+## v0.12.0 — Change Impact
+
 ### Security
 
 - **The Go security release of 2026-10-08** (HTTP/2, `net/http`,
