@@ -56,11 +56,11 @@ one URL and needs no second field.
 |---|---|
 | **Live** *(landing view when something is active)* | Watch. Active agents appear by themselves, one run's behavior flow animates as calls arrive, and an inspector shows what Trustvian decided |
 | **Status** *(landing view when nothing is)* | Diagnose. Which Collectors are reporting, which producers they have seen and how, which model calls the telemetry named, how many spans arrived only as HTTP, how each span's actor was bound, and named suggestions for what to check |
-| **Overview** | Orient. Live activity, the newest runs of a project, agent or candidate by status, one run's authoritative evidence, recent gate verdicts and the project's environments — each saying what it covers and when it was read |
+| **Overview** | Orient. Live activity, the newest runs of a project, agent or candidate by status, one run's authoritative evidence, the latest scenario execution's report, recent gate verdicts and the project's environments — each saying what it covers and when it was read |
 | **Projects** | Choose. A searchable table of what exists; picking a row scopes the whole console and the sidebar says which project that is |
 | **Runs** | Explore. A visible list of the project's agents and their candidates, then the run table itself. Clicking a run opens its workspace |
 | **Traces** | Investigate. A run's traces as a searchable list, one trace's evaluated actions as a waterfall, and one action's details beside it |
-| **Compare** | Measure. Assign two runs from a table as reference and candidate, then read the server's gate, diff and scorecard |
+| **Change Impact** | Measure. Read a recorded scenario execution's report — sameness, behaviors, targets, tokens and cost, the recorded gate and suggestions — or assign two runs from a table and read the server's gate, diff and scorecard |
 | **Evidence** | Explain. Follow a gate check or a behavioral delta to the observations behind it, and read one run's retained session, trace, sequence and timeline |
 | **Promotions** | Decide. Record a promotion decision and page the scoped project's history |
 | **Manage** | Administer. Create projects, agents, candidates and runs; drive a run's lifecycle; open anything by identifier |
@@ -123,13 +123,14 @@ forgotten after 300 s.
 
 **Overview** answers *where should I look first?* from records `/v1` already
 serves. Choose a project, agent and candidate at the top — or arrive with them
-already chosen from any other destination — and five panels summarise them:
+already chosen from any other destination — and six panels summarise them:
 
 | Panel | Reads | Says it covers |
 |---|---|---|
 | Live now | the Live connection's scope cards, for the project | this connection since it last synchronized |
 | Runs | the newest runs of the deepest level chosen — project, agent or candidate | every run newest first, or the newest page when more exist; **Load next page** reads on |
 | Newest run / Chosen run | that run's progress and first page of behaviors | one run; the newest by creation time unless you chose one |
+| Latest comparison | the first row of the project's scenario executions, narrowed to the agent when one is chosen, and that execution's report when it completed | the newest execution: its recorded verdict or *not recorded*, the four sameness answers, the first suggestion, and its added, removed and lost behavior rows — counted by the classification the report states, and labelled as rows of the report. **Open in Change Impact** reads it whole |
 | Gate verdicts | the first page of the project's promotion decisions | identifier order, not newest first |
 | Environments | the project's whole environment collection | every environment |
 
@@ -141,7 +142,7 @@ the change affects.
 
 Everything links to the record behind it. A run's chip chooses it for the
 evidence panel and **Open** goes to its workspace; **Reference** and
-**Candidate** assign it as a side in Compare, which is then ready with both
+**Candidate** assign it as a side in Change Impact's run comparison, which is then ready with both
 runs chosen; a verdict's **Open** opens its decision; a live card's **Watch**
 selects it in Live.
 
@@ -649,14 +650,55 @@ stay. Arrow keys, Page Up/Down, Home and End move the selection and the panel
 follows; Escape closes it and returns focus to the row. On a narrow screen the
 panel is a drawer over the waterfall and focus moves into it.
 
+## Change Impact
+
+**Change Impact** (task 107-C) is where a change is measured. Its first part is
+the context's recorded **scenario executions**, newest first, one page at a
+time; choosing a completed one reads its report, `GET
+/v1/scenario-executions/{id}/report` — result document version 2, the same
+document `trustvian eval report` prints and the pull request comment renders.
+**Open in Change Impact** on Evidence → Scenarios and on the Overview's latest
+comparison open the same report, and `#execution=<id>` in the address opens it
+with one read.
+
+The report is one table per section:
+
+| Section | What it shows |
+|---|---|
+| Sameness | whether both sides ran the same scenario, inputs, model and prompt reference — `same`, `differs` or `not recorded`, the control plane's answer — with both sides' recorded values, and every warning beside the gate |
+| Behaviors | each behavior's presence `k/N` on both sides, calls per run (min–max, mean), its classification, `lost` in its own column, each side's fidelity with `mixed` and its counts, and the repetitions that observed it |
+| Targets | calls per run per side and the call ratio, then each side's latency buckets, span status, HTTP status classes and 429s, and the change where the control plane compared them |
+| Tokens and cost | tokens per side and their change; cost only with its pricing version, digest and source, otherwise *not available* and why |
+| Gate | the six checks and the four frequency checks together, per-target rows for calls per run, a deferred check's missing evidence — as the execution recorded them when it completed. An execution completed before schema 14 says the gate was **not recorded** and shows no check, verdict or classification |
+| Suggestions | each rule's text and evidence, beside the verdict |
+
+**Every figure is the report's own.** `"2/3"`, `"1–4"`, `"2.5"` and `"1.2×"`
+are display strings the control plane formatted; counts are its decimals and
+changes its signed decimals. The page divides, rounds and compares nothing, and
+each figure sits in an element naming the report member it came from — a
+browser test walks the rendered page against golden reports and finds no other
+digit than a closed-vocabulary label such as a latency bucket's name.
+
+**Every behavior resolves to its observations.** A behavior row lists the
+repetitions that observed it, `R1`…`Rn` and `C1`…`Cn`. Choosing one opens that
+repetition's observations of the behavior in Evidence, through task 085, for
+that repetition's pair of runs. The reader chooses the repetition; nothing on
+the page decides which run represents a behavior.
+
 ## Comparing two runs
 
-**Compare** shows the runs of a candidate as a table with two controls on every
+Below the reports, **Change Impact** shows the runs of a candidate as a table with two controls on every
 row: **Reference** and **Candidate**. You assign a side by pressing one. Both
 chosen runs are then shown in full in labelled panels, so what you are about to
 compare is on screen rather than implied by two opaque strings, and the
 **Compare runs** control stays disabled until both sides are chosen and they
 are different runs.
+
+Two runs outside a scenario execution have no report. Their comparison shows
+the gate, the behavior diff and the scorecard, and since task 107-A also the
+sameness each run's recording execution states — `not recorded` for a run no
+execution recorded — with its warnings. Frequency and repeated fidelity read
+*not applicable — not a scenario execution*.
 
 There is no identifier field for either side and no menu standing in for one.
 The identifier is still the value the server receives — the contract is

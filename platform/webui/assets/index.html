@@ -64,7 +64,7 @@
       <li><button type="button" class="nav-item" id="nav-projects" data-view="view-projects" data-icon="projects">Projects</button></li>
       <li><button type="button" class="nav-item" id="nav-runs" data-view="view-runs" data-icon="runs">Runs</button></li>
       <li><button type="button" class="nav-item" id="nav-traces" data-view="view-traces" data-icon="trace">Traces</button></li>
-      <li><button type="button" class="nav-item" id="nav-compare" data-view="view-compare" data-icon="compare">Compare</button></li>
+      <li><button type="button" class="nav-item" id="nav-compare" data-view="view-compare" data-icon="compare">Change Impact</button></li>
       <li><button type="button" class="nav-item" id="nav-evidence" data-view="view-evidence" data-icon="evidence">Evidence</button></li>
     </ul>
   </div>
@@ -248,6 +248,7 @@
     <section class="panel panel-live" id="overview-live" aria-label="Live now"></section>
     <section class="panel panel-runs" id="overview-runs" aria-label="Runs"></section>
     <section class="panel panel-evidence" id="overview-evidence" aria-label="Newest run"></section>
+    <section class="panel panel-latest" id="overview-latest" aria-label="Latest comparison"></section>
     <section class="panel panel-verdicts" id="overview-verdicts" aria-label="Gate verdicts"></section>
     <section class="panel panel-envs" id="overview-environments" aria-label="Environments"></section>
   </div>
@@ -421,12 +422,36 @@
   </div>
 </section>
 
-<!-- ============================ Compare ============================
-     Two runs, chosen from a visible table by assigning rows to a side. The
-     two chosen runs are then shown in full, side by side, so the reader can
-     see what they are about to compare rather than two opaque identifiers.
+<!-- ========================= Change Impact =========================
+     Task 107-C. First, one recorded scenario execution's report — the
+     evidence the pull request comment shows, from the same document. Then,
+     for two runs that belong to no execution, the single-run comparison:
+     two runs chosen from a visible table by assigning rows to a side, shown
+     in full, side by side, before they are compared.
 -->
 <section class="view" id="view-compare" data-nav="nav-compare" hidden>
+  <div class="toolbar">
+    <h2 class="region-title">Scenario executions</h2>
+    <button type="button" class="btn-quiet" id="impact-refresh">Refresh</button>
+  </div>
+  <p class="region-note">
+    Each completed scenario execution has a report: sameness, every behavior
+    with presence and calls per run, every target with its latency and
+    status, tokens and cost, the gate as the execution recorded it, and the
+    suggestions. Every figure is the report's own; nothing is computed here.
+    It is what <code>trustvian eval report</code> prints and the pull request
+    comment shows.
+  </p>
+  <div id="impact-executions"></div>
+  <div class="result impact-report" id="impact-report"></div>
+
+  <h2 class="region-title">Or compare two runs</h2>
+  <p class="region-note">
+    Two runs outside a scenario execution have no report. Their comparison
+    has the gate, the behavior diff and the scorecard, and sameness when an
+    execution recorded either run; frequency and repeated fidelity are not
+    applicable — not a scenario execution.
+  </p>
   <div class="scope-bar">
     <div class="scope-col">
       <div class="scope-col-head">

@@ -927,3 +927,30 @@ fieldset > .hint { margin-bottom: 0.6rem; }
    those two cells wrap anywhere rather than pushing a later column out of
    view. Names, counts and times keep their own lines. */
 .status-grid .data-table td.status-wrap { min-width: 14ch; overflow-wrap: anywhere; white-space: normal; }
+
+/* ---------------------------------------------------------------- Change Impact (task 107-C) */
+.impact-report { margin-top: var(--s-3); }
+.impact-section { margin: var(--s-4) 0 var(--s-2); font-size: var(--t-base); }
+.impact-ident, .impact-note { color: var(--muted); font-size: var(--t-small); margin: var(--s-2) 0; }
+.impact-table td { vertical-align: top; }
+.impact-table .fp { color: var(--muted); }
+.impact-warnings, .impact-suggestions { margin: var(--s-2) 0; padding-left: var(--s-4); }
+.impact-warning strong { color: var(--fail); }
+.impact-executions { list-style: none; margin: var(--s-2) 0; padding: 0; }
+.impact-execution {
+  display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: baseline;
+  padding: var(--s-1) 0; border-bottom: 1px solid var(--line);
+}
+.impact-execution.selected { font-weight: 600; }
+.impact-execution .exec-id { color: var(--muted); font-size: var(--t-small); overflow-wrap: anywhere; }
+.present-in { display: inline-flex; flex-wrap: wrap; gap: var(--s-1); }
+.rep-chip { font-size: var(--t-small); }
+.class-added, .class-removed, .lost, .outcome-fail, .target-fail, .same-false { font-weight: 600; }
+.same-false { color: var(--fail); }
+.fidelity-mixed { font-weight: 600; }
+.gate-unrecorded { color: var(--muted); }
+/* A long digest or identifier wraps rather than widening the page; a wide
+   table scrolls inside its own wrapper. */
+.impact-report { min-width: 0; max-width: 100%; }
+.impact-report p, .impact-report li, .impact-execution { overflow-wrap: anywhere; }
+.impact-report .scroll { max-width: 100%; overflow-x: auto; }

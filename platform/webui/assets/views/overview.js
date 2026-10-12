@@ -3,12 +3,16 @@
 // Six panels, each a summary of records `/v1` already serves and each saying
 // what it covers and when it was read:
 //
-//   Live now        the realtime scope cards of this connection, for the project
-//   Runs            one page of the chosen candidate's runs, by status
-//   Newest run      the authoritative progress and behaviors of the newest run
-//                   on that page
-//   Gate verdicts   the first page of the project's recorded promotion decisions
-//   Environments    the project's whole environment collection
+//   Live now           the realtime scope cards of this connection, for the
+//                      project
+//   Runs               one page of the chosen candidate's runs, by status
+//   Newest run         the authoritative progress and behaviors of the newest
+//                      run on that page
+//   Latest comparison  the newest recorded scenario execution in the context,
+//                      and its report (task 107-C)
+//   Gate verdicts      the first page of the project's recorded promotion
+//                      decisions
+//   Environments       the project's whole environment collection
 //
 // What it refuses to show is as deliberate as what it shows: no project-wide
 // "recent runs" (no such collection — task 101), no decision or risk
@@ -98,12 +102,16 @@ export function createOverview(deps) {
 
   const evidenceSurface = createSurface("overview.evidence");
   const verdictSurface = createSurface("overview.verdicts");
+  const latestSurface = createSurface("overview.latest");
   let visible = false;
   let evidence = {
     runID: "", progress: null, behaviors: null, readAt: 0,
     loading: false, progressError: null, behaviorsError: null,
   };
   let verdicts = { projectID: "", page: null, readAt: 0, loading: false, error: null };
+  let latest = { key: "", execution: null, report: null, readAt: 0, loading: false, error: null };
+  const agentID = () => (selection.selection.agent === null ? "" : selection.selection.agent.id);
+  const latestKey = () => JSON.stringify([projectID(), agentID()]);
 
   const projectID = () => (selection.selection.project === null ? "" : selection.selection.project.id);
   // The run page describes the current scope only when its key matches it;
@@ -213,10 +221,49 @@ export function createOverview(deps) {
     drawVerdicts();
   }
 
+  // loadLatest reads the newest scenario execution in the context — the first
+  // row of task 102's recency page — and, when it completed, its report.
+  async function loadLatest(force) {
+    const key = latestKey();
+    if (!force && key === latest.key && (latest.loading || latest.readAt > 0)) {
+      return;
+    }
+    const project = projectID();
+    const ticket = latestSurface.begin(key);
+    latest = { key, execution: null, report: null, readAt: 0, loading: project !== "", error: null };
+    drawLatest();
+    if (project === "" || typeof deps.listExecutions !== "function") {
+      return;
+    }
+    try {
+      const page = await deps.listExecutions(project, agentID() ? { agentID: agentID() } : {}, "");
+      if (!latestSurface.owns(ticket)) {
+        return;
+      }
+      const rows = Array.isArray(page.executions) ? page.executions : [];
+      const execution = rows.length === 0 ? null : rows[0];
+      let report = null;
+      if (execution !== null && execution.status === "completed") {
+        report = await deps.getReport(execution.id);
+      }
+      if (!latestSurface.owns(ticket)) {
+        return;
+      }
+      latest = { key, execution, report, readAt: now(), loading: false, error: null };
+    } catch (error) {
+      if (!latestSurface.owns(ticket)) {
+        return;
+      }
+      latest = { key, execution: null, report: null, readAt: now(), loading: false, error };
+    }
+    drawLatest();
+  }
+
   function readWhatIsMissing() {
     void selection.ensure("runs");
     void selection.ensure("environments");
     void loadVerdicts(false);
+    void loadLatest(false);
     void loadEvidence(summarisedRun(), false);
   }
 
@@ -517,6 +564,64 @@ export function createOverview(deps) {
       "A verdict is the gate's outcome under the limits recorded with it — not a judgement that a candidate is safe."));
   }
 
+  function drawLatest() {
+    const host = hosts.latest;
+    if (host === undefined || host === null) {
+      return;
+    }
+    clear(host);
+    panelHead(host, "Latest comparison",
+      agentID() !== "" ? "The newest scenario execution of the chosen agent" : "The newest scenario execution in the project",
+      projectID() !== "" ? latest.readAt : undefined);
+    if (projectID() === "") {
+      host.append(inlineEmpty("Choose a project."));
+      return;
+    }
+    if (latest.loading) {
+      const box = element("div");
+      skeleton(box, 3, 3);
+      host.append(box);
+      return;
+    }
+    if (latest.error) {
+      failure(host, latest.error);
+      return;
+    }
+    const e = latest.execution;
+    if (e === null) {
+      host.append(emptyState("No scenario executions",
+        "A comparison with an identity is a scenario execution: run one with trustvian eval run.", "compare"));
+      return;
+    }
+    host.append(element("p", "panel-note mono", `${e.scenario_name || NOT_AVAILABLE} · ${e.id}`));
+    const report = latest.report;
+    if (report === null) {
+      host.append(inlineEmpty(`This execution is ${e.status || NOT_AVAILABLE}; only a completed execution has a report.`));
+      return;
+    }
+    const comparison = report.comparison || {};
+    const gate = comparison.gate || {};
+    const same = comparison.sameness || {};
+    const tally = model.reportTally(report);
+    const figures = element("div", "figures");
+    figures.append(figure("Verdict", gate.state === "recorded" ? gate.verdict : "not recorded",
+      gate.state === "recorded" ? `verdict-${String(gate.verdict).replace(/[^a-z]/g, "")}` : undefined));
+    figures.append(figure("Added rows", String(tally.added)));
+    figures.append(figure("Removed rows", String(tally.removed)));
+    figures.append(figure("Lost rows", String(tally.lost)));
+    host.append(figures);
+    host.append(element("p", "panel-note",
+      `Behavior rows of this report, by the classification it states; ${tally.rows} rows in all.`));
+    host.append(element("p", "panel-note",
+      `Same scenario ${same.same_scenario || NOT_AVAILABLE} · inputs ${same.same_inputs || NOT_AVAILABLE} · ` +
+      `model ${same.same_model || NOT_AVAILABLE} · prompt ${same.same_prompt_ref || NOT_AVAILABLE}`));
+    const suggestions = Array.isArray(comparison.suggestions) ? comparison.suggestions : [];
+    if (suggestions.length > 0) {
+      host.append(element("p", "panel-note", suggestions[0].text));
+    }
+    host.append(link("Open in Change Impact", () => nav.openReport(e.id), `Open the report of execution ${e.id}`));
+  }
+
   function drawEnvironments() {
     const host = hosts.environments;
     clear(host);
@@ -562,6 +667,7 @@ export function createOverview(deps) {
     drawRuns();
     drawEvidence();
     drawVerdicts();
+    drawLatest();
     drawEnvironments();
   }
 
@@ -581,6 +687,9 @@ export function createOverview(deps) {
     }
     if (what === "project") {
       void loadVerdicts(false);
+    }
+    if (what === "project" || what === "agent") {
+      void loadLatest(false);
     }
     // The newest run may have changed with the runs page or the candidate.
     void loadEvidence(summarisedRun(), false);
@@ -602,6 +711,7 @@ export function createOverview(deps) {
       void selection.refresh("runs");
       void selection.refresh("environments");
       void loadVerdicts(true);
+      void loadLatest(true);
       void loadEvidence(summarisedRun(), true);
     },
     drawLive() {

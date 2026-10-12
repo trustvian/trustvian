@@ -199,3 +199,30 @@ func TestOverviewIsADestinationButNotTheLandingView(t *testing.T) {
 		}
 	}
 }
+
+// The latest-comparison panel's counts are rows of the report, by the
+// classification the report states — never a figure it does not carry.
+func TestOverviewReportTallyCountsRowsAsStated(t *testing.T) {
+	const driver = `
+import * as m from "./views/overview-model.js";
+const report = { comparison: { behaviors: [
+  { classification: "added", lost: false },
+  { classification: "removed", lost: true },
+  { classification: "neither", lost: true },
+  { classification: "added" },
+  { classification: "not_recorded", lost: false },
+] } };
+process.stdout.write(JSON.stringify({ tally: m.reportTally(report), empty: m.reportTally({}) }));
+`
+	var got struct {
+		Tally, Empty struct{ Rows, Added, Removed, Lost, NotRecorded int }
+	}
+	decodeDriver(t, runDriver(t, driver), &got)
+	if got.Tally.Rows != 5 || got.Tally.Added != 2 || got.Tally.Removed != 1 || got.Tally.Lost != 2 ||
+		got.Tally.NotRecorded != 1 {
+		t.Errorf("reportTally = %+v", got.Tally)
+	}
+	if got.Empty.Rows != 0 || got.Empty.Added != 0 {
+		t.Errorf("an absent report produced figures: %+v", got.Empty)
+	}
+}
