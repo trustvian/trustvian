@@ -87,15 +87,15 @@ func (s Suite) Complete() bool { return s.r.complete }
 // RenderScenario renders a scenario's verdict within the limits: in full, then
 // with only the evidence the verdict rests on, and otherwise as no verdict.
 func RenderScenario(want Frame, lim Limits, s Scenario) Rendering {
-	return fit(want, lim, StateVerdict, func(full bool) string {
-		return renderScenario(want, lim, s.r, full)
+	return fit(want, lim, StateVerdict, func(level int) string {
+		return renderScenario(want, lim, s.r, level)
 	})
 }
 
 // RenderSuite renders a suite's report within the limits, as RenderScenario.
 func RenderSuite(want Frame, lim Limits, s Suite) Rendering {
-	return fit(want, lim, StateReport, func(full bool) string {
-		return renderSuite(want, lim, s.r, full)
+	return fit(want, lim, StateReport, func(level int) string {
+		return renderSuite(want, lim, s.r, level)
 	})
 }
 
@@ -112,3 +112,35 @@ const (
 	MaxJSONNodes    = maxJSONNodes
 	TruncatedMarker = truncatedMarker
 )
+
+// RenderDocument renders a bare result document — a scenario's, a report, or
+// a suite's — with no run around it: the rendering `trustvian eval report
+// --format md` prints, and `trustvian-ci-render --document` prints for the
+// same bytes. A comment for the same document is this rendering with the
+// commit, the run link and the CLI exit code added after its heading.
+//
+// A document that fails validation renders the no-verdict state, with
+// Rejected set, exactly as an artifact that fails validation does.
+func RenderDocument(raw []byte, lim Limits) Rendering {
+	var bare Frame
+	doc, err := parseStrict(raw)
+	if err != nil {
+		return rejected(bare, err)
+	}
+	if doc.kind == kindObject && doc.Has("members") {
+		suite, err := ParseSuite(doc)
+		if err != nil {
+			return rejected(bare, err)
+		}
+		if !suite.Complete() {
+			return noVerdict(bare, "the suite result is incomplete: it was larger than the CLI's "+
+				"output limit, so the CLI omitted every member outcome", nil)
+		}
+		return RenderSuite(bare, lim, suite)
+	}
+	scenario, err := ParseScenario(doc)
+	if err != nil {
+		return rejected(bare, err)
+	}
+	return RenderScenario(bare, lim, scenario)
+}

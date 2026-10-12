@@ -67,6 +67,10 @@ type scenarioResult struct {
 	behaviors   []behavior
 	checks      []check
 	verdict     string
+
+	// report is version 2's additions, nil for a version 1 document. For a
+	// report whose gate was not recorded, verdict is empty and checks nil.
+	report *report
 }
 
 type referenceProvenance struct {
@@ -99,6 +103,10 @@ func parseScenarioResult(doc *node, path string) (scenarioResult, error) {
 	var r scenarioResult
 	if doc.kind != kindObject {
 		return r, schemaErr(rootPath(path), "is not an object")
+	}
+	// Version 2 is the report (task 107); anything else but 1 is refused.
+	if version, err := str(doc, path, "version"); err == nil && version == "2" {
+		return parseReport(doc, path)
 	}
 	if err := equalText(doc, path, "version", "1"); err != nil {
 		return r, err

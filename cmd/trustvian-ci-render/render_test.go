@@ -769,7 +769,7 @@ func TestRenderRejectsOutOfContractValues(t *testing.T) {
 		name, field string
 		edit        func(doc map[string]any)
 	}{
-		{"document version 2", "version", func(d map[string]any) { d["version"] = "2" }},
+		{"document version 3", "version", func(d map[string]any) { d["version"] = "3" }},
 		{"comparison version 2", "comparison.version", func(d map[string]any) { obj(d, "comparison")["version"] = "2" }},
 		{"an unknown verdict", "comparison.gate.verdict", func(d map[string]any) { obj(d, "comparison", "gate")["verdict"] = "PASS" }},
 		{"an unknown classification", "comparison.behaviors[0].classification", func(d map[string]any) {
@@ -1310,7 +1310,8 @@ func assertInert(t *testing.T, md string) {
 		}
 		outside = strings.Replace(outside, runLink, "", 1)
 		for _, banned := range []string{"<", ">", "@", "](", "![", "http", "www.", "~~", "\\"} {
-			if strings.Contains(outside, banned) && !(banned == ">" && strings.HasPrefix(line, "> **Shortened:**")) {
+			quote := strings.HasPrefix(line, "> **Shortened:**") || strings.HasPrefix(line, "> **Warning** ")
+			if strings.Contains(outside, banned) && !(banned == ">" && quote) {
 				t.Errorf("%q outside a code span: %q", banned, line)
 			}
 		}

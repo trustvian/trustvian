@@ -71,22 +71,43 @@ type Rendering struct {
 // ErrRejected wraps every validation failure that rendering reports.
 var ErrRejected = errors.New("the artifact was rejected")
 
-// fit renders evidence within the total limit: in full, then with only the
-// evidence the verdict rests on, and otherwise not at all. An apparently
-// complete result that is missing a check or a classified behavior is never
-// produced.
-func fit(want Frame, lim Limits, s State, body func(full bool) string) Rendering {
-	for _, full := range []bool{true, false} {
-		if md := body(full); len(md) <= lim.TotalBytes {
+// Detail levels, from the whole document down to the evidence a verdict
+// rests on. A version 1 document has two: everything, then without its
+// unclassified behaviors. A report sheds more before it gives up (see
+// writeReportBody); each shed part is named where it would have been.
+const (
+	levelFull = iota
+	levelShort
+	levelShortest
+)
+
+// fit renders evidence within the total limit: in full, then with less detail
+// at each level, and otherwise not at all. An apparently complete result that
+// is missing a check or a classified behavior is never produced.
+func fit(want Frame, lim Limits, s State, body func(level int) string) Rendering {
+	for _, level := range []int{levelFull, levelShort, levelShortest} {
+		if md := body(level); len(md) <= lim.TotalBytes {
 			return Rendering{Markdown: md, State: s}
 		}
 	}
-	return noVerdict(want, "the result's required evidence does not fit in the rendering size limit; "+
-		"the artifact's result.json holds it whole", nil)
+	whole := "the artifact's result.json holds it whole"
+	if !want.framed() {
+		whole = "the document holds it whole"
+	}
+	return noVerdict(want, "the result's required evidence does not fit in the rendering size limit; "+whole, nil)
 }
 
+// framed reports whether the rendering is for a run the caller identified —
+// the pull request comment and job summary — rather than a bare document, as
+// `trustvian eval report --format md` renders one.
+func (f Frame) framed() bool { return f.HeadSHA != "" }
+
 func rejected(want Frame, err error) Rendering {
-	return noVerdict(want, "the artifact failed validation: "+err.Error(), fmt.Errorf("%w: %w", ErrRejected, err))
+	what := "the artifact"
+	if !want.framed() {
+		what = "the document"
+	}
+	return noVerdict(want, what+" failed validation: "+err.Error(), fmt.Errorf("%w: %w", ErrRejected, err))
 }
 
 // noVerdict renders the no-verdict state from the expected context alone. It
@@ -95,8 +116,12 @@ func rejected(want Frame, err error) Rendering {
 func noVerdict(want Frame, reason string, rejection error) Rendering {
 	var b strings.Builder
 	b.WriteString("### Trustvian behavioral gate — no verdict\n\n")
-	writeIdentity(&b, want)
-	b.WriteString("No verdict exists for this commit.\n\n")
+	if want.framed() {
+		writeIdentity(&b, want)
+		b.WriteString("No verdict exists for this commit.\n\n")
+	} else {
+		b.WriteString("No rendering exists for this document.\n\n")
+	}
 	b.WriteString("**Reason:** ")
 	b.WriteString(inert(reason, 512))
 	b.WriteString("\n")
@@ -127,21 +152,37 @@ var classLabel = map[string]string{
 	classAdded: "**+ added**", classRemoved: "**− removed**", classNeither: "unclassified",
 }
 
-// renderScenario renders a single scenario's verdict. full == false keeps
-// only the classified behaviors, and says so.
-func renderScenario(want Frame, lim Limits, r scenarioResult, full bool) string {
+// renderScenario renders a single scenario's verdict. Below levelFull it
+// keeps only the classified behaviors, and says so.
+func renderScenario(want Frame, lim Limits, r scenarioResult, level int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "### Trustvian behavioral gate — %s\n\n", verdictLabel[r.verdict])
-	writeIdentity(&b, want)
-	fmt.Fprintf(&b, "CLI exit code: %d\n\n", *want.ExitCode)
-	writeScenarioBody(&b, lim, r, full)
+	fmt.Fprintf(&b, "### Trustvian behavioral gate — %s\n\n", headingVerdict(r))
+	if want.framed() {
+		writeIdentity(&b, want)
+		fmt.Fprintf(&b, "CLI exit code: %d\n\n", *want.ExitCode)
+	}
+	writeScenarioBody(&b, lim, r, level)
 	return b.String()
+}
+
+// headingVerdict is the stored verdict, or, for a report whose execution kept
+// no gate, that it was not recorded.
+func headingVerdict(r scenarioResult) string {
+	if r.report != nil && !r.report.gateRecorded {
+		return "gate not recorded"
+	}
+	return verdictLabel[r.verdict]
 }
 
 // writeScenarioBody is everything a scenario's verdict rests on. It is shared
 // by a single scenario and a suite member, so the two cannot render
 // differently.
-func writeScenarioBody(b *strings.Builder, lim Limits, r scenarioResult, full bool) {
+func writeScenarioBody(b *strings.Builder, lim Limits, r scenarioResult, level int) {
+	if r.report != nil {
+		writeReportBody(b, lim, r, level)
+		return
+	}
+	full := level == levelFull
 	s := lim.StringBytes
 	fmt.Fprintf(b, "**Scenario** %s · **runs** %d · **execution** %s\n\n",
 		inert(r.name, s), r.runs, inert(r.executionID, s))
@@ -216,13 +257,15 @@ var skippedLabel = map[string]string{
 }
 
 // renderSuite renders a suite report: its recorded summary and members, then
-// each member's own verdict. full == false leaves out unclassified behaviors
-// in every member section.
-func renderSuite(want Frame, lim Limits, r suiteResult, full bool) string {
+// each member's own verdict. Below levelFull it leaves out unclassified
+// behaviors in every member section.
+func renderSuite(want Frame, lim Limits, r suiteResult, level int) string {
 	s := lim.StringBytes
 	var b strings.Builder
 	fmt.Fprintf(&b, "### Trustvian behavioral suite — CLI exit code %d\n\n", r.exitCode)
-	writeIdentity(&b, want)
+	if want.framed() {
+		writeIdentity(&b, want)
+	}
 	b.WriteString("A suite has no verdict of its own: each scenario below carries its own, " +
 		"and the CLI exit code is the most severe of them.\n\n")
 	failFast := "no"
@@ -259,8 +302,8 @@ func renderSuite(want Frame, lim Limits, r suiteResult, full bool) string {
 		if m.result == nil {
 			continue
 		}
-		fmt.Fprintf(&b, "\n#### %s — %s\n\n", inert(m.file, s), verdictLabel[m.result.verdict])
-		writeScenarioBody(&b, lim, *m.result, full)
+		fmt.Fprintf(&b, "\n#### %s — %s\n\n", inert(m.file, s), headingVerdict(*m.result))
+		writeScenarioBody(&b, lim, *m.result, level)
 	}
 	fmt.Fprintf(&b, "\nProduced by `trustvian` %s.\n", inert(r.cliVersion, s))
 	return b.String()
