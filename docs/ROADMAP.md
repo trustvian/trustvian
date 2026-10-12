@@ -662,6 +662,19 @@ request of its own, then 107.** 080 runs in parallel from 087 onward.
   changes behavioral identity and is
   [task 108](tasks/v0.13/108-legacy-http-semantic-conventions.md).
 
+## v0.13.0 — proposed
+
+**PROPOSED.** Nothing here is scheduled until `v0.12.0` ships. Tasks are in
+[`tasks/v0.13/`](tasks/v0.13/README.md).
+
+| Task | What it is | Status |
+|---|---|---|
+| [108](tasks/v0.13/108-legacy-http-semantic-conventions.md) | Read the pre-stable HTTP keys. This changes `OperationCategory` and `TargetName`, so every affected fingerprint and baseline; needs a rollout decision first | Proposed |
+| [109](tasks/v0.13/109-live-pause-and-actor-following.md) | The Live Observatory draws one source per actor, lists the actors seen live and follows one, and can pause and resume without disconnecting or replaying. `actor_id` and `actor_type` are added to the realtime observation frame as display metadata; identity is unchanged | Specified |
+
+088 and 092, deferred from [`v0.12.0`](#v0120--change-impact), are not yet
+specified.
+
 ## v1.0 — Local-First Behavioral Security Platform
 
 **NEXT.** `v1.0.0` is the first release where Trustvian is usable as a
@@ -1307,6 +1320,7 @@ The **Gate** column says which rows the release actually depends on.
 | 106 | [Frequency evidence](tasks/v0.12/106-frequency-evidence.md) — calls per run, per-target permille ratio, `lost` behaviors, and three optional named integer gate limits over them | **Implemented** (`v0.12.0`) | none |
 | 107 | [Change Impact view and Model Change Report](tasks/v0.12/107-change-impact-view-and-report.md) — 081/086/087/106 evidence in one table, the result document version 2, and one renderer for the CLI and the PR comment | Specified (`v0.12.0`) | none |
 | 108 | [Legacy HTTP semantic conventions](tasks/v0.13/108-legacy-http-semantic-conventions.md) — read `http.method`/`http.url` and the other pre-stable HTTP keys, which changes `OperationCategory` and `TargetName`, so every affected fingerprint and baseline; a staged rollout | Proposed (`v0.13.0`) | none |
+| 109 | [Live Observatory: pause, resume and following one actor](tasks/v0.13/109-live-pause-and-actor-following.md) — the actor on the realtime frame as display metadata, one graph source per actor, an actor list to follow, and pause/resume without disconnect or replay | Specified (`v0.13.0`) | none |
 
 **Production history and scale:**
 
