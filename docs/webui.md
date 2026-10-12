@@ -130,7 +130,7 @@ already chosen from any other destination — and six panels summarise them:
 | Live now | the Live connection's scope cards, for the project | this connection since it last synchronized |
 | Runs | the newest runs of the deepest level chosen — project, agent or candidate | every run newest first, or the newest page when more exist; **Load next page** reads on |
 | Newest run / Chosen run | that run's progress and first page of behaviors | one run; the newest by creation time unless you chose one |
-| Latest comparison | the first row of the project's scenario executions, narrowed to the agent when one is chosen, and that execution's report when it completed | the newest execution: its recorded verdict or *not recorded*, the four sameness answers, the first suggestion, and its added, removed and lost behavior rows — counted by the classification the report states, and labelled as rows of the report. **Open in Change Impact** reads it whole |
+| Latest comparison | the first row of the project's scenario executions, narrowed to the agent when one is chosen, and that execution's report when it completed | the newest execution: its recorded verdict or *not recorded*, the four sameness answers, the first suggestion, and its added, removed and lost behaviors — the report's own `comparison.counts`, which the control plane computes; the panel counts nothing. **Open in Change Impact** reads it whole |
 | Gate verdicts | the first page of the project's promotion decisions | identifier order, not newest first |
 | Environments | the project's whole environment collection | every environment |
 

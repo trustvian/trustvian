@@ -421,6 +421,14 @@
         }
       }
     ],
+    "counts": {
+      "rows": "4",
+      "added": "1",
+      "removed": "0",
+      "neither": "3",
+      "not_recorded": "0",
+      "lost": "0"
+    },
     "gate": {
       "checks": [
         {

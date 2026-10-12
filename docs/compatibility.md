@@ -898,6 +898,7 @@ string, as everywhere on `/v1`.
 | `behaviors[].reference_fidelity`, `candidate_fidelity` | object | task 081: `level`, `mixed`, `semantic`, `transport`, `unrecorded`, `layer{…}` | absent on a side that never observed the behavior |
 | `behaviors[].display` | object of strings | **new.** `reference_presence`, `candidate_presence` (`"k/N"`); `reference_calls_per_run`, `candidate_calls_per_run` (`"min–max"`, an en dash); `reference_calls_per_run_mean`, `candidate_calls_per_run_mean` (the mean from `calls_per_run_mean_milli`, exact: `2400` → `"2.4"`, `2456` → `"2.456"`, `3000` → `"3"`) | a per-run string reads `"not available"` on a side with no completed repetition |
 | `behaviors[].present_in` | object | **new.** `reference`, `candidate`: arrays of `{index, run_id}`, the repetitions whose snapshot observed the behavior, in index order. Each array's length equals the side's presence count. Any run named there resolves the behavior through `GET /v1/evidence/observations` (task 085); the reader picks the pair | an empty array on a side that never observed it |
+| `counts` | object of strings | **new** (exit criterion 7). The behavior rows' totals, computed by the control plane from the same rows: `rows`, and by the classification each row states `added`, `removed`, `neither` and `not_recorded` — which together are `rows` — and `lost`, task 106's, of any classification. An adapter shows these and counts nothing | `not_recorded` equals `rows` when the gate was not recorded; every member is always present |
 | `gate` | object | `checks[]` (all six), `verdict`, `frequency_checks[]` (all four, task 106's three then task 081's `max_llm_calls_per_run`), and **new** `state: "recorded"` | `{"state": "not_recorded"}` and nothing else, for an execution completed before schema 14 |
 | `operational` | object | task 087's `latency`, `errors`, `tokens`; each has `comparable` and, when comparable, `delta` | a section that is not comparable has `reason` (`reference_unavailable`, `candidate_unavailable`, `both_unavailable`) and **no `delta` member** |
 | `operational.cost` | object | task 087, only with a pricing table, always with `pricing_version`, `pricing_digest`, `source` and `currency` | absent without pricing, and then **new** `operational.cost_reason: "pricing_not_configured"`; a side that reported no tokens has no `cost_micros`, and an incomparable cost no `delta` |
@@ -1251,6 +1252,14 @@ output differ.
         }
       }
     ],
+    "counts": {
+      "rows": "3",
+      "added": "1",
+      "removed": "0",
+      "neither": "2",
+      "not_recorded": "0",
+      "lost": "1"
+    },
     "gate": {
       "checks": [
         {

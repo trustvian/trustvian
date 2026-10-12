@@ -583,6 +583,14 @@
         }
       }
     ],
+    "counts": {
+      "rows": "6",
+      "added": "2",
+      "removed": "2",
+      "neither": "2",
+      "not_recorded": "0",
+      "lost": "2"
+    },
     "gate": {
       "checks": [
         {

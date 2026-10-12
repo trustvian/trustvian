@@ -141,29 +141,6 @@ export function verdictTally(rows) {
   return Array.from(counts, ([outcome, count]) => ({ outcome, count }));
 }
 
-// reportTally counts one report's behavior rows by the classification the
-// report states, and the rows it states are lost — rows on screen, in the
-// report's own words, never a figure the report does not carry. A row whose
-// classification was not recorded is counted under that word.
-export function reportTally(report) {
-  const rows = report && report.comparison && Array.isArray(report.comparison.behaviors)
-    ? report.comparison.behaviors : [];
-  const out = { rows: rows.length, added: 0, removed: 0, lost: 0, notRecorded: 0 };
-  for (const row of rows) {
-    if (row.classification === "added") {
-      out.added += 1;
-    } else if (row.classification === "removed") {
-      out.removed += 1;
-    } else if (row.classification === "not_recorded") {
-      out.notRecorded += 1;
-    }
-    if (row.lost === true) {
-      out.lost += 1;
-    }
-  }
-  return out;
-}
-
 // readClock states when a panel was read, as a wall-clock time.
 //
 // Absolute rather than "5s ago": nothing on this page runs a timer, so a

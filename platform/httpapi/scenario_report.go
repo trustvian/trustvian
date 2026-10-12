@@ -78,18 +78,33 @@ type reportComparisonDTO struct {
 	Runs    int    `json:"runs"`
 	// GateLimits are the recorded limits; absent when the gate was not
 	// recorded.
-	GateLimits           *repeatedLimitsResponseDTO `json:"gate_limits,omitempty"`
-	Repetitions          []repetitionDTO            `json:"repetitions"`
-	Behaviors            []reportBehaviorDTO        `json:"behaviors"`
-	Gate                 reportGateDTO              `json:"gate"`
-	Operational          reportOperationalDTO       `json:"operational"`
-	Targets              []reportTargetDTO          `json:"targets"`
-	LostTransitions      string                     `json:"lost_transitions"`
-	Suggestions          []suggestionDTO            `json:"suggestions"`
-	SuggestionsTruncated bool                       `json:"suggestions_truncated"`
-	Sameness             samenessDTO                `json:"sameness"`
-	Warnings             []warningDTO               `json:"warnings"`
-	Producer             producerDTO                `json:"producer"`
+	GateLimits  *repeatedLimitsResponseDTO `json:"gate_limits,omitempty"`
+	Repetitions []repetitionDTO            `json:"repetitions"`
+	Behaviors   []reportBehaviorDTO        `json:"behaviors"`
+	// Counts are the behavior rows' totals, the control plane's (exit
+	// criterion 7): an adapter shows them and counts nothing.
+	Counts               reportCountsDTO      `json:"counts"`
+	Gate                 reportGateDTO        `json:"gate"`
+	Operational          reportOperationalDTO `json:"operational"`
+	Targets              []reportTargetDTO    `json:"targets"`
+	LostTransitions      string               `json:"lost_transitions"`
+	Suggestions          []suggestionDTO      `json:"suggestions"`
+	SuggestionsTruncated bool                 `json:"suggestions_truncated"`
+	Sameness             samenessDTO          `json:"sameness"`
+	Warnings             []warningDTO         `json:"warnings"`
+	Producer             producerDTO          `json:"producer"`
+}
+
+// reportCountsDTO totals the report's behavior rows by the classification
+// they state. not_recorded is the rows of an execution whose gate was not
+// recorded; lost is task 106's, of any classification. Canonical decimals.
+type reportCountsDTO struct {
+	Rows        string `json:"rows"`
+	Added       string `json:"added"`
+	Removed     string `json:"removed"`
+	Neither     string `json:"neither"`
+	NotRecorded string `json:"not_recorded"`
+	Lost        string `json:"lost"`
 }
 
 // reportBehaviorDTO is one behavior row: version 1's fields, and version 2's
@@ -196,10 +211,15 @@ func newScenarioReportResponse(report platform.ScenarioExecutionReport, producer
 
 	comparison := reportComparisonDTO{
 		Version: v1.Version, Runs: v1.Runs,
-		Repetitions:          v1.Repetitions,
-		Behaviors:            make([]reportBehaviorDTO, 0, len(v1.Behaviors)),
-		Operational:          reportOperationalDTO{operationalSectionsDTO: v1.Operational},
-		Targets:              make([]reportTargetDTO, 0, len(v1.Targets)),
+		Repetitions: v1.Repetitions,
+		Behaviors:   make([]reportBehaviorDTO, 0, len(v1.Behaviors)),
+		Operational: reportOperationalDTO{operationalSectionsDTO: v1.Operational},
+		Targets:     make([]reportTargetDTO, 0, len(v1.Targets)),
+		Counts: reportCountsDTO{
+			Rows: u64(report.Counts.Rows), Added: u64(report.Counts.Added), Removed: u64(report.Counts.Removed),
+			Neither: u64(report.Counts.Neither), NotRecorded: u64(report.Counts.NotRecorded),
+			Lost: u64(report.Counts.Lost),
+		},
 		LostTransitions:      v1.LostTransitions,
 		Suggestions:          v1.Suggestions,
 		SuggestionsTruncated: v1.SuggestionsTruncated,

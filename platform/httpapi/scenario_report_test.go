@@ -560,3 +560,63 @@ func TestReportVersion2ExampleIsPinned(t *testing.T) {
 		t.Fatal("docs/compatibility.md's version 2 example differs from " + reportExamplePath)
 	}
 }
+
+// Exit criterion 7: the report's counts are the control plane's totals of its
+// own rows, so no adapter counts them. With the gate not recorded every row
+// counts as not recorded.
+func TestReportCountsAreTheRowsTotals(t *testing.T) {
+	type counts struct {
+		Rows, Added, Removed, Neither, Lost string
+		NotRecorded                         string `json:"not_recorded"`
+	}
+	type body struct {
+		Comparison struct {
+			Counts    counts `json:"counts"`
+			Behaviors []struct {
+				Classification string `json:"classification"`
+				Lost           bool   `json:"lost"`
+			} `json:"behaviors"`
+		} `json:"comparison"`
+	}
+	tally := func(b body) counts {
+		n := map[string]int{}
+		lost := 0
+		for _, row := range b.Comparison.Behaviors {
+			n[row.Classification]++
+			if row.Lost {
+				lost++
+			}
+		}
+		return counts{Rows: fmt.Sprint(len(b.Comparison.Behaviors)), Added: fmt.Sprint(n["added"]),
+			Removed: fmt.Sprint(n["removed"]), Neither: fmt.Sprint(n["neither"]),
+			NotRecorded: fmt.Sprint(n["not_recorded"]), Lost: fmt.Sprint(lost)}
+	}
+	path := filepath.Join(t.TempDir(), "platform.db")
+	a := openAPI(t, path)
+	a.completeReportExecution("e1")
+	var recorded body
+	if err := json.Unmarshal(a.report("e1"), &recorded); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := recorded.Comparison.Counts, tally(recorded); got != want || got.Added == "0" || got.Lost == "0" {
+		t.Fatalf("counts %+v, rows give %+v", got, want)
+	}
+
+	a.store.Close()
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE platform_scenario_executions SET gate_snapshot = NULL WHERE id = 'e1'`); err != nil {
+		t.Fatal(err)
+	}
+	raw.Close()
+	a = openAPI(t, path)
+	var unrecorded body
+	if err := json.Unmarshal(a.report("e1"), &unrecorded); err != nil {
+		t.Fatal(err)
+	}
+	if got := unrecorded.Comparison.Counts; got != tally(unrecorded) || got.NotRecorded != got.Rows || got.Added != "0" {
+		t.Fatalf("counts without a recorded gate %+v", got)
+	}
+}

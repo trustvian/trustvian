@@ -43,6 +43,41 @@ type ScenarioExecutionReport struct {
 	// computation GET /v1/evaluations/operational runs, summed over the same
 	// completed repetitions the comparison counted.
 	TargetOperational []OperationalTargetRow
+
+	// Counts are the behavior rows' totals by the classification the report
+	// states (task 107, exit criterion 7): computed here, from Comparison's
+	// rows, so no adapter counts them.
+	Counts ReportCounts
+}
+
+// ReportCounts totals a report's behavior rows. Added, Removed and
+// NotRecorded partition the rows with Neither by classification — NotRecorded
+// for an execution whose gate was not recorded, when no row is classified —
+// and Lost counts the rows task 106 states are lost, of any classification.
+type ReportCounts struct {
+	Rows, Added, Removed, Neither, NotRecorded, Lost uint64
+}
+
+// reportCounts totals the rows a report shows.
+func reportCounts(behaviors []RepeatedBehaviorPresence) ReportCounts {
+	var c ReportCounts
+	for _, b := range behaviors {
+		c.Rows++
+		switch b.Classification {
+		case RepeatedAdded:
+			c.Added++
+		case RepeatedRemoved:
+			c.Removed++
+		case RepeatedNeither:
+			c.Neither++
+		case "":
+			c.NotRecorded++
+		}
+		if b.Lost {
+			c.Lost++
+		}
+	}
+	return c
 }
 
 // BehaviorPresentIn is the repetitions one behavior was observed in.
@@ -104,6 +139,7 @@ func (c *ControlPlane) ScenarioExecutionReport(
 		Execution: execution, Comparison: comparison,
 		PresentIn:         presentIn(comparison.Behaviors, inputs),
 		TargetOperational: targets,
+		Counts:            reportCounts(comparison.Behaviors),
 	}, nil
 }
 
