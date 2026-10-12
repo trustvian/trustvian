@@ -1,6 +1,13 @@
 # 0057 — The CI renderer is a standalone, offline transcriber of the run artifact
 
-**Status:** Accepted
+**Status:** Accepted. Since task
+[107-B](../tasks/v0.12/107-change-impact-view-and-report.md#what-shipped-107-b)
+the transcriber's document half lives in `internal/cirender` and serves two
+callers: this command, which still reads and validates the artifact, and
+`trustvian eval report --format md`. It is still offline, standard-library
+only and computes nothing; `TestRendererImportsOnlyWhatItNeeds` and
+`TestRendererParsesNoCount` cover both halves. It reads result document version
+1 or 2, and `--document <file>` renders one document with no run around it.
 
 ## Context
 

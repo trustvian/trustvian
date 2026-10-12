@@ -118,6 +118,10 @@ type scenarioAPI struct {
 	// beginProvenance, when set, is the execution's provenance in the begin
 	// reply; sameness, when set, is added to the comparison (task 086).
 	beginProvenance, sameness string
+	// reports, keyed by execution id, are served by the report route; an
+	// execution with none is answered 404, as by a control plane that
+	// predates the route.
+	reports map[string]string
 	// Per-execution overrides, keyed by execution id, for suites.
 	verdicts          map[string]string
 	completeStatusFor map[string]int
@@ -181,6 +185,16 @@ func newScenarioAPI(t *testing.T, verdict string) *scenarioAPI {
 			w.WriteHeader(200)
 			fmt.Fprintf(w, `{"version":"1","execution":{"id":%q,"status":"completed"},"comparison":%s}`,
 				id, comparison)
+		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/report"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/scenario-executions/"), "/report")
+			report, ok := api.reports[id]
+			if !ok {
+				w.WriteHeader(404)
+				fmt.Fprint(w, `404 page not found`)
+				return
+			}
+			w.WriteHeader(200)
+			fmt.Fprint(w, report)
 		case strings.HasSuffix(r.URL.Path, "/fail"):
 			w.WriteHeader(200)
 			fmt.Fprint(w, `{"version":"1","execution":{"id":"scn-test","status":"failed"}}`)
@@ -245,6 +259,7 @@ const (
 	beginPath    = "POST /v1/scenario-executions"
 	completePath = "POST /v1/scenario-executions/scn-test/complete"
 	failPath     = "POST /v1/scenario-executions/scn-test/fail"
+	reportPath   = "GET /v1/scenario-executions/scn-test/report"
 )
 
 func TestEvalRunIsolatesEveryRepetitionAndRunsThemInOrder(t *testing.T) {
@@ -254,8 +269,8 @@ func TestEvalRunIsolatesEveryRepetitionAndRunsThemInOrder(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("exit %d, want 0", code)
 	}
-	if got := api.paths(); !slices.Equal(got, []string{beginPath, completePath}) {
-		t.Fatalf("requests %v, want begin then complete", got)
+	if got := api.paths(); !slices.Equal(got, []string{beginPath, completePath, reportPath}) {
+		t.Fatalf("requests %v, want begin, complete, then the report", got)
 	}
 	if len(rec.calls) != 6 {
 		t.Fatalf("%d repetitions, want 6", len(rec.calls))
@@ -296,7 +311,7 @@ func TestEvalRunIsolatesEveryRepetitionAndRunsThemInOrder(t *testing.T) {
 	}
 	if begin.ID != "scn-test" || begin.ScenarioName != "support" || begin.Runs != 3 ||
 		begin.ProjectID != "proj-x" || begin.AgentID != "agent-x" || begin.Environment != "staging" ||
-		begin.Reference != nil {
+		begin.Reference != nil || begin.CLIVersion != "cli-test" {
 		t.Errorf("begin = %+v", begin)
 	}
 	var body completeExecutionBody

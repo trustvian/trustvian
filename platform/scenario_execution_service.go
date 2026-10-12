@@ -47,6 +47,10 @@ type BeginScenarioExecutionRequest struct {
 	// (task 086). The zero value records nothing, which is what a client
 	// predating it sends.
 	Provenance ExecutionProvenance
+
+	// CLIVersion is the version of the CLI that runs the execution (task 107,
+	// D14). Empty records nothing, which is what a client predating it sends.
+	CLIVersion string
 }
 
 // CompleteScenarioExecutionRequest finishes one execution.
@@ -107,6 +111,9 @@ func (c *ControlPlane) BeginScenarioExecution(
 	if err := request.Provenance.validate(); err != nil {
 		return ScenarioExecution{}, ScenarioExecution{}, err
 	}
+	if err := validateCLIVersion(request.CLIVersion); err != nil {
+		return ScenarioExecution{}, ScenarioExecution{}, err
+	}
 	if request.Reference.Recorded() && request.Provenance.Reference != (SideDeclaration{}) {
 		return ScenarioExecution{}, ScenarioExecution{}, fmt.Errorf(
 			"%w: a reused reference side ran under the referenced execution, whose model and prompt "+
@@ -142,6 +149,13 @@ func (c *ControlPlane) BeginScenarioExecution(
 		referenceSide = reference.Provenance(SideReference)
 	}
 	execution, err = execution.withProvenance(referenceSide, request.Provenance.side(request.Provenance.Candidate))
+	if err != nil {
+		return ScenarioExecution{}, ScenarioExecution{}, err
+	}
+	// The mode is the one asked for, kept beside the execution it resolved
+	// to: `last` and an explicit id can name the same execution, and only the
+	// request knows which was meant.
+	execution, err = execution.withProducer(request.CLIVersion, request.Reference.mode())
 	if err != nil {
 		return ScenarioExecution{}, ScenarioExecution{}, err
 	}

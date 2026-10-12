@@ -1,4 +1,4 @@
-package main
+package cirender
 
 // Making an artifact-supplied string inert in GitHub-flavored Markdown.
 //

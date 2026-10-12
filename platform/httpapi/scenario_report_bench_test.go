@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -103,11 +104,18 @@ func BenchmarkScenarioExecutionReportAtTheBound(b *testing.B) {
 	// runs, which the report's reduction is.
 	b.Run("report", func(b *testing.B) {
 		b.ReportAllocs()
-		var size int
+		var doc []byte
 		for b.Loop() {
-			size = len(benchRequest(b, handler, "GET", "/v1/scenario-executions/e-bound/report", nil, 200))
+			doc = benchRequest(b, handler, "GET", "/v1/scenario-executions/e-bound/report", nil, 200)
 		}
-		b.ReportMetric(float64(size), "bytes/doc")
+		b.ReportMetric(float64(len(doc)), "bytes/doc")
+		// The at-bound document, for rendering it with trustvian-ci-render
+		// --document (docs/PERFORMANCE.md, task 107-B).
+		if out := os.Getenv("TRUSTVIAN_BENCH_REPORT_OUT"); out != "" {
+			if err := os.WriteFile(out, doc, 0o644); err != nil {
+				b.Fatal(err)
+			}
+		}
 	})
 	b.Run("compare-repeated", func(b *testing.B) {
 		b.ReportAllocs()

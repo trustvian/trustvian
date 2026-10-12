@@ -1,0 +1,748 @@
+{
+  "version": "2",
+  "scenario": {
+    "name": "support",
+    "runs": 2
+  },
+  "execution_id": "golden-mixed-fidelity",
+  "producers": {
+    "cli_version": "v0.13.0 3e86f9cead2586e7ee90e14185a8f34074b54240",
+    "control_plane_version": "v0.13.0"
+  },
+  "provenance": {
+    "reference": {
+      "inputs": "not_recorded"
+    },
+    "candidate": {
+      "inputs": "not_recorded"
+    }
+  },
+  "comparison": {
+    "version": "1",
+    "runs": 2,
+    "gate_limits": {
+      "added_candidate_presence_minimum": "2",
+      "added_reference_presence_maximum": "0",
+      "max_repeated_added_behaviors": "0",
+      "max_block_decisions_per_run": "0",
+      "max_critical_risk_observations_per_run": "0"
+    },
+    "repetitions": [
+      {
+        "side": "reference",
+        "index": 1,
+        "run_id": "golden-mixed-fidelity-reference-1",
+        "status": "completed",
+        "behavioral_profile": "golden-mixed-fidelity-reference-1-profile",
+        "record_count": "2",
+        "distinct_behavior_count": 1,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "reference",
+        "index": 2,
+        "run_id": "golden-mixed-fidelity-reference-2",
+        "status": "completed",
+        "behavioral_profile": "golden-mixed-fidelity-reference-2-profile",
+        "record_count": "2",
+        "distinct_behavior_count": 1,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "candidate",
+        "index": 1,
+        "run_id": "golden-mixed-fidelity-candidate-1",
+        "status": "completed",
+        "behavioral_profile": "golden-mixed-fidelity-candidate-1-profile",
+        "record_count": "2",
+        "distinct_behavior_count": 1,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "candidate",
+        "index": 2,
+        "run_id": "golden-mixed-fidelity-candidate-2",
+        "status": "completed",
+        "behavioral_profile": "golden-mixed-fidelity-candidate-2-profile",
+        "record_count": "2",
+        "distinct_behavior_count": 1,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      }
+    ],
+    "behaviors": [
+      {
+        "fingerprint_id": "fp-tool-lookup_customer@",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "tool",
+          "operation_name": "lookup_customer",
+          "environment": "staging"
+        },
+        "reference_runs_present": "2",
+        "candidate_runs_present": "2",
+        "classification": "neither",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "4",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "4",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "lost": false,
+        "reference_fidelity": {
+          "level": "semantic",
+          "mixed": false,
+          "semantic": "4",
+          "transport": "0",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "4",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "candidate_fidelity": {
+          "level": "transport",
+          "mixed": true,
+          "semantic": "3",
+          "transport": "1",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "3",
+            "retrieval": "0",
+            "transport": "1",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "display": {
+          "reference_presence": "2/2",
+          "candidate_presence": "2/2",
+          "reference_calls_per_run": "2–2",
+          "candidate_calls_per_run": "2–2",
+          "reference_calls_per_run_mean": "2",
+          "candidate_calls_per_run_mean": "2"
+        },
+        "present_in": {
+          "reference": [
+            {
+              "index": 1,
+              "run_id": "golden-mixed-fidelity-reference-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-mixed-fidelity-reference-2"
+            }
+          ],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "golden-mixed-fidelity-candidate-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-mixed-fidelity-candidate-2"
+            }
+          ]
+        }
+      }
+    ],
+    "gate": {
+      "checks": [
+        {
+          "name": "reference_repetitions_completed",
+          "actual": "2",
+          "rule": "equals",
+          "bound": "2",
+          "passed": true
+        },
+        {
+          "name": "candidate_repetitions_completed",
+          "actual": "2",
+          "rule": "equals",
+          "bound": "2",
+          "passed": true
+        },
+        {
+          "name": "repetitions_failing_minimum_evidence",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true
+        },
+        {
+          "name": "repeatedly_added_behaviors",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true
+        },
+        {
+          "name": "worst_candidate_block_decisions",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true,
+          "advisory": "fresh_scope"
+        },
+        {
+          "name": "worst_candidate_critical_risk_observations",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true,
+          "advisory": "fresh_scope"
+        }
+      ],
+      "verdict": "pass",
+      "frequency_checks": [
+        {
+          "name": "min_candidate_frequency",
+          "state": "not_evaluated"
+        },
+        {
+          "name": "max_lost_behaviors",
+          "state": "not_evaluated"
+        },
+        {
+          "name": "max_calls_per_run",
+          "state": "not_evaluated"
+        },
+        {
+          "name": "max_llm_calls_per_run",
+          "state": "not_evaluated"
+        }
+      ],
+      "state": "recorded"
+    },
+    "operational": {
+      "latency": {
+        "comparable": true,
+        "reference": {
+          "runs_with_evidence": "2",
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "4"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "4",
+          "unobserved": "0",
+          "sum_nanos": "8000000",
+          "min_nanos": "2000000",
+          "max_nanos": "2000000"
+        },
+        "candidate": {
+          "runs_with_evidence": "2",
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "4"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "4",
+          "unobserved": "0",
+          "sum_nanos": "8000000",
+          "min_nanos": "2000000",
+          "max_nanos": "2000000"
+        },
+        "delta": {
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "0",
+          "unobserved": "0",
+          "sum_nanos": "0",
+          "min_nanos": "0",
+          "max_nanos": "0"
+        }
+      },
+      "errors": {
+        "comparable": true,
+        "reference": {
+          "runs_with_evidence": "2",
+          "span_status": {
+            "unavailable": "0",
+            "unset": "0",
+            "ok": "4",
+            "error": "0"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "0",
+            "3xx": "0",
+            "4xx": "0",
+            "5xx": "0",
+            "unavailable": "4"
+          },
+          "http_429": "0"
+        },
+        "candidate": {
+          "runs_with_evidence": "2",
+          "span_status": {
+            "unavailable": "0",
+            "unset": "0",
+            "ok": "4",
+            "error": "0"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "0",
+            "3xx": "0",
+            "4xx": "0",
+            "5xx": "0",
+            "unavailable": "4"
+          },
+          "http_429": "0"
+        },
+        "delta": {
+          "span_status": {
+            "unavailable": "0",
+            "unset": "0",
+            "ok": "0",
+            "error": "0"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "0",
+            "3xx": "0",
+            "4xx": "0",
+            "5xx": "0",
+            "unavailable": "0"
+          },
+          "http_429": "0"
+        }
+      },
+      "tokens": {
+        "comparable": false,
+        "reason": "both_unavailable",
+        "reference": {
+          "runs_with_evidence": "0",
+          "input": "0",
+          "output": "0",
+          "unsplit": "0",
+          "observed": "0",
+          "unobserved": "4"
+        },
+        "candidate": {
+          "runs_with_evidence": "0",
+          "input": "0",
+          "output": "0",
+          "unsplit": "0",
+          "observed": "0",
+          "unobserved": "4"
+        }
+      },
+      "cost_reason": "pricing_not_configured"
+    },
+    "targets": [
+      {
+        "target_name": "",
+        "target_category": "",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "4",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "4",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "call_ratio_available": true,
+        "call_ratio_permille": "1000",
+        "display": {
+          "reference_calls_per_run": "2–2",
+          "candidate_calls_per_run": "2–2",
+          "reference_calls_per_run_mean": "2",
+          "candidate_calls_per_run_mean": "2",
+          "call_ratio": "1.0×"
+        },
+        "operational": {
+          "latency": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "2",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "4"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "4",
+              "unobserved": "0",
+              "sum_nanos": "8000000",
+              "min_nanos": "2000000",
+              "max_nanos": "2000000"
+            },
+            "candidate": {
+              "runs_with_evidence": "2",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "4"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "4",
+              "unobserved": "0",
+              "sum_nanos": "8000000",
+              "min_nanos": "2000000",
+              "max_nanos": "2000000"
+            },
+            "delta": {
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "0",
+              "unobserved": "0",
+              "sum_nanos": "0",
+              "min_nanos": "0",
+              "max_nanos": "0"
+            }
+          },
+          "errors": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "2",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "4",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "4"
+              },
+              "http_429": "0"
+            },
+            "candidate": {
+              "runs_with_evidence": "2",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "4",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "4"
+              },
+              "http_429": "0"
+            },
+            "delta": {
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "0",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "0"
+              },
+              "http_429": "0"
+            }
+          }
+        }
+      }
+    ],
+    "lost_transitions": "not_recorded",
+    "suggestions": [],
+    "suggestions_truncated": false,
+    "sameness": {
+      "same_scenario": "not_recorded",
+      "same_inputs": "not_recorded",
+      "same_model": "not_recorded",
+      "same_prompt_ref": "not_recorded",
+      "reference": {
+        "inputs": "not_recorded"
+      },
+      "candidate": {
+        "inputs": "not_recorded"
+      }
+    },
+    "warnings": [],
+    "producer": {
+      "control_plane_version": "v0.13.0"
+    }
+  }
+}
+

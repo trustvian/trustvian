@@ -54,16 +54,18 @@ type reportScenarioDTO struct {
 }
 
 // reportReferenceDTO is present when the execution reused a recorded
-// reference side. mode is not_recorded: whether the runner asked for "last"
-// or named the execution was never persisted.
+// reference side. mode is how the runner asked for it, "execution" or "last",
+// as recorded since schema 15 (D14); not_recorded for an execution begun
+// before it, or by a client that sent none.
 type reportReferenceDTO struct {
 	Mode        string `json:"mode"`
 	ExecutionID string `json:"execution_id"`
 }
 
-// reportProducersDTO names who produced the document. cli_version is
-// not_recorded: the version of the CLI that ran the execution was never
-// persisted, and the report is produced by the control plane.
+// reportProducersDTO names who produced the document. cli_version is the
+// version of the CLI that ran the execution, as recorded since schema 15
+// (D14); not_recorded for an execution begun before it, or by a client that
+// sent none. The report itself is produced by the control plane.
 type reportProducersDTO struct {
 	CLIVersion          string `json:"cli_version"`
 	ControlPlaneVersion string `json:"control_plane_version"`
@@ -131,6 +133,18 @@ type presentRepetitionDTO struct {
 type reportTargetDTO struct {
 	targetFrequencyDTO
 	Display targetDisplayDTO `json:"display"`
+	// Operational is the target's latency and error sections (D16), exactly
+	// as GET /v1/evaluations/operational states them for the same runs.
+	Operational reportTargetOperationalDTO `json:"operational"`
+}
+
+// reportTargetOperationalDTO is one target's latency buckets, span and HTTP
+// status classes and 429s, each side summed over its completed repetitions
+// with runs_with_evidence beside it. A section that cannot be compared says
+// so and carries no delta, as on the operational route.
+type reportTargetOperationalDTO struct {
+	Latency latencySectionDTO `json:"latency"`
+	Errors  errorsSectionDTO  `json:"errors"`
 }
 
 // targetDisplayDTO is the target row's numbers as text. call_ratio is "2.4×"
@@ -232,22 +246,36 @@ func newScenarioReportResponse(report platform.ScenarioExecutionReport, producer
 				CandidateCallsPerRunMean: platform.RenderCallsPerRunMean(target.Candidate),
 				CallRatio:                platform.RenderCallRatio(target),
 			},
+			Operational: reportTargetOperationalDTO{
+				Latency: newLatencySectionDTO(report.TargetOperational[i].Sections.Latency),
+				Errors:  newErrorsSectionDTO(report.TargetOperational[i].Sections.Errors),
+			},
 		})
 	}
 
 	var reference *reportReferenceDTO
 	if e.ReferenceExecution() != "" {
-		reference = &reportReferenceDTO{Mode: notRecorded, ExecutionID: string(e.ReferenceExecution())}
+		reference = &reportReferenceDTO{Mode: orNotRecorded(string(e.ReferenceMode())),
+			ExecutionID: string(e.ReferenceExecution())}
 	}
 	return scenarioReportResponse{
 		Version:     ResultDocumentVersion,
 		Scenario:    reportScenarioDTO{Name: e.ScenarioName(), Runs: e.Runs()},
 		ExecutionID: string(e.ID()),
 		Reference:   reference,
-		Producers:   reportProducersDTO{CLIVersion: notRecorded, ControlPlaneVersion: producerVersion},
-		Provenance:  newExecutionProvenanceDTO(e),
-		Comparison:  comparison,
+		Producers: reportProducersDTO{CLIVersion: orNotRecorded(e.CLIVersion()),
+			ControlPlaneVersion: producerVersion},
+		Provenance: newExecutionProvenanceDTO(e),
+		Comparison: comparison,
 	}
+}
+
+// orNotRecorded is a recorded fact, or not_recorded when there is none.
+func orNotRecorded(value string) string {
+	if value == "" {
+		return notRecorded
+	}
+	return value
 }
 
 func newPresentInDTO(p platform.BehaviorPresentIn) presentInDTO {

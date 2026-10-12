@@ -2,6 +2,10 @@
 
 Runs a Trustvian behavioral scenario or suite (`trustvian eval run --json`),
 uploads its result document as an artifact, and exits with the CLI's own code.
+From a runtime carrying task 107-B, the result document is the execution's
+report — result document version 2, exactly what `trustvian eval report --json`
+prints — and a suite's members embed theirs; an older runtime uploads version
+1.
 
 **Run side only.** It renders no verdict and does not comment on the pull
 request. That is [`trustvian-comment`](../trustvian-comment/README.md)'s job, in a

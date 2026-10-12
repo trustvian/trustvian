@@ -349,6 +349,11 @@ both ([ADR 0057](adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md
 - It needs **no credential**.
 - It **executes nothing** from the artifact.
 - It is built from the Go standard library alone.
+- Since task 107-B its document half is `internal/cirender`, the one renderer
+  `trustvian eval report --format md` also calls. For the same document,
+  `trustvian-ci-render --document <file>` and `eval report --format md` print
+  the same bytes; the comment is that rendering with the commit, the run link
+  and the CLI exit code added after its heading.
 
 The [comment action](#the-comment-job) builds and runs it; nothing else in a
 workflow needs to. The flags below are its contract, for running it by hand
@@ -377,6 +382,10 @@ from them alone.
 On `1` and `3`, the reason is also written to stderr, so a broken artifact is
 never silently a "no verdict".
 
+`--document <file>` takes no other flag and renders one result document, with
+no run around it, read under the same rules as `result.json`. It exits as
+above, with `1` only when the evidence does not fit.
+
 ### What it checks
 
 The artifact was produced by a job that ran the pull request's code, so it is
@@ -398,7 +407,7 @@ read as untrusted data:
   - Absent, `null`, `0` and `false` are distinct: a required field is never
     filled in.
 - **Closed values.** These must be defined values:
-  - versions (`"1"`);
+  - versions (`"1"`, or `"2"` for the report — see below);
   - verdicts and classifications;
   - the six checks, in their stable order;
   - rules and advisories;
@@ -435,6 +444,33 @@ document:
   outcome and the `fresh scope` advisory;
 - the limits;
 - both producer versions.
+
+**A version 2 report**, for one scenario execution — what `eval run --json`
+uploads from a runtime carrying task 107-B (D15). Everything the verdict above
+carries, read from the report's version 1 subset, and:
+
+- sameness, with both sides' recorded scenario digest, inputs, model and
+  prompt reference, and every warning, beside the gate;
+- per behavior, the presence `k/N` and calls per run (min–max, mean) as the
+  document's own display strings, the classification, `lost` in its own
+  column, and each side's fidelity with `mixed` and its counts;
+- per target, calls per run, the call ratio string, and each side's latency
+  buckets, span and HTTP status classes and 429s, with the change when the
+  section is comparable (D16);
+- tokens, and cost only with its pricing version, digest and source — or the
+  `cost_reason` saying there is no pricing table;
+- the gate as the execution recorded it: the six checks and all four
+  frequency checks together, per-target rows for `max_calls_per_run`, the
+  missing evidence of a deferred check, and the recorded limits. A gate the
+  execution did not record says `not recorded`, and no check, verdict or
+  classification is shown;
+- the suggestions, with their rule and evidence.
+
+The report is validated as strictly as version 1: closed vocabularies, every
+display string in the one shape the control plane writes, presence agreeing
+with its counts, a comparable section with a change and an incomparable one
+with a reason and none, and a cost never without its pricing. A suite's
+members may embed version 1 or version 2 documents.
 
 **A report**, for a suite:
 
@@ -493,8 +529,21 @@ no link, image, HTML, emphasis, `@mention` or `#issue` reference from it:
 The body is capped at 60,000 bytes, below GitHub's comment limit:
 
 - When it would be longer, unclassified behaviors are left out, with a visible
-  note. Every added and removed behavior and every check stays.
+  note. Every added and removed behavior and every check stays. A version 2
+  report keeps lost behaviors too.
+- A version 2 report that still does not fit then leaves out each target's
+  latency and status detail and the suggestions, again with a note where each
+  would have been. Sameness, the gate and the target calls stay.
 - When even that does not fit, the rendering is no verdict.
+
+**The pinned runtime decides what is uploaded.** The run and comment actions
+build the commit `runtime.env` pins
+([ADR 0056](adr/0056-the-run-action-builds-a-pinned-source-commit.md),
+[ADR 0058](adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md)).
+Until that pin moves to a commit carrying task 107-B, the run action uploads
+version 1 and the comment renders it as before; the action's end-to-end
+workflow proves, with this repository's own runtime, that the uploaded
+document is then the report and the comment its version 2 rendering.
 
 ## The comment job
 

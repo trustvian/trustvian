@@ -37,6 +37,12 @@ type ScenarioExecutionReport struct {
 	// PresentIn is, for each entry of Comparison.Behaviors in the same order,
 	// the repetitions that observed it, each side in index order.
 	PresentIn []BehaviorPresentIn
+
+	// TargetOperational is, for each entry of Comparison.Targets in the same
+	// order, that target's latency and error sections (task 107, D16): the
+	// computation GET /v1/evaluations/operational runs, summed over the same
+	// completed repetitions the comparison counted.
+	TargetOperational []OperationalTargetRow
 }
 
 // BehaviorPresentIn is the repetitions one behavior was observed in.
@@ -90,10 +96,36 @@ func (c *ControlPlane) ScenarioExecutionReport(
 			comparison.Behaviors[i].Classification = ""
 		}
 	}
+	targets, err := targetOperational(comparison.Targets, inputs)
+	if err != nil {
+		return ScenarioExecutionReport{}, err
+	}
 	return ScenarioExecutionReport{
 		Execution: execution, Comparison: comparison,
-		PresentIn: presentIn(comparison.Behaviors, inputs),
+		PresentIn:         presentIn(comparison.Behaviors, inputs),
+		TargetOperational: targets,
 	}, nil
+}
+
+// targetOperational is each comparison target's operational row, over the
+// completed repetitions — the runs the comparison's own sections sum. A
+// repetition that did not complete has no evidence to add, as in the
+// comparison.
+func targetOperational(targets []RepeatedTargetFrequency, inputs []repetitionInput) ([]OperationalTargetRow, error) {
+	rows := targetOperationalRows{}
+	for _, in := range inputs {
+		if !in.evidence.Completed() {
+			continue
+		}
+		if err := rows.addRun(in.evidence.Side, in.entries); err != nil {
+			return nil, err
+		}
+	}
+	out := make([]OperationalTargetRow, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, rows.row(t.Target))
+	}
+	return out, nil
 }
 
 // presentIn lists, per behavior, the completed repetitions whose snapshot

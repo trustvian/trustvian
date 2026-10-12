@@ -121,7 +121,7 @@ trustvian eval compare-repeated
                             [--min-candidate-frequency <n>] [--max-lost-behaviors <n>]
                             [--max-calls-per-run <target>=<max> ...]
                             [--max-llm-calls-per-run <n>]
-trustvian eval report       <execution-id>
+trustvian eval report       <execution-id> [--format md]
 
 trustvian env create   --project-id <id> --ref <ref> --name <name> [--rank <n>]
 trustvian env get      --project-id <id> --ref <ref>
@@ -308,10 +308,13 @@ states a value only when every one of its runs was recorded with the same one
 
 A completed scenario execution has a report: the result document version 2
 ([contract](compatibility.md#result-document-version-2)), served by
-`GET /v1/scenario-executions/{execution_id}/report`. It is version 1 — what
-`eval run --json` printed — plus, on every behavior row, display strings
-(`"2/3"`, `"1–4"`, the mean, and `"2.4×"` per target) and `present_in`, the
-repetitions and runs that observed it.
+`GET /v1/scenario-executions/{execution_id}/report`. It is version 1 plus, on
+every behavior row, display strings (`"2/3"`, `"1–4"`, the mean, and `"2.4×"`
+per target) and `present_in`, the repetitions and runs that observed it, and,
+on every target, its latency buckets, status classes and 429s per side (D16).
+Since task 107-B, `eval run --json` prints this same document when the
+execution completes (D15), and the report names the CLI version and reference
+mode the run recorded at begin (D14).
 
 ```text
 trustvian eval report scn-support-20261011T105259-d4334c77 --json
@@ -322,8 +325,21 @@ adds nothing computed. It is a read, not a gate: exit `0` when the report was
 read, whatever verdict it records; `2` usage (no execution id, a second
 positional argument, an unknown flag); `3` an API or network failure — an
 unknown execution (`404`) or one still running or failed (`409`) among them —
-with nothing on stdout. There is no Markdown mode yet; it comes from the one
-renderer the pull-request comment uses (task 107-B).
+with nothing on stdout.
+
+`--format md` prints the report as Markdown, rendered by `internal/cirender` —
+the renderer the pull request comment uses:
+
+```text
+trustvian eval report scn-support-20261011T105259-d4334c77 --format md
+```
+
+Its bytes are exactly `trustvian-ci-render --document report.json`'s for the
+same document, and the comment's with the commit, run link and CLI exit code
+added after the heading. Every figure in it is a string or integer from the
+document. A document the renderer refuses still prints its no-verdict
+rendering, and the command exits `3`. `--format md` cannot be combined with
+`--json`; `--format json` is the default.
 
 The gate in the report is the one the execution **recorded when it completed**
 (schema 14, [ADR 0069](adr/0069-a-completed-execution-records-the-gate-it-consumed.md)),

@@ -153,11 +153,13 @@ func insertScenarioExecution(ctx context.Context, w scenarioExecutionWriter, e S
 		string(e.scope.Environment), int64(e.runs), reference, string(e.status), timeText(e.startedAt), key}
 	args = append(args, provenanceColumnValues(e.provenance[0])...)
 	args = append(args, provenanceColumnValues(e.provenance[1])...)
+	args = append(args, e.producerColumnValues()...)
 	_, err = w.exec(ctx, w.rebind(
 		`INSERT INTO `+tableScenarioExecutions+` (
 		   id, scenario_name, project_id, agent_id, environment, runs,
-		   reference_execution_id, status, started_at, started_order, `+scenarioProvenanceColumnList+`
-		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), args...)
+		   reference_execution_id, status, started_at, started_order, `+scenarioProvenanceColumnList+`,
+		   `+columnCLIVersion+`, `+columnReferenceMode+`
+		 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), args...)
 	if err != nil {
 		return w.writeError("scenario execution", string(e.id), err)
 	}
@@ -270,6 +272,7 @@ func loadScenarioExecutionRow(
 		name, project, agent, environment, status, startedAt string
 		runs                                                 int64
 		reference, finishedAt, verdict, gateSnapshot         sql.NullString
+		cliVersion, referenceMode                            sql.NullString
 		sequence                                             sql.NullInt64
 		provenance                                           [10]sql.NullString
 	)
@@ -278,11 +281,12 @@ func loadScenarioExecutionRow(
 	for i := range provenance {
 		targets = append(targets, &provenance[i])
 	}
-	targets = append(targets, &gateSnapshot)
+	targets = append(targets, &gateSnapshot, &cliVersion, &referenceMode)
 	err := q.queryRow(ctx, q.rebind(
 		`SELECT scenario_name, project_id, agent_id, environment, runs,
 		        reference_execution_id, status, started_at, finished_at,
-		        completion_sequence, verdict, `+scenarioProvenanceColumnList+`, `+columnGateSnapshot+`
+		        completion_sequence, verdict, `+scenarioProvenanceColumnList+`, `+columnGateSnapshot+`,
+		        `+columnCLIVersion+`, `+columnReferenceMode+`
 		 FROM `+tableScenarioExecutions+` WHERE id = ?`), string(id)).
 		Scan(targets...)
 	switch {
@@ -317,6 +321,17 @@ func loadScenarioExecutionRow(
 				ErrStoreCorrupt, preview(string(id)), scenarioProvenanceColumns()[i])
 		}
 	}
+	// The runner's own facts (schema 15) follow the same rule: NULL is not
+	// recorded, and an empty string is nothing any write produces.
+	for _, column := range []struct {
+		name  string
+		value sql.NullString
+	}{{columnCLIVersion, cliVersion}, {columnReferenceMode, referenceMode}} {
+		if column.value.Valid && column.value.String == "" {
+			return ScenarioExecution{}, fmt.Errorf("%w: scenario execution %s has an empty %s",
+				ErrStoreCorrupt, preview(string(id)), column.name)
+		}
+	}
 	// NULL is "not recorded": an execution not completed, or completed before
 	// schema 14. Anything stored is decoded and re-proved; the execution's
 	// own validation then holds it to the verdict and N beside it.
@@ -336,6 +351,7 @@ func loadScenarioExecutionRow(
 		provenance: [2]SideProvenance{
 			sideProvenanceFromColumns(provenance[0:5]), sideProvenanceFromColumns(provenance[5:10]),
 		},
+		cliVersion: cliVersion.String, referenceMode: ScenarioReferenceMode(referenceMode.String),
 	}, nil
 }
 

@@ -20,6 +20,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+
+	"github.com/trustvian/trustvian/internal/cirender"
 )
 
 // The artifact's fixed file names (docs/ci-github-action.md).
@@ -51,7 +53,7 @@ func readBounded(dir, name string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("%s: cannot be examined", name)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%w: %s: is not a regular file", errSchema, name)
+		return nil, fmt.Errorf("%w: %s: is not a regular file", cirender.ErrSchema, name)
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -62,14 +64,14 @@ func readBounded(dir, name string, limit int64) ([]byte, error) {
 	// between the two calls is refused.
 	opened, err := f.Stat()
 	if err != nil || !os.SameFile(info, opened) || !opened.Mode().IsRegular() {
-		return nil, fmt.Errorf("%w: %s: changed while it was opened", errSchema, name)
+		return nil, fmt.Errorf("%w: %s: changed while it was opened", cirender.ErrSchema, name)
 	}
 	raw, err := io.ReadAll(io.LimitReader(f, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("%s: cannot be read", name)
 	}
 	if int64(len(raw)) > limit {
-		return nil, fmt.Errorf("%w: %s: is larger than %d bytes", errSchema, name, limit)
+		return nil, fmt.Errorf("%w: %s: is larger than %d bytes", cirender.ErrSchema, name, limit)
 	}
 	return raw, nil
 }
@@ -112,113 +114,113 @@ type metadata struct {
 // parseMetadata validates trustvian-run.json and checks every identity it
 // records against what the caller expects. A mismatch is a rejection: the
 // artifact does not describe this commit, repository, run or exit code.
-func parseMetadata(raw []byte, want expectedContext) (metadata, error) {
+func parseMetadata(raw []byte, want cirender.Frame) (metadata, error) {
 	var m metadata
-	doc, err := parseStrict(raw)
+	doc, err := cirender.Parse(raw)
 	if err != nil {
 		return m, err
 	}
-	if doc.kind != kindObject {
-		return m, schemaErr(metadataFile, "is not an object")
+	if !doc.IsObject() {
+		return m, cirender.SchemaErr(metadataFile, "is not an object")
 	}
-	if err := equalText(doc, "", "version", "1"); err != nil {
+	if err := cirender.EqualText(doc, "", "version", "1"); err != nil {
 		return m, err
 	}
-	head, err := object(doc, "", "head")
+	head, err := cirender.Object(doc, "", "head")
 	if err != nil {
 		return m, err
 	}
-	sha, err := str(head, "head", "sha")
+	sha, err := cirender.Str(head, "head", "sha")
 	if err != nil {
 		return m, err
 	}
 	if !shaText.MatchString(sha) {
-		return m, schemaErr("head.sha", "is not a lowercase hexadecimal commit SHA")
+		return m, cirender.SchemaErr("head.sha", "is not a lowercase hexadecimal commit SHA")
 	}
-	if sha != want.headSHA {
-		return m, schemaErr("head.sha", "is not the expected head commit")
+	if sha != want.HeadSHA {
+		return m, cirender.SchemaErr("head.sha", "is not the expected head commit")
 	}
-	if _, err := enum(head, "head", "source", "event.pull_request.head.sha", "github.sha"); err != nil {
+	if _, err := cirender.Enum(head, "head", "source", "event.pull_request.head.sha", "github.sha"); err != nil {
 		return m, err
 	}
-	if _, err := str(doc, "", "event"); err != nil {
+	if _, err := cirender.Str(doc, "", "event"); err != nil {
 		return m, err
 	}
-	if repo, err := str(doc, "", "repository"); err != nil {
+	if repo, err := cirender.Str(doc, "", "repository"); err != nil {
 		return m, err
-	} else if repo != want.repository {
-		return m, schemaErr("repository", "is not the expected repository")
+	} else if repo != want.Repository {
+		return m, cirender.SchemaErr("repository", "is not the expected repository")
 	}
-	run, err := object(doc, "", "run")
+	run, err := cirender.Object(doc, "", "run")
 	if err != nil {
 		return m, err
 	}
-	if id, err := str(run, "run", "id"); err != nil {
+	if id, err := cirender.Str(run, "run", "id"); err != nil {
 		return m, err
-	} else if id != want.runID {
-		return m, schemaErr("run.id", "is not the expected run")
+	} else if id != want.RunID {
+		return m, cirender.SchemaErr("run.id", "is not the expected run")
 	}
-	if attempt, err := str(run, "run", "attempt"); err != nil {
+	if attempt, err := cirender.Str(run, "run", "attempt"); err != nil {
 		return m, err
-	} else if attempt != want.runAttempt {
-		return m, schemaErr("run.attempt", "is not the expected run attempt")
+	} else if attempt != want.RunAttempt {
+		return m, cirender.SchemaErr("run.attempt", "is not the expected run attempt")
 	}
-	if m.mode, err = enum(doc, "", "mode", modeScenario, modeSuite, modeBoth, modeNone); err != nil {
-		return m, err
-	}
-	if _, err := enum(doc, "", "control_plane", "started", "attached"); err != nil {
+	if m.mode, err = cirender.Enum(doc, "", "mode", modeScenario, modeSuite, modeBoth, modeNone); err != nil {
 		return m, err
 	}
-	cli, err := object(doc, "", "cli")
+	if _, err := cirender.Enum(doc, "", "control_plane", "started", "attached"); err != nil {
+		return m, err
+	}
+	cli, err := cirender.Object(doc, "", "cli")
 	if err != nil {
 		return m, err
 	}
 	// Any status the process can exit with; whether it is in the CLI's
 	// contract is decided later, against the expected code.
-	if m.exitCode, err = integer(cli, "cli", "exit_code", 0, 255); err != nil {
+	if m.exitCode, err = cirender.Integer(cli, "cli", "exit_code", 0, 255); err != nil {
 		return m, err
 	}
-	if m.exitCode != int64(*want.exitCode) {
-		return m, schemaErr("cli.exit_code", "is not the exit code the run job reported")
+	if m.exitCode != int64(*want.ExitCode) {
+		return m, cirender.SchemaErr("cli.exit_code", "is not the exit code the run job reported")
 	}
-	runtime, err := object(doc, "", "runtime")
+	runtime, err := cirender.Object(doc, "", "runtime")
 	if err != nil {
 		return m, err
 	}
-	if _, err := str(runtime, "runtime", "source_commit"); err != nil {
+	if _, err := cirender.Str(runtime, "runtime", "source_commit"); err != nil {
 		return m, err
 	}
-	if _, err := str(runtime, "runtime", "go_version"); err != nil {
+	if _, err := cirender.Str(runtime, "runtime", "go_version"); err != nil {
 		return m, err
 	}
 
-	result, err := object(doc, "", "result")
+	result, err := cirender.Object(doc, "", "result")
 	if err != nil {
 		return m, err
 	}
-	if m.resultStatus, err = enum(result, "result", "status",
+	if m.resultStatus, err = cirender.Enum(result, "result", "status",
 		statusPresent, statusAbsent, statusOversized, statusInvalid); err != nil {
 		return m, err
 	}
 	if m.resultStatus == statusPresent {
 		// The artifact's own file name is checked, never used: the file read
 		// is always result.json.
-		if err := equalText(result, "result", "file", resultFile); err != nil {
+		if err := cirender.EqualText(result, "result", "file", resultFile); err != nil {
 			return m, err
 		}
-		if m.resultBytes, err = integer(result, "result", "bytes", 2, maxResultBytes); err != nil {
+		if m.resultBytes, err = cirender.Integer(result, "result", "bytes", 2, maxResultBytes); err != nil {
 			return m, err
 		}
-		if m.resultSHA256, err = str(result, "result", "sha256"); err != nil {
+		if m.resultSHA256, err = cirender.Str(result, "result", "sha256"); err != nil {
 			return m, err
 		}
 		if !sha256Text.MatchString(m.resultSHA256) {
-			return m, schemaErr("result.sha256", "is not a 64-character lowercase SHA-256")
+			return m, cirender.SchemaErr("result.sha256", "is not a 64-character lowercase SHA-256")
 		}
 	} else {
 		for _, name := range []string{"file", "bytes", "sha256"} {
-			if _, ok := result.fields[name]; ok {
-				return m, schemaErr(join("result", name), "is present although no result was preserved")
+			if result.Has(name) {
+				return m, cirender.SchemaErr(cirender.Join("result", name), "is present although no result was preserved")
 			}
 		}
 	}
@@ -228,11 +230,11 @@ func parseMetadata(raw []byte, want expectedContext) (metadata, error) {
 // checkDigest confirms result.json is the file the metadata describes.
 func checkDigest(raw []byte, m metadata) error {
 	if int64(len(raw)) != m.resultBytes {
-		return schemaErr(resultFile, "is not the size trustvian-run.json records")
+		return cirender.SchemaErr(resultFile, "is not the size trustvian-run.json records")
 	}
 	sum := sha256.Sum256(raw)
 	if hex.EncodeToString(sum[:]) != m.resultSHA256 {
-		return schemaErr(resultFile, "does not match the SHA-256 trustvian-run.json records")
+		return cirender.SchemaErr(resultFile, "does not match the SHA-256 trustvian-run.json records")
 	}
 	return nil
 }

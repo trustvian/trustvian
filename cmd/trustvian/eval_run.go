@@ -17,6 +17,7 @@ package main
 // side is that execution's, reused whole.
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -338,6 +339,9 @@ func (r scenarioRunner) execute(ctx context.Context, s streams, client *platform
 		ID: executionID, ScenarioName: scenario.Name, Runs: runs,
 		ProjectID: scope.project, AgentID: scope.agent, Environment: scope.environment,
 		Reference: reference, Provenance: job.provenance,
+		// Recorded by the control plane (task 107, D14), so the report says
+		// which CLI ran the execution, as this document's producers do.
+		CLIVersion: r.cliVersion(),
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -549,6 +553,15 @@ func (r scenarioRunner) execute(ctx context.Context, s streams, client *platform
 		out.executionID = executionID
 		return out
 	}
+	// D15: the document is the execution's report, the one `eval report`
+	// prints and the pull request comment renders, when the control plane
+	// serves it; the version 1 document above otherwise.
+	document, err = r.reportDocument(ctx, s, client, executionID, comparison.Gate.Verdict, document)
+	if err != nil {
+		out := stopped(err)
+		out.executionID = executionID
+		return out
+	}
 	return scenarioOutcome{
 		exit: exit, document: document, executionID: executionID,
 		render: func(w io.Writer) error {
@@ -556,6 +569,60 @@ func (r scenarioRunner) execute(ctx context.Context, s streams, client *platform
 				comparison)
 		},
 	}
+}
+
+// reportDocument is the completed execution's report (task 107, D15): the
+// document GET /v1/scenario-executions/{id}/report serves, unchanged, so that
+// `eval run --json`, `eval report --json` and the comment's artifact are one
+// document.
+//
+// A control plane without the route answers 404, and then the version 1
+// document is printed, as it was before the report existed, and stderr says
+// so. Any other failure to read the report does the same, naming why: the
+// verdict was already committed and is the one the version 1 document
+// carries. A report that contradicts the completion — another execution, a
+// gate not recorded, another verdict — is not printed at all: the command
+// fails, because neither document can then be trusted to be this
+// execution's.
+func (r scenarioRunner) reportDocument(ctx context.Context, s streams, client *platformClient,
+	executionID, verdict string, v1 []byte) ([]byte, error) {
+	fallback := func(why string) ([]byte, error) {
+		fmt.Fprintf(s.err, "trustvian eval run: %s; printing the version 1 result document\n", why)
+		return v1, nil
+	}
+	result, err := client.get(ctx, "scenario-executions", executionID, "report")
+	if err != nil {
+		return fallback(fmt.Sprintf("the report of execution %s could not be read: %v", executionID, err))
+	}
+	if result.status == http.StatusNotFound {
+		return fallback("the control plane serves no report route (404)")
+	}
+	if err := checkStatus(result); err != nil {
+		return fallback(fmt.Sprintf("the report of execution %s could not be read: %v", executionID, err))
+	}
+	if err := requireJSONBody(result.body); err != nil {
+		return fallback(fmt.Sprintf("the report of execution %s is not JSON: %v", executionID, err))
+	}
+	var report struct {
+		Version     string `json:"version"`
+		ExecutionID string `json:"execution_id"`
+		Comparison  struct {
+			Gate struct {
+				State   string `json:"state"`
+				Verdict string `json:"verdict"`
+			} `json:"gate"`
+		} `json:"comparison"`
+	}
+	if err := decodeJSON(result.body, &report); err != nil {
+		return fallback(fmt.Sprintf("the report of execution %s cannot be read: %v", executionID, err))
+	}
+	if report.Version != "2" || report.ExecutionID != executionID ||
+		report.Comparison.Gate.State != "recorded" || report.Comparison.Gate.Verdict != verdict {
+		return nil, operationalErrorf("the control plane's report of execution %s (version %q, execution %q, "+
+			"gate %q %q) contradicts its completion (verdict %q)", executionID, report.Version,
+			report.ExecutionID, report.Comparison.Gate.State, report.Comparison.Gate.Verdict, verdict)
+	}
+	return bytes.TrimRight(result.body, "\n"), nil
 }
 
 // begin records the execution, and with a reference, has the control plane
@@ -696,8 +763,12 @@ func newExecutionID(name string) string {
 
 func cliVersionString() string {
 	info := buildinfo.Read()
-	if info.Revision == "" {
+	switch {
+	case info.Revision == "":
 		return info.Version
+	case info.Version == "":
+		// Never " <revision>": the control plane refuses a padded version.
+		return info.Revision
 	}
 	return info.Version + " " + info.Revision
 }
@@ -769,6 +840,10 @@ type beginExecutionBody struct {
 	// Provenance is task 086's: the scenario and input digests and each
 	// side's declared model and prompt reference.
 	Provenance *executionProvenanceBody `json:"provenance,omitempty"`
+
+	// CLIVersion is this CLI's version, recorded with the execution (task
+	// 107, D14). Empty is omitted and recorded as not recorded.
+	CLIVersion string `json:"cli_version,omitempty"`
 }
 
 // executionSummary decodes only what the runner reports about an execution.

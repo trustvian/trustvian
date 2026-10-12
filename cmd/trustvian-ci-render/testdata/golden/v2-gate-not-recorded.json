@@ -1,0 +1,1073 @@
+{
+  "version": "2",
+  "scenario": {
+    "name": "support",
+    "runs": 2
+  },
+  "execution_id": "golden-pre-v14",
+  "producers": {
+    "cli_version": "not_recorded",
+    "control_plane_version": "v0.13.0"
+  },
+  "provenance": {
+    "reference": {
+      "inputs": "not_recorded"
+    },
+    "candidate": {
+      "inputs": "not_recorded"
+    }
+  },
+  "comparison": {
+    "version": "1",
+    "runs": 2,
+    "repetitions": [
+      {
+        "side": "reference",
+        "index": 1,
+        "run_id": "golden-pre-v14-reference-1",
+        "status": "completed",
+        "behavioral_profile": "golden-pre-v14-reference-1-profile",
+        "record_count": "2",
+        "distinct_behavior_count": 2,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "reference",
+        "index": 2,
+        "run_id": "golden-pre-v14-reference-2",
+        "status": "completed",
+        "behavioral_profile": "golden-pre-v14-reference-2-profile",
+        "record_count": "2",
+        "distinct_behavior_count": 2,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "candidate",
+        "index": 1,
+        "run_id": "golden-pre-v14-candidate-1",
+        "status": "completed",
+        "behavioral_profile": "golden-pre-v14-candidate-1-profile",
+        "record_count": "3",
+        "distinct_behavior_count": 3,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "candidate",
+        "index": 2,
+        "run_id": "golden-pre-v14-candidate-2",
+        "status": "completed",
+        "behavioral_profile": "golden-pre-v14-candidate-2-profile",
+        "record_count": "2",
+        "distinct_behavior_count": 2,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      }
+    ],
+    "behaviors": [
+      {
+        "fingerprint_id": "fp-http-POST@ollama.localhost",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "http",
+          "operation_name": "POST",
+          "target_name": "ollama.localhost",
+          "target_category": "external",
+          "environment": "staging"
+        },
+        "reference_runs_present": "2",
+        "candidate_runs_present": "2",
+        "classification": "not_recorded",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "lost": false,
+        "reference_fidelity": {
+          "level": "transport",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "2",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "2",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "candidate_fidelity": {
+          "level": "transport",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "2",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "2",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "display": {
+          "reference_presence": "2/2",
+          "candidate_presence": "2/2",
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "1"
+        },
+        "present_in": {
+          "reference": [
+            {
+              "index": 1,
+              "run_id": "golden-pre-v14-reference-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-pre-v14-reference-2"
+            }
+          ],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "golden-pre-v14-candidate-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-pre-v14-candidate-2"
+            }
+          ]
+        }
+      },
+      {
+        "fingerprint_id": "fp-tool-export_customer@",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "tool",
+          "operation_name": "export_customer",
+          "environment": "staging"
+        },
+        "reference_runs_present": "0",
+        "candidate_runs_present": "1",
+        "classification": "not_recorded",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "0",
+          "calls_per_run_min": "0",
+          "calls_per_run_max": "0",
+          "calls_per_run_mean_milli": "0"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "1",
+          "calls_per_run_min": "0",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "500"
+        },
+        "lost": false,
+        "candidate_fidelity": {
+          "level": "semantic",
+          "mixed": false,
+          "semantic": "1",
+          "transport": "0",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "1",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "display": {
+          "reference_presence": "0/2",
+          "candidate_presence": "1/2",
+          "reference_calls_per_run": "0–0",
+          "candidate_calls_per_run": "0–1",
+          "reference_calls_per_run_mean": "0",
+          "candidate_calls_per_run_mean": "0.5"
+        },
+        "present_in": {
+          "reference": [],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "golden-pre-v14-candidate-1"
+            }
+          ]
+        }
+      },
+      {
+        "fingerprint_id": "fp-tool-lookup_customer@",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "tool",
+          "operation_name": "lookup_customer",
+          "environment": "staging"
+        },
+        "reference_runs_present": "2",
+        "candidate_runs_present": "2",
+        "classification": "not_recorded",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "lost": false,
+        "reference_fidelity": {
+          "level": "semantic",
+          "mixed": false,
+          "semantic": "2",
+          "transport": "0",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "2",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "candidate_fidelity": {
+          "level": "semantic",
+          "mixed": false,
+          "semantic": "2",
+          "transport": "0",
+          "unrecorded": "0",
+          "layer": {
+            "model": "0",
+            "tool": "2",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "0"
+          }
+        },
+        "display": {
+          "reference_presence": "2/2",
+          "candidate_presence": "2/2",
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "1"
+        },
+        "present_in": {
+          "reference": [
+            {
+              "index": 1,
+              "run_id": "golden-pre-v14-reference-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-pre-v14-reference-2"
+            }
+          ],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "golden-pre-v14-candidate-1"
+            },
+            {
+              "index": 2,
+              "run_id": "golden-pre-v14-candidate-2"
+            }
+          ]
+        }
+      }
+    ],
+    "gate": {
+      "state": "not_recorded"
+    },
+    "operational": {
+      "latency": {
+        "comparable": true,
+        "reference": {
+          "runs_with_evidence": "2",
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "2"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "2"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "4",
+          "unobserved": "0",
+          "sum_nanos": "1004000000",
+          "min_nanos": "2000000",
+          "max_nanos": "500000000"
+        },
+        "candidate": {
+          "runs_with_evidence": "2",
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "3"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "2"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "5",
+          "unobserved": "0",
+          "sum_nanos": "1006000000",
+          "min_nanos": "2000000",
+          "max_nanos": "500000000"
+        },
+        "delta": {
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "1"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "1",
+          "unobserved": "0",
+          "sum_nanos": "2000000",
+          "min_nanos": "0",
+          "max_nanos": "0"
+        }
+      },
+      "errors": {
+        "comparable": true,
+        "reference": {
+          "runs_with_evidence": "2",
+          "span_status": {
+            "unavailable": "0",
+            "unset": "0",
+            "ok": "4",
+            "error": "0"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "2",
+            "3xx": "0",
+            "4xx": "0",
+            "5xx": "0",
+            "unavailable": "2"
+          },
+          "http_429": "0"
+        },
+        "candidate": {
+          "runs_with_evidence": "2",
+          "span_status": {
+            "unavailable": "0",
+            "unset": "0",
+            "ok": "5",
+            "error": "0"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "2",
+            "3xx": "0",
+            "4xx": "0",
+            "5xx": "0",
+            "unavailable": "3"
+          },
+          "http_429": "0"
+        },
+        "delta": {
+          "span_status": {
+            "unavailable": "0",
+            "unset": "0",
+            "ok": "1",
+            "error": "0"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "0",
+            "3xx": "0",
+            "4xx": "0",
+            "5xx": "0",
+            "unavailable": "1"
+          },
+          "http_429": "0"
+        }
+      },
+      "tokens": {
+        "comparable": false,
+        "reason": "both_unavailable",
+        "reference": {
+          "runs_with_evidence": "0",
+          "input": "0",
+          "output": "0",
+          "unsplit": "0",
+          "observed": "0",
+          "unobserved": "4"
+        },
+        "candidate": {
+          "runs_with_evidence": "0",
+          "input": "0",
+          "output": "0",
+          "unsplit": "0",
+          "observed": "0",
+          "unobserved": "5"
+        }
+      },
+      "cost_reason": "pricing_not_configured"
+    },
+    "targets": [
+      {
+        "target_name": "",
+        "target_category": "",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "3",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "1500"
+        },
+        "call_ratio_available": true,
+        "call_ratio_permille": "1500",
+        "display": {
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "1–2",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "1.5",
+          "call_ratio": "1.5×"
+        },
+        "operational": {
+          "latency": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "2",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "2"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "2",
+              "unobserved": "0",
+              "sum_nanos": "4000000",
+              "min_nanos": "2000000",
+              "max_nanos": "2000000"
+            },
+            "candidate": {
+              "runs_with_evidence": "2",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "3"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "3",
+              "unobserved": "0",
+              "sum_nanos": "6000000",
+              "min_nanos": "2000000",
+              "max_nanos": "2000000"
+            },
+            "delta": {
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "1"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "1",
+              "unobserved": "0",
+              "sum_nanos": "2000000",
+              "min_nanos": "0",
+              "max_nanos": "0"
+            }
+          },
+          "errors": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "2",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "2",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "2"
+              },
+              "http_429": "0"
+            },
+            "candidate": {
+              "runs_with_evidence": "2",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "3",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "3"
+              },
+              "http_429": "0"
+            },
+            "delta": {
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "1",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "1"
+              },
+              "http_429": "0"
+            }
+          }
+        }
+      },
+      {
+        "target_name": "ollama.localhost",
+        "target_category": "external",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "call_ratio_available": true,
+        "call_ratio_permille": "1000",
+        "display": {
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "1",
+          "call_ratio": "1.0×"
+        },
+        "operational": {
+          "latency": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "2",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "2"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "2",
+              "unobserved": "0",
+              "sum_nanos": "1000000000",
+              "min_nanos": "500000000",
+              "max_nanos": "500000000"
+            },
+            "candidate": {
+              "runs_with_evidence": "2",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "2"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "2",
+              "unobserved": "0",
+              "sum_nanos": "1000000000",
+              "min_nanos": "500000000",
+              "max_nanos": "500000000"
+            },
+            "delta": {
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "0",
+              "unobserved": "0",
+              "sum_nanos": "0",
+              "min_nanos": "0",
+              "max_nanos": "0"
+            }
+          },
+          "errors": {
+            "comparable": true,
+            "reference": {
+              "runs_with_evidence": "2",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "2",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "2",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "0"
+              },
+              "http_429": "0"
+            },
+            "candidate": {
+              "runs_with_evidence": "2",
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "2",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "2",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "0"
+              },
+              "http_429": "0"
+            },
+            "delta": {
+              "span_status": {
+                "unavailable": "0",
+                "unset": "0",
+                "ok": "0",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "0"
+              },
+              "http_429": "0"
+            }
+          }
+        }
+      }
+    ],
+    "lost_transitions": "not_recorded",
+    "suggestions": [],
+    "suggestions_truncated": false,
+    "sameness": {
+      "same_scenario": "not_recorded",
+      "same_inputs": "not_recorded",
+      "same_model": "not_recorded",
+      "same_prompt_ref": "not_recorded",
+      "reference": {
+        "inputs": "not_recorded"
+      },
+      "candidate": {
+        "inputs": "not_recorded"
+      }
+    },
+    "warnings": [],
+    "producer": {
+      "control_plane_version": "v0.13.0"
+    }
+  }
+}
+

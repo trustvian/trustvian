@@ -137,11 +137,7 @@ func (c *ControlPlane) OperationalByTarget(
 		name ComparisonSide
 		ids  []EvaluationRunID
 	}
-	type accumulated struct {
-		reference, candidate  operationalSide
-		referenceObs, candObs uint64
-	}
-	rows := map[OperationalTarget]*accumulated{}
+	rows := targetOperationalRows{}
 	var first EvaluationRun
 	for _, s := range []side{{SideReference, request.ReferenceRunIDs}, {SideCandidate, request.CandidateRunIDs}} {
 		for _, id := range s.ids {
@@ -171,32 +167,8 @@ func (c *ControlPlane) OperationalByTarget(
 				return OperationalTargetPage{}, fmt.Errorf(
 					"%w: run %s saturated its behavior snapshot", ErrIncompleteSnapshot, preview(string(id)))
 			}
-			// One run's entries, grouped by target, then folded into each
-			// target's side as one run — which is what makes
-			// runs_with_evidence count runs rather than behaviors.
-			byTarget := map[OperationalTarget][]BehaviorEntry{}
-			for _, e := range snapshot.Entries() {
-				t := OperationalTarget{Name: e.Behavior.TargetName, Category: string(e.Behavior.TargetCategory)}
-				byTarget[t] = append(byTarget[t], e)
-			}
-			for t, entries := range byTarget {
-				row := rows[t]
-				if row == nil {
-					row = &accumulated{}
-					rows[t] = row
-				}
-				target, observations := &row.candidate, &row.candObs
-				if s.name == SideReference {
-					target, observations = &row.reference, &row.referenceObs
-				}
-				if err := target.addRun(entries); err != nil {
-					return OperationalTargetPage{}, err
-				}
-				for _, e := range entries {
-					if err := addCount(observations, e.Observations, "target observations"); err != nil {
-						return OperationalTargetPage{}, err
-					}
-				}
+			if err := rows.addRun(s.name, snapshot.Entries()); err != nil {
+				return OperationalTargetPage{}, err
 			}
 		}
 	}
@@ -212,13 +184,64 @@ func (c *ControlPlane) OperationalByTarget(
 
 	page := OperationalTargetPage{More: len(targets) > limit}
 	for _, t := range targets[:min(limit, len(targets))] {
-		row := rows[t]
-		page.Rows = append(page.Rows, OperationalTargetRow{
-			Target:                t,
-			ReferenceObservations: row.referenceObs,
-			CandidateObservations: row.candObs,
-			Sections:              compareOperational(row.reference, row.candidate),
-		})
+		page.Rows = append(page.Rows, rows.row(t))
 	}
 	return page, nil
+}
+
+// targetOperationalRows accumulates per-target operational evidence over runs,
+// each side summed over its runs. It is the one computation behind this
+// route and a report's per-target sections (task 107, D16), so the two cannot
+// disagree about a target.
+type targetOperationalRows map[OperationalTarget]*targetOperationalAccumulator
+
+type targetOperationalAccumulator struct {
+	reference, candidate  operationalSide
+	referenceObs, candObs uint64
+}
+
+// addRun folds one run's entries in: grouped by target, then each target's
+// group folded into its side as one run — which is what makes
+// runs_with_evidence count runs rather than behaviors.
+func (rows targetOperationalRows) addRun(side ComparisonSide, entries []BehaviorEntry) error {
+	byTarget := map[OperationalTarget][]BehaviorEntry{}
+	for _, e := range entries {
+		t := OperationalTarget{Name: e.Behavior.TargetName, Category: string(e.Behavior.TargetCategory)}
+		byTarget[t] = append(byTarget[t], e)
+	}
+	for t, entries := range byTarget {
+		row := rows[t]
+		if row == nil {
+			row = &targetOperationalAccumulator{}
+			rows[t] = row
+		}
+		target, observations := &row.candidate, &row.candObs
+		if side == SideReference {
+			target, observations = &row.reference, &row.referenceObs
+		}
+		if err := target.addRun(entries); err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := addCount(observations, e.Observations, "target observations"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// row is one target's sections; a target no run reached has every section
+// unavailable on both sides.
+func (rows targetOperationalRows) row(t OperationalTarget) OperationalTargetRow {
+	acc := rows[t]
+	if acc == nil {
+		acc = &targetOperationalAccumulator{}
+	}
+	return OperationalTargetRow{
+		Target:                t,
+		ReferenceObservations: acc.referenceObs,
+		CandidateObservations: acc.candObs,
+		Sections:              compareOperational(acc.reference, acc.candidate),
+	}
 }

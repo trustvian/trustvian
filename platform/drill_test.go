@@ -2,17 +2,18 @@ package platform
 
 // The recovery drill for the platform database, in both directions each
 // schema step supports, on both backends. Task 081 built it for v13; task 107
-// extends it to v14's gate snapshot:
+// extends it to v14's gate snapshot and v15's runner facts (D14):
 //
 //   - upgrade: a backup taken at v10 — by the real v0.11.0 trustvian-local,
-//     the schema v0.11.0 users hold — and ones taken at v12 and v13 restore
-//     into this binary and migrate to v14, every behavior reading unrecorded
-//     (v13's step) and the completed execution reading its gate not recorded
-//     (v14's step);
-//   - restore at the new version: a backup taken at v14 restores and passes
-//     the restore-time invariant checks with every count intact, and its
+//     the schema v0.11.0 users hold — and ones taken at v12, v13 and v14
+//     restore into this binary and migrate to v15, every behavior reading
+//     unrecorded (v13's step), the completed execution reading its gate not
+//     recorded (v14's step), and every execution reading its CLI version and
+//     reference mode not recorded (v15's step);
+//   - restore at the new version: a backup taken at v15 restores and passes
+//     the restore-time invariant checks with every count intact, its
 //     execution's gate snapshot decodes and re-proves every invariant, equal
-//     to what the completion recorded.
+//     to what the completion recorded, and both runner facts read as begun.
 //
 // A backup is what an operator takes: VACUUM INTO for SQLite, pg_dump and
 // pg_restore for PostgreSQL. Gated on TRUSTVIAN_TEST_PLATFORM_DRILL, because
@@ -52,6 +53,8 @@ const (
 	drillCandidateRunID  = "drill-run-candidate"
 	drillCandidateProf   = "drill-profile-candidate"
 	drillExecutionID     = "drill-exec"
+	drillReuseID         = "drill-exec-reuse"
+	drillCLIVersion      = "v0.13.0-drill 3e86f9c"
 	drillEnvironment     = "staging"
 	drillRecordsPerShape = 3
 )
@@ -239,6 +242,7 @@ func seedCurrent(t *testing.T, store Store) ScenarioExecution {
 	scope := ScenarioScope{ProjectID: "proj-1", AgentID: "agent-1", Environment: drillEnvironment}
 	if _, _, err := plane.BeginScenarioExecution(ctx, BeginScenarioExecutionRequest{
 		ID: drillExecutionID, ScenarioName: "drill", Runs: 1, Scope: scope, At: epoch.Add(2 * time.Hour),
+		CLIVersion: drillCLIVersion,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +265,38 @@ func seedCurrent(t *testing.T, store Store) ScenarioExecution {
 		t.Fatalf("seeded execution %s: verdict %s, gate recorded %v", execution.ID(), execution.Verdict(),
 			execution.GateRecord().Recorded())
 	}
+	// A second execution, left running, that asked for `last`: the one row
+	// that carries a reference mode.
+	if _, _, err := plane.BeginScenarioExecution(ctx, BeginScenarioExecutionRequest{
+		ID: drillReuseID, ScenarioName: "drill", Runs: 1, Scope: scope, At: epoch.Add(4 * time.Hour),
+		Reference: ScenarioReference{Last: true}, CLIVersion: drillCLIVersion,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	return execution
+}
+
+// assertDrillProducer: both executions' runner facts, as begun when the
+// backup is at v15, or not recorded when it predates it.
+func assertDrillProducer(t *testing.T, store Store, recorded bool) {
+	t.Helper()
+	cli, mode := "", ScenarioReferenceMode("")
+	if recorded {
+		cli, mode = drillCLIVersion, ScenarioReferenceModeLast
+	}
+	for _, want := range []struct {
+		id   ScenarioExecutionID
+		mode ScenarioReferenceMode
+	}{{drillExecutionID, ""}, {drillReuseID, mode}} {
+		got, err := store.ScenarioExecution(context.Background(), want.id)
+		if err != nil {
+			t.Fatalf("ScenarioExecution(%s) after restore error = %v", want.id, err)
+		}
+		if got.CLIVersion() != cli || got.ReferenceMode() != want.mode {
+			t.Fatalf("restored %s records %q %q, want %q %q", want.id, got.CLIVersion(), got.ReferenceMode(),
+				cli, want.mode)
+		}
+	}
 }
 
 // assertDrillExecution: the execution survives as completed PASS. want is the
@@ -364,19 +399,23 @@ func TestPlatformDrillSQLite(t *testing.T) {
 		}
 		assertDrillEntry(t, restored, unrecordedFidelity(drillRecordsPerShape))
 		assertDrillExecution(t, restored, ScenarioExecution{})
+		// v0.11.0 began it with no runner facts to keep.
+		assertProducer(t, restored, drillExecutionID, "", "")
 	})
 	for _, leg := range []struct {
 		name      string
 		stamp     int
 		downgrade func(testing.TB, func(string) error)
 		fidelity  BehaviorFidelity
+		gate      bool
 	}{
-		{"v12", schemaVersionV12, downgradeToV12, unrecordedFidelity(drillRecordsPerShape)},
-		{"v13", schemaVersionV13, downgradeToV13, semanticDrill},
+		{"v12", schemaVersionV12, downgradeToV12, unrecordedFidelity(drillRecordsPerShape), false},
+		{"v13", schemaVersionV13, downgradeToV13, semanticDrill, false},
+		{"v14", schemaVersionV14, downgradeToV14, semanticDrill, true},
 	} {
 		t.Run(leg.name+" backup restores and migrates", func(t *testing.T) {
 			store, path := testStore(t)
-			seedCurrent(t, store)
+			completed := seedCurrent(t, store)
 			store.Close()
 			raw, err := sql.Open("sqlite", path)
 			if err != nil {
@@ -400,20 +439,26 @@ func TestPlatformDrillSQLite(t *testing.T) {
 				t.Fatalf("version = %d, want %d", v, SchemaVersion)
 			}
 			assertDrillEntry(t, restored, leg.fidelity)
-			assertDrillExecution(t, restored, ScenarioExecution{})
+			if leg.gate {
+				assertDrillExecution(t, restored, completed)
+			} else {
+				assertDrillExecution(t, restored, ScenarioExecution{})
+			}
+			assertDrillProducer(t, restored, false)
 		})
 	}
-	t.Run("v14 backup restores with every count and invariant", func(t *testing.T) {
+	t.Run("v15 backup restores with every count and invariant", func(t *testing.T) {
 		store, path := testStore(t)
 		completed := seedCurrent(t, store)
 		store.Close()
 		restored, err := OpenSQLiteStore(t.Context(), sqliteBackup(t, path))
 		if err != nil {
-			t.Fatalf("opening a v14 backup: %v", err)
+			t.Fatalf("opening a v15 backup: %v", err)
 		}
 		defer restored.Close()
 		assertDrillEntry(t, restored, semanticDrill)
 		assertDrillExecution(t, restored, completed)
+		assertDrillProducer(t, restored, true)
 	})
 }
 
@@ -519,15 +564,19 @@ func TestPlatformDrillPostgres(t *testing.T) {
 		defer restored.Close()
 		assertDrillEntry(t, restored, unrecordedFidelity(drillRecordsPerShape))
 		assertDrillExecution(t, restored, ScenarioExecution{})
+		// v0.11.0 began it with no runner facts to keep.
+		assertProducer(t, restored, drillExecutionID, "", "")
 	})
 	for _, leg := range []struct {
 		name      string
 		stamp     int
 		downgrade func(testing.TB, func(string) error)
 		fidelity  BehaviorFidelity
+		gate      bool
 	}{
-		{"v12", schemaVersionV12, downgradeToV12, unrecordedFidelity(drillRecordsPerShape)},
-		{"v13", schemaVersionV13, downgradeToV13, semanticDrill},
+		{"v12", schemaVersionV12, downgradeToV12, unrecordedFidelity(drillRecordsPerShape), false},
+		{"v13", schemaVersionV13, downgradeToV13, semanticDrill, false},
+		{"v14", schemaVersionV14, downgradeToV14, semanticDrill, true},
 	} {
 		t.Run(leg.name+" backup restores and migrates", func(t *testing.T) {
 			dsn := isolatedSchemaDSN(t, postgresDSN(t))
@@ -535,7 +584,7 @@ func TestPlatformDrillPostgres(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			seedCurrent(t, store)
+			completed := seedCurrent(t, store)
 			store.Close()
 			pool, err := pgxpool.New(ctx, dsn)
 			if err != nil {
@@ -556,10 +605,15 @@ func TestPlatformDrillPostgres(t *testing.T) {
 			}
 			defer restored.Close()
 			assertDrillEntry(t, restored, leg.fidelity)
-			assertDrillExecution(t, restored, ScenarioExecution{})
+			if leg.gate {
+				assertDrillExecution(t, restored, completed)
+			} else {
+				assertDrillExecution(t, restored, ScenarioExecution{})
+			}
+			assertDrillProducer(t, restored, false)
 		})
 	}
-	t.Run("v14 backup restores with every count and invariant", func(t *testing.T) {
+	t.Run("v15 backup restores with every count and invariant", func(t *testing.T) {
 		dsn := isolatedSchemaDSN(t, postgresDSN(t))
 		store, err := OpenPostgresStore(ctx, PostgresConfig{DSN: dsn})
 		if err != nil {
@@ -569,10 +623,11 @@ func TestPlatformDrillPostgres(t *testing.T) {
 		store.Close()
 		restored, err := OpenPostgresStore(ctx, PostgresConfig{DSN: pgDumpRestore(t, dsn)})
 		if err != nil {
-			t.Fatalf("opening a v14 backup: %v", err)
+			t.Fatalf("opening a v15 backup: %v", err)
 		}
 		defer restored.Close()
 		assertDrillEntry(t, restored, semanticDrill)
 		assertDrillExecution(t, restored, completed)
+		assertDrillProducer(t, restored, true)
 	})
 }

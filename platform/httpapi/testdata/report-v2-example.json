@@ -6,7 +6,7 @@
   },
   "execution_id": "e1",
   "producers": {
-    "cli_version": "not_recorded",
+    "cli_version": "v0.13.0 3e86f9c",
     "control_plane_version": "v0.12.0"
   },
   "provenance": {
@@ -628,6 +628,156 @@
           "reference_calls_per_run_mean": "2",
           "candidate_calls_per_run_mean": "2.5",
           "call_ratio": "1.2×"
+        },
+        "operational": {
+          "latency": {
+            "comparable": false,
+            "reason": "both_unavailable",
+            "reference": {
+              "runs_with_evidence": "0",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "0",
+              "unobserved": "4",
+              "sum_nanos": "0"
+            },
+            "candidate": {
+              "runs_with_evidence": "0",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "0",
+              "unobserved": "5",
+              "sum_nanos": "0"
+            }
+          },
+          "errors": {
+            "comparable": false,
+            "reason": "both_unavailable",
+            "reference": {
+              "runs_with_evidence": "0",
+              "span_status": {
+                "unavailable": "4",
+                "unset": "0",
+                "ok": "0",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "4"
+              },
+              "http_429": "0"
+            },
+            "candidate": {
+              "runs_with_evidence": "0",
+              "span_status": {
+                "unavailable": "5",
+                "unset": "0",
+                "ok": "0",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "5"
+              },
+              "http_429": "0"
+            }
+          }
         }
       }
     ],

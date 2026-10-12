@@ -107,18 +107,28 @@ func replaceArg(args []string, flag, value string) []string {
 	return out
 }
 
+// rendererDirs are the renderer's two halves: this command, which reads the
+// artifact, and internal/cirender, which renders the document.
+var rendererDirs = []string{".", filepath.Join("..", "..", "internal", "cirender")}
+
 // The renderer can execute nothing and reach nothing: its sources import no
 // process, network, plugin or unsafe package, and it is built from the
-// standard library alone.
+// standard library and internal/cirender alone — which is itself built from
+// the standard library alone.
 func TestRendererImportsOnlyWhatItNeeds(t *testing.T) {
 	allowed := map[string]bool{
 		"bytes": true, "crypto/sha256": true, "encoding/hex": true, "encoding/json": true, "errors": true,
 		"flag": true, "fmt": true, "io": true, "io/fs": true, "os": true, "path/filepath": true,
 		"regexp": true, "strconv": true, "strings": true, "unicode": true, "unicode/utf8": true,
+		"github.com/trustvian/trustvian/internal/cirender": true,
 	}
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	var files []string
+	for _, dir := range rendererDirs {
+		matched, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, matched...)
 	}
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") {
@@ -141,24 +151,29 @@ func TestRendererImportsOnlyWhatItNeeds(t *testing.T) {
 		t.Fatalf("go list: %v", err)
 	}
 	for _, line := range strings.Fields(string(out)) {
-		if line != "github.com/trustvian/trustvian/cmd/trustvian-ci-render" {
+		if line != "github.com/trustvian/trustvian/cmd/trustvian-ci-render" &&
+			line != "github.com/trustvian/trustvian/internal/cirender" {
 			t.Errorf("the renderer depends on %s, which is not the standard library", line)
 		}
 	}
 }
 
 // Counts, limits and thresholds are text from the document, never numbers
-// this renderer computes with. The test scans every non-test source file
-// except main.go — which parses only the caller's --exit-code — for
+// this renderer computes with. The test scans every non-test source file of
+// both halves except main.go — which parses only the caller's --exit-code — for
 // "strconv.", "Sscan", "ParseUint", "ParseInt" and "Atoi", the ways Go turns
 // text into a number. JSON integers (runs, exit codes, the suite summary,
 // scenario_count) are read through json.Number.Int64, range-checked and
 // re-printed in canonical form; that is not a text conversion this scan
 // covers, and the renderer does no arithmetic with them.
 func TestRendererParsesNoCount(t *testing.T) {
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
+	var files []string
+	for _, dir := range rendererDirs {
+		matched, err := filepath.Glob(filepath.Join(dir, "*.go"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, matched...)
 	}
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") || file == "main.go" {
@@ -174,4 +189,52 @@ func TestRendererParsesNoCount(t *testing.T) {
 			}
 		}
 	}
+}
+
+// --document renders one document file alone, under the artifact's read
+// rules, and takes no other flag.
+func TestRunDocumentMode(t *testing.T) {
+	good := filepath.Join("testdata", "golden", "v2-model-change.json")
+	bad := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(bad, []byte(`{"version":"3"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link.json")
+	if err := os.Symlink(mustAbs(t, good), link); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name   string
+		args   []string
+		want   int
+		stdout string
+	}{
+		{"a report", []string{"--document", good}, exitRendered, "### Trustvian behavioral gate — FAIL"},
+		{"a version 1 document", []string{"--document", filepath.Join("testdata", "artifacts", "pass", "result.json")},
+			exitRendered, "### Trustvian behavioral gate — PASS"},
+		{"a refused document", []string{"--document", bad}, exitRejected, "No rendering exists for this document."},
+		{"a link", []string{"--document", link}, exitRejected, ""},
+		{"a missing file", []string{"--document", filepath.Join(t.TempDir(), "none.json")}, exitRejected, ""},
+		{"an empty path", []string{"--document", ""}, exitUsage, ""},
+		{"another flag beside it", append([]string{"--document", good}, cliArgs("x", "0")...), exitUsage, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if got := run(tt.args, &stdout, &stderr); got != tt.want {
+				t.Fatalf("exit %d, want %d; stderr %s", got, tt.want, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), tt.stdout) {
+				t.Errorf("stdout lacks %q:\n%s", tt.stdout, stdout.String())
+			}
+		})
+	}
+}
+
+func mustAbs(t *testing.T, path string) string {
+	t.Helper()
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return abs
 }
