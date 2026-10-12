@@ -1343,6 +1343,34 @@ and eight commas. One run of 512 behaviors, one observation each, grew from
 81,920 bytes, about 24 bytes a behavior. The bound is about 96 KB per
 512-behavior run.
 
+### v0.12 task 107-A (Report Identity and JSON)
+
+Task 107-A adds nothing to ingest, to the Collector or to the engine. A
+completion writes one more column, and the report route reruns the
+reduction a completion already runs.
+
+**Storage:** `gate_snapshot` is 1,654 bytes for an execution of 64 runs a side
+with no optional limit, and 12,424 bytes at every bound — sixteen 255-byte
+targets (each named twice, in the limits and in its outcome), every optional
+check, and a deferral naming a 255-byte run. `TestGateRecordSizeIsBounded`
+logs both and fails above 16 KiB. One row per execution, never per run.
+
+**The report route at the repetition bound** —
+`BenchmarkScenarioExecutionReportAtTheBound`: 64 repetitions a side, each run
+observing 16 behaviors twice (the candidate side 18), every optional limit set,
+file-backed SQLite, through the HTTP handler:
+
+| Request | ns/op | bytes/doc | B/op | allocs/op |
+|---|---|---|---|---|
+| `GET …/report` | 26,440,996–27,969,529 | 155,690 | ~9,256,000 | ~130,500 |
+| `POST /v1/evaluations/compare-repeated`, same runs | 25,995,385–26,281,429 | 53,367 | ~8,346,000 | ~129,670 |
+
+Three runs each, 20 iterations, darwin/arm64, Apple M3 Pro, Go 1.27. The report
+is the repeated comparison plus about 1 ms and 900 KB of allocation for its
+additions, most of it `present_in` — up to 2N repetition entries per behavior,
+which is also why its document is three times the size. The time is the
+reduction's: reading 128 runs' snapshots and aggregates.
+
 ## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —

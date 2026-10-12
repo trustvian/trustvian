@@ -146,7 +146,14 @@ func (r RepeatedEvaluationRequest) Validate() error {
 		}
 		seen[id] = struct{}{}
 	}
-	k, j := r.Limits.AddedCandidatePresenceMinimum, r.Limits.AddedReferencePresenceMaximum
+	return validateRepeatedLimits(r.Limits, n)
+}
+
+// validateRepeatedLimits refuses limits that could never be evaluated at N
+// runs per side: k outside 1..N, j not below k, or a frequency limit task 106
+// refuses.
+func validateRepeatedLimits(l RepeatedEvaluationGateLimits, n int) error {
+	k, j := l.AddedCandidatePresenceMinimum, l.AddedReferencePresenceMaximum
 	if k < 1 || k > uint64(n) {
 		return fmt.Errorf("%w: added_candidate_presence_minimum (k) is %d; it must be "+
 			"within 1..%d", ErrInvalidRepeatedRequest, k, n)
@@ -156,7 +163,7 @@ func (r RepeatedEvaluationRequest) Validate() error {
 			"below k (%d), or a behavior equally present on both sides would be added",
 			ErrInvalidRepeatedRequest, j, k)
 	}
-	return validateFrequencyLimits(r.Limits, n)
+	return validateFrequencyLimits(l, n)
 }
 
 // RepetitionEvidence is one repetition as the control plane found it.
@@ -549,8 +556,18 @@ func (c *ControlPlane) CompareRepeatedEvaluations(
 func (c *ControlPlane) compareRepeated(
 	ctx context.Context, request RepeatedEvaluationRequest,
 ) (RepeatedEvaluationComparison, error) {
+	result, _, err := c.compareRepeatedWithInputs(ctx, request)
+	return result, err
+}
+
+// compareRepeatedWithInputs is compareRepeated, also returning the
+// repetitions' evidence it reduced — what a report reads to say which
+// repetition observed each behavior.
+func (c *ControlPlane) compareRepeatedWithInputs(
+	ctx context.Context, request RepeatedEvaluationRequest,
+) (RepeatedEvaluationComparison, []repetitionInput, error) {
 	if err := request.Validate(); err != nil {
-		return RepeatedEvaluationComparison{}, err
+		return RepeatedEvaluationComparison{}, nil, err
 	}
 
 	type named struct {
@@ -571,10 +588,10 @@ func (c *ControlPlane) compareRepeated(
 	for i, n := range order {
 		run, err := c.evaluations.EvaluationRun(ctx, n.id)
 		if err != nil {
-			return RepeatedEvaluationComparison{}, err
+			return RepeatedEvaluationComparison{}, nil, err
 		}
 		if other, shared := profiles[run.BehavioralProfile()]; shared {
-			return RepeatedEvaluationComparison{}, fmt.Errorf(
+			return RepeatedEvaluationComparison{}, nil, fmt.Errorf(
 				"%w: runs %s and %s share behavioral profile %s",
 				ErrRepeatedIsolation, preview(string(other)), preview(string(n.id)),
 				preview(string(run.BehavioralProfile())))
@@ -590,7 +607,7 @@ func (c *ControlPlane) compareRepeated(
 			// evidence is loaded, so a run that ingested nothing is held to
 			// it too.
 			if run.Environment() != runs[0].Environment() {
-				return RepeatedEvaluationComparison{}, fmt.Errorf(
+				return RepeatedEvaluationComparison{}, nil, fmt.Errorf(
 					"%w: run %s is in environment %s, run %s in %s; every repetition "+
 						"of a scenario must run in one environment",
 					ErrBehaviorEnvironmentMismatch,
@@ -598,7 +615,7 @@ func (c *ControlPlane) compareRepeated(
 					preview(string(n.id)), preview(string(run.Environment())))
 			}
 			if err := c.requireSameProject(ctx, runs[0], run); err != nil {
-				return RepeatedEvaluationComparison{}, err
+				return RepeatedEvaluationComparison{}, nil, err
 			}
 		}
 		runs[i] = run
@@ -617,17 +634,17 @@ func (c *ControlPlane) compareRepeated(
 		}
 		aggregate, snapshot, err := c.comparisonEvidence(ctx, run)
 		if err != nil {
-			return RepeatedEvaluationComparison{}, err
+			return RepeatedEvaluationComparison{}, nil, err
 		}
 		input, err := completedRepetition(evidence, aggregate, snapshot)
 		if err != nil {
-			return RepeatedEvaluationComparison{}, err
+			return RepeatedEvaluationComparison{}, nil, err
 		}
 		inputs = append(inputs, input)
 	}
 	result, err := reduceRepeated(request.Limits, request.Runs(), inputs)
 	if err != nil {
-		return RepeatedEvaluationComparison{}, err
+		return RepeatedEvaluationComparison{}, nil, err
 	}
 	var reference, candidate [][]BehaviorEntry
 	for _, in := range inputs {
@@ -641,12 +658,12 @@ func (c *ControlPlane) compareRepeated(
 	}
 	cost, priced, err := compareCost(c.pricing, reference, candidate)
 	if err != nil {
-		return RepeatedEvaluationComparison{}, err
+		return RepeatedEvaluationComparison{}, nil, err
 	}
 	if priced {
 		result.Cost = &cost
 	}
-	return result, nil
+	return result, inputs, nil
 }
 
 // completedRepetition turns one completed run's persisted evidence into a

@@ -234,6 +234,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("POST /v1/scenario-executions", h.beginScenarioExecution)
 	h.mux.HandleFunc("GET /v1/scenario-executions/{execution_id}", h.getScenarioExecution)
 	h.mux.HandleFunc("GET /v1/scenario-executions/{execution_id}/reference-check", h.referenceCheck)
+	h.mux.HandleFunc("GET /v1/scenario-executions/{execution_id}/report", h.scenarioExecutionReport)
 	h.mux.HandleFunc("GET /v1/projects/{project_id}/scenario-executions", h.listScenarioExecutions)
 	h.mux.HandleFunc("POST /v1/scenario-executions/{execution_id}/complete", h.completeScenarioExecution)
 	h.mux.HandleFunc("POST /v1/scenario-executions/{execution_id}/fail", h.failScenarioExecution)

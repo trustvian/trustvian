@@ -1,6 +1,6 @@
 # 107 — Change Impact View and Model Change Report
 
-Status: Specified; not implemented
+Status: 107-A implemented (the report's identity and JSON) — see [What shipped (107-A)](#what-shipped-107-a); 107-B (the shared renderer and Markdown) and 107-C (the WebUI) specified
 Milestone: [`v0.12.0`](../../ROADMAP.md#v0120--change-impact)
 Depends on: [086](086-scenario-and-input-versioning.md),
 [087](087-performance-and-cost-evidence.md), [106](106-frequency-evidence.md),
@@ -9,9 +9,9 @@ Depends on: [086](086-scenario-and-input-versioning.md),
 [099](../v0.11/099-overview-dashboard.md) (implemented)
 Decision records: [ADR 0036](../../adr/0036-webui-is-a-same-origin-adapter-over-v1.md),
 [ADR 0057](../../adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md),
-[ADR 0064](../../adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md);
-a new ADR for the report's identity (see
-[§ Conflict: a comparison has no identifier](#conflict-a-comparison-has-no-identifier))
+[ADR 0064](../../adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md),
+[ADR 0069](../../adr/0069-a-completed-execution-records-the-gate-it-consumed.md)
+(the report's identity, decision D10)
 Blocks: nothing
 
 **Presentation only.** This task computes nothing. Every number it shows is
@@ -221,3 +221,207 @@ version, the hardware, and every unavailable section as it rendered.
   request. ADR 0064 and the non-goals answer it.
 - **Version 2 of the result document is a consumed contract.** It is published
   in `docs/compatibility.md` before 079's action renders it.
+
+## Maintainer decisions
+
+- **D10 — The report is keyed by scenario execution** (Option A of
+  [§ Conflict: a comparison has no identifier](#conflict-a-comparison-has-no-identifier)).
+  When an execution completes it records a gate-result snapshot in the
+  completion transaction: the limits; every entry of `gate.checks` and
+  `gate.frequency_checks` with its state, actual value, bound, outcome and
+  `missing_evidence`; the verdict. One schema step, v14, on both backends.
+  [ADR 0069](../../adr/0069-a-completed-execution-records-the-gate-it-consumed.md)
+  amends ADR 0054 § 1 and § 4: the decision keeps the gate evidence it
+  consumed, by 066's rule. An execution completed before v14 has no snapshot;
+  its report says `gate: not_recorded` and is never re-derived from today's
+  code.
+- **D11 — The control plane serves JSON only** (Option A of
+  [§ Conflict: where Markdown is rendered](#conflict-where-markdown-is-rendered)).
+  The route has no `format=md`; the Markdown comes in 107-B, from the one
+  renderer.
+- **D12 — The single-run comparison gains `sameness` and `warnings[]`**
+  ([§ Open decision](#open-decision-sameness-on-the-single-run-comparison)).
+  `POST /v1/evaluations/compare` looks each run up through the executions that
+  recorded it, exactly as compare-repeated does. A run no execution recorded
+  reads `not_recorded`. Additive; no check reads it.
+
+The task is delivered in three pull requests: **107-A** (this section's
+decisions, the snapshot, the report route, its display strings, `eval report`
+and D12), **107-B** (the renderer moves to `internal/cirender`, renders version
+2, and `eval report` gains Markdown) and **107-C** (Change Impact and the
+Overview panel).
+
+## What shipped (107-A)
+
+### Delivered
+
+1. **Schema 14 and the snapshot.** `ScenarioGateRecord`, stored as
+   `gate_snapshot` on `platform_scenario_executions`: fixed-shape canonical
+   JSON, every field always present, no maps. Written by the same `UPDATE` as
+   the verdict; a completion without one is refused. On restore it is decoded
+   strictly, re-validated against itself (outcomes against their own actual
+   and bound, bounds against the limits they name, frequency states against
+   whether their limit was supplied, the verdict against the checks) and
+   against its row (verdict column, N), and re-encoded — text that is not
+   byte-identical is refused as corrupt. v13 → v14 is forward-only and
+   backfills nothing. The chained upgrade from v10 reaches v14 on both
+   backends.
+2. **The recovery drill**, both directions, both backends: v10 (written by
+   the real v0.11.0 `trustvian-local`, now with a completed execution), v12 and
+   v13 backups restore into this binary and migrate, the execution reading its
+   gate not recorded; a v14 backup restores and re-proves the snapshot, equal
+   to what the completion returned. All eight legs pass locally (PostgreSQL 17,
+   `pg_dump`/`pg_restore` 18).
+3. **`GET /v1/scenario-executions/{execution_id}/report`**, result document
+   version 2, published in
+   [`compatibility.md` § Result document version 2](../../compatibility.md#result-document-version-2).
+   Version 1 member for member — built by the same `newCompareRepeatedResponse`
+   completion uses — with the recorded gate and `gate.state`. `409` for a
+   running or failed execution, `404` for an unknown one.
+4. **Display strings**, produced by the control plane
+   (`platform.RenderPresence`, `RenderCallsPerRun`, `RenderCallsPerRunMean`,
+   `RenderMilli`, `RenderCallRatio`), beside the integers they format, on every
+   behavior and target row; and **`present_in`** per behavior.
+5. **`trustvian eval report <execution-id> [--json]`**, printing the document
+   unchanged; exit `0`/`2`/`3` as the rest of the eval family.
+6. **D12** on `POST /v1/evaluations/compare`.
+7. ADR 0069; `compatibility.md` (the version 2 contract with a pinned full
+   example, the route, the CLI row, D12, schema 14); `platform-cli.md`;
+   CHANGELOG; PERFORMANCE; the v0.12 index and ROADMAP.
+
+### Departures from the specification, and why
+
+- **`gate.frequency_checks` holds four checks, not three.** 081 added
+  `max_llm_calls_per_run` after this specification was written. The report
+  carries all four; § 1's "the three `frequency_checks`" is stale.
+- **No `format=md`, no `--format`** (D11). `eval report` takes `--json` only,
+  and both modes print the JSON.
+- **Two version 1 members were never persisted** and read `not_recorded` rather
+  than being guessed: `producers.cli_version` (the CLI that ran the execution)
+  and, for a reused reference, `reference.mode` (`last` or `execution`). Both
+  are gaps in what 078 records, not in this task; the version 1 subset test
+  covers every other member.
+- **`present_in` uses the repetition index the rest of the document uses**,
+  1-based, with each repetition's run: `{"index": 1, "run_id": "…"}`, not the
+  0-based bare integers of § 1's sketch.
+- **An execution completed before v14 reads every `classification` as
+  `not_recorded`, and has no `gate_limits`.** Classifying needs k and j, which
+  were not kept. Presence, frequency, fidelity, operational sections, targets,
+  sameness and suggestions — none of which needs a limit — are still reported.
+- **`operational.cost_reason: "pricing_not_configured"`** is new: without it
+  an absent cost section would say nothing about why.
+- **The mean is rendered exactly**, `2456` → `"2.456"`, rather than to one
+  decimal: no digit is rounded away, so the string says what the integer says.
+  The ratio keeps `RenderRatio`'s one truncated decimal (`"2.4×"`), the
+  rendering 106's suggestion texts already use.
+- **The behavior rows are reduced again, by today's code**, from the recorded
+  runs' persisted snapshots. Only the gate is a record. ADR 0069's
+  consequences say what a disagreement would look like.
+- **Per-target latency, status classes and 429s** (§ 1's Targets columns) are
+  not in the report: the repeated comparison carries 087's sections per side,
+  and the per-target breakdown is `GET /v1/evaluations/operational`'s. The
+  report adds no evidence (constraint), so 107-C must read that route, or a
+  later task must put it on the comparison.
+
+### Measured
+
+**Storage and latency** ([PERFORMANCE.md](../../PERFORMANCE.md#v012-task-107-a-report-identity-and-json)):
+`gate_snapshot` is 1,654 bytes at 64 runs a side with no optional limit and
+12,424 bytes at every bound. The report route at the repetition bound (64 runs
+a side, 16–18 behaviors each, file-backed SQLite) takes 26.4–28.0 ms and
+returns 155,690 bytes; compare-repeated over the same runs takes 26.0–26.3 ms.
+
+**The demo agent on Ollama.** `trustvian-python-agent-demo` at `291fbc9`
+(with #13's GenAI `chat` span), `opentelemetry-instrument`, Ollama 0.34.4,
+`gemma3:4b` on both sides, Apple M3 Pro, this branch's `trustvian`,
+`trustvian-collector` and `trustvian-local` with a pricing table, `runs: 3`,
+three tickets a run. The reference side ran `SUPPORT_AGENT_MODE=reference`, the
+candidate side `candidate` (which adds `export_customer`). Every optional limit
+was set, `max_calls_per_run` naming both `ollama` and `ollama.localhost`.
+
+- A first attempt changed the model instead, `qwen2.5:3b` on the candidate
+  side. Its first candidate repetition looped on `knowledge_search` and
+  `send_email`, hit the agent's 14-step limit and exited 1, so `eval run`
+  stopped with exit 3 and recorded the execution failed. Its report is
+  `409 conflict` (`… is failed; only a completed execution has a report`), as
+  specified. No verdict was produced and none is claimed.
+- Execution `scn-support-candidate-change-20261011T105949-1fc68faf` completed
+  FAIL (exit 1). `gate_snapshot` stored 1,864 bytes. `trustvian eval report
+  --json` printed 41,254 bytes, exit 0. The live route answered in 3–16 ms.
+- The version 1 subset of the report equals the `eval run --json` document
+  for the same execution except `version` and `producers.cli_version`, which
+  reads `not_recorded`.
+- **Sameness:** `same_scenario`, `same_inputs` and `same_model` are `"true"`
+  (both sides `gemma3:4b`, one `scenario_digest`), `same_prompt_ref`
+  `"not_recorded"`, `warnings: []`.
+- **A behavior row**, `tool/export_customer`: `reference_runs_present` `"0"`,
+  `candidate_runs_present` `"3"`, `classification` `added`; `display`
+  `{"reference_presence": "0/3", "candidate_presence": "3/3",
+  "reference_calls_per_run": "0–0", "candidate_calls_per_run": "1–1",
+  "reference_calls_per_run_mean": "0", "candidate_calls_per_run_mean": "1"}`;
+  `present_in.reference` `[]`, `present_in.candidate` repetitions 1, 2 and 3
+  with their runs; candidate fidelity `semantic`, `layer.tool` 3.
+- **The model call is counted under two targets**, as the demo's README says:
+  `ollama` (the `chat` span) and `ollama.localhost` (its HTTP request), each
+  20 calls a run on both sides, `call_ratio` `"1.0×"`. The report shows both
+  rows, and `max_calls_per_run` evaluates both (`20` against `30`, `pass`
+  twice). They are two behaviors too: `external · gemma3:4b → ollama`,
+  semantic, layer model, and `http · POST → ollama.localhost`, transport. The
+  report does not add them up anywhere, and it does not merge them:
+  `max_llm_calls_per_run` reads only the model layer, `actual` `"20"`, and the
+  tokens (`observed` `60` a side, 20 per run) come from the `chat` spans only.
+  A reader adding the two target rows would count 40 model calls a run.
+- **Tokens:** reference input 39,354, output 8,232; candidate input 42,552,
+  output 9,504; `delta` input +3,198, output +1,272; `observed` 60,
+  `unobserved` 162 on each side. **Cost** (illustrative prices, with
+  `pricing_version` `measurement-107a`, its digest and source): 7,228 and 8,056
+  micro-USD, `delta` +828.
+- **`max_llm_calls_per_run`:** `{"state": "evaluated", "rule": "at_most",
+  "actual": "20", "bound": "30", "passed": true}`.
+- The verdict FAIL comes from `repeatedly_added_behaviors` (2:
+  `export_customer` and `POST → export.localhost`), `min_candidate_frequency`
+  (0 against 2) and `max_lost_behaviors` (2 against 0: `escalate_ticket` and
+  `POST → escalation.localhost`, 3/3 and 0/3). Four suggestions fired: two
+  `compare.added_in_all_runs`, two `compare.lost_in_half`.
+
+### Proven by test
+
+- The snapshot: built from a real reduction with evaluated, deferred and
+  per-target checks, it round-trips through its text; the encoding is pinned
+  byte for byte; nineteen kinds of damage (malformed, non-canonical, padded, a
+  field missing, a contradicted outcome, a bound that is not its limit, an
+  unknown state, another N, a flipped verdict …) are refused as corrupt;
+  contradictory parts are refused at construction; a record is a copy; a
+  completion without one is refused; a stored record that disagrees with its
+  row is refused when the execution loads.
+- Schema 14: v13 → v14 and v10 → v14 on both backends, with a completion after
+  the migration; fresh and migrated tables agree; every schema statement is
+  attributed to its version.
+- The report: its version 1 subset equals the document `eval run` builds from
+  the completion; a reused reference is named with `mode: not_recorded`;
+  running, failed and unknown executions are refused; a pre-v14 execution
+  reports `gate: {"state": "not_recorded"}`; the cost reason; SQLite and
+  PostgreSQL return byte-identical reports; the version 2 example in
+  `compatibility.md` equals the route's output.
+- The display strings equal the formatting of the integers beside them; the
+  mean rendering is exact; `present_in` lists exactly as many repetitions as
+  each presence count, never a repetition that did not complete; every row
+  resolves through `GET /v1/evidence/observations` from every run it names.
+- D12: a recorded pair states both recorded values and its warning, with a
+  gate byte-identical to an unrecorded pair's; an unrecorded pair reads
+  `not_recorded` with `warnings: []`.
+- `eval report`: the request path, the body printed unchanged in both modes,
+  and its usage and API-failure exit codes.
+
+### Current state rows found stale on `main` (`a3dcaf9`)
+
+| Row | On `a3dcaf9` |
+|---|---|
+| Comparisons are not persisted, `platform/controlplane.go:1398-1411` | Still true, but the lines moved: `EvaluationComparison` is at 1451, `CompareEvaluations` at 1469–1561. 1398–1411 is now `EvaluationProgress` |
+| Overview has five panels, `index.html:221-227` | The file is `platform/webui/assets/index.html`, and the five panels are at 248–252 |
+| The CI renderer, `render.go:186-360` | The file is 358 lines: `noVerdict` 186, `renderScenario` 223, `renderSuite` 312–358 |
+| Scenario executions persist no gate limits or check results (ADR 0054 § 1, § 4) | True on `a3dcaf9`; no longer true after this task (D10) |
+
+The other rows — `api.js:362-367`, `render.js:769-782`,
+`document.go:3-14`, `evidence.go:90-104` and `overview.js:3-11` (still "Six
+panels" listing five) — hold as written.

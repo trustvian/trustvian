@@ -202,7 +202,7 @@ func TestLastNeverFallsBackToAnOlderExecution(t *testing.T) {
 		if _, err := f.store.CompleteScenarioExecution(t.Context(), "e-broken", []platform.ScenarioRepetition{
 			{Side: platform.SideReference, Index: 1, RunID: "ghost-run", BehavioralProfile: "ghost-p"},
 			{Side: platform.SideCandidate, Index: 1, RunID: "ghost-run-2", BehavioralProfile: "ghost-p2"},
-		}, platform.GateVerdictPass, execClock.Add(time.Hour)); err != nil {
+		}, passingGateRecord(t, 1), execClock.Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
 		_, _, err = f.begin(t, "e-now", "support", 1, platform.ScenarioReference{Last: true})
@@ -406,4 +406,64 @@ func containsAll(err error, parts ...string) bool {
 		}
 	}
 	return true
+}
+
+// passingGateRecord is a valid recorded PASS for an execution of N runs, for a
+// test that completes an execution through the store rather than the plane.
+func passingGateRecord(t *testing.T, runs int) platform.ScenarioGateRecord {
+	t.Helper()
+	n := uint64(runs)
+	advisory := ""
+	if runs > 1 {
+		advisory = platform.AdvisoryFreshScope
+	}
+	record, err := platform.NewScenarioGateRecord(runs, platform.RepeatedEvaluationGateLimits{
+		AddedCandidatePresenceMinimum: 1,
+	}, []platform.RepeatedGateCheck{
+		{Name: platform.CheckReferenceRepetitionsCompleted, Actual: n, Rule: platform.RuleEquals, Bound: n, Passed: true},
+		{Name: platform.CheckCandidateRepetitionsCompleted, Actual: n, Rule: platform.RuleEquals, Bound: n, Passed: true},
+		{Name: platform.CheckRepetitionsFailingMinimum, Rule: platform.RuleAtMost, Passed: true},
+		{Name: platform.CheckRepeatedlyAddedBehaviors, Rule: platform.RuleAtMost, Passed: true},
+		{Name: platform.CheckWorstCandidateBlockDecisions, Rule: platform.RuleAtMost, Passed: true, Advisory: advisory},
+		{Name: platform.CheckWorstCandidateCriticalRiskCount, Rule: platform.RuleAtMost, Passed: true, Advisory: advisory},
+	}, []platform.FrequencyGateCheck{
+		{Name: platform.CheckMinCandidateFrequency, State: platform.GateCheckNotEvaluated},
+		{Name: platform.CheckMaxLostBehaviors, State: platform.GateCheckNotEvaluated},
+		{Name: platform.CheckMaxCallsPerRun, State: platform.GateCheckNotEvaluated},
+		{Name: platform.CheckMaxLLMCallsPerRun, State: platform.GateCheckNotEvaluated},
+	}, platform.GateVerdictPass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return record
+}
+
+// TestCompletionRecordsTheGateItsVerdictCameFrom (task 107, D10): a completed
+// execution holds the limits and every check the comparison evaluated, as the
+// comparison returned them, and keeps them across a reload.
+func TestCompletionRecordsTheGateItsVerdictCameFrom(t *testing.T) {
+	f := newFixture(t)
+	limits := repeatedLimits(2, 0, 0, 0, 0)
+	limits.MaxLostBehaviors = platform.NewOptionalGateLimit(0)
+	limits.MaxLLMCallsPerRun = platform.NewOptionalGateLimit(3)
+	execution, comparison := f.selfContained(t, "e-gate", "support",
+		reps(2, "read"), reps(2, "read", "export"), limits)
+	stored, err := f.plane.ScenarioExecution(t.Context(), "e-gate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []platform.ScenarioExecution{execution, stored} {
+		record := e.GateRecord()
+		if !record.Recorded() || record.Gate().Verdict() != e.Verdict() {
+			t.Fatalf("execution %s gate = %+v", e.ID(), record)
+		}
+		if !reflect.DeepEqual(record.Gate().Checks(), comparison.Gate.Checks()) ||
+			!reflect.DeepEqual(record.Gate().FrequencyChecks(), comparison.Gate.FrequencyChecks()) ||
+			!reflect.DeepEqual(record.Limits(), comparison.Limits) {
+			t.Fatalf("recorded gate %+v\ndiffers from the comparison's %+v", record, comparison.Gate)
+		}
+	}
+	if comparison.Gate.Verdict() != platform.GateVerdictFail {
+		t.Fatalf("the fixture should fail on the added behavior and the deferred check")
+	}
 }

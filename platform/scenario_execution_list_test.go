@@ -35,7 +35,7 @@ func conformScenarioExecutionList(t *testing.T, open func(testing.TB) Store) {
 			t.Fatalf("create %s: %v", e.id, err)
 		}
 	}
-	if _, err := store.CompleteScenarioExecution(ctx, "e-1", associations("e1", 2), GateVerdictPass,
+	if _, err := store.CompleteScenarioExecution(ctx, "e-1", associations("e1", 2), recordedGate(2, GateVerdictPass),
 		t0.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}

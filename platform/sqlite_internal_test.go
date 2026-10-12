@@ -1267,9 +1267,13 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 	//
 	// v13 too: task 081 adds one column, of nine counters, to the behavior
 	// entry table.
+	//
+	// v14 too: task 107 adds the gate snapshot column to the scenario
+	// execution table.
 	indexOnly := map[int]bool{
 		schemaVersionV5: true, schemaVersionV6: true, schemaVersionV8: true,
 		schemaVersionV10: true, schemaVersionV11: true, schemaVersionV12: true, schemaVersionV13: true,
+		schemaVersionV14: true,
 	}
 	for version := schemaVersionV1 + 1; version <= SchemaVersion; version++ {
 		previous := schemaTablesByVersion[version-1]
@@ -1302,5 +1306,7 @@ func TestSchemaTablesCoverEveryKnownVersion(t *testing.T) {
 
 // schemaVersionV12 is declared in behavior_fidelity.go now that v13 exists.
 
-// schemaVersionV13 is task 081's fidelity counts, named for the same guards.
-const schemaVersionV13 = 13
+// schemaVersionV13 is declared in scenario_gate_record.go now that v14 exists.
+
+// schemaVersionV14 is task 107's gate snapshot, named for the same guards.
+const schemaVersionV14 = 14

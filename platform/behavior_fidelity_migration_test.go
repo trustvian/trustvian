@@ -22,6 +22,7 @@ import (
 // gone, version 12 stamped. exec runs one statement against it.
 func downgradeToV12(t testing.TB, exec func(string) error) {
 	t.Helper()
+	downgradeToV13(t, exec)
 	if err := exec(`ALTER TABLE ` + tableEntries + ` DROP COLUMN ` + columnFidelityCounts); err != nil {
 		t.Fatalf("drop v13 column: %v", err)
 	}

@@ -80,7 +80,7 @@ func writeAndCompleteExecution(t *testing.T, store Store) ScenarioExecution {
 		t.Fatalf("CreateScenarioExecution() after migration error = %v", err)
 	}
 	completed, err := store.CompleteScenarioExecution(ctx, "exec-after", associations("after", 2),
-		GateVerdictPass, scenarioEpoch.Add(time.Minute))
+		recordedGate(2, GateVerdictPass), scenarioEpoch.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("CompleteScenarioExecution() after migration error = %v", err)
 	}

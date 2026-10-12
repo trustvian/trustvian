@@ -26,7 +26,7 @@ func BenchmarkRunProvenanceAtTheBound(b *testing.B) {
 		b.Fatal(err)
 	}
 	reps := associations("exec-bench", MaxRepetitions)
-	if _, err := store.CompleteScenarioExecution(ctx, e.ID(), reps, GateVerdictPass,
+	if _, err := store.CompleteScenarioExecution(ctx, e.ID(), reps, recordedGate(MaxRepetitions, GateVerdictPass),
 		scenarioEpoch.Add(time.Minute)); err != nil {
 		b.Fatal(err)
 	}

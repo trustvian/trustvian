@@ -121,6 +121,7 @@ trustvian eval compare-repeated
                             [--min-candidate-frequency <n>] [--max-lost-behaviors <n>]
                             [--max-calls-per-run <target>=<max> ...]
                             [--max-llm-calls-per-run <n>]
+trustvian eval report       <execution-id>
 
 trustvian env create   --project-id <id> --ref <ref> --name <name> [--rank <n>]
 trustvian env get      --project-id <id> --ref <ref>
@@ -302,6 +303,38 @@ failure or a verdict it does not recognize.
 Sameness here comes from the executions that recorded the runs: each side
 states a value only when every one of its runs was recorded with the same one
 (see [Provenance](#provenance-what-each-side-ran)).
+
+### One execution's report: `eval report`
+
+A completed scenario execution has a report: the result document version 2
+([contract](compatibility.md#result-document-version-2)), served by
+`GET /v1/scenario-executions/{execution_id}/report`. It is version 1 — what
+`eval run --json` printed — plus, on every behavior row, display strings
+(`"2/3"`, `"1–4"`, the mean, and `"2.4×"` per target) and `present_in`, the
+repetitions and runs that observed it.
+
+```text
+trustvian eval report scn-support-20261011T105259-d4334c77 --json
+```
+
+The command prints the document unchanged in both output modes; the human mode
+adds nothing computed. It is a read, not a gate: exit `0` when the report was
+read, whatever verdict it records; `2` usage (no execution id, a second
+positional argument, an unknown flag); `3` an API or network failure — an
+unknown execution (`404`) or one still running or failed (`409`) among them —
+with nothing on stdout. There is no Markdown mode yet; it comes from the one
+renderer the pull-request comment uses (task 107-B).
+
+The gate in the report is the one the execution **recorded when it completed**
+(schema 14, [ADR 0069](adr/0069-a-completed-execution-records-the-gate-it-consumed.md)),
+never re-evaluated. An execution completed before schema 14 recorded none: its
+report says `gate: {"state": "not_recorded"}`, has no `gate_limits`, and reads
+every `classification` as `not_recorded`, while presence, frequency, fidelity,
+operational sections, targets, sameness and suggestions are still reported.
+
+`eval compare` responses carry `sameness` and `warnings` too (task 107, D12),
+each run looked up through the executions that recorded it; a run no execution
+recorded reads `not_recorded`. No check reads either.
 
 ### Fidelity on a comparison
 
@@ -645,7 +678,7 @@ reading once rather than assuming.
 | Commands | 0 | 1 | 2 | 3 |
 |---|---|---|---|---|
 | `analyze`, `baseline`, `version` | success | command failed | top-level usage | — |
-| `project`, `agent`, `candidate`, most of `eval` | success | *unused* | usage | API or network failure |
+| `project`, `agent`, `candidate`, most of `eval` — `eval report` included | success | *unused* | usage | API or network failure |
 | `eval compare` | gate **PASS** | gate **FAIL** | usage | API or network failure |
 | `status`, `dev --check` | the document was read; for `--check`, and its Collector reported | *unused* | usage | API or network failure; for `--check`, a helper that could not start or a Collector that did not report within the wait (the document is still printed) |
 | `eval run` | gate **PASS** | gate **FAIL** | usage — the scenario, the suite or `--reference`, before anything runs | API or network failure, a reference the control plane refused (before any workload), a repetition whose workload or run failed, or a scenario past its `--scenario-timeout`. A suite exits with its most severe scenario: 3, then 2, then 1, then 0 |

@@ -92,6 +92,7 @@ as long as its own decision holds.
 | [0066](0066-a-per-target-call-limit-is-one-named-check-over-a-bounded-list.md) | A per-target call limit is one named check over a bounded list | Accepted |
 | [0067](0067-scenario-provenance-is-recorded-per-execution-side.md) | Scenario provenance is recorded per execution side | Accepted |
 | [0068](0068-fidelity-and-layer-are-persisted-as-per-behavior-counts.md) | Fidelity and layer are persisted as per-behavior counts | Accepted |
+| [0069](0069-a-completed-execution-records-the-gate-it-consumed.md) | A completed execution records the gate it consumed | Accepted |
 
 **0046 is the first record here carried as Proposed.** Its reasoning is
 complete and no maintainer has ratified it, which is exactly what this status

@@ -1,6 +1,9 @@
 # 0054 — Scenario executions are persisted, and references are resolved by the control plane
 
-**Status:** Accepted
+**Status:** Accepted. § 1's exclusion of the gate limits is amended by
+[ADR 0069](0069-a-completed-execution-records-the-gate-it-consumed.md): a
+completed execution records the gate result it consumed, limits included.
+§ 4 stands — a later execution never reads them. Everything else here stands.
 
 ## Context
 

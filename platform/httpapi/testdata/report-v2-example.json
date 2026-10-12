@@ -1,0 +1,710 @@
+{
+  "version": "2",
+  "scenario": {
+    "name": "support",
+    "runs": 2
+  },
+  "execution_id": "e1",
+  "producers": {
+    "cli_version": "not_recorded",
+    "control_plane_version": "v0.12.0"
+  },
+  "provenance": {
+    "reference": {
+      "inputs": "not_recorded"
+    },
+    "candidate": {
+      "inputs": "not_recorded"
+    }
+  },
+  "comparison": {
+    "version": "1",
+    "runs": 2,
+    "gate_limits": {
+      "added_candidate_presence_minimum": "2",
+      "added_reference_presence_maximum": "0",
+      "max_repeated_added_behaviors": "0",
+      "max_block_decisions_per_run": "0",
+      "max_critical_risk_observations_per_run": "0",
+      "min_candidate_frequency": "1",
+      "max_lost_behaviors": "0",
+      "max_calls_per_run": [
+        {
+          "target": "api.example",
+          "max": "5"
+        }
+      ],
+      "max_llm_calls_per_run": "3"
+    },
+    "repetitions": [
+      {
+        "side": "reference",
+        "index": 1,
+        "run_id": "e1-reference-1",
+        "status": "completed",
+        "behavioral_profile": "e1-reference-1-profile",
+        "record_count": "2",
+        "distinct_behavior_count": 2,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "reference",
+        "index": 2,
+        "run_id": "e1-reference-2",
+        "status": "completed",
+        "behavioral_profile": "e1-reference-2-profile",
+        "record_count": "2",
+        "distinct_behavior_count": 2,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "candidate",
+        "index": 1,
+        "run_id": "e1-candidate-1",
+        "status": "completed",
+        "behavioral_profile": "e1-candidate-1-profile",
+        "record_count": "3",
+        "distinct_behavior_count": 3,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      },
+      {
+        "side": "candidate",
+        "index": 2,
+        "run_id": "e1-candidate-2",
+        "status": "completed",
+        "behavioral_profile": "e1-candidate-2-profile",
+        "record_count": "2",
+        "distinct_behavior_count": 2,
+        "block_decisions": "0",
+        "critical_risk_observations": "0"
+      }
+    ],
+    "behaviors": [
+      {
+        "fingerprint_id": "fp-export",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "tool",
+          "operation_name": "export",
+          "target_name": "build-host",
+          "target_category": "external",
+          "environment": "staging"
+        },
+        "reference_runs_present": "0",
+        "candidate_runs_present": "2",
+        "classification": "added",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "0",
+          "calls_per_run_min": "0",
+          "calls_per_run_max": "0",
+          "calls_per_run_mean_milli": "0"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "lost": false,
+        "candidate_fidelity": {
+          "level": "unrecorded",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "0",
+          "unrecorded": "2",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "2"
+          }
+        },
+        "display": {
+          "reference_presence": "0/2",
+          "candidate_presence": "2/2",
+          "reference_calls_per_run": "0–0",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "0",
+          "candidate_calls_per_run_mean": "1"
+        },
+        "present_in": {
+          "reference": [],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "e1-candidate-1"
+            },
+            {
+              "index": 2,
+              "run_id": "e1-candidate-2"
+            }
+          ]
+        }
+      },
+      {
+        "fingerprint_id": "fp-lookup",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "tool",
+          "operation_name": "lookup",
+          "target_name": "build-host",
+          "target_category": "external",
+          "environment": "staging"
+        },
+        "reference_runs_present": "2",
+        "candidate_runs_present": "1",
+        "classification": "neither",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "1",
+          "calls_per_run_min": "0",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "500"
+        },
+        "lost": true,
+        "reference_fidelity": {
+          "level": "unrecorded",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "0",
+          "unrecorded": "2",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "2"
+          }
+        },
+        "candidate_fidelity": {
+          "level": "unrecorded",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "0",
+          "unrecorded": "1",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "1"
+          }
+        },
+        "display": {
+          "reference_presence": "2/2",
+          "candidate_presence": "1/2",
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "0–1",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "0.5"
+        },
+        "present_in": {
+          "reference": [
+            {
+              "index": 1,
+              "run_id": "e1-reference-1"
+            },
+            {
+              "index": 2,
+              "run_id": "e1-reference-2"
+            }
+          ],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "e1-candidate-1"
+            }
+          ]
+        }
+      },
+      {
+        "fingerprint_id": "fp-read",
+        "behavior": {
+          "actor_type": "ai_agent",
+          "operation_category": "tool",
+          "operation_name": "read",
+          "target_name": "build-host",
+          "target_category": "external",
+          "environment": "staging"
+        },
+        "reference_runs_present": "2",
+        "candidate_runs_present": "2",
+        "classification": "neither",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "2",
+          "calls_per_run_min": "1",
+          "calls_per_run_max": "1",
+          "calls_per_run_mean_milli": "1000"
+        },
+        "lost": false,
+        "reference_fidelity": {
+          "level": "unrecorded",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "0",
+          "unrecorded": "2",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "2"
+          }
+        },
+        "candidate_fidelity": {
+          "level": "unrecorded",
+          "mixed": false,
+          "semantic": "0",
+          "transport": "0",
+          "unrecorded": "2",
+          "layer": {
+            "model": "0",
+            "tool": "0",
+            "retrieval": "0",
+            "transport": "0",
+            "unclassified": "0",
+            "unrecorded": "2"
+          }
+        },
+        "display": {
+          "reference_presence": "2/2",
+          "candidate_presence": "2/2",
+          "reference_calls_per_run": "1–1",
+          "candidate_calls_per_run": "1–1",
+          "reference_calls_per_run_mean": "1",
+          "candidate_calls_per_run_mean": "1"
+        },
+        "present_in": {
+          "reference": [
+            {
+              "index": 1,
+              "run_id": "e1-reference-1"
+            },
+            {
+              "index": 2,
+              "run_id": "e1-reference-2"
+            }
+          ],
+          "candidate": [
+            {
+              "index": 1,
+              "run_id": "e1-candidate-1"
+            },
+            {
+              "index": 2,
+              "run_id": "e1-candidate-2"
+            }
+          ]
+        }
+      }
+    ],
+    "gate": {
+      "checks": [
+        {
+          "name": "reference_repetitions_completed",
+          "actual": "2",
+          "rule": "equals",
+          "bound": "2",
+          "passed": true
+        },
+        {
+          "name": "candidate_repetitions_completed",
+          "actual": "2",
+          "rule": "equals",
+          "bound": "2",
+          "passed": true
+        },
+        {
+          "name": "repetitions_failing_minimum_evidence",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true
+        },
+        {
+          "name": "repeatedly_added_behaviors",
+          "actual": "1",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": false
+        },
+        {
+          "name": "worst_candidate_block_decisions",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true,
+          "advisory": "fresh_scope"
+        },
+        {
+          "name": "worst_candidate_critical_risk_observations",
+          "actual": "0",
+          "rule": "at_most",
+          "bound": "0",
+          "passed": true,
+          "advisory": "fresh_scope"
+        }
+      ],
+      "verdict": "fail",
+      "frequency_checks": [
+        {
+          "name": "min_candidate_frequency",
+          "state": "evaluated",
+          "rule": "at_least",
+          "actual": "1",
+          "bound": "1",
+          "passed": true
+        },
+        {
+          "name": "max_lost_behaviors",
+          "state": "evaluated",
+          "rule": "at_most",
+          "actual": "1",
+          "bound": "0",
+          "passed": false
+        },
+        {
+          "name": "max_calls_per_run",
+          "state": "evaluated",
+          "rule": "at_most",
+          "passed": false,
+          "targets": [
+            {
+              "target": "api.example",
+              "actual": "0",
+              "max": "5",
+              "outcome": "not_observed"
+            }
+          ]
+        },
+        {
+          "name": "max_llm_calls_per_run",
+          "state": "deferred",
+          "missing_evidence": "run \"e1-candidate-1\" has no model-layer observation; model calls cannot be counted (2 of 2 candidate runs have none)"
+        }
+      ],
+      "state": "recorded"
+    },
+    "operational": {
+      "latency": {
+        "comparable": false,
+        "reason": "both_unavailable",
+        "reference": {
+          "runs_with_evidence": "0",
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "0",
+          "unobserved": "4",
+          "sum_nanos": "0"
+        },
+        "candidate": {
+          "runs_with_evidence": "0",
+          "buckets": [
+            {
+              "bound": "le_1ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_5ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_50ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_100ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_250ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_1000ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_2500ms",
+              "count": "0"
+            },
+            {
+              "bound": "le_10000ms",
+              "count": "0"
+            },
+            {
+              "bound": "gt_10000ms",
+              "count": "0"
+            }
+          ],
+          "observed": "0",
+          "unobserved": "5",
+          "sum_nanos": "0"
+        }
+      },
+      "errors": {
+        "comparable": false,
+        "reason": "both_unavailable",
+        "reference": {
+          "runs_with_evidence": "0",
+          "span_status": {
+            "unavailable": "4",
+            "unset": "0",
+            "ok": "0",
+            "error": "0"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "0",
+            "3xx": "0",
+            "4xx": "0",
+            "5xx": "0",
+            "unavailable": "4"
+          },
+          "http_429": "0"
+        },
+        "candidate": {
+          "runs_with_evidence": "0",
+          "span_status": {
+            "unavailable": "5",
+            "unset": "0",
+            "ok": "0",
+            "error": "0"
+          },
+          "http_status": {
+            "1xx": "0",
+            "2xx": "0",
+            "3xx": "0",
+            "4xx": "0",
+            "5xx": "0",
+            "unavailable": "5"
+          },
+          "http_429": "0"
+        }
+      },
+      "tokens": {
+        "comparable": false,
+        "reason": "both_unavailable",
+        "reference": {
+          "runs_with_evidence": "0",
+          "input": "0",
+          "output": "0",
+          "unsplit": "0",
+          "observed": "0",
+          "unobserved": "4"
+        },
+        "candidate": {
+          "runs_with_evidence": "0",
+          "input": "0",
+          "output": "0",
+          "unsplit": "0",
+          "observed": "0",
+          "unobserved": "5"
+        }
+      },
+      "cost": {
+        "pricing_version": "team-2026-10",
+        "pricing_digest": "sha256:abababababababababababababababababababababababababababababababab",
+        "source": "test fixture",
+        "currency": "USD",
+        "comparable": false,
+        "reason": "both_unavailable",
+        "reference": {
+          "runs_with_evidence": "0",
+          "priced_tokens": "0",
+          "unpriced_tokens": "0",
+          "token_observations": "0",
+          "observations_without_tokens": "4"
+        },
+        "candidate": {
+          "runs_with_evidence": "0",
+          "priced_tokens": "0",
+          "unpriced_tokens": "0",
+          "token_observations": "0",
+          "observations_without_tokens": "5"
+        }
+      }
+    },
+    "targets": [
+      {
+        "target_name": "build-host",
+        "target_category": "external",
+        "reference_frequency": {
+          "runs": "2",
+          "calls_total": "4",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "2",
+          "calls_per_run_mean_milli": "2000"
+        },
+        "candidate_frequency": {
+          "runs": "2",
+          "calls_total": "5",
+          "calls_per_run_min": "2",
+          "calls_per_run_max": "3",
+          "calls_per_run_mean_milli": "2500"
+        },
+        "call_ratio_available": true,
+        "call_ratio_permille": "1250",
+        "display": {
+          "reference_calls_per_run": "2–2",
+          "candidate_calls_per_run": "2–3",
+          "reference_calls_per_run_mean": "2",
+          "candidate_calls_per_run_mean": "2.5",
+          "call_ratio": "1.2×"
+        }
+      }
+    ],
+    "lost_transitions": "not_recorded",
+    "suggestions": [
+      {
+        "rule": "compare.added_in_all_runs",
+        "rule_version": 1,
+        "evidence": [
+          {
+            "name": "fingerprint_id",
+            "value": "fp-export"
+          },
+          {
+            "name": "behavior",
+            "value": "tool/export → build-host"
+          },
+          {
+            "name": "candidate_runs_present",
+            "value": "2"
+          },
+          {
+            "name": "reference_runs_present",
+            "value": "0"
+          },
+          {
+            "name": "runs",
+            "value": "2"
+          }
+        ],
+        "text": "tool/export → build-host was added in 2/2 candidate runs. If this was expected, add it to the scenario; otherwise investigate before promoting."
+      },
+      {
+        "rule": "compare.lost_in_half",
+        "rule_version": 1,
+        "evidence": [
+          {
+            "name": "fingerprint_id",
+            "value": "fp-lookup"
+          },
+          {
+            "name": "behavior",
+            "value": "tool/lookup → build-host"
+          },
+          {
+            "name": "reference_runs_present",
+            "value": "2"
+          },
+          {
+            "name": "candidate_runs_present",
+            "value": "1"
+          },
+          {
+            "name": "runs",
+            "value": "2"
+          }
+        ],
+        "text": "tool/lookup → build-host was in every reference run and is missing from 1 of 2 candidate runs. Task completion may have regressed."
+      }
+    ],
+    "suggestions_truncated": false,
+    "sameness": {
+      "same_scenario": "not_recorded",
+      "same_inputs": "not_recorded",
+      "same_model": "not_recorded",
+      "same_prompt_ref": "not_recorded",
+      "reference": {
+        "inputs": "not_recorded"
+      },
+      "candidate": {
+        "inputs": "not_recorded"
+      }
+    },
+    "warnings": [],
+    "producer": {
+      "control_plane_version": "v0.12.0"
+    }
+  }
+}
+

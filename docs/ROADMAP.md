@@ -517,7 +517,7 @@ per observation (076). Each is stated on screen where it applies.
 
 **PLANNED.** Tasks 081, 086, 087 and 105–107 are specified in
 [`tasks/v0.12/`](tasks/v0.12/README.md). 105, 087, 106, 086 and 081 are
-implemented; 107 is not. The engine is
+implemented; 107-A (the report's identity and JSON) is, 107-B and 107-C are not. The engine is
 unchanged. The platform gains:
 
 - one ephemeral status surface (105);
@@ -574,7 +574,7 @@ post the same report on the pull request, byte for byte
 | 106 | **Implemented** | [Frequency evidence](tasks/v0.12/106-frequency-evidence.md): calls per run, per-target call ratio in integer permille, a `lost` classification, three optional named gate limits ([ADR 0066](adr/0066-a-per-target-call-limit-is-one-named-check-over-a-bounded-list.md); `max_llm_calls_per_run` moved to 081), and a comparison rule table. No schema step |
 | 086 | **Implemented** | [Scenario and input versioning](tasks/v0.12/086-scenario-and-input-versioning.md): `scenario_digest` and `input_digest` on each execution side, a declared model and `prompt_ref` per side ([ADR 0067](adr/0067-scenario-provenance-is-recorded-per-execution-side.md)), sameness on every repeated comparison with warnings outside the gate, and `trustvian eval compare-repeated`. Schema 12 |
 | 081 | **Implemented** | [Persisted per-behavior fidelity](tasks/v0.12/081-persisted-behavior-fidelity.md): fidelity and layer counts per behavior on both backends ([ADR 0068](adr/0068-fidelity-and-layer-are-persisted-as-per-behavior-counts.md)), reported per side as the lowest level seen with `mixed`, and `max_llm_calls_per_run` as a fourth frequency check, deferred without semantic evidence (D8). Schema 13 |
-| 107 | Specified | [Change Impact view and Model Change Report](tasks/v0.12/107-change-impact-view-and-report.md): Compare becomes Change Impact, the result document goes to version 2, `trustvian eval report`, one shared renderer for the CLI and the PR comment, and an Overview panel |
+| 107 | **107-A implemented**; 107-B, 107-C specified | [Change Impact view and Model Change Report](tasks/v0.12/107-change-impact-view-and-report.md): Compare becomes Change Impact, the result document goes to version 2, `trustvian eval report`, one shared renderer for the CLI and the PR comment, and an Overview panel. 107-A: each completed execution records its gate ([ADR 0069](adr/0069-a-completed-execution-records-the-gate-it-consumed.md)), the report route and `eval report` serve version 2 as JSON, and the single-run compare gains sameness. Schema 14 |
 | 080 | Specified — **parallel measurement, gates nothing** | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md), run and published under `docs/results/`. It changes no code outside `examples/` and `docs/` |
 
 **Proposed build order: 105, then 087 → 106, then 086, then 081 in a pull

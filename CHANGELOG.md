@@ -40,6 +40,24 @@ actually depend on.
 
 ### Added
 
+- **A scenario execution's report** (task 107-A, decisions D10–D12,
+  [ADR 0069](docs/adr/0069-a-completed-execution-records-the-gate-it-consumed.md)).
+  - Every completed scenario execution records the gate it consumed — the
+    limits, all six checks, all four frequency checks and the verdict — in the
+    completion transaction, at platform schema 14 on SQLite and PostgreSQL.
+    Executions completed before it read `not_recorded`; nothing is
+    backfilled or re-derived.
+  - `GET /v1/scenario-executions/{execution_id}/report` serves result document
+    version 2: version 1 member for member, the recorded gate, and on every
+    behavior and target row display strings (`"2/3"`, `"1–4"`, `"2.4"`,
+    `"2.4×"`) and `present_in`, the repetitions and runs each behavior was
+    observed in. JSON only. The contract is published in
+    [`docs/compatibility.md`](docs/compatibility.md#result-document-version-2).
+  - `trustvian eval report <execution-id> [--json]` prints it unchanged. Exit
+    `0` whatever the recorded verdict, `2` usage, `3` API failure.
+  - `POST /v1/evaluations/compare` gains `sameness` and `warnings[]`, each run
+    looked up through the executions that recorded it. Additive; no check
+    reads them.
 - **Pipeline status surface** (task 105,
   [ADR 0064](docs/adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md),
   [ADR 0065](docs/adr/0065-collectors-report-pipeline-status-the-control-plane-holds-it-in-memory.md)).

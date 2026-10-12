@@ -108,7 +108,7 @@ func conformScenarioProvenance(t *testing.T, open func(testing.TB) Store) {
 			t.Fatalf("CreateScenarioExecution(%s) error = %v", tt.id, err)
 		}
 		completed, err := store.CompleteScenarioExecution(ctx, ScenarioExecutionID(tt.id),
-			associations(tt.id, 1), GateVerdictPass, scenarioEpoch.Add(time.Minute))
+			associations(tt.id, 1), recordedGate(1, GateVerdictPass), scenarioEpoch.Add(time.Minute))
 		if err != nil {
 			t.Fatal(err)
 		}

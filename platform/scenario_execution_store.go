@@ -31,8 +31,9 @@ type ScenarioExecutionStore interface {
 	ScenarioExecution(ctx context.Context, id ScenarioExecutionID) (ScenarioExecution, error)
 
 	// CompleteScenarioExecution moves a running execution to completed with
-	// its ordered associations and verdict, in one transaction, and returns
-	// the stored value.
+	// its ordered associations and its gate result — the verdict and the
+	// evidence it consumed (schema 14) — in one transaction, and returns the
+	// stored value.
 	//
 	// The transaction serializes on the execution's project row, assigns the
 	// next completion sequence within the project, inserts the associations
@@ -41,7 +42,7 @@ type ScenarioExecutionStore interface {
 	// completion is not retried into a second one.
 	CompleteScenarioExecution(
 		ctx context.Context, id ScenarioExecutionID,
-		repetitions []ScenarioRepetition, verdict GateVerdict, at time.Time,
+		repetitions []ScenarioRepetition, gate ScenarioGateRecord, at time.Time,
 	) (ScenarioExecution, error)
 
 	// FailScenarioExecution moves a running execution to failed and returns
@@ -167,7 +168,7 @@ func insertScenarioExecution(ctx context.Context, w scenarioExecutionWriter, e S
 // transaction.
 func completeScenarioExecutionTx(
 	ctx context.Context, w scenarioExecutionWriter, id ScenarioExecutionID,
-	repetitions []ScenarioRepetition, verdict GateVerdict, at time.Time,
+	repetitions []ScenarioRepetition, gate ScenarioGateRecord, at time.Time,
 ) (ScenarioExecution, error) {
 	current, err := loadScenarioExecutionRow(ctx, w, id)
 	if err != nil {
@@ -191,16 +192,22 @@ func completeScenarioExecutionTx(
 	}
 	sequence := uint64(last.Int64) + 1
 
-	next, err := current.complete(repetitions, verdict, sequence, at)
+	next, err := current.complete(repetitions, gate, sequence, at)
+	if err != nil {
+		return ScenarioExecution{}, err
+	}
+	snapshot, err := encodeScenarioGateRecord(next.gate)
 	if err != nil {
 		return ScenarioExecution{}, err
 	}
 
+	// The gate result is written in the same statement as the verdict: there
+	// is no committed completion without the evidence it consumed.
 	affected, err := w.exec(ctx, w.rebind(
 		`UPDATE `+tableScenarioExecutions+`
-		 SET status = ?, finished_at = ?, completion_sequence = ?, verdict = ?
+		 SET status = ?, finished_at = ?, completion_sequence = ?, verdict = ?, `+columnGateSnapshot+` = ?
 		 WHERE id = ? AND status = ?`),
-		string(ScenarioExecutionCompleted), timeText(at), int64(sequence), string(verdict),
+		string(ScenarioExecutionCompleted), timeText(at), int64(sequence), string(next.verdict), snapshot,
 		string(id), string(ScenarioExecutionRunning))
 	if err != nil {
 		return ScenarioExecution{}, w.writeError("scenario execution", string(id), err)
@@ -262,7 +269,7 @@ func loadScenarioExecutionRow(
 	var (
 		name, project, agent, environment, status, startedAt string
 		runs                                                 int64
-		reference, finishedAt, verdict                       sql.NullString
+		reference, finishedAt, verdict, gateSnapshot         sql.NullString
 		sequence                                             sql.NullInt64
 		provenance                                           [10]sql.NullString
 	)
@@ -271,10 +278,11 @@ func loadScenarioExecutionRow(
 	for i := range provenance {
 		targets = append(targets, &provenance[i])
 	}
+	targets = append(targets, &gateSnapshot)
 	err := q.queryRow(ctx, q.rebind(
 		`SELECT scenario_name, project_id, agent_id, environment, runs,
 		        reference_execution_id, status, started_at, finished_at,
-		        completion_sequence, verdict, `+scenarioProvenanceColumnList+`
+		        completion_sequence, verdict, `+scenarioProvenanceColumnList+`, `+columnGateSnapshot+`
 		 FROM `+tableScenarioExecutions+` WHERE id = ?`), string(id)).
 		Scan(targets...)
 	switch {
@@ -309,8 +317,17 @@ func loadScenarioExecutionRow(
 				ErrStoreCorrupt, preview(string(id)), scenarioProvenanceColumns()[i])
 		}
 	}
+	// NULL is "not recorded": an execution not completed, or completed before
+	// schema 14. Anything stored is decoded and re-proved; the execution's
+	// own validation then holds it to the verdict and N beside it.
+	var gate ScenarioGateRecord
+	if gateSnapshot.Valid {
+		if gate, err = decodeScenarioGateRecord(gateSnapshot.String, int(runs)); err != nil {
+			return ScenarioExecution{}, fmt.Errorf("scenario execution %s: %w", preview(string(id)), err)
+		}
+	}
 	return ScenarioExecution{
-		id: id, scenarioName: name,
+		id: id, scenarioName: name, gate: gate,
 		scope: ScenarioScope{ProjectID: ProjectID(project), AgentID: AgentID(agent),
 			Environment: EnvironmentRef(environment)},
 		runs: int(runs), reference: ScenarioExecutionID(reference.String),
