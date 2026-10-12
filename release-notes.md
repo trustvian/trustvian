@@ -1,62 +1,74 @@
-# Trustvian v0.11.0 — webui feature
+# Trustvian v0.12.0 — Change Impact
 
-The release that makes the WebUI an investigation tool rather than a viewer.
-After `v0.10.0` showed you what your agent does, `v0.11.0` helps you find out
-why: an Overview of a project's newest runs, gate verdicts and evidence; a
-trace timeline over the actions Trustvian evaluated; and searchable selectors in
-place of every identifier you used to paste. Upgrade if you use the local WebUI
-or the control plane's `/v1` API. The engine, the CLI's commands and the gate
-are unchanged. The platform database moves to schema v10 on first start, and an
-older build then refuses it.
+`v0.12.0` answers the question a developer asks right after changing a model,
+a prompt or a tool: *what did that do?* One report per scenario execution
+puts it in one table — whether both sides ran the same scenario, inputs, model
+and prompt; every behavior's k/N and calls per run; every target's load,
+latency, status classes and 429s; tokens and, with a pricing table, cost; the
+gate as the execution recorded it; and suggestions beside the evidence. The
+CLI, the pull request comment's renderer and the WebUI's new Change Impact
+destination show the same document. When nothing arrives at all, a Status
+view says why. Upgrade if you run `trustvian eval run` or `trustvian dev`; the
+engine is unchanged. **Back up the platform state first**: the database moves
+from schema 10 to 15 and does not move back.
 
 Every change is in
-[CHANGELOG.md](https://github.com/trustvian/trustvian/blob/v0.11.0/CHANGELOG.md#v0110--webui-feature).
+[CHANGELOG.md](https://github.com/trustvian/trustvian/blob/v0.12.0/CHANGELOG.md#v0120--change-impact).
 
 ## What's new
 
-- **Light, Dark and System themes.** A switch at the foot of the sidebar; a
-  first visit follows your operating system, and an explicit choice is
-  remembered without flashing light on load.
-- **Searchable selectors instead of pasted identifiers.** Every field that
-  asked for an existing project, agent, candidate, run, environment, session or
-  scenario execution is a keyboard-operable search showing names, with the
-  identifier beside it and a **Copy ID** control. A choice made in one
-  destination carries to the others; changing a parent clears what depended on
-  it. "Advanced: paste an ID" remains.
-- **The Overview.** A new destination: live activity, the newest runs of a
-  project, agent or candidate by status, one run's evidence and top behaviors,
-  recorded gate verdicts and environments. Every panel says what it covers and
-  when it was read; nothing refreshes on a timer and nothing missing reads as
-  `0`.
-- **Trace investigation.** A **Traces** destination lists a run's traces and
-  draws one as a waterfall of the actions Trustvian evaluated, nested by
-  recorded parent span, with a details panel beside it. It says plainly that
-  it is not a complete distributed trace.
-- **Runs newest first.** Runs, the Overview and every run selector list runs
-  newest first across a project, an agent or a candidate.
-- **Recorded scenario executions.** Evidence → **Scenarios** lists past
-  `trustvian eval run` executions, asks the control plane whether one can be
-  reused as a `--reference`, and copies the command. Nothing runs from the
-  browser.
-- **New `/v1` routes:** `GET /v1/projects/{id}/evaluation-runs/recent`,
-  `/v1/evaluation-runs/{id}/traces` and `/sessions`,
-  `/v1/projects/{id}/scenario-executions` and
-  `/v1/scenario-executions/{id}/reference-check`
-  ([compatibility](https://github.com/trustvian/trustvian/blob/v0.11.0/docs/compatibility.md)).
+- **Status: why is Live empty?** `GET /v1/status`, `trustvian status`,
+  `trustvian dev --check` and a WebUI Status view show which Collectors report,
+  which producers and model calls they have seen, how each span's actor was
+  bound, and named suggestions for what to check. The WebUI opens on Status
+  when nothing is active and on Live otherwise (task 105).
+- **Scenario, input and prompt provenance.** A scenario may declare `inputs:`,
+  a `model` or `model_env` and a `prompt_ref` per side. Every repeated
+  comparison says whether both sides ran the same scenario, inputs, model and
+  prompt, and warns beside the gate when they differ (task 086).
+- **Frequency evidence.** Every behavior shows k/N and calls per run per side;
+  every target a permille call ratio; `lost` marks a behavior in every
+  reference run missing from a candidate run. Optional limits
+  `min_candidate_frequency`, `max_lost_behaviors` and `max_calls_per_run`
+  (task 106).
+- **Performance and cost evidence.** Latency buckets, span and HTTP status
+  classes, 429s and token counts per behavior, per target and per run, and
+  cost only from a versioned pricing table whose provenance every figure
+  carries (`trustvian-local --pricing`; task 087).
+- **Fidelity.** Every behavior says whether telemetry named it or it was
+  inferred from transport, with counts, and `max_llm_calls_per_run` gates the
+  model calls in one candidate run (task 081).
+- **The scenario execution report.** Each completed execution records the
+  gate it consumed. `trustvian eval report <id>` prints its report — result
+  document version 2 — as JSON or, with `--format md`, as the Markdown the pull
+  request comment's renderer produces, byte for byte. `trustvian eval run
+  --json` now prints the same report (task 107).
+- **Change Impact in the WebUI.** Compare becomes Change Impact: the
+  context's scenario executions and one execution's report, every figure the
+  report's own, every behavior one click from its observations. Overview gains
+  a Latest comparison panel (task 107).
+- **A measured Model Change Report** — `llama3.2` against `gemma3:4b`, ten
+  runs a side — is published under `docs/results/2026-10-12-model-change-report/`,
+  with what it shows and what it does not.
+- **Security.** Builds use Go 1.27.2 and the Collector `golang.org/x/net
+  v0.60.0`, fixing the 2026-10-08 HTTP/2, `net/http`, `mime/multipart`,
+  `crypto/tls` and `html/template` advisories. **v0.11.0's published binaries
+  and image predate the fix**; see the CHANGELOG's Security section for the
+  advisories each carries.
 
 ## What this release does not include
 
-- **Complete distributed traces.** Trustvian retains the actions it evaluated
-  — at most 4096 per run — not every span, attribute, event or service name.
-  Keep your trace backend for the full picture.
-- **Starting a scenario from the browser.** The WebUI finds and checks recorded
-  executions; running one stays in the CLI, because it runs your command.
-- **Authentication or remote access** for the local runtime (task 070). It
-  still binds loopback only.
-- **Promotion sharing across a deployment** and the rest of the `v1.0` gate
-  (tasks 068–072), which the roadmap still lists as not specified.
-- **Measured detection numbers** for metadata-only detection (task 080, still
-  specified and not implemented).
+- **No verdict, score or advice of its own.** Nothing adds an aggregate
+  verdict, an impact score, a cost gate, a rate gate or a percentile.
+  Suggestions are named rule outputs beside the evidence and change no exit
+  code.
+- **No content.** No prompt, completion, tool argument or body is read,
+  retained or shown; a prompt is identified by a reference you declare.
+- **The pull request comment is still the version 1 rendering.** The run and
+  comment actions build the commit their `runtime.env` pins, which predates
+  the report; a later release moves the pin.
+- **No metadata-only detection evaluation (080)**; it moved to `v0.13.0`.
+- **No review decisions or analytics (088, 092)**; deferred to `v0.13.0`.
 
 ## Known limits
 
@@ -90,14 +102,40 @@ Every change is in
 - **macOS binaries are not notarized.** Download with `curl` as documented. A
   browser download is quarantined by Gatekeeper; clear it with
   `xattr -d com.apple.quarantine` on the three binaries.
-- **Schema v10 is one-way.** The first start of `v0.11.0` migrates the platform
-  database in place; an older build then refuses it as newer. To keep a way
-  back, copy the stopped runtime's state directory first — `.trustvian/`, or
+- **Schema 10 → 15 is one-way.** The first start of `v0.12.0` migrates a
+  `v0.11.0` platform database forward through schemas 11 to 15 in one step, on
+  SQLite and PostgreSQL; an older build then refuses it as newer. **Back up
+  first**: copy the stopped runtime's state directory — `.trustvian/`, or
   `~/.trustvian/dev/<hash>/` under `trustvian dev`
-  ([where state lives](https://github.com/trustvian/trustvian/blob/v0.11.0/docs/local-development.md)).
-  Platform backup tooling is task 071, not yet implemented.
+  ([where state lives](https://github.com/trustvian/trustvian/blob/v0.12.0/docs/local-development.md))
+  — or `pg_dump` the PostgreSQL schema. Records and executions from before each
+  step read *not recorded* for that step's evidence, never zero. Platform backup tooling is task 071, not yet implemented.
+- **Upgrade the control plane before the CLI.** A control plane older than
+  `v0.12.0` refuses the `provenance` and `cli_version` fields a `v0.12.0`
+  `trustvian eval run` sends, with `400` before any workload starts.
+- **`eval run --json` now prints result document version 2.** Against a
+  control plane without the report route it prints version 1 and says so;
+  consumers branch on `version`.
+- **A model change always changes the model behavior.** The model's name is
+  the GenAI operation name, so the reference model's behavior is removed and
+  lost and the candidate's is added. `max_lost_behaviors: 0` and
+  `min_candidate_frequency` fail any model change on that row alone.
+- **One model call can count under two targets.** A GenAI model-call span and
+  the HTTP request beneath it are two behaviors (`ollama` and
+  `ollama.localhost` in the demo); do not add the two rows.
+- **Operational and fidelity evidence arrive only through the Collector.** A
+  run ingested in-process through the SDK path reads its operational sections
+  as unavailable and its fidelity as unrecorded.
+- **Legacy HTTP keys are not read.** A span with only `http.method` and
+  `http.url` becomes `rpc/<METHOD>` with no target, and 105's
+  `status.collapsed_http_operations` rarely fires for method-only span names.
+  Task 108 proposes a staged change.
+- **Actors inside one live run are indistinguishable** in the Live view until
+  task 109; the retained observations name each actor.
+- **Two Overview panels still count a page in the browser** — the Runs status
+  breakdown and the Gate verdicts tally — and say so.
 - **With a candidate chosen, run lists show only its runs.** Pick a
-  promotion's or provenance's other side under Compare, or paste its ID.
+  promotion's or provenance's other side under Change Impact, or paste its ID.
 - **A reference check holds for the execution's own repetition count, project
   and environment.** A scenario that differs on any of them is refused by the
   CLI's same validation.
@@ -105,7 +143,7 @@ Every change is in
 ## Verifying
 
 ```bash
-V=v0.11.0
+V=v0.12.0
 A=trustvian_${V}_linux_amd64.tar.gz
 SHA=$(git ls-remote https://github.com/trustvian/trustvian "refs/tags/$V^{}" | cut -f1)
 
@@ -125,4 +163,4 @@ cosign verify "$IMAGE@$DIGEST" \
   --certificate-github-workflow-sha "$SHA"
 ```
 
-What each flag pins: [supply-chain.md](https://github.com/trustvian/trustvian/blob/v0.11.0/docs/supply-chain.md#verifying-a-published-image).
+What each flag pins: [supply-chain.md](https://github.com/trustvian/trustvian/blob/v0.12.0/docs/supply-chain.md#verifying-a-published-image).
