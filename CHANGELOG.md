@@ -55,6 +55,9 @@ actually depend on.
     [`docs/compatibility.md`](docs/compatibility.md#result-document-version-2).
   - `trustvian eval report <execution-id> [--json]` prints it unchanged. Exit
     `0` whatever the recorded verdict, `2` usage, `3` API failure.
+  - The report carries `comparison.counts`: its behavior rows' totals by
+    classification, and the lost rows, computed by the control plane so no
+    interface counts them.
   - `POST /v1/evaluations/compare` gains `sameness` and `warnings[]`, each run
     looked up through the executions that recorded it. Additive; no check
     reads them.
@@ -144,7 +147,7 @@ actually depend on.
   - The platform recovery drill covers backup, restore and upgrade on both
     backends. It includes a v10 backup written by v0.11.0's own
     `trustvian-local`.
-
+- **Scenario, input and prompt provenance** (task 086,
   [ADR 0067](docs/adr/0067-scenario-provenance-is-recorded-per-execution-side.md)).
   A repeated comparison now says whether both sides ran the same scenario, the
   same inputs, the same model and the same prompt.

@@ -35,12 +35,14 @@ carries it because it contradicts
 
 `v0.10.0` — the [developer preview](#v0100--developer-preview) — and `v0.11.0`
 — the [WebUI experience](#v0110--webui-experience) — have SHIPPED.
-`v0.12.0` — [Change Impact](#v0120--change-impact) — is PLANNED, and `v1.0`
+`v0.12.0` — [Change Impact](#v0120--change-impact) — is IMPLEMENTED on `main`
+and awaiting its release, and `v1.0`
 is the release gate beyond them. Track B is **partly implemented**: the
 evaluation foundation, local persistence, the local control-plane API and
 realtime, the developer CLI, the TUI, the WebUI, the PostgreSQL backend, the
 environment model and promotion (tasks 051–066, 073 and 074) exist; 067 and
-075–079 are implemented, 080 is specified, and
+075–079, 081 and 083–087 are implemented, 080 is specified and moved to
+`v0.13.0`, and
 068–072 are still PLANNED. [Task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md)
 is a planning task, in 049's shape: it reserves and scopes 083–090 — inspection
 and evaluation depth — and implements nothing.
@@ -231,18 +233,22 @@ task 062's runtime composes one, on loopback by default.
 **`v0.10.0` was the first release to carry the platform**, and `v0.11.0` the
 WebUI experience (097–104).
 
+**On `main`, not yet released: `v0.12.0` — Change Impact** (105–107, 081, 086,
+087; [section](#v0120--change-impact)). The pipeline status surface and
+`trustvian status`; frequency, operational and cost evidence on a comparison;
+scenario, input and prompt provenance with sameness; persisted per-behavior
+fidelity; a recorded gate on every completed execution; the scenario
+execution report, result document version 2, printed by `trustvian eval
+report` and `eval run --json` and rendered as Markdown by the one renderer the
+pull request comment uses; and the WebUI's Change Impact destination. Platform
+schema 15. The engine is unchanged.
+
 **Not implemented:**
 - Multi-node and load validation, platform security hardening, platform backup
   and restore, and the rest of 068–072. They are planned, with no
   specification.
-- Metadata-only detection evaluation (080), which is specified and runs as a
-  parallel measurement in [`v0.12.0`](#v0120--change-impact).
-- The rest of the [`v0.12.0` Change Impact](#v0120--change-impact) tasks —
-  persisted fidelity (081), scenario and input versioning (086), performance
-  and cost evidence (087), frequency evidence (106) and the Change Impact view
-  and report (107). They are specified in
-  [`tasks/v0.12/`](tasks/v0.12/README.md); the pipeline status surface (105) is
-  implemented.
+- Metadata-only detection evaluation (080), which is specified and moved to
+  [`v0.13.0`](#v0130--proposed) as a parallel measurement that gates nothing.
 - Inspection depth 088–090, which is scoped by
   [task 082](tasks/v1.0/082-agent-inspection-and-evaluation-depth.md). 089 is
   PROPOSED, not approved.
@@ -515,7 +521,7 @@ per observation (076). Each is stated on screen where it applies.
 
 ## v0.12.0 — Change Impact
 
-**PLANNED.** Tasks 081, 086, 087 and 105–107 are specified in
+**IMPLEMENTED on `main`; release pending.** Tasks 081, 086, 087 and 105–107 are specified in
 [`tasks/v0.12/`](tasks/v0.12/README.md). 105, 087, 106, 086 and 081 are
 implemented, and so is 107 in its three parts: the report's identity and JSON (107-A), one renderer and the comment's report (107-B), and Change Impact with the Overview panel (107-C). The engine is
 unchanged. The platform gains:
@@ -575,10 +581,11 @@ post the same report on the pull request, byte for byte
 | 086 | **Implemented** | [Scenario and input versioning](tasks/v0.12/086-scenario-and-input-versioning.md): `scenario_digest` and `input_digest` on each execution side, a declared model and `prompt_ref` per side ([ADR 0067](adr/0067-scenario-provenance-is-recorded-per-execution-side.md)), sameness on every repeated comparison with warnings outside the gate, and `trustvian eval compare-repeated`. Schema 12 |
 | 081 | **Implemented** | [Persisted per-behavior fidelity](tasks/v0.12/081-persisted-behavior-fidelity.md): fidelity and layer counts per behavior on both backends ([ADR 0068](adr/0068-fidelity-and-layer-are-persisted-as-per-behavior-counts.md)), reported per side as the lowest level seen with `mixed`, and `max_llm_calls_per_run` as a fourth frequency check, deferred without semantic evidence (D8). Schema 13 |
 | 107 | **Implemented** (107-A, 107-B, 107-C) | [Change Impact view and Model Change Report](tasks/v0.12/107-change-impact-view-and-report.md): Compare becomes Change Impact, the result document goes to version 2, `trustvian eval report`, one shared renderer for the CLI and the PR comment, and an Overview panel. 107-A: each completed execution records its gate ([ADR 0069](adr/0069-a-completed-execution-records-the-gate-it-consumed.md)), the report route and `eval report` serve version 2 as JSON, and the single-run compare gains sameness. Schema 14. 107-B: the execution records its CLI version and reference mode (schema 15), the report carries per-target latency and errors, `eval run --json` prints the report, and `internal/cirender` renders version 2 for the comment and `eval report --format md` |
-| 080 | Specified — **parallel measurement, gates nothing** | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md), run and published under `docs/results/`. It changes no code outside `examples/` and `docs/` |
+| 080 | **Moved to `v0.13.0`** (maintainer decision D13) — it gated nothing and was not run | [Metadata-only detection evaluation](tasks/v1.0/080-metadata-only-detection-evaluation.md), a parallel measurement published under `docs/results/`. It changes no code outside `examples/` and `docs/` |
 
 **Proposed build order: 105, then 087 → 106, then 086, then 081 in a pull
-request of its own, then 107.** 080 runs in parallel from 087 onward.
+request of its own, then 107.** That is the order they landed in. 080 was to
+run in parallel and moved to `v0.13.0` (D13).
 
 ### Dependencies and missing capabilities
 
@@ -608,24 +615,18 @@ request of its own, then 107.** 080 runs in parallel from 087 onward.
 
 ### Exit criterion
 
-1. **Status.** With nothing running, the WebUI opens on Status and names the
-   next step. With an agent running, it opens on Live as before.
-   `trustvian status`, `dev --check` and the view show the same facts.
-2. **Sameness.** A comparison states whether both sides ran the same scenario,
-   inputs, model and prompt reference, shows the digests, and warns, outside the
-   gate, when they differ.
-3. **Frequency.** Every behavior shows k/N and calls per run per side. Every
-   target shows a permille call ratio or *not available*.
-4. **Operational.** Latency buckets, status classes, 429s and tokens appear per
-   target and per run when the telemetry carried them, and *not available*
-   otherwise, with no delta.
-5. **Fidelity.** Every behavior on a comparison says whether telemetry named it
-   or it was inferred from transport, with counts.
-6. **One report.** `trustvian eval report`, the CI comment and Change Impact
-   show the same evidence, and the Markdown is byte-identical between the CLI
-   and the comment.
-7. **Traceable.** Every number on every screen is a field of a `/v1` response,
-   and every behavior row resolves through 085 to its observations.
+Assessed when the milestone closed, against `main` at `9e1bd20` plus this
+closing change. "Met" only where the evidence shows it.
+
+| # | Criterion | Evidence | Status |
+|---|---|---|---|
+| 1 | **Status.** With nothing running, the WebUI opens on Status and names the next step. With an agent running, it opens on Live as before. `trustvian status`, `dev --check` and the view show the same facts | #158, #159: the status document, `trustvian status`, `dev --check`, the landing rule (`landing`, `last_ingest_at`) and the Status view render one document; [105's What shipped](tasks/v0.12/105-pipeline-status-surface.md#what-shipped) | **Met** |
+| 2 | **Sameness.** A comparison states whether both sides ran the same scenario, inputs, model and prompt reference, shows the digests, and warns, outside the gate, when they differ | #162 (repeated comparison), #168 (D12, the single-run comparison); the [measured report](results/2026-10-12-model-change-report/README.md): model `llama3.2` against `gemma3:4b` **differs**, warning `model_differs`, verdict unaffected | **Met** |
+| 3 | **Frequency.** Every behavior shows k/N and calls per run per side. Every target shows a permille call ratio or *not available* | #161, #168 (display strings), #170 (rendering); the measured report: 17 behaviors with k/N and min–max, mean per side; 10 targets with a ratio | **Met** |
+| 4 | **Operational.** Latency buckets, status classes, 429s and tokens appear per target and per run when the telemetry carried them, and *not available* otherwise, with no delta | #160 (087), #170 (D16, per target on the report); the measured report: per-target buckets, status classes and 429s, `billing.localhost` *not available* on the side that never called it, and run-level tokens. Through the in-process SDK path these read unavailable (a known limitation) | **Met** |
+| 5 | **Fidelity.** Every behavior on a comparison says whether telemetry named it or it was inferred from transport, with counts | #164, #166; the measured report: every behavior's level, `mixed` and counts per side | **Met** |
+| 6 | **One report.** `trustvian eval report`, the CI comment and Change Impact show the same evidence, and the Markdown is byte-identical between the CLI and the comment | #170: `eval report --format md` equals `trustvian-ci-render --document` for all 15 golden documents and for the measured report, and the comment is that rendering with the commit, run link and exit code after its heading; #171: Change Impact renders the same document, every figure walked against it in Chrome. **But** the run and comment actions build the commit `runtime.env` pins (#140), which predates the report, so a posted comment is still the version 1 rendering until a reviewed change moves the pin | **Not met** for the posted comment until the pin moves; met for the CLI, the renderer and Change Impact |
+| 7 | **Traceable.** Every number on every screen is a field of a `/v1` response, and every behavior row resolves through 085 to its observations | Change Impact: #171's DOM walk. Overview's latest comparison: this closing change's `comparison.counts`. Every behavior row: `present_in` with its runs, resolved through 085 (#168's test, #171's links). **But** two older Overview panels count in the browser: the Runs panel's status breakdown (`platform/webui/assets/views/overview.js:359`, `statusBreakdown`) and the Gate verdicts panel's outcome tally (`overview.js:546`, `verdictTally`), each over the page on screen and labelled so (task 099) | **Not met** for those two panels; met for everything 107 added |
 
 ### Exclusions
 
@@ -642,8 +643,10 @@ request of its own, then 107.** 080 runs in parallel from 087 onward.
 
 ### Known limitations after implementation
 
-- Status codes and token counts arrive only through the Collector. A run
-  ingested in-process through the SDK path reports them as unavailable.
+- Status codes, token counts, fidelity and layer arrive only through the
+  Collector, on the ingest envelope. A run ingested in-process through the SDK
+  path reports its operational sections as unavailable and its fidelity and
+  layer as unrecorded, so `max_llm_calls_per_run` is deferred for it.
 - Engine facts on the Status view are unavailable until a reviewed engine
   accessor exists, so the fingerprint-admission
   [open conflict](#open-conflicts-to-resolve-before-implementation) stays open.
@@ -658,9 +661,21 @@ request of its own, then 107.** 080 runs in parallel from 087 onward.
   span by its method alone, so several paths on one host are one distinct
   operation (measured in #158). Phase 4's two-model measurement revisits the
   signal. Without `OTEL_SEMCONV_STABILITY_OPT_IN=http` those spans also carry
-  only the legacy HTTP keys, which Trustvian does not read; changing that
+  only the legacy HTTP keys, which Trustvian does not read.
+- **Legacy HTTP semantic conventions are not read.** A span carrying only
+  `http.method`/`http.url` becomes `rpc/<METHOD>` with no target. Reading them
   changes behavioral identity and is
   [task 108](tasks/v0.13/108-legacy-http-semantic-conventions.md).
+- **One model call can be counted under two targets.** The demo agent's GenAI
+  model-call span (target `ollama`) and the HTTP request beneath it (target
+  `ollama.localhost`) are two behaviors, so the report's targets show the same
+  calls twice and `max_calls_per_run` needs a limit on each. The measured report
+  shows it ([`docs/results`](results/)). A reader must not add the two rows.
+- **Actors inside one live run are indistinguishable.** The realtime frame
+  carries the run's scope and not the observation's actor, so several workers
+  under one `trustvian dev` run draw as one agent until
+  [task 109](tasks/v0.13/109-live-pause-and-actor-following.md); the retained
+  observations name each actor.
 
 ## v0.13.0 — proposed
 
@@ -670,6 +685,7 @@ request of its own, then 107.** 080 runs in parallel from 087 onward.
 | Task | What it is | Status |
 |---|---|---|
 | [108](tasks/v0.13/108-legacy-http-semantic-conventions.md) | Read the pre-stable HTTP keys. This changes `OperationCategory` and `TargetName`, so every affected fingerprint and baseline; needs a rollout decision first | Proposed |
+| [080](tasks/v1.0/080-metadata-only-detection-evaluation.md) | Metadata-only detection evaluation, a parallel measurement that gates nothing; moved from `v0.12.0` (D13) | Specified |
 | [109](tasks/v0.13/109-live-pause-and-actor-following.md) | The Live Observatory draws one source per actor, lists the actors seen live and follows one, and can pause and resume without disconnecting or replaying. `actor_id` and `actor_type` are added to the realtime observation frame as display metadata; identity is unchanged | Specified |
 
 088 and 092, deferred from [`v0.12.0`](#v0120--change-impact), are not yet

@@ -15,9 +15,11 @@ Their specifications live here because this is the milestone that builds them.
 | [081 — Persisted per-behavior fidelity](081-persisted-behavior-fidelity.md) | Implemented |
 | [107 — Change Impact view and Model Change Report](107-change-impact-view-and-report.md) | Implemented: 107-A (report identity and JSON), 107-B (one renderer, the comment's report), 107-C (Change Impact, the Overview panel) |
 
-[080 — Metadata-only detection evaluation](../v1.0/080-metadata-only-detection-evaluation.md)
-runs alongside as a measurement. It gates nothing, and its specification stays
-under `v1.0/`.
+Every task above is implemented. [080 — Metadata-only detection
+evaluation](../v1.0/080-metadata-only-detection-evaluation.md) was to run
+alongside as a measurement; it gated nothing, was not run, and moved to
+[`v0.13.0`](../v0.13/README.md) (maintainer decision D13). Its specification
+stays under `v1.0/`.
 
 **Proposed build order: 105, then 087 → 106, then 086, then 081 alone, then
 107.** 105 depends on none of the others. 106's 429 rule reads 087's status
