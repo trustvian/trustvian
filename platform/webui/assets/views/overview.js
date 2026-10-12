@@ -602,16 +602,19 @@ export function createOverview(deps) {
     const comparison = report.comparison || {};
     const gate = comparison.gate || {};
     const same = comparison.sameness || {};
-    const tally = model.reportTally(report);
+    // The counts are the report's own (comparison.counts, exit criterion 7):
+    // this panel shows them and counts nothing.
+    const counts = comparison.counts || {};
     const figures = element("div", "figures");
     figures.append(figure("Verdict", gate.state === "recorded" ? gate.verdict : "not recorded",
       gate.state === "recorded" ? `verdict-${String(gate.verdict).replace(/[^a-z]/g, "")}` : undefined));
-    figures.append(figure("Added rows", String(tally.added)));
-    figures.append(figure("Removed rows", String(tally.removed)));
-    figures.append(figure("Lost rows", String(tally.lost)));
+    figures.append(figure("Added", counts.added));
+    figures.append(figure("Removed", counts.removed));
+    figures.append(figure("Lost", counts.lost));
     host.append(figures);
     host.append(element("p", "panel-note",
-      `Behavior rows of this report, by the classification it states; ${tally.rows} rows in all.`));
+      `Behaviors of this report by the classification it states, of ${counts.rows || NOT_AVAILABLE} in all` +
+      (counts.not_recorded && counts.not_recorded !== "0" ? `; ${counts.not_recorded} not classified, the gate not recorded.` : ".")));
     host.append(element("p", "panel-note",
       `Same scenario ${same.same_scenario || NOT_AVAILABLE} · inputs ${same.same_inputs || NOT_AVAILABLE} · ` +
       `model ${same.same_model || NOT_AVAILABLE} · prompt ${same.same_prompt_ref || NOT_AVAILABLE}`));

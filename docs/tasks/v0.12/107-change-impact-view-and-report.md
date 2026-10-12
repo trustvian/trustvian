@@ -599,11 +599,10 @@ Markdown are in [PERFORMANCE](../../PERFORMANCE.md).
 
 ### Departures from the specification, and why
 
-- **The Overview's counts are rows of the report**, counted by the
-  classification the report states and labelled so — the precedent of the
-  Gate verdicts panel's tally — because the report carries no total of added,
-  removed or lost behaviors. Repeatedly added behaviors are also the gate's
-  own `repeatedly_added_behaviors` actual, which Change Impact shows.
+- **The Overview's counts were tallied in the browser** from the report's
+  rows, against exit criterion 7. Corrected when the milestone closed: the
+  report now carries `comparison.counts`, computed by the control plane, and
+  the panel shows those; the browser tally is gone.
 - **The browser check is a Chrome test that skips without a browser**, like
   the PostgreSQL tests without a database: the WebUI has no JavaScript test
   runner beyond the node driver, and a rendered DOM needs a browser.
@@ -620,8 +619,9 @@ Markdown are in [PERFORMANCE](../../PERFORMANCE.md).
   the display strings rather than deriving them, and the existing guards —
   no uint64 parsed as a number, no markup parsed, every await followed by an
   ownership check, no timer — hold for the new code.
-- `reportTally` counts rows by the stated classification, `not_recorded`
-  under its own word, and nothing for an absent report.
+- The panel reads `comparison.counts`, and no browser-side report tally
+  exists (`TestOverviewLatestComparisonReadsTheReportsCounts`); the counts
+  equal the rows' totals, recorded or not (`TestReportCountsAreTheRowsTotals`).
 
 ### Checked by hand
 
