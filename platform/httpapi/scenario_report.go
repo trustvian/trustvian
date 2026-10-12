@@ -133,6 +133,18 @@ type presentRepetitionDTO struct {
 type reportTargetDTO struct {
 	targetFrequencyDTO
 	Display targetDisplayDTO `json:"display"`
+	// Operational is the target's latency and error sections (D16), exactly
+	// as GET /v1/evaluations/operational states them for the same runs.
+	Operational reportTargetOperationalDTO `json:"operational"`
+}
+
+// reportTargetOperationalDTO is one target's latency buckets, span and HTTP
+// status classes and 429s, each side summed over its completed repetitions
+// with runs_with_evidence beside it. A section that cannot be compared says
+// so and carries no delta, as on the operational route.
+type reportTargetOperationalDTO struct {
+	Latency latencySectionDTO `json:"latency"`
+	Errors  errorsSectionDTO  `json:"errors"`
 }
 
 // targetDisplayDTO is the target row's numbers as text. call_ratio is "2.4×"
@@ -233,6 +245,10 @@ func newScenarioReportResponse(report platform.ScenarioExecutionReport, producer
 				ReferenceCallsPerRunMean: platform.RenderCallsPerRunMean(target.Reference),
 				CandidateCallsPerRunMean: platform.RenderCallsPerRunMean(target.Candidate),
 				CallRatio:                platform.RenderCallRatio(target),
+			},
+			Operational: reportTargetOperationalDTO{
+				Latency: newLatencySectionDTO(report.TargetOperational[i].Sections.Latency),
+				Errors:  newErrorsSectionDTO(report.TargetOperational[i].Sections.Errors),
 			},
 		})
 	}

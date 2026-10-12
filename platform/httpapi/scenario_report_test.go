@@ -36,9 +36,15 @@ func reportLimits() map[string]any {
 // completeReportExecution runs a self-contained execution of two repetitions
 // per side — read on both sides, export added on the candidate side, lookup
 // lost from one candidate repetition — and returns the completion's body.
+// reportCLIVersion is the version the fixture's runner records at begin.
+const reportCLIVersion = "v0.13.0 3e86f9c"
+
 func (a *api) completeReportExecution(id string) []byte {
 	a.t.Helper()
-	a.beginExecution(id, 2, nil, 201)
+	a.seedHierarchy()
+	begin := beginBody(id, 2, nil)
+	begin["cli_version"] = reportCLIVersion
+	a.mustStatus(a.do("POST", "/v1/scenario-executions", begin), 201, "begin "+id)
 	sides := map[string][][]string{
 		"reference": {{"read", "lookup"}, {"read", "lookup"}},
 		"candidate": {{"read", "export", "lookup"}, {"read", "export"}},
@@ -109,8 +115,8 @@ func requireSubset(t *testing.T, path string, want, got any) {
 
 // TestReportCarriesVersionOneUnchanged: the version 1 subset of the report
 // equals what `eval run --json` writes for the same execution — the
-// completion's comparison, verbatim, and the document members the control
-// plane holds. The two members it cannot hold are stated, not invented.
+// completion's comparison, verbatim, and every other member, the CLI version
+// included now that the execution records it (D14). Only the version differs.
 func TestReportCarriesVersionOneUnchanged(t *testing.T) {
 	a := newAPI(t)
 	var completion struct {
@@ -129,9 +135,21 @@ func TestReportCarriesVersionOneUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 	// What eval run builds around the comparison (cmd/trustvian/eval_run.go).
+	var comparison struct {
+		Producer struct {
+			Version string `json:"control_plane_version"`
+		} `json:"producer"`
+	}
+	if err := json.Unmarshal(completion.Comparison, &comparison); err != nil {
+		t.Fatal(err)
+	}
 	v1 := decodeAny(t, mustJSON(t, map[string]any{
 		"version": "1", "scenario": map[string]any{"name": "support", "runs": 2},
-		"execution_id": "e1", "provenance": execution.Provenance, "comparison": completion.Comparison,
+		"execution_id": "e1",
+		"producers": map[string]any{
+			"cli_version": reportCLIVersion, "control_plane_version": comparison.Producer.Version,
+		},
+		"provenance": execution.Provenance, "comparison": completion.Comparison,
 	}))
 	report := decodeAny(t, a.report("e1"))
 	if report["version"] != "2" {
@@ -140,10 +158,6 @@ func TestReportCarriesVersionOneUnchanged(t *testing.T) {
 	delete(v1, "version")
 	requireSubset(t, "$", v1, report)
 
-	producers := report["producers"].(map[string]any)
-	if producers["cli_version"] != "not_recorded" || producers["control_plane_version"] == "" {
-		t.Fatalf("producers = %v", producers)
-	}
 	if _, ok := report["reference"]; ok {
 		t.Fatal("a self-contained execution's report names a reference")
 	}

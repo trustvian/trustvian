@@ -852,8 +852,8 @@ for the same execution, with exactly these differences:
 | Member | Version 1 | Version 2 |
 |---|---|---|
 | `version` | `"1"` | `"2"` |
-| `producers.cli_version` | the CLI that ran the execution | `"not_recorded"`: never persisted, and the report is produced by the control plane |
-| `reference.mode` | `execution` or `last` | `"not_recorded"`: whether the runner asked for `last` was never persisted. `reference.execution_id` is the reused execution, as in version 1; `reference` is absent for a self-contained execution |
+| `producers.cli_version` | the CLI that ran the execution | the same, as the execution recorded it at begin (schema 15, D14); `"not_recorded"` for an execution begun before schema 15 or by a client that sent none |
+| `reference.mode` | `execution` or `last` | the same, as recorded at begin (schema 15, D14); `"not_recorded"` for an execution begun before it. `reference.execution_id` is the reused execution, as in version 1; `reference` is absent for a self-contained execution |
 | `producers.control_plane_version`, `comparison.producer.control_plane_version` | the control plane that completed the execution | the control plane that produced the report |
 | `comparison.gate`, `comparison.gate_limits` | evaluated at completion | **the record the execution kept when it completed** (schema 14), never re-evaluated |
 
@@ -889,6 +889,7 @@ string, as everywhere on `/v1`.
 | `operational` | object | task 087's `latency`, `errors`, `tokens`; each has `comparable` and, when comparable, `delta` | a section that is not comparable has `reason` (`reference_unavailable`, `candidate_unavailable`, `both_unavailable`) and **no `delta` member** |
 | `operational.cost` | object | task 087, only with a pricing table, always with `pricing_version`, `pricing_digest`, `source` and `currency` | absent without pricing, and then **new** `operational.cost_reason: "pricing_not_configured"`; a side that reported no tokens has no `cost_micros`, and an incomparable cost no `delta` |
 | `targets[]` | array | task 106 per-target frequency; `call_ratio_permille` when `call_ratio_available` | `call_ratio_permille` absent when the reference never called the target |
+| `targets[].operational` | object | **new** (D16). `latency` (duration buckets) and `errors` (span status, HTTP status classes, `http_429`), each per side with `runs_with_evidence`, exactly as `GET /v1/evaluations/operational` states them for the execution's completed repetitions | a section not comparable has `reason` and no `delta`, as on that route |
 | `targets[].display` | object of strings | **new.** per-side `…_calls_per_run`, `…_calls_per_run_mean` as above, and `call_ratio` (`"2.4×"`, from the permille, one decimal, truncated — the rendering suggestion texts use) | `"not available"` as above, and for `call_ratio` when the reference never called the target |
 | `lost_transitions` | string | always `not_recorded` (task 106) | — |
 | `suggestions[]`, `suggestions_truncated` | array, boolean | ADR 0064 rule outputs, beside the evidence | — |
@@ -920,7 +921,7 @@ output differ.
   },
   "execution_id": "e1",
   "producers": {
-    "cli_version": "not_recorded",
+    "cli_version": "v0.13.0 3e86f9c",
     "control_plane_version": "v0.12.0"
   },
   "provenance": {
@@ -1542,6 +1543,156 @@ output differ.
           "reference_calls_per_run_mean": "2",
           "candidate_calls_per_run_mean": "2.5",
           "call_ratio": "1.2×"
+        },
+        "operational": {
+          "latency": {
+            "comparable": false,
+            "reason": "both_unavailable",
+            "reference": {
+              "runs_with_evidence": "0",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "0",
+              "unobserved": "4",
+              "sum_nanos": "0"
+            },
+            "candidate": {
+              "runs_with_evidence": "0",
+              "buckets": [
+                {
+                  "bound": "le_1ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_5ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_50ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_100ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_250ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_1000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_2500ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "le_10000ms",
+                  "count": "0"
+                },
+                {
+                  "bound": "gt_10000ms",
+                  "count": "0"
+                }
+              ],
+              "observed": "0",
+              "unobserved": "5",
+              "sum_nanos": "0"
+            }
+          },
+          "errors": {
+            "comparable": false,
+            "reason": "both_unavailable",
+            "reference": {
+              "runs_with_evidence": "0",
+              "span_status": {
+                "unavailable": "4",
+                "unset": "0",
+                "ok": "0",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "4"
+              },
+              "http_429": "0"
+            },
+            "candidate": {
+              "runs_with_evidence": "0",
+              "span_status": {
+                "unavailable": "5",
+                "unset": "0",
+                "ok": "0",
+                "error": "0"
+              },
+              "http_status": {
+                "1xx": "0",
+                "2xx": "0",
+                "3xx": "0",
+                "4xx": "0",
+                "5xx": "0",
+                "unavailable": "5"
+              },
+              "http_429": "0"
+            }
+          }
         }
       }
     ],
