@@ -190,3 +190,51 @@ func TestRendererParsesNoCount(t *testing.T) {
 		}
 	}
 }
+
+// --document renders one document file alone, under the artifact's read
+// rules, and takes no other flag.
+func TestRunDocumentMode(t *testing.T) {
+	good := filepath.Join("testdata", "golden", "v2-model-change.json")
+	bad := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(bad, []byte(`{"version":"3"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "link.json")
+	if err := os.Symlink(mustAbs(t, good), link); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name   string
+		args   []string
+		want   int
+		stdout string
+	}{
+		{"a report", []string{"--document", good}, exitRendered, "### Trustvian behavioral gate — FAIL"},
+		{"a version 1 document", []string{"--document", filepath.Join("testdata", "artifacts", "pass", "result.json")},
+			exitRendered, "### Trustvian behavioral gate — PASS"},
+		{"a refused document", []string{"--document", bad}, exitRejected, "No rendering exists for this document."},
+		{"a link", []string{"--document", link}, exitRejected, ""},
+		{"a missing file", []string{"--document", filepath.Join(t.TempDir(), "none.json")}, exitRejected, ""},
+		{"an empty path", []string{"--document", ""}, exitUsage, ""},
+		{"another flag beside it", append([]string{"--document", good}, cliArgs("x", "0")...), exitUsage, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if got := run(tt.args, &stdout, &stderr); got != tt.want {
+				t.Fatalf("exit %d, want %d; stderr %s", got, tt.want, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), tt.stdout) {
+				t.Errorf("stdout lacks %q:\n%s", tt.stdout, stdout.String())
+			}
+		})
+	}
+}
+
+func mustAbs(t *testing.T, path string) string {
+	t.Helper()
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return abs
+}

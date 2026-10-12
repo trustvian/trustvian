@@ -67,7 +67,7 @@ const evalUsage = `usage:
                               [--api-url <url>] [--json]
   trustvian eval run          --scenario <file> [--collector-bin <path>]
                               [--api-url <url>] [--json]
-  trustvian eval report       <execution-id> [--api-url <url>] [--json]
+  trustvian eval report       <execution-id> [--format md] [--api-url <url>] [--json]
   trustvian eval operational  --reference-run <id> --candidate-run <id>
                               [--reference-run <id> --candidate-run <id> ...]
                               [--after <cursor>] [--limit <n>]

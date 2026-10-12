@@ -1,5 +1,8 @@
 // Command trustvian-ci-render renders a trustvian-run artifact as Markdown for
-// a pull request comment or a job summary (task 079; ADR 0057).
+// a pull request comment or a job summary (task 079; ADR 0057). With
+// --document it renders one result document alone, with no run around it —
+// byte for byte what `trustvian eval report --format md` prints for the same
+// document. Both render through internal/cirender (task 107-B).
 //
 // It works offline, needs no credential, and treats the artifact as untrusted
 // data: it opens only the artifact's two fixed file names, bounds every read,
@@ -14,9 +17,10 @@
 // Exit codes:
 //
 //	0  evidence was rendered: a scenario verdict or a suite report
-//	1  no verdict: the CLI did not run, exited 2 or 3, or left no result
+//	1  no verdict: the CLI did not run, exited 2 or 3, or left no result, or
+//	   the evidence does not fit the size limit
 //	2  usage: the expected context is missing or malformed; nothing rendered
-//	3  no verdict: the artifact was rejected by validation
+//	3  no verdict: the artifact or document was rejected by validation
 //
 // The Markdown is written to stdout in every case but 2; the reason for a
 // no-verdict state is also written to stderr.
@@ -27,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -38,10 +43,15 @@ const usageText = `usage:
   trustvian-ci-render --artifact-dir <dir> --head-sha <sha> --repository <owner/name>
                       --run-id <id> --run-attempt <n> --exit-code <code or empty>
                       [--server-url <https://host>]
+  trustvian-ci-render --document <file>
 
 Renders a trustvian-run artifact as Markdown on stdout. Every flag but
 --server-url is required; --exit-code is the run job's exit-code output, and
 an empty value means the CLI did not run.
+
+--document renders one result document, version 1 or 2, with no run around
+it: what trustvian eval report --format md prints for the same document. It
+takes no other flag.
 
   0  evidence rendered    1  no verdict
   2  usage                3  no verdict: the artifact was rejected`
@@ -74,6 +84,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	attempt := fs.String("run-attempt", "", "the workflow run attempt")
 	exitCode := fs.String("exit-code", "", "the run job's exit-code output")
 	serverURL := fs.String("server-url", "https://github.com", "the GitHub server URL")
+	document := fs.String("document", "", "render one result document, with no run around it")
 	usage := func(problem string) int {
 		fmt.Fprintf(stderr, "trustvian-ci-render: %s\n\n%s\n", problem, usageText)
 		return exitUsage
@@ -86,6 +97,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if set["document"] {
+		if len(set) != 1 {
+			return usage("--document takes no other flag")
+		}
+		if *document == "" {
+			return usage("--document is empty")
+		}
+		return renderDocument(*document, stdout, stderr)
+	}
 	for _, name := range []string{"artifact-dir", "head-sha", "repository", "run-id", "run-attempt", "exit-code"} {
 		if !set[name] {
 			return usage("--" + name + " is required")
@@ -122,6 +142,32 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	out := render(*dir, want, cirender.DefaultLimits)
+	if _, err := io.WriteString(stdout, out.Markdown); err != nil {
+		fmt.Fprintf(stderr, "trustvian-ci-render: writing the rendering: %v\n", err)
+		return exitRejected
+	}
+	switch {
+	case out.State != cirender.StateNoVerdict:
+		return exitRendered
+	case out.Rejected != nil:
+		fmt.Fprintf(stderr, "trustvian-ci-render: no verdict: %s\n", out.Reason)
+		return exitRejected
+	default:
+		fmt.Fprintf(stderr, "trustvian-ci-render: no verdict: %s\n", out.Reason)
+		return exitNoVerdict
+	}
+}
+
+// renderDocument renders one result document file. The file is read as the
+// artifact's result.json is: a regular file, never a link, under the same
+// size bound.
+func renderDocument(path string, stdout, stderr io.Writer) int {
+	raw, err := readBounded(filepath.Dir(path), filepath.Base(path), maxResultBytes)
+	if err != nil {
+		fmt.Fprintf(stderr, "trustvian-ci-render: no verdict: the document cannot be read: %v\n", err)
+		return exitRejected
+	}
+	out := cirender.RenderDocument(raw, cirender.DefaultLimits)
 	if _, err := io.WriteString(stdout, out.Markdown); err != nil {
 		fmt.Fprintf(stderr, "trustvian-ci-render: writing the rendering: %v\n", err)
 		return exitRejected
