@@ -467,3 +467,46 @@ func TestCompletionRecordsTheGateItsVerdictCameFrom(t *testing.T) {
 		t.Fatalf("the fixture should fail on the added behavior and the deferred check")
 	}
 }
+
+// D14: the begin request's CLI version and the reference mode it asked for
+// are recorded, the mode as asked rather than as resolved.
+func TestBeginRecordsTheRunnersFacts(t *testing.T) {
+	f := newFixture(t)
+	first, _ := f.selfContained(t, "e1", "support", reps(2, "read"), reps(2, "read"), strict)
+	if first.CLIVersion() != "" || first.ReferenceMode() != "" {
+		t.Fatalf("e1 records %q %q without being asked", first.CLIVersion(), first.ReferenceMode())
+	}
+	for _, tt := range []struct {
+		id        string
+		reference platform.ScenarioReference
+		want      platform.ScenarioReferenceMode
+	}{
+		{"e-last", platform.ScenarioReference{Last: true}, platform.ScenarioReferenceModeLast},
+		{"e-named", platform.ScenarioReference{ExecutionID: "e1"}, platform.ScenarioReferenceModeExecution},
+		{"e-own", platform.ScenarioReference{}, ""},
+	} {
+		f.seedRepeatedHierarchy(t)
+		begun, _, err := f.plane.BeginScenarioExecution(t.Context(), platform.BeginScenarioExecutionRequest{
+			ID: platform.ScenarioExecutionID(tt.id), ScenarioName: "support", Runs: 2, Scope: execScope,
+			Reference: tt.reference, At: execClock, CLIVersion: "v0.13.0 abc",
+		})
+		if err != nil {
+			t.Fatalf("begin %s: %v", tt.id, err)
+		}
+		stored, err := f.plane.ScenarioExecution(t.Context(), begun.ID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.CLIVersion() != "v0.13.0 abc" || stored.ReferenceMode() != tt.want {
+			t.Errorf("%s records %q %q, want %q %q", tt.id, stored.CLIVersion(), stored.ReferenceMode(),
+				"v0.13.0 abc", tt.want)
+		}
+	}
+	_, _, err := f.plane.BeginScenarioExecution(t.Context(), platform.BeginScenarioExecutionRequest{
+		ID: "e-bad", ScenarioName: "support", Runs: 2, Scope: execScope, At: execClock,
+		CLIVersion: "v1\nforged",
+	})
+	if !errors.Is(err, platform.ErrInvalidRepeatedRequest) {
+		t.Errorf("a version with a newline: %v, want ErrInvalidRepeatedRequest", err)
+	}
+}

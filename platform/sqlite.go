@@ -35,7 +35,7 @@ import (
 // schema version. They change for different reasons, and coupling them would
 // force a migration on an unrelated release or hide a real one behind an
 // unchanged number.
-const SchemaVersion = 14
+const SchemaVersion = 15
 
 // Table names. Compile-time constants: these are the only identifiers that
 // ever appear in assembled SQL. Every caller-supplied value is a bound
@@ -123,7 +123,7 @@ const (
 // schemaTables is every table this schema owns, and the allowlist a test
 // asserts against so an event, scorecard, or gate-result table cannot appear
 // without something failing.
-var schemaTables = schemaTablesV14
+var schemaTables = schemaTablesV15
 
 // SQLiteStore is the local persistence adapter.
 //
@@ -261,13 +261,21 @@ func (s *SQLiteStore) verifySchema(ctx context.Context) error {
 	case SchemaVersion:
 		return s.requireTables(ctx, SchemaVersion, schemaTables)
 
+	case schemaVersionV14:
+		// Task 107-A's schema, before the runner's own facts. v15 adds
+		// columns only, so the table set is the current one.
+		if err := s.requireTables(ctx, schemaVersionV14, schemaTablesV14); err != nil {
+			return err
+		}
+		return s.migrateV14ToV15(ctx)
+
 	case schemaVersionV13:
 		// Task 081's schema, before task 107's gate snapshot. v14 adds a
 		// column only, so the table set is the current one.
 		if err := s.requireTables(ctx, schemaVersionV13, schemaTablesV13); err != nil {
 			return err
 		}
-		return s.migrateV13ToV14(ctx)
+		return s.migrateV13ToCurrent(ctx)
 
 	case schemaVersionV12:
 		// Task 086's schema, before task 081's fidelity counts. v13 adds a
@@ -883,7 +891,15 @@ func (s *SQLiteStore) migrateV12ToCurrent(ctx context.Context) error {
 	if err := s.migrateV12ToV13(ctx); err != nil {
 		return err
 	}
-	return s.migrateV13ToV14(ctx)
+	return s.migrateV13ToCurrent(ctx)
+}
+
+// migrateV13ToCurrent is every step from v13 forward.
+func (s *SQLiteStore) migrateV13ToCurrent(ctx context.Context) error {
+	if err := s.migrateV13ToV14(ctx); err != nil {
+		return err
+	}
+	return s.migrateV14ToV15(ctx)
 }
 
 func (s *SQLiteStore) migrateV8ToV9(ctx context.Context) error {
@@ -1088,7 +1104,7 @@ func (s *SQLiteStore) migrateV12ToV13Once(ctx context.Context) error {
 // was kept when it completed and none can be re-derived honestly now.
 func (s *SQLiteStore) migrateV13ToV14(ctx context.Context) error {
 	if err := s.migrateV13ToV14Once(ctx); err != nil {
-		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+		if s.migrationRaceRecovered(ctx, schemaVersionV14) {
 			return nil
 		}
 		return err
@@ -1108,13 +1124,50 @@ func (s *SQLiteStore) migrateV13ToV14Once(ctx context.Context) error {
 			return fmt.Errorf("platform: migrate schema v13 to v14: %w", err)
 		}
 	}
+	// Literal schemaVersionV14: v15's runner facts follow in their own step.
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
-		SchemaVersion); err != nil {
+		schemaVersionV14); err != nil {
 		return fmt.Errorf("platform: migrate schema v13 to v14: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("platform: migrate schema v13 to v14: %w", err)
+	}
+	return nil
+}
+
+// migrateV14ToV15 adds the runner's CLI version and reference mode (task 107,
+// D14) and backfills nothing: an execution begun before it reads
+// not_recorded, because neither was kept when it began.
+func (s *SQLiteStore) migrateV14ToV15(ctx context.Context) error {
+	if err := s.migrateV14ToV15Once(ctx); err != nil {
+		if s.migrationRaceRecovered(ctx, SchemaVersion) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrateV14ToV15Once(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("platform: migrate schema v14 to v15: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	for _, statement := range scenarioProducerSchemaStatements() {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("platform: migrate schema v14 to v15: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE `+tableSchemaVersion+` SET version = ? WHERE id = 1`,
+		SchemaVersion); err != nil {
+		return fmt.Errorf("platform: migrate schema v14 to v15: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("platform: migrate schema v14 to v15: %w", err)
 	}
 	return nil
 }
@@ -1364,6 +1417,10 @@ var schemaTablesV13 = schemaTablesV12
 // v14 added a column to the scenario execution table only (task 107).
 var schemaTablesV14 = schemaTablesV13
 
+// schemaTablesV15 is what a complete v15 database holds: v14's tables, because
+// v15 added columns to the scenario execution table only (task 107, D14).
+var schemaTablesV15 = schemaTablesV14
+
 // schemaTablesByVersion maps every schema version this binary can recognize to
 // the tables a complete database at that version holds.
 //
@@ -1393,6 +1450,7 @@ var schemaTablesByVersion = map[int][]string{
 	schemaVersionV11: schemaTablesV11,
 	schemaVersionV12: schemaTablesV12,
 	schemaVersionV13: schemaTablesV13,
+	schemaVersionV14: schemaTablesV14,
 	SchemaVersion:    schemaTables,
 }
 
@@ -1625,7 +1683,9 @@ func schemaStatements() []string {
 							// v13: task 081's per-behavior fidelity counts.
 							append(behaviorFidelitySchemaStatements("TEXT"),
 								// v14: task 107's gate snapshot.
-								scenarioGateSchemaStatements()...)...)...)...)...)...)...)...)
+								append(scenarioGateSchemaStatements(),
+									// v15: the runner's CLI version and reference mode.
+									scenarioProducerSchemaStatements()...)...)...)...)...)...)...)...)...)
 }
 
 // observationSchemaStatements is schema v7's whole addition, written once so

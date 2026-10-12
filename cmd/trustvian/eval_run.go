@@ -338,6 +338,9 @@ func (r scenarioRunner) execute(ctx context.Context, s streams, client *platform
 		ID: executionID, ScenarioName: scenario.Name, Runs: runs,
 		ProjectID: scope.project, AgentID: scope.agent, Environment: scope.environment,
 		Reference: reference, Provenance: job.provenance,
+		// Recorded by the control plane (task 107, D14), so the report says
+		// which CLI ran the execution, as this document's producers do.
+		CLIVersion: r.cliVersion(),
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -696,8 +699,12 @@ func newExecutionID(name string) string {
 
 func cliVersionString() string {
 	info := buildinfo.Read()
-	if info.Revision == "" {
+	switch {
+	case info.Revision == "":
 		return info.Version
+	case info.Version == "":
+		// Never " <revision>": the control plane refuses a padded version.
+		return info.Revision
 	}
 	return info.Version + " " + info.Revision
 }
@@ -769,6 +776,10 @@ type beginExecutionBody struct {
 	// Provenance is task 086's: the scenario and input digests and each
 	// side's declared model and prompt reference.
 	Provenance *executionProvenanceBody `json:"provenance,omitempty"`
+
+	// CLIVersion is this CLI's version, recorded with the execution (task
+	// 107, D14). Empty is omitted and recorded as not recorded.
+	CLIVersion string `json:"cli_version,omitempty"`
 }
 
 // executionSummary decodes only what the runner reports about an execution.

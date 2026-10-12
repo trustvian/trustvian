@@ -54,16 +54,18 @@ type reportScenarioDTO struct {
 }
 
 // reportReferenceDTO is present when the execution reused a recorded
-// reference side. mode is not_recorded: whether the runner asked for "last"
-// or named the execution was never persisted.
+// reference side. mode is how the runner asked for it, "execution" or "last",
+// as recorded since schema 15 (D14); not_recorded for an execution begun
+// before it, or by a client that sent none.
 type reportReferenceDTO struct {
 	Mode        string `json:"mode"`
 	ExecutionID string `json:"execution_id"`
 }
 
-// reportProducersDTO names who produced the document. cli_version is
-// not_recorded: the version of the CLI that ran the execution was never
-// persisted, and the report is produced by the control plane.
+// reportProducersDTO names who produced the document. cli_version is the
+// version of the CLI that ran the execution, as recorded since schema 15
+// (D14); not_recorded for an execution begun before it, or by a client that
+// sent none. The report itself is produced by the control plane.
 type reportProducersDTO struct {
 	CLIVersion          string `json:"cli_version"`
 	ControlPlaneVersion string `json:"control_plane_version"`
@@ -237,17 +239,27 @@ func newScenarioReportResponse(report platform.ScenarioExecutionReport, producer
 
 	var reference *reportReferenceDTO
 	if e.ReferenceExecution() != "" {
-		reference = &reportReferenceDTO{Mode: notRecorded, ExecutionID: string(e.ReferenceExecution())}
+		reference = &reportReferenceDTO{Mode: orNotRecorded(string(e.ReferenceMode())),
+			ExecutionID: string(e.ReferenceExecution())}
 	}
 	return scenarioReportResponse{
 		Version:     ResultDocumentVersion,
 		Scenario:    reportScenarioDTO{Name: e.ScenarioName(), Runs: e.Runs()},
 		ExecutionID: string(e.ID()),
 		Reference:   reference,
-		Producers:   reportProducersDTO{CLIVersion: notRecorded, ControlPlaneVersion: producerVersion},
-		Provenance:  newExecutionProvenanceDTO(e),
-		Comparison:  comparison,
+		Producers: reportProducersDTO{CLIVersion: orNotRecorded(e.CLIVersion()),
+			ControlPlaneVersion: producerVersion},
+		Provenance: newExecutionProvenanceDTO(e),
+		Comparison: comparison,
 	}
+}
+
+// orNotRecorded is a recorded fact, or not_recorded when there is none.
+func orNotRecorded(value string) string {
+	if value == "" {
+		return notRecorded
+	}
+	return value
 }
 
 func newPresentInDTO(p platform.BehaviorPresentIn) presentInDTO {

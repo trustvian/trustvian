@@ -153,8 +153,8 @@ func TestReportCarriesVersionOneUnchanged(t *testing.T) {
 	}
 }
 
-// TestReportOfARecordedReference names the reused execution, and says the
-// mode was not recorded rather than guessing it.
+// TestReportOfARecordedReference names the reused execution and the mode the
+// runner asked for, recorded at begin since schema 15 (D14).
 func TestReportOfARecordedReference(t *testing.T) {
 	a := newAPI(t)
 	a.completeReportExecution("e1")
@@ -169,8 +169,44 @@ func TestReportOfARecordedReference(t *testing.T) {
 		map[string]any{"candidate_run_ids": ids, "gate_limits": reportLimits()})
 	a.mustStatus(r, 200, "complete e2")
 	reference := decodeAny(t, a.report("e2"))["reference"].(map[string]any)
-	if reference["execution_id"] != "e1" || reference["mode"] != "not_recorded" {
+	if reference["execution_id"] != "e1" || reference["mode"] != "last" {
 		t.Fatalf("reference = %v", reference)
+	}
+}
+
+// D14: the begin request's cli_version is the report's producers.cli_version,
+// as recorded; a begin without one says not_recorded rather than inventing
+// one, and a malformed one is refused before anything is recorded.
+func TestReportCarriesTheRecordedCLIVersion(t *testing.T) {
+	a := newAPI(t)
+	a.seedHierarchy()
+	body := beginBody("e-cli", 2, nil)
+	body["cli_version"] = "v0.13.0 3e86f9c"
+	a.mustStatus(a.do("POST", "/v1/scenario-executions", body), 201, "begin e-cli")
+	sides := map[string][][]string{
+		"reference": {{"read"}, {"read"}},
+		"candidate": {{"read"}, {"read"}},
+	}
+	complete := map[string]any{"gate_limits": reportLimits()}
+	for _, side := range []string{"reference", "candidate"} {
+		var ids []string
+		for i, ops := range sides[side] {
+			run := fmt.Sprintf("e-cli-%s-%d", side, i+1)
+			a.completeIsolatedRun(run, ops)
+			ids = append(ids, run)
+		}
+		complete[side+"_run_ids"] = ids
+	}
+	a.mustStatus(a.do("POST", "/v1/scenario-executions/e-cli/complete", complete), 200, "complete e-cli")
+	producers := decodeAny(t, a.report("e-cli"))["producers"].(map[string]any)
+	if producers["cli_version"] != "v0.13.0 3e86f9c" {
+		t.Fatalf("producers = %v", producers)
+	}
+
+	for _, bad := range []string{" v1", "v1\nforged", strings.Repeat("v", 257)} {
+		body := beginBody("e-bad", 1, nil)
+		body["cli_version"] = bad
+		a.mustStatus(a.do("POST", "/v1/scenario-executions", body), 400, "cli_version "+bad)
 	}
 }
 

@@ -36,6 +36,10 @@ type beginScenarioExecutionRequest struct {
 
 	// Provenance is task 086's: optional, and nothing is recorded without it.
 	Provenance *executionProvenanceDTO `json:"provenance,omitempty"`
+
+	// CLIVersion is the runner's own version (task 107, D14): optional, and
+	// the report says not_recorded without it.
+	CLIVersion string `json:"cli_version,omitempty"`
 }
 
 type completeScenarioExecutionRequest struct {
@@ -140,6 +144,7 @@ func (h *Handler) beginScenarioExecution(w http.ResponseWriter, r *http.Request)
 			Reference:  reference,
 			At:         h.now(),
 			Provenance: request.Provenance.decode(),
+			CLIVersion: request.CLIVersion,
 		})
 	if err != nil {
 		h.writeError(w, err)

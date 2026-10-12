@@ -141,6 +141,11 @@ type ScenarioExecution struct {
 	// by every completion since schema 14, not recorded for an execution
 	// completed before it, and never for one that is not completed.
 	gate ScenarioGateRecord
+
+	// cliVersion and referenceMode are what the runner said about itself when
+	// it began (task 107, D14, schema 15); empty is not recorded.
+	cliVersion    string
+	referenceMode ScenarioReferenceMode
 }
 
 // NewScenarioExecution returns a running execution. reference is empty for an
@@ -313,6 +318,9 @@ func (e ScenarioExecution) validate() error {
 		if err := p.validate(); err != nil {
 			return err
 		}
+	}
+	if err := e.validateProducer(); err != nil {
+		return err
 	}
 
 	running := e.status == ScenarioExecutionRunning

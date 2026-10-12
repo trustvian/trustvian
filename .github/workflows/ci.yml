@@ -232,9 +232,10 @@ jobs:
       - name: Platform recovery drill
         # The platform database's backup, restore and upgrade, on both
         # backends: a v10 backup from the previous release, carrying a
-        # completed scenario execution, and v12 and v13 ones migrate to the
-        # current schema; a backup at the current schema restores with every
-        # invariant, the execution's gate snapshot included. pg_dump and
+        # completed scenario execution, and v12, v13 and v14 ones migrate to
+        # the current schema; a backup at the current schema restores with
+        # every invariant, the execution's gate snapshot and the runner's CLI
+        # version and reference mode included. pg_dump and
         # pg_restore are the tools installed above.
         working-directory: platform
         env:

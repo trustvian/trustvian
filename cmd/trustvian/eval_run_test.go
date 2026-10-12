@@ -296,7 +296,7 @@ func TestEvalRunIsolatesEveryRepetitionAndRunsThemInOrder(t *testing.T) {
 	}
 	if begin.ID != "scn-test" || begin.ScenarioName != "support" || begin.Runs != 3 ||
 		begin.ProjectID != "proj-x" || begin.AgentID != "agent-x" || begin.Environment != "staging" ||
-		begin.Reference != nil {
+		begin.Reference != nil || begin.CLIVersion != "cli-test" {
 		t.Errorf("begin = %+v", begin)
 	}
 	var body completeExecutionBody
