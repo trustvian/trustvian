@@ -27,8 +27,8 @@ Trustvian dev
   Environment local
   Run         dev-git-188ac38-20261013T212105.524Z
 
-  State    /Users/mecitsemerci/.trustvian/dev/382774ec0ca4
-  Baseline /Users/mecitsemerci/.trustvian/dev/382774ec0ca4/baseline-git_3a188ac38.json
+  State    ~/.trustvian/dev/382774ec0ca4
+  Baseline ~/.trustvian/dev/382774ec0ca4/baseline-git_3a188ac38.json
   API      http://127.0.0.1:63349
   OTLP     http://127.0.0.1:63351  (gRPC 127.0.0.1:63352)
   Web      http://127.0.0.1:63349/
@@ -390,7 +390,7 @@ discovery file, because an empty value almost always means an unset variable:
 $ ./bin/trustvian eval get --id run-1
 trustvian: no local runtime was found.
   .trustvian/runtime.json: no local Trustvian runtime found; start one with `make local` or pass --api-url
-  /Users/mecitsemerci/.trustvian/dev/bafb746f7eb5/runtime.json: no local Trustvian runtime found; start one with `make local` or pass --api-url
+  ~/.trustvian/dev/bafb746f7eb5/runtime.json: no local Trustvian runtime found; start one with `make local` or pass --api-url
 Start one with 'make local' or 'trustvian dev', or pass --api-url
 $ echo $?
 3
