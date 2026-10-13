@@ -30,20 +30,31 @@ TRUSTVIAN_ACTION=trustvian-run
 # Exit 1 here is the action's own failure — setup, input, or preservation —
 # and it is never the CLI's code: whenever the CLI ran, its exact code is in
 # the exit-code output and the finish step exits with it.
+#
+# fail and warn print the annotation in parts rather than through a command
+# substitution: run.sh calls them where a cancellation signal can arrive, and
+# bash 5.2 can lose or mishandle a trapped signal during one (see run.sh,
+# "Signals and command substitution"). A failure of the escaping pipeline
+# is ignored, as the substitution ignored it, so warn never ends the script.
 fail() {
-    printf '::error title=%s::%s\n' "$TRUSTVIAN_ACTION" "$(annotation_text "$*")"
+    printf '::error title=%s::' "$TRUSTVIAN_ACTION"
+    annotation_text "$*" || true
+    printf '\n'
     exit 1
 }
 
 warn() {
-    printf '::warning title=%s::%s\n' "$TRUSTVIAN_ACTION" "$(annotation_text "$*")"
+    printf '::warning title=%s::' "$TRUSTVIAN_ACTION"
+    annotation_text "$*" || true
+    printf '\n'
 }
 
 # annotation_text makes a message safe to place in a workflow command: a
-# newline would end the command early, and '%' starts an escape.
+# newline would end the command early, and '%' starts an escape. It prints no
+# newline of its own, whatever sed does with a last line that lacks one.
 annotation_text() {
     printf '%s' "$1" | LC_ALL=C tr -d '\000-\011\013-\037\177' |
-        sed -e 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } { print }' | sed -e 's/%0A$//'
+        sed -e 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } { print }' | sed -e 's/%0A$//' | tr -d '\n'
 }
 
 # set_output appends one name=value line to $GITHUB_OUTPUT. Every value this
