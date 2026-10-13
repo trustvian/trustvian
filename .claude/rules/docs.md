@@ -5,7 +5,7 @@
 Documentation is published. Real command output pasted into it must not
 carry anything that identifies the machine or the person who ran it:
 
-- home directories (`/Users/<name>`, `/home/<name>`, `C:\Users\<name>`) —
+- home directories (`/Users/<user>`, `/home/<user>`, `C:\Users\<user>`) —
   write `~/...`, or a placeholder such as `/Users/you` when the output
   really is an absolute path;
 - macOS per-user temp directories (`/var/folders/...`);
