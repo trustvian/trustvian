@@ -15,6 +15,11 @@ pattern [`policy-guide.md`](policy-guide.md) and
 and anomaly configuration ([ADR
 0018](adr/0018-production-store-boundary-and-postgresql-direction.md)).
 
+This guide is about the engine's baseline store. The control plane
+(`trustvian-local`, `trustvian dev`) keeps evaluation state in a separate
+database, SQLite by default or PostgreSQL, with its own schema version: see
+[Operations § The control plane's database](operations.md#the-control-planes-database).
+
 ## Choosing a backend
 
 | | `memory` | `file` | `postgres` |
@@ -68,7 +73,7 @@ file:
 version: v1
 type: postgres
 postgres:
-  dsn: postgres://trustvian:${PGPASSWORD}@db.internal:5432/trustvian?sslmode=require
+  dsn: postgres://trustvian:<password>@db.internal:5432/trustvian?sslmode=require
   max_connections: 25          # optional; 0 = pgx default
   connect_timeout_seconds: 15  # optional; 0 = 10s
 ```
@@ -81,6 +86,12 @@ postgres:
 
 Carrying an unused backend block is valid, so you can switch backends by
 editing the `type:` line alone.
+
+The file is read as written: `config.LoadStorageFile` and `--storage-config`
+expand no `${…}`, so a variable left in the DSN reaches PostgreSQL literally
+and authentication fails. Write the file from your secret at deploy time. A
+Collector configuration is different: the Collector expands `${env:…}` itself
+before Trustvian sees it ([below](#in-the-reference-deployment)).
 
 ### CLI
 
@@ -532,9 +543,9 @@ separate packages' binaries concurrently, and two packages here use
 PostgreSQL. It also means these tests are safe to point at a database that
 already holds data.
 
-A reference Docker Compose environment is [task
-037](../CHANGELOG.md#v080--production-runtime--storage)'s deliverable; the
-command above is the minimum for running the tests today.
+The command above is the minimum. The [reference
+deployment](#in-the-reference-deployment)'s PostgreSQL serves the same purpose
+through `make integration-postgres`.
 
 ## In the reference deployment
 
@@ -579,7 +590,7 @@ change before anything resembling production.
 ## Pool sizing
 
 `max_connections` caps the pool. Left at `0`, pgx uses its own default —
-the greater of 4 and `GOMAXPROCS`.
+the greater of 4 and `runtime.NumCPU()`.
 
 Guidance, deliberately brief because there is little to tune:
 

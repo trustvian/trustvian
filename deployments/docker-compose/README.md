@@ -27,8 +27,8 @@ PostgreSQL, no build artifacts. Versions this was verified against:
 
 | | Version |
 |---|---|
-| Docker Engine | 29.8.0 |
-| Docker Compose | v5.5.1 |
+| Docker Engine | 29.8.2 |
+| Docker Compose | v5.6.0 |
 | PostgreSQL image | `postgres:17-alpine` |
 | Go builder image | `golang:1.27-alpine` |
 | Runtime base image | `alpine:3.22` |
@@ -48,7 +48,7 @@ Then look at what happened.
 **3. Trustvian's decisions** — every span comes back enriched:
 
 ```bash
-docker compose logs otel-collector | grep -o 'trustvian\.[a-z.]*: [A-Za-z]*([^)]*)' | tail -5
+docker compose logs otel-collector | grep -o 'trustvian\.[a-z.]*: [A-Za-z]*([^)]*)' | tail -7
 ```
 
 ```text
@@ -57,10 +57,13 @@ trustvian.trust.score: Double(0.79)
 trustvian.risk.level: Str(low)
 trustvian.decision: Str(allow)
 trustvian.fingerprint.id: Str(5b035252a6538d34)
+trustvian.fidelity: Str(transport)
+trustvian.behavior.layer: Str(transport)
 ```
 
-The anomaly score falls as the run proceeds (0.45 → 0.40 → 0.35 → 0.30):
-that is Trustvian learning what this actor normally does.
+The anomaly score falls as the run proceeds (1 → 0.95 → … → 0.35 → 0.30),
+four spans at each step: that is Trustvian learning what this actor normally
+does.
 
 **4. The learned baseline in PostgreSQL** — no JSONB decoding needed:
 
@@ -136,6 +139,21 @@ TRUSTVIAN_DEMO_ANOMALY=true TRUSTVIAN_DEMO_SPAN_COUNT=1 \
 docker compose logs otel-collector | grep -A1 'admin/export-all' | tail -3
 ```
 
+The span is one long log line. Its Trustvian attributes:
+
+```text
+     -> trustvian.anomaly.score: Double(1)
+     -> trustvian.trust.score: Double(1)
+     -> trustvian.risk.level: Str(low)
+     -> trustvian.decision: Str(allow)
+     -> trustvian.fingerprint.id: Str(93f0274d7d74f9d2)
+```
+
+The anomaly score reacts: the target is new. Trust and the decision do not,
+because the baseline has never seen this fingerprint, so its anomaly
+confidence is zero and the score carries no weight
+([cold start](../../docs/ARCHITECTURE.md#cold-start-two-numbers-not-one)).
+
 ## Restart semantics
 
 The distinction matters, so it is spelled out:
@@ -178,15 +196,25 @@ installing:
 ```bash
 # Outside the repository, so a backup can never be committed by accident.
 BACKUPS="$HOME/trustvian-backups" && mkdir -p -m 700 "$BACKUPS"
-tools() {
+tools() {   # docker run flags, then the image, then the command
   docker run --rm --network trustvian-reference_default --user "$(id -u):$(id -g)" \
     -v "$PWD/../../scripts:/scripts:ro" -v "$BACKUPS:/backups" \
-    -e PGHOST=postgres -e PGUSER=trustvian -e PGPASSWORD postgres:17-bookworm "$@"
+    -e PGHOST=postgres -e PGUSER=trustvian -e PGPASSWORD "$@"
 }
 export PGPASSWORD=change-me        # the reference placeholder; never a real password on a shared host
 
 # Backup while the stack runs.
-tools -e PGDATABASE=trustvian bash /scripts/backup-postgres.sh --output /backups/trustvian-$(date -u +%Y%m%dT%H%MZ)
+tools -e PGDATABASE=trustvian postgres:17-bookworm \
+  bash /scripts/backup-postgres.sh --output /backups/trustvian-$(date -u +%Y%m%dT%H%MZ)
+```
+
+```text
+backup-postgres: starting online backup to /backups/trustvian-20261013T2111Z
+backup-postgres: backup complete
+backup-postgres:   directory:      /backups/trustvian-20261013T2111Z
+backup-postgres:   schema version: 2
+backup-postgres:   dump sha256:    7a0c834197751b93d12d988375cb94a23d2c49912d8a79181ae56f8fb89f760e
+backup-postgres: treat this directory as sensitive: it contains learned behavioral state
 ```
 
 ### Restoring a backup
@@ -196,7 +224,8 @@ tools -e PGDATABASE=trustvian bash /scripts/backup-postgres.sh --output /backups
 docker compose exec postgres createdb -U trustvian trustvian_restored
 
 # 2. Restore and verify. Refused if the checksum fails or the target is not empty.
-tools bash /scripts/restore-postgres.sh --backup /backups/<backup-dir> --target-db trustvian_restored
+tools postgres:17-bookworm \
+  bash /scripts/restore-postgres.sh --backup /backups/<backup-dir> --target-db trustvian_restored
 
 # 3. Cut over — your decision, recorded in .env so it persists.
 echo 'TRUSTVIAN_RUNTIME_POSTGRES_DB=trustvian_restored' >> .env
@@ -240,6 +269,10 @@ the restored database must reach 80 observations (continued from the
 backup's 40) while the original stays at 40. It removes its own volume and
 backup directory when it finishes. Needs Docker, `curl`, and bash.
 
+**Both this drill and the smoke test start with `docker compose down -v`.**
+They delete whatever learned state this project's `postgres-data` volume
+already holds. Back it up first if you need it.
+
 ## Automated smoke test
 
 ```bash
@@ -280,7 +313,8 @@ trustvian-collector: run failed: failed to build pipelines: failed to create
 "trustvian" processor, in pipeline "traces": trustvianprocessor: storage:
 store/postgres: database unavailable: failed to connect to
 `user=trustvian database=trustvian`: 127.0.0.1:1 (127.0.0.1): dial error:
-dial tcp 127.0.0.1:1: connect: connection refused
+dial tcp 127.0.0.1:1: connect: connection refused; sync /dev/stderr: invalid
+argument
 ```
 
 Non-zero exit, no processor, and — note what the driver reports — the user

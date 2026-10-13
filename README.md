@@ -17,7 +17,10 @@ control.
 
 The **platform** asks the next question: *did this version of this agent behave
 differently from the last one, and does that difference pass the gates your
-team set?* It runs on a laptop, with no account and loopback binding by
+team set?* It reports which behaviors a change added or lost, how often each
+ran, where the load went, what happened to latency, errors and tokens, and
+whether both sides ran the same scenario, inputs, model and prompt reference.
+It runs on a laptop, with no account and loopback binding by
 default, and consumes the engine as an ordinary dependency — neither layer
 absorbs the other, and the direction of that dependency never reverses
 ([ADR 0022](docs/adr/0022-core-platform-boundary.md)).
@@ -105,19 +108,165 @@ on misconfiguration.
 **Alerts** — declarative rules over results, delivered to a generic HTTPS
 webhook with HMAC-SHA256 request signing.
 
+**Change evaluation** — a reference and a candidate run N times each, compared
+by behavior, frequency, latency, errors, tokens and provenance, and gated by
+integer checks you set. See [Local-First Platform](#local-first-platform).
+
 Persistence, OpenTelemetry integration, and AI-agent security each have
 their own section below.
 
 ## Quick Start
 
-### Install
+Two paths. [Run your agent under Trustvian](#run-your-agent-under-trustvian)
+from the release archive alone, with no Go toolchain and no clone. Or
+[use the engine](#use-the-engine) directly, through the CLI or the Go SDK, over
+events you construct.
+
+### Run your agent under Trustvian
+
+You need Linux or macOS, a git repository with at least one commit, and an
+agent that already sends OpenTelemetry traces over OTLP and sets
+`OTEL_SERVICE_NAME`. [Getting Started](docs/getting-started.md#developer-preview)
+walks through every step, with the model-free stand-in agent (`./agent.sh`)
+that produced the output below.
+
+**1. Install.** The archive holds `trustvian`, `trustvian-local` and
+`trustvian-collector`. Keep them side by side: `trustvian` finds the other two
+next to itself.
+
+```bash
+V=v0.12.0
+A=trustvian_${V}_linux_amd64          # or linux_arm64, darwin_amd64, darwin_arm64
+curl -sLO https://github.com/trustvian/trustvian/releases/download/$V/$A.tar.gz
+curl -sLO https://github.com/trustvian/trustvian/releases/download/$V/checksums.txt
+sha256sum -c checksums.txt --ignore-missing   # macOS: shasum -a 256 -c checksums.txt --ignore-missing
+tar -xzf $A.tar.gz
+export PATH="$PWD/$A:$PATH"
+```
+
+**2. Start the control plane** in your agent's repository, in a terminal of its
+own. Add `.trustvian/` to `.gitignore` first, or the candidate reads
+`git:<sha>+dirty`.
+
+```bash
+trustvian-local
+```
+
+```text
+Trustvian local runtime
+API:   http://127.0.0.1:62279
+Web:   http://127.0.0.1:62279/
+Store: sqlite
+State: .trustvian/platform.db
+Local clients in this directory can now omit --api-url.
+Press Ctrl-C to stop.
+```
+
+Open the `Web:` URL. With nothing arriving, it opens on **Status**, which says
+why Live is empty and what to check. `trustvian status` prints the same
+document.
+
+**3. Run your agent under it**, in a second terminal in the same directory:
+
+```bash
+OTEL_SERVICE_NAME=support-agent \
+  trustvian dev --api-url http://127.0.0.1:62279 -- ./agent.sh
+```
+
+```text
+Trustvian dev
+
+  Project     my-agent
+  Agent       support-agent   (declared by the workload)
+  Candidate   git:3c3d787
+  Environment local
+  Run         dev-git-3c3d787-20261013T211422.481Z
+…
+Run dev-git-3c3d787-20261013T211422.481Z complete.
+```
+
+`dev` runs your command unchanged, with an OTLP receiver around it, and exits
+with its status. The browser's **Live** view shows the run as telemetry
+arrives. `trustvian dev --check` proves the pipeline with no workload at all.
+
+**4. Gate a change.** A scenario runs a reference and a candidate `runs` times
+each and gates the difference. In
+[the scenario this path is tested with](docs/getting-started.md#4-gate-a-change-with-a-scenario),
+the candidate reaches one more tool:
+
+```bash
+trustvian eval run --scenario scenarios/export-tool.yaml
+echo $?    # 0 PASS, 1 gate FAIL, 2 usage, 3 operational
+```
+
+```text
+export-tool   runs 3   (execution scn-export-tool-20261013T210842-0bb4f40a)
+…
+Behavior                                  reference   candidate
+  tool/crm_lookup → tools.localhost              3/3         3/3
+  tool/export_customer → tools.localhost         0/3         3/3   + added
+  tool/knowledge_search → tools.localho…         3/3         3/3
+
+Gate (k = 1, j = 0)
+…
+  FAIL repeatedly added behaviors: 1 (<= 0)
+…
+Sameness
+  same_scenario    true
+  same_inputs      true
+  same_model       not_recorded
+  same_prompt_ref  not_recorded
+…
+Gate: FAIL
+```
+
+**5. Read the report.** Every completed execution keeps its report: sameness,
+every behavior's presence and calls per run, every target's load, latency and
+status, tokens and cost, the gate as it was recorded, and the suggestions.
+
+```bash
+trustvian eval report scn-export-tool-20261013T210842-0bb4f40a --format md
+```
+
+```text
+### Trustvian behavioral gate — FAIL
+
+**Scenario** `export-tool` · **runs** 3 · **execution** `scn-export-tool-20261013T210842-0bb4f40a`
+
+#### Sameness
+…
+#### Behaviors
+…
+#### Targets
+…
+#### Tokens and cost
+…
+#### Gate
+
+**Verdict: FAIL**, as the execution recorded it when it completed.
+…
+#### Suggestions
+…
+```
+
+`trustvian-ci-render` produces the same Markdown from the same document.
+`--json` prints the report document instead, and the WebUI's **Change Impact**
+view renders the same document. To run the gate on your pull requests, see
+[GitHub Actions](docs/ci-github-action.md): at v0.12.0 the actions still build
+an earlier pinned runtime, so the comment they post is the version 1 rendering.
+
+### Use the engine
 
 ```bash
 go install github.com/trustvian/trustvian/cmd/trustvian@latest   # CLI
 go get github.com/trustvian/trustvian                            # library
 ```
 
-### CLI
+`go install` builds the `trustvian` CLI alone. `trustvian dev` also needs
+`trustvian-local` and `trustvian-collector`: use the release archive, or
+`make dev` from a clone, which builds them.
+
+#### CLI
 
 The repository ships event fixtures, so the fastest first run is from a
 clone:
@@ -156,7 +305,7 @@ trustvian analyze        --storage-config storage.yaml events.json
 
 See the [CLI guide](docs/cli-guide.md).
 
-### Go SDK
+#### Go SDK
 
 ```go
 package main
@@ -356,30 +505,14 @@ telemetry → live behavior → behavioral evidence
           → reference versus candidate → gate → promotion
 ```
 
-One command starts all of it — SQLite, the control plane, the realtime bus,
-and a loopback HTTP listener serving both the `/v1` API and the browser:
-
-```bash
-make local
-```
-
-```text
-Trustvian local runtime
-API:   http://127.0.0.1:54321
-Web:   http://127.0.0.1:54321/
-State: .trustvian/platform.db
-```
-
-Clients started in the same directory discover that endpoint themselves, so
-there is no `--api-url` to pass and no account to create.
-
-Or skip the setup entirely and run your own agent under it — one command
-composes the runtime, the receiver and the evaluation run around a command it
-does not modify:
-
-```bash
-make dev ARGS='-- python agent.py'
-```
+`trustvian-local` starts all of it — SQLite (or PostgreSQL), the control
+plane, the realtime bus, and a loopback HTTP listener serving both the `/v1`
+API and the browser. Clients started in the same directory discover that
+endpoint themselves, so there is no account to create.
+[Quick Start](#run-your-agent-under-trustvian) runs it from the release
+archive. From a clone, `make local` starts the same control plane, and
+`make dev ARGS='-- python agent.py'` builds the two helpers and runs a workload
+under `trustvian dev`.
 
 Your repository is never written to, the exit status is your command's own, and
 the application gains no Trustvian dependency. Your workload does have to emit
@@ -390,35 +523,35 @@ twice. See [Local development](docs/local-development.md).
 | Capability | What it does |
 |---|---|
 | **Evaluation run** | A bounded execution assessing one candidate, grouping its records, results and behavioral evidence |
-| **Behavioral diff** | Which behavioral shapes a candidate gained, lost, or shares with a reference run — keyed by fingerprint, never by commit or artifact digest |
+| **Repeated scenarios** | `trustvian eval run` runs a scenario N times per side, each repetition in a learning scope of its own, and reports every behavior's presence as k/N. `--suite` runs a directory of scenarios; `--reference` reuses a recorded reference |
+| **Behavioral diff** | Which behavioral shapes a candidate gained, lost, or shares with a reference — keyed by fingerprint, never by commit or artifact digest |
 | **Scorecard** | A fixed-shape comparison of the two runs' decision, risk, approval and numeric evidence. Deliberately no composite score |
-| **Hard gates** | Five deterministic integer checks returning PASS or FAIL against limits you own. A favorable average cannot override a failed check, because no weighting path exists |
+| **Hard gates** | Deterministic integer checks returning PASS or FAIL against limits you own: five for one run against another (and an optional sixth), six over repeated runs, plus four optional frequency limits. A configured limit whose evidence is absent is *deferred* and fails the verdict. A favorable average cannot override a failed check, because no weighting path exists |
+| **Frequency evidence** | Calls per run for every behavior and target, an integer permille call ratio per target against the reference, and the behaviors a candidate *lost* |
+| **Operational and cost evidence** | Latency buckets, span status, HTTP status classes, 429s and tokens, per target and per run, from the telemetry the Collector receives. With a pricing table you supply (`trustvian-local --pricing`), cost in integer micro-units, every figure carrying the table's version, source and digest. Trustvian ships no prices, and there is no cost gate |
+| **Provenance and sameness** | Each side of an execution records a scenario digest, an input digest, and a declared model and prompt reference — identifiers, never prompt text. Every comparison states whether both sides ran the same of each, and warns when they differ. No check reads either |
+| **Fidelity** | Whether telemetry named each behavior or it was inferred from transport, with the counts |
+| **The report** | Each completed execution records the gate it consumed. `trustvian eval report` prints its report as JSON, or as the Markdown `trustvian-ci-render` produces; the WebUI's **Change Impact** view renders the same document |
+| **Pipeline status** | `trustvian status`, `trustvian dev --check` and the WebUI's **Status** view show what each Collector received, evaluated and learned, and say why nothing is arriving |
 | **Environments and promotion** | A project owns environments; a promotion is an append-only record of a *decision* and the gate evidence it rested on — never a deployment, and never a claim about where a candidate now runs |
 | **Three interfaces** | CLI for CI, TUI for the inner loop, browser for management and investigation — each an adapter over the same control-plane services, none carrying its own copy of a gate |
 
-Metadata only throughout: a diff, a scorecard, a gate result and a promotion
-record contain no prompt, completion, tool argument, tool result or body.
+Metadata only throughout: a diff, a scorecard, a gate result, a report and a
+promotion record contain no prompt, completion, tool argument, tool result or
+body. Evidence a run did not carry reads *not available* or *not recorded*,
+never zero. Suggestions — on the status document and on a comparison — are the
+outputs of fixed, versioned rule tables, shown beside the evidence; none changes
+a verdict or an exit code.
 
 **This layer first shipped in `v0.10.0`.** The macOS and Linux release
 archives carry `trustvian-local` and `trustvian-collector` beside `trustvian`;
 use an archive, or build from a clone. The `trustvian-platform` and
 `trustvian-processor` modules are not published as Go modules
 ([release guide](docs/release-guide.md#module-publication-model)).
+[docs/ROADMAP.md](docs/ROADMAP.md) is authoritative for what is planned next.
 
-Three milestones are **specified and not implemented**, and the platform is not
-usable end to end without them. [docs/ROADMAP.md](docs/ROADMAP.md) is
-authoritative for their status:
-
-| Task | What it adds |
-|---|---|
-| [075](docs/tasks/v1.0/075-ai-semantic-telemetry-normalization.md) | Agent-oriented OpenTelemetry read at the fidelity it carries, so a tool call is a tool call rather than an HTTP POST |
-| [076](docs/tasks/v1.0/076-behavioral-evidence-explorer.md) | *Why* a behavior was familiar, new or anomalous — sessions, traces and behavioral sequence, from metadata alone |
-| [078](docs/tasks/v1.0/078-behavioral-scenario-suites.md) | The same behavioral scenario run again, diffed and gated — repeatably, in CI |
-
-[077](docs/tasks/v1.0/077-unified-otlp-local-dev-runtime.md) — the one command
-above — **is implemented**, and supervises two helper executables the release
-archive does not yet contain, so it is a checkout-and-`make` capability for now.
-
+- [Getting Started](docs/getting-started.md#developer-preview) — the whole
+  path, from the archive to a gate on your pull requests
 - [Local development](docs/local-development.md) — `trustvian dev`, what
   `make local` starts, and how discovery works
 - [Platform CLI](docs/platform-cli.md) — `project`, `agent`, `candidate`,
@@ -454,30 +587,79 @@ change first.
 ## Architecture
 
 ```mermaid
-flowchart TD
-    A["Applications · Services · AI Agents"] -->|"telemetry"| B["OpenTelemetry Collector<br/>(optional)"]
-    A -->|"Go SDK, direct"| C
-    B --> C["Trustvian Engine"]
-    C --> D["Features → Fingerprint"]
-    D --> E["Baseline"]
-    E --> F["Anomaly"]
-    F --> G["Trust"]
-    G --> H["Policy → Decision"]
-    E <--> I["Store port"]
-    I --> J["InMemory"]
-    I --> K["FileStore"]
-    I --> L["PostgreSQL"]
+flowchart LR
+    Agent["your agent<br/>(any OpenTelemetry SDK)"]
+    Dev["trustvian dev<br/>(cmd/trustvian)"]
+
+    subgraph collector["trustvian-collector"]
+        Receiver["OTLP receiver"]
+        Processor["Trustvian processor<br/>Engine: Analyze, then Observe"]
+    end
+
+    subgraph local["trustvian-local (control plane)"]
+        Ingest["ingest"]
+        Status["status"]
+        API["/v1 API"]
+        Realtime["realtime"]
+        Store[("store<br/>SQLite or PostgreSQL")]
+    end
+
+    WebUI["WebUI<br/>(browser)"]
+    CLI["trustvian CLI<br/>eval, status, tui"]
+
+    subgraph ci["GitHub Actions"]
+        Run["trustvian-run<br/>trustvian eval run --json"]
+        Render["trustvian-ci-render"]
+        Comment["trustvian-ci-comment"]
+    end
+
+    PR["pull request comment"]
+
+    Dev -->|"starts the workload, sets OTEL_EXPORTER_OTLP_*"| Agent
+    Dev -->|"starts with collector.yaml (file)"| collector
+    Dev -->|"/v1: creates, starts and completes the run"| API
+    Agent -->|"OTLP gRPC or HTTP"| Receiver
+    Receiver --> Processor
+    Processor -->|"POST /v1/evaluation-runs/{id}/records"| Ingest
+    Processor -->|"POST /v1/collectors/{id}/status"| Status
+    Ingest --> Store
+    Ingest -.->|"notification after commit"| Realtime
+    Status -->|"GET /v1/status"| API
+    API --> Store
+    API -->|"/v1 JSON"| WebUI
+    Realtime -->|"SSE GET /v1/realtime"| WebUI
+    API -->|"/v1 JSON"| CLI
+    Realtime -->|"SSE GET /v1/realtime"| CLI
+    Run -->|"/v1 scenario-executions"| API
+    Run -->|"result.json (artifact)"| Render
+    Render -->|"Markdown (file)"| Comment
+    Comment -->|"GitHub REST API"| PR
 ```
+
+Drawn from `cmd/trustvian/dev.go`, `cmd/trustvian/dev_collector.go`, `cmd/trustvian/eval_run.go`, `processor/processor.go`, `processor/internal/status/reporter.go`, `platform/localruntime/runtime.go`, `platform/httpapi/handler.go`, `.github/actions/` at v0.12.0.
+
+```text
+Event → Features → Fingerprint → Baseline(read) → Anomaly → Trust → Policy → Decision
+```
+
+On the platform path the engine runs inside the Collector, in the Trustvian
+processor. It scores each span, then posts the decision record to the control
+plane over `/v1`. The control plane stores records, computes comparisons and
+gates, and streams notifications. It runs no engine of its own. The WebUI, the
+CLI and the CI renderer show what `/v1` returns: no verdict, score or gate is
+computed outside the control plane. The engine also runs in-process wherever
+you call the Go SDK or `trustvian analyze`.
 
 The engine is a hexagonal core: each pipeline stage is a small package built
 around a pure function, and storage sits behind a two-method port. The core
 carries no database, OpenTelemetry, or transport dependency — adapters
 depend on the core, never the reverse.
 
-The platform is a separate Go module that depends on the core's public API and
-imports nothing under `internal/`, and the core does not depend on the platform
-at all. `make check-platform-boundary` asks the module graph rather than
-trusting review, and CI runs it on every pull request.
+The platform (`platform/`) and the processor (`processor/`) are separate Go
+modules. They depend on the core's public API and import nothing under
+`internal/`, and the core depends on neither. `make check-platform-boundary`
+asks the module graph rather than trusting review, and CI runs it on every
+pull request.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the
 [decision records](docs/adr/).
@@ -492,7 +674,7 @@ Design properties, each enforced by tests rather than convention:
 - **Fail-closed storage** — explicitly configured persistence never silently degrades to a non-durable store.
 - **Schema compatibility protection** — a newer schema version, or ambiguous metadata, aborts startup rather than being mutated.
 - **Parameterized SQL** — every value is a bound parameter; credentials are never logged or wrapped into errors.
-- **No raw telemetry warehouse** — current learned state is persisted, not event history. No prompts, tool arguments, request bodies, or SQL payloads.
+- **No raw telemetry warehouse** — the engine persists current learned state, not event history, and the platform retains a bounded, metadata-only history of observations. No prompts, tool arguments, request bodies, or SQL payloads.
 
 Identity confidence is an **input** Trustvian trusts, not something it
 computes; Trustvian is not an authenticator. See
@@ -513,6 +695,7 @@ Found a vulnerability? Report it privately, not in a public issue — see
 | Storage and persistence | [storage-guide.md](docs/storage-guide.md) |
 | Local platform: the one-command runtime | [local-development.md](docs/local-development.md) |
 | Platform CLI · Terminal dashboard · Web interface | [platform-cli.md](docs/platform-cli.md) · [tui.md](docs/tui.md) · [webui.md](docs/webui.md) |
+| The behavioral gate on pull requests | [ci-github-action.md](docs/ci-github-action.md) |
 | Operations: backup, restore, upgrade | [operations.md](docs/operations.md) |
 | Policy · Behavioral signals | [policy-guide.md](docs/policy-guide.md) · [anomaly-config-guide.md](docs/anomaly-config-guide.md) |
 | Sequence analysis | [sequence-analysis.md](docs/sequence-analysis.md) |
@@ -525,12 +708,14 @@ Found a vulnerability? Report it privately, not in a public issue — see
 
 ## Examples
 
-Every example under [`examples/`](examples/) is a runnable Go program with
-its own README and real captured output. The directory is a separate Go
+Every Go example under [`examples/`](examples/) is a runnable program, and
+most carry a README with real captured output. The directory is a separate Go
 module, which also proves the public API is usable from outside this
 repository.
 
-**Getting started** — [`basic`](examples/basic/)
+**Getting started** — [`basic`](examples/basic/),
+[`configured-engine`](examples/configured-engine/) (every way to configure an
+`Engine` through public API)
 
 **Security scenarios** — [`credential-misuse`](examples/credential-misuse/),
 [`external-destination`](examples/external-destination/),
@@ -544,14 +729,21 @@ repository.
 
 **Alerts** — [`alert-webhook`](examples/alert-webhook/)
 
+**CI** — [`github-actions/behavioral-gate.yml`](examples/github-actions/behavioral-gate.yml),
+a workflow that gates pull requests on a behavioral scenario
+
 ## Development
 
 ```bash
-make check     # gofmt, vet, build, race tests
-make test      # all tests
+make check     # gofmt, vet, build, race tests — root module
+make test      # root-module tests
 make bench     # benchmarks with allocation stats
 make examples  # run every example
 ```
+
+`platform/`, `processor/` and `examples/` are separate Go modules: test each
+from its own directory with `GOWORK=off go test ./...`, as CI does
+([CONTRIBUTING.md](CONTRIBUTING.md#the-four-modules)).
 
 PostgreSQL integration and stress tests are opt-in and skip without a
 database, so `go test ./...` never requires one:
@@ -565,9 +757,12 @@ make integration-postgres
 
 ## Project Status & Releases
 
-Trustvian is under active development. The engine is released and stable at
-`v0.9.x`. The local-first platform described above is on `main`, is not in any
-release yet, and is gated on `v1.0` — which also needs 075–078 above.
+Trustvian is pre-`v1.0` and under active development. Every release since
+`v0.10.0` carries both the engine and the local-first platform described above.
+`v1.0` is the release gate beyond them: [docs/ROADMAP.md](docs/ROADMAP.md) says
+what it still needs and what is planned, and
+[GitHub Releases](https://github.com/trustvian/trustvian/releases) lists the
+newest release.
 
 - **Release history** — [CHANGELOG.md](CHANGELOG.md)
 - **Milestone status and planned work** — [docs/ROADMAP.md](docs/ROADMAP.md)
@@ -577,7 +772,7 @@ release yet, and is gated on `v1.0` — which also needs 075–078 above.
 ## Contributing
 
 Issues and pull requests are welcome. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the quality gates, the three-module
+[CONTRIBUTING.md](CONTRIBUTING.md) for the quality gates, the four-module
 layout, and how to run the PostgreSQL tests, and
 [docs/governance/branching.md](docs/governance/branching.md) for how branches,
 pull requests, and releases fit together. The conventions this codebase

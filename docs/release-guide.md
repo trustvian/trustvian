@@ -13,9 +13,9 @@ here and enforced by `scripts/check-modules.sh`.
 | Module | Path | Published | Distribution |
 |---|---|---|---|
 | root | `github.com/trustvian/trustvian` | **Yes** | Go module + release binaries |
-| processor | `trustvian-processor` | No | Built from a clone |
+| processor | `trustvian-processor` | No | Built from a clone; `trustvian-collector` ships in the release archives and the container image |
 | examples | `trustvian-examples` | No | Read and run in place |
-| platform | `trustvian-platform` | No | Built from a clone |
+| platform | `trustvian-platform` | No | Built from a clone; `trustvian-local` ships in the release archives |
 
 **The root module is the product.** It carries the engine, the public API
 (`event`, `config`, `alert`, and the root package), and the `trustvian`
@@ -39,9 +39,9 @@ a proxy.
 
 `platform` additionally requires the root at the **zero placeholder**
 (`v0.0.0-00010101000000-000000000000`) that Go writes for a fully replaced
-dependency. That is the honest version: the `DecisionRecord` API it consumes
-landed after `v0.9.0` and has not been published in any tag, so naming a
-released version would assert something untrue. `scripts/check-modules.sh`
+dependency. That is the honest version: the platform always builds against the
+core in the same checkout, never against a published tag, so naming a released
+version would assert something untrue. `scripts/check-modules.sh`
 recognizes this form explicitly.
 
 `platform`'s module path is additionally load-bearing rather than

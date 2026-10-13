@@ -1,9 +1,12 @@
 # Architecture
 
-Trustvian is a single-module, single-tenant Go engine built as a
-hexagonal core (`event` + `internal/*`) wrapped by a thin composition
-root (`Engine`, root package) and two adapters (`cmd/trustvian`,
-`internal/otel`). This document explains the system's shape; see
+Trustvian is a single-tenant Go engine built as a hexagonal core (`event` +
+`internal/*`) wrapped by a thin composition root (`Engine`, root package),
+plus two layers built on its public API in modules of their own: the
+OpenTelemetry Collector processor (`processor/`) and the control plane
+(`platform/`). The [module boundary](#the-four-modules) section shows how
+the four modules depend on each other. This document explains the system's
+shape; see
 [DOMAIN.md](DOMAIN.md) for what each pipeline stage's data actually
 means, [SECURITY.md](SECURITY.md) for the threat model, and
 [PERFORMANCE.md](PERFORMANCE.md) for measured hot-path behavior.
@@ -16,43 +19,57 @@ order — is in [ROADMAP.md](ROADMAP.md) and [`tasks/`](tasks/).
 ```mermaid
 flowchart LR
     subgraph ext["External"]
-        OTelSDK["Application / OTel SDK / Collector"]
-        JSONFile["JSON file"]
+        OTLP["OTLP span batch<br/>(pdata, in a Collector)"]
+        SDKSpan["finished SDK span<br/>(sdktrace.ReadOnlySpan)"]
+        JSONFile["JSON event file"]
     end
 
-    subgraph adapters["Adapters (internal/, or in-module)"]
-        OTelAdapter["internal/otel\n(EventFromSpan)"]
-        CLI["cmd/trustvian\n(analyze, baseline build)"]
+    subgraph adapters["Adapters"]
+        Processor["trustvian-processor<br/>EventFromSpan<br/>(separate module)"]
+        OTelAdapter["internal/otel<br/>EventFromSpan"]
+        CLI["cmd/trustvian<br/>analyze, baseline build"]
     end
 
-    subgraph core["Core (event + internal/*) — zero infrastructure deps"]
+    subgraph core["Core (event + internal/*): zero infrastructure deps"]
         Event["event.Event"]
         Features["internal/features"]
         Fingerprint["internal/fingerprint"]
-        Baseline["internal/baseline\n+ internal/store"]
+        Baseline["internal/baseline<br/>+ internal/store"]
         Anomaly["internal/anomaly"]
         Trust["internal/trust"]
         Policy["internal/policy"]
     end
 
-    Engine["Engine (root package)\ncomposition root"]
+    Engine["Engine (root package)<br/>composition root"]
 
-    OTelSDK -->|span| OTelAdapter
-    JSONFile -->|JSON| CLI
-    OTelAdapter -->|Event| Event
-    CLI -->|Event| Event
+    OTLP -->|"span"| Processor
+    SDKSpan -->|"span"| OTelAdapter
+    JSONFile -->|"JSON"| CLI
+    Processor -->|"Event"| Event
+    OTelAdapter -->|"Event"| Event
+    CLI -->|"Event"| Event
     Event --> Features --> Fingerprint --> Baseline --> Anomaly --> Trust --> Policy
-    Policy -->|Decision| Engine
-    Engine -.wires.-> Event
-    Engine -.wires.-> Baseline
-    Engine -.wires.-> Policy
-    Engine -->|Result| Consumer["Caller: CLI output, future export/Control"]
+    Policy -->|"Decision"| Engine
+    Engine -.->|"wires"| Event
+    Engine -.->|"wires"| Baseline
+    Engine -.->|"wires"| Policy
+    Engine -->|"Result"| Consumer["Caller: CLI output, trustvian.* span attributes,<br/>Result.DecisionRecord()"]
 ```
+
+Drawn from `engine.go`, `internal/otel/otel.go`, `processor/mapping.go`, `cmd/trustvian/analyze.go`, `cmd/trustvian/baseline.go` at v0.12.0.
 
 Dotted edges are composition (`Engine` constructs and holds these), not
 data flow. Nothing under `core` imports `adapters`, `Engine`, or each
 other except strictly downward along the pipeline — see
 [Dependency direction](#dependency-direction).
+
+Two adapters turn an OpenTelemetry span into an `Event`, one per data model.
+The Collector processor maps a pdata span inside `trustvian-collector`; that is
+where the engine runs in a deployment and under `trustvian dev`. `internal/otel`
+maps a finished SDK span. It is internal, so only this module can call it, and
+only its own tests do. Both read one convention table, `internal/semconv`:
+`internal/otel` imports it, and the processor, which cannot reach `internal/`,
+calls it through `event.NormalizeSpan`.
 
 ## The pipeline
 
@@ -163,13 +180,17 @@ trustvian/
 ├── alert/                                              # public: Alert, Severity, Condition/Rule/Evaluate, Sink, WebhookSink
 ├── config/                                             # public: PolicyConfig/Rule/Condition, CompilePolicy
 ├── cmd/trustvian/                                       # CLI (in-module, can import internal/*)
-├── cmd/trustvian-ci-render/                             # CI artifact → Markdown (stdlib only; ADR 0057)
+├── cmd/trustvian-ci-render/                             # CI artifact → Markdown, through internal/cirender (ADR 0057)
 ├── cmd/trustvian-ci-comment/                            # Markdown → the PR's one gate comment (stdlib only; ADR 0058)
 ├── examples/                                           # separate module: genuinely-external-consumer demos
-├── processor/                                          # separate module: standalone OTel Collector processor
+├── platform/                                           # separate module: control plane, trustvian-local, WebUI
+├── processor/                                          # separate module: Collector processor, trustvian-collector
 └── internal/
-    ├── features/    fingerprint/    baseline/    store/
+    ├── features/    fingerprint/    baseline/    store/    store/postgres/
     ├── anomaly/     trust/          policy/
+    ├── semconv/                                         # the agent-oriented convention table; imports nothing
+    ├── buildinfo/                                       # version and revision of the running binary
+    ├── cirender/                                        # result document → Markdown, for eval report and trustvian-ci-render
     └── otel/                                            # the ONLY package that imports go.opentelemetry.io/otel*
 ```
 
@@ -217,9 +238,10 @@ a method signature:
 `policy.Policy`/`Condition`/`Rule`/`Decision`, `anomaly.Config`,
 `trust.Config`, and `store.Store` implementations all stay
 `internal/`: no external caller needs to *construct* any of them by
-name. `config.CompilePolicy`/`config.CompileAnomaly` are the two
-exported functions that produce a `policy.Policy`/`anomaly.Config` for
-pass-through use — the identical boundary [ADR
+name. `config.CompilePolicy`, `config.CompileAnomaly` and
+`config.CompileTrust` are the exported functions that produce a
+`policy.Policy`, `anomaly.Config` and `trust.Config` for pass-through use — the
+identical boundary [ADR
 0008](adr/0008-policy-config-boundary.md) established for Policy in
 `v0.5`, extended to Anomaly configuration by [ADR
 0017](adr/0017-public-anomaly-configuration-boundary.md) in `v0.7`:
@@ -227,19 +249,16 @@ pass-through use — the identical boundary [ADR
 ```text
 config.PolicyConfig  → CompilePolicy  → policy.Policy   → Engine
 config.AnomalyConfig → CompileAnomaly → anomaly.Config   → Engine
+config.TrustConfig   → CompileTrust   → trust.Config     → Engine
 config.StorageConfig → CompileStorage → store.Store      → Engine
 ```
 
-`CompileStorage` is the one of the three that is deliberately *not*
+`CompileStorage` is the one of these that is deliberately *not*
 pure — it opens the store, so a load failure surfaces at construction
-rather than on the first `Observe`. All three fail closed; for storage
+rather than on the first `Observe`. All of them fail closed; for storage
 that specifically means a nil `Store` on any error, never a silent
-downgrade to non-durable storage.
-
-`trust.Config` is the one config type this pattern has not yet reached
-— see [Go SDK Guide § the public/internal boundary
-today](sdk-guide.md#configuring-from-outside-the-module) and the
-[Roadmap](ROADMAP.md) for the current state.
+downgrade to non-durable storage. See [Go SDK Guide § configuring from
+outside the module](sdk-guide.md#configuring-from-outside-the-module).
 
 **Why `internal/otel` is the only package that imports OpenTelemetry.**
 The core engine (`event` through `internal/policy`, and `Engine`
@@ -269,26 +288,34 @@ one careless import would silently destroy. See
 Verified directly, not asserted — `go list -deps` on every package:
 
 ```
-event            → (stdlib only)
+internal/semconv     → (stdlib only)   ← the convention table; no OTel import
+event                → internal/semconv
 internal/features    → event
 internal/fingerprint → internal/features
 internal/baseline    → internal/features, internal/fingerprint
 internal/store       → internal/baseline, internal/features, internal/fingerprint
+internal/store/postgres → internal/{baseline,features,fingerprint}   (+ github.com/jackc/pgx/v5)
 internal/anomaly     → internal/baseline, internal/features, internal/fingerprint
 internal/trust       → internal/anomaly
 internal/policy      → event, internal/features, internal/trust
-internal/semconv     → (stdlib only)   ← the convention table; no OTel import
-internal/otel        → event, internal/features, internal/semconv   (+ go.opentelemetry.io/otel*)
 trustvian (root)     → event, internal/{anomaly,baseline,features,fingerprint,policy,store,trust}
-cmd/trustvian        → trustvian (root), event, internal/policy, internal/trust
-cmd/trustvian-ci-render → (stdlib only)   ← reads the run artifact as data; imports nothing in this module
-cmd/trustvian-ci-comment → (stdlib only)  ← the only code that writes to GitHub; imports nothing in this module
+internal/otel        → trustvian (root), event, internal/features, internal/semconv   (+ go.opentelemetry.io/otel*)
+alert                → trustvian (root), event, internal/policy, internal/trust
+config               → alert, event, internal/{anomaly,policy,store,store/postgres,trust}   (+ go.yaml.in/yaml/v3)
+internal/buildinfo   → (stdlib only)
+internal/cirender    → (stdlib only)   ← the one renderer of result documents
+cmd/trustvian        → trustvian (root), config, event, internal/{buildinfo,cirender,policy,trust}   (+ bubbletea, golang.org/x/sys)
+cmd/trustvian-ci-render  → internal/cirender   ← reads the run artifact as data
+cmd/trustvian-ci-comment → (stdlib only)       ← the only code that writes to GitHub; imports nothing in this module
 ```
 
-Every edge points strictly toward an earlier pipeline stage or a leaf
-(`event`). Nothing under `internal/` imports the root package or
-`cmd/`, so there is no cycle: `internal/otel` is the only package with
-an external (non-stdlib) import, and the root package + `cmd/trustvian`
+Every pipeline edge points strictly toward an earlier stage or a leaf
+(`event`, `internal/semconv`). Only the adapters `internal/otel` and
+`alert` import the root package, and nothing imports `cmd/`, so there is no
+cycle. Each third-party dependency is confined to one package:
+OpenTelemetry to `internal/otel`, pgx to `internal/store/postgres`, YAML to
+`config` (and the test-only `scripts` package), and the terminal UI and
+`golang.org/x/sys` to `cmd/trustvian`. The root package and `cmd/trustvian`
 are the only ones that assemble the pipeline stages together.
 
 `internal/semconv` is a leaf like `event`: it holds the agent-oriented
@@ -396,9 +423,9 @@ shape, applied a second time rather than a new mechanism invented.
 
 ## Deployment topology
 
-Until `v0.8` task 037 the repository described how Trustvian is *built* but
-never what a running deployment looks like. It now has one concrete,
-runnable shape ([`deployments/docker-compose/`](../deployments/docker-compose/)):
+The reference deployment
+([`deployments/docker-compose/`](../deployments/docker-compose/)) is the
+engine's runtime shape on its own, with no control plane:
 
 ```text
    demo workload / instrumented service
@@ -420,10 +447,14 @@ runnable shape ([`deployments/docker-compose/`](../deployments/docker-compose/))
 
 Two things about this diagram are load-bearing.
 
-**Trustvian is not a network service.** Nothing in this repository listens
-on a socket. The Collector does, and the Trustvian processor is a component
-inside it. The reference deployment containerizes an *existing* runtime
-shape rather than introducing a daemon — see
+**The engine is not a network service.** Nothing in the root module serves
+on a socket; `trustvian dev` binds port 0 only to choose free ports for the
+processes it starts, and closes them. The Collector does serve, and the
+Trustvian processor is a component inside it; the processor itself binds only
+its health endpoint. The control
+plane, `trustvian-local`, is a separate listener in the `platform/` module and
+is not part of this deployment. The reference deployment containerizes an
+*existing* runtime shape rather than introducing a daemon — see
 [task 037](archive/tasks/v0.8/037-reference-docker-compose-deployment.md) § Runtime
 decision for why that mattered.
 
@@ -435,8 +466,9 @@ reaches storage only through the public `config.StorageConfig` /
 deployment that inverted any of this would be a design regression, not a
 packaging detail.
 
-**Packaging is outside the code.** Two artifacts ship: the `trustvian` CLI
-as cross-compiled binaries, and the Collector — this same runtime shape — as
+**Packaging is outside the code.** Two kinds of artifact ship: per-platform
+archives holding three binaries — `trustvian`, `trustvian-local` and
+`trustvian-collector` — and the Collector, this same runtime shape, as
 a distroless, non-root, multi-architecture image
 (`ghcr.io/trustvian/trustvian-collector`, root `Dockerfile`). How they are
 built, scanned, signed, and published lives entirely in
@@ -506,7 +538,8 @@ bound, and the inventory is short enough to state in full:
 | Resource | Bound | Shutdown owner |
 |---|---|---|
 | Health-server goroutine | One, bounded header-read timeout | Trustvian (`Shutdown` → `http.Server.Shutdown`) |
-| Channels, queues, tickers, timers | None exist | — |
+| Status reporter (when `status:` is configured) | One goroutine and one ticker, 1s to 1m interval (default 10s); each report bounded by the client timeout and abandoned at stop | Trustvian (`Shutdown` → `Reporter.Stop`) |
+| Other channels, queues, tickers, timers | None exist | — |
 | PostgreSQL pool | `MaxConns`; lifetime 1h, idle 30m | Trustvian (`Shutdown` → `Close`, exactly once) |
 | In-memory store | O(distinct actors), each capped | Process lifetime |
 | Meter and instruments | Fixed, 19 time series (15 always, 4 evaluation-only) | **The Collector** |
@@ -520,13 +553,14 @@ second-owner mistake the signal-handling row above avoids. No global
 concurrency limiter exists: the Collector owns pipeline concurrency, and a
 second limiter would put two control layers on one throughput number. And
 the evaluation sink's client never constructs its own `http.Transport`, so
-there is no per-client connection pool for `Shutdown` to close — the
-absence from `Shutdown`'s three steps below is correct, not an omission this
-inventory previously failed to notice.
+there is no per-client connection pool for `Shutdown` to close — its
+absence from `Shutdown`'s steps below is correct, not an omission. The
+status reporter's client is the same: no transport of its own.
 
-`Shutdown` orders its three steps for a reason: mark draining, then stop
-the health server, then release the store. Stopping the store first would
-let a readiness probe race a closing connection pool.
+`Shutdown` orders its steps for a reason: mark draining, then stop the
+status reporter before anything it reads is torn down, then stop the health
+server, then release the store. Stopping the store first would let a
+readiness probe race a closing connection pool.
 
 Instrumentation follows the same dependency rule as everything else here —
 it lives in the processor, never in the engine, so the core's zero-OTel
@@ -536,78 +570,521 @@ in-memory growth characteristics.
 
 ## Relationship to the platform layer
 
-**The platform has begun, as `platform/`.** Task 052 added its domain —
-`Project`, `Agent`, `Candidate`, `EvaluationRun`, and references to an
-environment and a behavioral profile. Task 053 added `EvaluationAggregate`, a
-fixed-shape summary of one evaluation's decisions. Task 054 added the
-behavioral diff: `BehaviorCollector` → `BehaviorSnapshot` →
-`CompareBehaviorSnapshots`, reporting which behavioral shapes appeared,
-disappeared, or persisted between two evaluations.
+Trustvian is a two-layer product: the behavioral engine described above, and a
+platform, `platform/`, that evaluates *candidates* — versions of an agent —
+compares them, gates them, and records promotion decisions. The engine runs in
+the Collector, inside the Trustvian processor. The control plane stores what
+the engine decided and runs no engine of its own. The layering is strictly
+one-directional, and the [module boundary](#the-four-modules) below is what
+keeps it so.
 
-Task 055 added `EvaluationScorecard`, composing those two outputs into one
-fixed-shape comparison of two evaluations. Task 056 added the first layer
-allowed to judge one: `EvaluateEvaluationGate` pairs a card with explicit
-caller-owned integer limits and returns a PASS/FAIL `EvaluationGateResult`.
+### The platform system
 
-Task 065 added the environment registry: `Environment`, owned by a project,
-identified by the `EnvironmentRef` a run already records, and carrying a name,
-an optional promotion rank and an active/archived status. A run may now only
-name an environment its own project owns and has not archived, which the
-control plane checks by walking candidate → agent → project before anything is
-written. `CanPromote` is the single ordering primitive a promotion workflow
-will ask, and it authorizes nothing. The engine is untouched: the platform's
-environment and the core's `baseline.Key.Environment` meet at a string
-comparison that already existed, on the platform side, and no core package
-knows this entity exists. See
-[ADR 0039](adr/0039-environments-are-project-owned-ranked-references.md).
+```mermaid
+flowchart LR
+    Agent["agent process<br/>(any OpenTelemetry SDK)"]
+    Dev["trustvian dev<br/>(cmd/trustvian)"]
 
-Task 066 added `Promotion`, the first layer allowed to conclude that a
-candidate may advance between environments — and the last one that could be
-mistaken for deploying something, which is why the boundary is stated as a
-rule: **Trustvian records a promotion decision; Trustvian does not deploy
-anything.** A promotion is an immutable, append-only record holding the two
-evaluation runs, both environments with the rank and revision they had at the
-time, the caller-owned limits, the gate result the decision actually consumed,
-and an outcome derived from that verdict and never supplied by a caller.
+    subgraph collector["trustvian-collector (processor/cmd/trustvian-collector)"]
+        Receiver["otlp receiver<br/>gRPC and HTTP"]
+        Processor["trustvian processor<br/>Engine: Analyze, then Observe<br/>learning scope = behavioral_profile"]
+        Sink["evaluation sink<br/>(processor/internal/evaluation)"]
+        Reporter["status reporter<br/>(processor/internal/status)"]
+        Health["health server<br/>/livez, /readyz"]
+        Debug["debug exporter"]
+        Baseline[("baseline file<br/>one per behavioral profile")]
+    end
 
-The architectural consequences are the usual ones, kept: the engine gained
-nothing and does not know promotion exists; `ControlStore` gained three
-methods (`CreatePromotion`, `Promotion`, `ProjectPromotions`) rather than a
-`PromotionStore` or a generic repository; the store owns no gate logic and the
-domain owns no SQL; and the HTTP, CLI and WebUI layers are adapters with no
-promotion logic of their own — no rank comparison, gate calculation or source
-inference happens in JavaScript. `CanPromote` remains the single ordering
-primitive, called from the domain constructor, the service and the store's
-commit-time revalidation, and re-derived nowhere. The one genuinely new
-structural obligation is that the write spans three rows, so `CreatePromotion`
-revalidates both environment revisions inside the transaction that inserts.
-Schema version is now 4 on both backends. See
+    subgraph local["trustvian-local (platform/cmd/trustvian-local)"]
+        HTTPAPI["platform/httpapi<br/>/v1"]
+        WebUIHandler["platform/webui<br/>/ and /assets/"]
+        CP["ControlPlane<br/>(package platform)"]
+        Bus["InMemoryRealtimeBus"]
+        Board["pipeline status<br/>(in memory)"]
+        SQLite[("SQLiteStore<br/>default")]
+        Postgres[("PostgresStore<br/>--backend postgres")]
+    end
+
+    Discovery["runtime.json (file)"]
+    Browser["WebUI in a browser"]
+    CLI["trustvian CLI<br/>project, agent, env, candidate, eval,<br/>evidence, promotion, status, tui"]
+
+    Dev -->|"exec, OTEL_EXPORTER_OTLP_* set"| Agent
+    Dev -->|"exec --config collector.yaml (file)"| collector
+    Dev -->|"exec --state-dir --listen 127.0.0.1:0"| local
+    local -->|"writes"| Discovery
+    Discovery -->|"read for the API URL"| Dev
+    Discovery -->|"read for the API URL"| CLI
+    Dev -->|"GET /livez"| Health
+    Dev -->|"/v1: ensure project, agent, candidate, environment<br/>POST /v1/evaluation-runs, .../start, .../complete"| HTTPAPI
+    Agent -->|"OTLP gRPC or HTTP"| Receiver
+    Receiver --> Processor
+    Processor --> Debug
+    Processor -->|"Get, Observe"| Baseline
+    Processor -->|"DecisionRecord"| Sink
+    Sink -->|"GET /v1/evaluation-runs/{id}/ingest-state<br/>POST /v1/evaluation-runs/{id}/records"| HTTPAPI
+    Reporter -->|"POST /v1/collectors/{id}/status"| HTTPAPI
+    HTTPAPI --> CP
+    CP --> SQLite
+    CP --> Postgres
+    CP -->|"publish after commit"| Bus
+    CP --> Board
+    Bus -->|"subscribe"| HTTPAPI
+    WebUIHandler -->|"GET /, /assets/*"| Browser
+    Browser -->|"/v1 JSON, same origin"| HTTPAPI
+    HTTPAPI -->|"SSE GET /v1/realtime"| Browser
+    CLI -->|"/v1 JSON"| HTTPAPI
+    HTTPAPI -->|"SSE GET /v1/realtime (tui)"| CLI
+```
+
+Drawn from `cmd/trustvian/dev.go`, `cmd/trustvian/dev_collector.go`, `cmd/trustvian/dev_provision.go`, `cmd/trustvian/dev_runtime.go`, `processor/processor.go`, `processor/internal/evaluation/client.go`, `processor/internal/status/reporter.go`, `processor/internal/health/handler.go`, `platform/localruntime/runtime.go`, `platform/httpapi/handler.go`, `platform/webui/handler.go`, `platform/webui/assets/v1/api.js` at v0.12.0.
+
+What crosses each edge, and who owns it:
+
+| Edge | What crosses it | Owner |
+|---|---|---|
+| workload → Collector | OTLP spans, gRPC or HTTP, on loopback ports `dev` chose | the workload's SDK, steered by `OTEL_EXPORTER_OTLP_*` when `dev` owns instrumentation |
+| processor → baseline | the Engine's learned state, a file store per behavioral profile | the processor's Engine (`WithLearningScope`) |
+| processor → control plane | one `DecisionRecord` per scored span, at a per-run sequence | `processor/internal/evaluation` |
+| processor → control plane | a content-free status report on an interval | `processor/internal/status` |
+| `dev` → control plane | the hierarchy, the run's creation, start and completion | `cmd/trustvian/dev_provision.go` |
+| control plane → clients | `/v1` JSON reads and writes, and SSE notifications | `platform/httpapi` |
+| control plane → browser | the static shell and assets, same origin as `/v1` | `platform/webui` |
+
+`trustvian dev` composes all of it for one run. With `--api-url` it attaches
+to a running control plane instead of starting `trustvian-local`. It starts
+one Collector per run, waits for `/livez` and both receiver ports, runs the
+workload, and stops the Collector before it completes the run: ingest is
+refused once a run is terminal, so stopping first flushes what the Collector
+holds. State lives under `~/.trustvian/dev/`, never in the workload's
+repository.
+
+**Learning scopes.** Each evaluation run names a behavioral profile. The
+processor passes it to `trustvian.WithLearningScope`, so the run trains only
+its own baseline. `dev` keeps one baseline file per profile in its state
+directory. `eval run` gives every repetition its own profile, and the control
+plane refuses a repeated comparison whose repetitions share one.
+
+**Pipeline status.** A Collector configured with `status:` posts a report to
+`POST /v1/collectors/{collector_id}/status` on an interval. The control plane
+keeps the latest report per Collector in memory, bounded and aged out, and
+serves it at `GET /v1/status`; `trustvian status`, `trustvian dev --check` and
+the WebUI's Status view read it. It is never persisted and no gate reads it.
+
+### One scenario execution
+
+```mermaid
+sequenceDiagram
+    participant Run as trustvian eval run
+    participant Dev as trustvian dev (per repetition)
+    participant Col as trustvian-collector (per repetition)
+    participant API as trustvian-local /v1
+    participant Store as ControlPlane and store
+    participant Readers as eval report, Change Impact
+    participant Render as trustvian-ci-render
+    participant Comment as trustvian-ci-comment
+    participant GH as GitHub
+
+    Run->>API: POST /v1/scenario-executions (runs N, provenance, cli_version)
+    API->>Store: BeginScenarioExecution, resolves a --reference
+    loop reference side, repetitions 1..N (skipped with --reference)
+        Run->>Dev: run EXEC-reference-i, profile EXEC-reference-pi
+        Dev->>API: POST /v1/evaluation-runs, then .../start
+        Dev->>Col: start with collector.yaml (run_id, behavioral_profile)
+        Col->>API: POST /v1/evaluation-runs/{id}/records, per scored span
+        Dev->>Col: stop, flushing what it holds
+        Dev->>API: POST /v1/evaluation-runs/{id}/complete
+    end
+    loop candidate side, repetitions 1..N
+        Run->>Dev: run EXEC-candidate-i, profile EXEC-candidate-pi
+        Dev->>API: create, start, ingest and complete the run, as above
+    end
+    Run->>API: POST /v1/scenario-executions/{id}/complete (run ids, gate limits)
+    API->>Store: CompleteScenarioExecution
+    Note over Store: repeated comparison: presence over N, frequency checks, operational sections, cost when priced
+    Note over Store: one transaction: completed status, repetitions, gate_snapshot
+    API-->>Run: comparison and gate verdict
+    Run->>API: GET /v1/scenario-executions/{id}/report
+    API-->>Run: report, result document version 2
+    Readers->>API: GET /v1/scenario-executions/{id}/report
+    Run->>Render: result.json (trustvian-run artifact)
+    Render->>Comment: Markdown (file)
+    Comment->>GH: POST or PATCH the pull request's gate comment (REST)
+```
+
+Drawn from `cmd/trustvian/eval_run.go`, `cmd/trustvian/dev.go`, `cmd/trustvian/dev_provision.go`, `cmd/trustvian/eval_report.go`, `platform/scenario_execution_service.go`, `platform/repeated.go`, `platform/scenario_gate_record.go`, `platform/scenario_report.go`, `platform/sqlite.go`, `platform/httpapi/handler.go`, `platform/webui/assets/v1/api.js`, `cmd/trustvian-ci-render/main.go`, `cmd/trustvian-ci-comment/post.go`, `.github/actions/trustvian-run/run.sh`, `.github/actions/trustvian-comment/` at v0.12.0.
+
+- **Begin.** `eval run` records the execution before any workload runs. The
+  body carries the scenario's provenance (its digest, its inputs' digests, each
+  side's model and prompt references) and the CLI's version. With
+  `--reference`, the control plane resolves and validates the recorded
+  execution here, so a missing or unusable reference costs no workload.
+- **Repetitions.** Sequential, reference side first. Each repetition is a
+  `trustvian dev` run in-process, with its own run id, its own behavioral
+  profile and its own Collector, against the one control plane resolved at the
+  start. A failed repetition stops the scenario with exit 3 and no verdict.
+- **Completion.** `CompleteScenarioExecution` revalidates every run against
+  the execution's scope and calls the same repeated comparison
+  `POST /v1/evaluations/compare-repeated` serves. It reduces presence, the
+  frequency checks and the operational sections (latency, errors, tokens), and
+  prices cost when `trustvian-local --pricing` supplied a table. The completed
+  status, the repetitions and the gate snapshot are written in one transaction
+  ([ADR 0069](adr/0069-a-completed-execution-records-the-gate-it-consumed.md)).
+- **Report.** `GET /v1/scenario-executions/{id}/report` reads the recorded
+  evidence back and the recorded gate; it never re-evaluates the gate.
+  `eval run --json` prints that document, `eval report` reads it by id, and the
+  WebUI's Change Impact view draws it.
+- **Pull request.** In CI, the `trustvian-run` action uploads `eval run --json`
+  as `result.json`. The `trustvian-comment` action renders it with
+  `trustvian-ci-render` — through `internal/cirender`, the renderer
+  `eval report --format md` uses — and `trustvian-ci-comment` creates or updates
+  the one gate comment. Neither computes a number.
+
+### The four modules
+
+```mermaid
+flowchart TB
+    Root["github.com/trustvian/trustvian<br/>(root module)<br/>Engine, event, alert, config, internal/*,<br/>cmd/trustvian, trustvian-ci-render, trustvian-ci-comment"]
+    Platform["trustvian-platform<br/>(platform/)<br/>ControlPlane, httpapi, webui, localruntime,<br/>trustvian-local"]
+    Processor["trustvian-processor<br/>(processor/)<br/>Collector processor, trustvian-collector,<br/>agent-producer, demo-producer"]
+    Examples["trustvian-examples<br/>(examples/)"]
+
+    Platform -->|"go.mod: require, replace ../"| Root
+    Processor -->|"go.mod: require v0.8.0, replace ../"| Root
+    Examples -->|"go.mod: require, replace ../"| Root
+    Processor -.->|"HTTP /v1 only, no Go import"| Platform
+    Root -.->|"cmd/trustvian: HTTP /v1 and SSE only, no Go import"| Platform
+```
+
+Drawn from `go.mod`, `platform/go.mod`, `processor/go.mod`, `examples/go.mod`, `scripts/check-platform-boundary.sh` at v0.12.0.
+
+Solid edges are Go module dependencies; dotted edges are network edges with no
+Go import behind them. Every module path outside the root is deliberately not
+under `github.com/trustvian/trustvian`: Go's `internal/` rule turns on
+import-path ancestry rather than module membership, so a repository-prefixed
+path would be allowed to import the engine's internal packages, and these paths
+make that a compile error. Each module imports the core's public API only: the platform and the
+processor import `trustvian`, `event` and `config`; the examples also import
+`alert`.
+
+The root module requires none of the other three. Each of the two network
+edges is held by a test on the client's side: `cmd/trustvian`'s architecture
+test and `processor/architecture_test.go` both fail on an import of
+`trustvian-platform`, and on the module appearing in their `go.mod` or `go.sum`.
+
+`make check-platform-boundary` runs `scripts/check-platform-boundary.sh`, which
+CI runs on every pull request. It checks, in order:
+
+| # | Check | How |
+|---|---|---|
+| 1 | The platform's module path is outside `github.com/trustvian/trustvian` | reads `platform/go.mod` |
+| 2 | No platform source imports `github.com/trustvian/trustvian/internal` | `grep` over `platform/` |
+| 3 | The root module does not depend on the platform | the root `go.mod`, then `GOWORK=off go list -deps ./...` |
+| 4 | No platform identity (`ProjectID`, `CandidateID`, a `type Candidate struct`, …) is declared in non-test core source | a comment-stripped scan, exempting the CLI's listed `/v1` wire-adapter files |
+| 5 | The platform builds on its own | `cd platform && GOWORK=off go build ./...` |
+| 6 | The core's build graph has no OpenTelemetry package, and `internal/otel` still has one | `GOWORK=off go list -deps` over `event`, `internal/semconv`, `internal/features` … `internal/policy`, `internal/store`, the root package; then over `internal/otel` |
+| 7 | No agent framework is named in non-test source | `grep` over the root, `platform/` and `processor/` |
+
+At v0.12.0 it prints every check `ok` and ends `Core/platform boundary: OK`.
+It checks the platform, not the processor: the processor's boundary is its own
+architecture test.
+
+Four rules make that arrow one-directional, and each is an invariant rather
+than a preference:
+
+1. **The platform may depend on the core. The core must never depend on the
+   platform.** Not by import, not by interface, not by configuration.
+2. **The platform must not import `internal/*`.** Enforced by the module path
+   and by check 2 above.
+3. **No platform-aware branches in the engine.** There is no
+   `if runningUnderControl`, no `EvaluationRunID` field on `Event`, and no
+   mode flag. An engine that behaves differently under the platform is an
+   engine nobody can reason about in isolation.
+4. **`Engine` stays an engine.** Project, Candidate, EvaluationRun, Scorecard,
+   Promotion, Environment, users, and access control are platform concepts and
+   do not appear in the core — not as types, not as fields, not as options.
+
+`GOWORK=off` verification is there for a different purpose: proving each
+module's declared dependencies actually resolve, which a workspace hides. See
+[ADR 0022](adr/0022-core-platform-boundary.md).
+
+Where the core keeps a type internal (`policy.Decision`, `trust.RiskLevel`,
+both carried on the record as `string`), the platform re-declares the small
+closed set of values rather than asking the core to widen its public surface.
+Restating four and six constants is cheaper than a public type nobody outside
+this repository needs.
+
+### What the core already provides the platform
+
+The platform builds on properties the engine already has, which is why the
+boundary is affordable:
+
+| Property | Why the platform needs it |
+|---|---|
+| `Analyze` is read-only; `Observe` is the only write path | An evaluation can score behavior without teaching the baseline |
+| Learning is gated against unsafe decisions | A candidate cannot train its way out of being blocked |
+| Behavioral state is bounded | An evaluation's cost is predictable |
+| Baselines are keyed `{Scope, ActorID, Environment}` | Learning isolation is a key dimension, not a platform concept the engine knows about |
+| `ActorTypeAIAgent`, and agents reuse the normal pipeline | No second engine for agents |
+| `Context.SessionID` correlates without entering the fingerprint | Runs can group events without creating behavioral identity |
+| `Context.DelegatedFrom`, bounded, behavioral | Delegation stability is measurable evidence |
+| `Context.ApprovalStatus`, enforceable by policy | Approval compliance is a gate input |
+| `Result` carries anomaly, confidence, trust, decision, contributors, explanation | A scorecard aggregates evidence that already exists |
+| PostgreSQL persistence; OTel ingestion | The runtime path is already production-shaped |
+| The core retains no raw event history | History is the platform's job, deliberately not the engine's — and the platform retains bounded *evidence* history, never raw events |
+| `Result.DecisionRecord()` — a serializable public projection | The platform persists, streams, and aggregates records without naming an internal type or re-declaring behavioral shapes |
+
+`DecisionRecord` is the read boundary itself: a fixed-shape projection of the
+evidence behind one decision, carrying no event payload and no consumer-side
+identifiers. It is a copy, not a second implementation — nothing in it is
+recomputed, and it shares no memory with the `Result` it came from.
+
+Fixed-shape is not size-bounded: caller-supplied strings inside it are not
+length-limited here. Excluding the attribute map removes the part that grows
+without limit; capping what remains is an ingest concern, and belongs to the
+control API rather than to the type.
+
+The event-history row is the load-bearing one. The engine holds learned state,
+not an event log. Any evaluation feature that needs to replay or diff raw events
+needs the platform to store them — and that is a boundary, not a gap.
+
+### Learning isolation, the core change the platform required
+
+Evaluating two candidates against one actor identity would train one baseline,
+so each candidate would teach the other and the evaluation would measure a
+baseline it had polluted. **Learning isolation is a prerequisite.**
+
+The mechanism is generic. `SessionID` is not baseline identity, an evaluation
+run is not fingerprint identity, and candidate metadata — git SHA, artifact
+digest, model or tool-set hash — is never a fingerprint dimension, or every
+deployment would look like a new actor. The engine does not know what a
+Candidate is.
+
+A learning scope is a `baseline.Key` dimension, selected by
+`trustvian.WithLearningScope` and absent from behavioral identity — see
+[ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md). The
+platform names the same idea `BehavioralProfileRef` and keeps it separate from
+a candidate or a run; the processor maps one onto the other.
+
+### Inside the platform: everything is an adapter
+
+The platform's own shape is decided in
+[ADR 0023](adr/0023-interfaces-are-adapters.md), and it is what keeps the
+boundary above from being re-crossed by accident.
+
+Authoritative logic — evaluation, comparison, behavioral diff, gate
+evaluation, promotion — lives in `ControlPlane`. The interfaces consume it
+and own none of it:
+
+```text
+     CLI           TUI           WebUI         trustvian-ci-render
+      └─────────────┴──── HTTP /v1 + SSE ──┘    (reads the result document)
+                           │
+                           ▼
+                platform/httpapi  ← adapter only
+                           │
+                           ▼
+                     ControlPlane  ← authoritative services
+                           │
+        ┌──────────────────┼──────────────────┐
+        ▼                  ▼                  ▼
+   RealtimeBus       store capabilities    pipeline status
+   (in memory)      SQLite · PostgreSQL     (in memory)
+```
+
+Two consequences worth stating, because both are easy to erode:
+
+- **A rule implemented in one interface is a defect**, not a feature of that
+  interface. Three copies of a gate rule are three behaviors. The handler
+  decodes, calls one method, and maps the result; a source-scanning test fails
+  if `platform/httpapi` references `CompareBehaviorSnapshots`,
+  `NewEvaluationScorecard`, `EvaluateEvaluationGate` or a store type. The CLI
+  reads `gate.verdict` to choose an exit code and reproduces none of the logic
+  behind it, and the browser computes nothing.
+- **Persistence is capabilities, not a database.** There is no generic
+  `Database` interface — the same reasoning
+  [ADR 0004](adr/0004-narrow-store-port-in-memory-only.md) used to keep
+  `internal/store.Store` at two methods, applied to a larger surface.
+
+### The evaluation domain
+
+The domain is `Project`, `Agent`, `Candidate`, `EvaluationRun`, and references
+to an environment and a behavioral profile. Each step from evidence to a
+decision is its own type, and only the last ones judge:
+
+| Type | What it is |
+|---|---|
+| `EvaluationAggregate` | a fixed-shape summary of one run's decisions, O(1) in the record count, no per-behavior state |
+| `BehaviorSnapshot` | one run's behavioral shapes, bounded at 512 distinct behaviors; `CompareBehaviorSnapshots` is the behavioral diff |
+| `EvaluationScorecard` | the aggregate and the diff of two runs composed, copying only summaries; it carries no verdict |
+| `EvaluateEvaluationGate` | a scorecard against explicit caller-owned integer limits: PASS or FAIL |
+| `CompareRepeatedEvaluations` | N isolated repetitions per side, reduced to presence, frequency and operational evidence, with its own gate |
+| `Environment` | owned by a project, with a name, an optional promotion rank and an active or archived status; a run may name only an environment its project owns and has not archived |
+| `Promotion` | an immutable, append-only record that a candidate may advance between environments |
+
+The gate is separate from the evidence because the limits are a caller's
+policy, not a property of evidence. See
+[ADR 0026](adr/0026-evaluation-aggregation-is-bounded-evidence.md),
+[ADR 0027](adr/0027-behavioral-diff-compares-bounded-snapshots.md),
+[ADR 0028](adr/0028-scorecards-are-fixed-shape-comparative-evidence.md) and
+[ADR 0029](adr/0029-hard-gates-use-explicit-integer-evidence.md).
+
+**Trustvian records a promotion decision; Trustvian does not deploy
+anything.** A promotion holds the two evaluation runs, both environments with
+the rank and revision they had at the time, the caller-owned limits, the gate
+result the decision consumed, and an outcome derived from that verdict and
+never supplied by a caller. `CanPromote` is the single ordering primitive,
+called from the domain constructor, the service and the store's commit-time
+revalidation; it authorizes nothing. Because the write spans three rows,
+`CreatePromotion` revalidates both environment revisions inside the
+transaction that inserts. The engine does not know environments or promotions
+exist: the platform's environment and the core's `baseline.Key.Environment`
+meet at a string comparison on the platform side. See
+[ADR 0039](adr/0039-environments-are-project-owned-ranked-references.md) and
 [ADR 0040](adr/0040-promotions-are-immutable-evidence-backed-platform-decisions.md).
 
-Task 074 added the **bounded hierarchy collection capability** and the
-zero-input Live view that consumes it. Four routes — `GET /v1/projects`,
-`/v1/projects/{id}/agents`, `/v1/agents/{id}/candidates` and
-`/v1/candidates/{id}/evaluation-runs` — follow the entity graph the domain
-already makes immutable, and share task 065's paging design unchanged: `id`
-byte order, an exclusive `after` cursor, `limit` 1..64, and `next_after`
-present exactly when another row follows.
+A gate verdict has no side effect: it is evidence about acceptance, not an
+action.
 
-**Where each half lives is the architectural point.** `ControlStore` owns the
-Project, Agent and Candidate collections; `EvaluationStore` owns the
-EvaluationRun collection; `ControlPlane` composes both into one browsing
-surface, and the HTTP adapter never learns they came from different
-capabilities. Task 057 split the two because a later backend may implement one
-and not the other, and a list method does not move an entity between
-capabilities — putting the run collection on `ControlStore` would oblige a
-control-only backend to serve evaluation runs it does not store. No fifth
-interface was added.
+### Persistence
 
-Its browser surface is an observability cockpit and a record-first admin
-console rather than a CRUD form set — a persistent sidebar of destinations
-(Live, Projects, Runs, Compare, Evidence, Promotions, Manage), a workspace
-whose primary surface is a table of what `/v1` returned, and a contextual panel
-beside it. Rows are the navigation and identifiers are the controls that follow
-them, so no journey through it requires typing one
+`SQLiteStore` (the default, one file under `--state-dir`) and `PostgresStore`
+(`trustvian-local --backend postgres`) implement the same capabilities:
+
+```text
+  ControlStore · EvaluationStore · EvaluationIngestStore · ObservationStore
+  ScenarioExecutionStore · ScenarioExecutionListStore · RecentRunStore
+  RunProvenanceStore · TraceSummaryStore · SessionSummaryStore
+                    ╱                             ╲
+              SQLiteStore                    PostgresStore
+              local · default                shared · deployed
+```
+
+Both live in package `platform` rather than a subpackage, because the aggregate
+and snapshot carry private bound markers and restoring them from outside would
+require a public evidence-forging constructor. The cost is a driver dependency
+in that package; the boundary check still holds, and the core's build graph
+contains none of it. Backend selection exists in exactly one place,
+`localruntime`'s composition, and an architecture test fails if `httpapi`,
+`webui` or any service names a backend. `/v1`, realtime, the CLI, the TUI and
+the WebUI cannot tell which one answered. See
+[ADR 0030](adr/0030-local-persistence-stores-authoritative-bounded-state.md)
+and [ADR 0037](adr/0037-postgresql-is-the-shared-platform-persistence-backend.md).
+
+It persists what cannot be rebuilt — the entities, the aggregate, the
+behavioral snapshot, a bounded per-observation history, the scenario
+executions and the gate each completed execution consumed — and recomputes
+what can: diff, scorecard and comparison are deterministic functions of stored
+evidence, so storing them too would create a second thing that can be true.
+
+One logical `SchemaVersion` governs both physical schemas; it is 15 at
+v0.12.0. The types are chosen to preserve observable behaviour rather than to
+look idiomatic: timestamps and uint64 counters are `TEXT` on both backends,
+because `TIMESTAMPTZ` normalizes the caller's zone offset and truncates
+nanoseconds — both API-visible — and `BIGINT` is signed 64-bit while `NUMERIC`
+would launder the corruption signal a non-canonical counter raises. A shared
+conformance suite and a SQLite/PostgreSQL differential suite keep the two from
+drifting. SQLite's atomicity comes from holding one connection; a pool has no
+such property, so on PostgreSQL every run-scoped write takes a row lock on its
+run before the reads it depends on. Isolation stays `READ COMMITTED`.
+
+**One table grows per accepted record, and it is bounded.** At most 4096
+observations per run are retained, written inside the transaction that writes
+the aggregate and the ingest cursor, over an allowlist of columns that excludes
+every content field. Past the bound the run keeps ingesting and reports its
+history as partial. Nothing reads that history back into the engine: a
+retained observation influences no decision, no baseline and no fingerprint
+([ADR 0048](adr/0048-retained-history-is-sequence-identified-bounded-and-honest-about-absence.md)).
+It is read through three narrowings — `session_id`, `trace_id` and
+`fingerprint_id`, optional and mutually exclusive — applied in storage before
+the page bound
+([ADR 0049](adr/0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md)).
+Which observations support a finding is answered by the control plane, at
+`GET /v1/evidence/behaviors` and `GET /v1/evidence/observations`.
+
+Columns that carry the newer evidence:
+
+| Schema | Adds |
+|---|---|
+| 9 | scenario executions and their ordered run associations; a per-project completion sequence under the project-row lock ([ADR 0054](adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)) |
+| 10 | a stored, fixed-width recency key on runs and executions — UTC Unix nanoseconds, zero-padded to 20 digits, so byte order is time order — listed newest first with a `(key, id)` keyset cursor ([ADR 0063](adr/0063-recency-is-a-stored-sort-key-and-a-composite-cursor.md)) |
+| 11 | `operational_counts` on each behavior: its 31 operational counters as canonical decimal text, in one column because every ingest rewrites a run's entries |
+| 12 | ten nullable provenance columns per execution: per side, the scenario and input digests and the model and prompt references ([ADR 0067](adr/0067-scenario-provenance-is-recorded-per-execution-side.md)) |
+| 13 | fidelity and layer counts on each behavior |
+| 14 | `gate_snapshot`: the limits, every check and the verdict a completed execution consumed ([ADR 0069](adr/0069-a-completed-execution-records-the-gate-it-consumed.md)) |
+| 15 | `cli_version` and `reference_mode` on each execution |
+
+A NULL provenance or producer column is *not recorded*, never zero, and an
+execution completed before schema 14 reports its gate as `not_recorded` rather
+than re-deriving one. Comparisons sum the operational summaries in Go, per
+run, per target and over N runs, and price them on read when
+`trustvian-local --pricing` supplied a table; nothing per target or per cost is
+stored.
+
+### Control API, ingest and realtime
+
+`platform/httpapi` is an adapter over `ControlPlane`, in a subpackage so it
+cannot reach package-private state. The API package binds no listener;
+`localruntime` composes one, loopback by default, and serves the WebUI from
+the same listener.
+
+Ingest consumes the public `DecisionRecord` and nothing else — the control
+plane is not a second engine host, and no route analyzes a raw `Event`. Since
+a duplicate record counts twice by design, retries are made safe by a
+monotonic per-run sequence plus the digest of the last accepted record: O(1)
+durable state, with gaps, stale numbers and divergent retries all failing
+closed ([ADR 0031](adr/0031-control-plane-owns-ingest-and-http-is-an-adapter.md)).
+
+The Collector processor is the producer `trustvian dev` uses. It projects the
+`Result` it already computed and posts it over `/v1`:
+
+```text
+OTLP ─▶ processor ─▶ Engine.Analyze ─▶ Result ─┬─▶ trustvian.* attributes ─▶ exporter
+                                               └─▶ DecisionRecord ──HTTP /v1──▶ ControlPlane
+```
+
+The edge is HTTP, exactly as it is for the CLI, and for the same reason:
+`trustvian-processor` importing `trustvian-platform` would put the platform's
+driver, schema and domain into every Collector distribution built from the
+component ([ADR 0038](adr/0038-collector-evaluation-ingest-is-an-http-adapter.md)).
+
+Realtime is notification, and durable state is authoritative:
+
+```text
+ControlPlane ──after a committed mutation──▶ RealtimePublisher
+                                                   │
+                                          InMemoryRealtimeBus
+                                          bounded / ephemeral
+                                                   │
+                                     SSE adapter, GET /v1/realtime
+```
+
+Publication happens only after a commit, and a delivery failure never changes a
+committed operation's outcome — reporting one as failed would make a client
+retry a write that landed. The bus retains no history. Each subscriber owns a
+bounded queue, the subscriber count is bounded too, and one that falls behind
+is disconnected rather than blocking the publisher or silently losing events.
+Every connection therefore resynchronizes from authoritative state before
+consuming incrementally. Filtering by `project_id`, `agent_id` or `run_id`
+happens before enqueue, so a busy run cannot overflow a subscriber watching a
+quiet one ([ADR 0032](adr/0032-realtime-is-bounded-ephemeral-not-authoritative.md)).
+The control plane holds a publisher and the transport holds a subscriber, so
+neither gains the other's authority — a transport able to publish could
+fabricate state.
+
+**Realtime is in-process.** Two control-plane processes sharing one PostgreSQL
+database share authoritative state and do *not* share realtime notifications.
+Multi-node validation is planned work (task 069, see
+[ROADMAP.md](ROADMAP.md)).
+
+### The browser surface
+
+The WebUI is an observability cockpit and a record-first admin console rather
+than a CRUD form set — a persistent sidebar of destinations (Live, Status,
+Overview, Projects, Runs, Traces, Change Impact, Evidence, Promotions, Manage),
+a workspace whose primary surface is a table of what `/v1` returned, and a
+contextual panel beside it. Rows are the navigation and identifiers are the
+controls that follow them, so no journey through it requires typing one
 ([ADR 0050](adr/0050-the-browser-surface-is-a-record-first-admin-console.md)).
 
 It is built from vanilla ES modules over the same static same-origin `/v1`
@@ -634,513 +1111,79 @@ Asynchronous state is owned by `views/run-state.js` and
 `views/project-scope.js` rather than by the view that draws it. Both hold the
 rule that their contents belong to one subject — a run, a project — and both
 refuse a response that arrived for a subject the reader has left, using the
-ticket primitive in `core/ownership.js`. The same rule `internal` realtime
-applies to the stream: take a token before the await, check it immediately
-after, and never depend on a cancellation winning a race.
+ticket primitive in `core/ownership.js`. The same rule applies to the stream:
+take a token before the await, check it immediately after, and never depend on
+a cancellation winning a race.
 
 No framework, no npm, no CDN, no build step, and no web font — the policy's
-`font-src 'none'` is honest because nothing asks for one.
+`font-src 'none'` is honest because nothing asks for one. `webui.NewHandler()`
+takes no arguments: the WebUI holds no capability, import or authority beyond
+the `/v1` routes any client may call.
 
-The WebUI gained no capability, import or authority: `webui.NewHandler()` still
-takes no arguments. It gained server routes to call, which the CLI or any
-future client may use equally. Its Live view subscribes to `GET /v1/realtime`
-unfiltered — a capability that already existed, since an empty `RealtimeFilter`
-is unconstrained — and the realtime protocol is unchanged. Discovery is bounded
-as a whole workflow rather than only per route: one collection request at
-startup and on every reconnect, zero automatic continuations, and lazy
-user-triggered descent. Schema version is 5 on both backends, and that
-migration adds three indexes and nothing else. See
-[ADR 0041](adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md).
-
-Task 057 added the first persistence adapter: a local SQLite store behind two
-narrow capabilities — `ControlStore` for projects, agents and candidates, and
-`EvaluationStore` for runs and their evidence. There is no generic `Database`
-interface; ADR 0023's rule that a store is an adapter expressed in domain
-terms is what the capability shape follows.
-
-It persists what cannot be rebuilt — the entities, the aggregate, the
-behavioral snapshot and, since [task 067](tasks/v1.0/067-event-history-capability-boundary.md),
-a bounded per-observation history — and recomputes what can: diff, scorecard and
-gate result are deterministic functions of stored evidence, so storing them too
-would create a second thing that can be true.
-
-**One table grows per accepted record, and it is bounded.** Task 067 retains at
-most 4096 observations per run, written inside the transaction that already
-writes the aggregate and the ingest cursor, over an allowlist of columns that
-excludes every content field. Past the bound the run keeps ingesting and reports
-its history as partial. Nothing reads that history back into the engine: a
-retained observation influences no decision, no baseline and no fingerprint.
-[ADR 0048](adr/0048-retained-history-is-sequence-identified-bounded-and-honest-about-absence.md)
-records the reasoning.
-
-**That history is read through three narrowings and nothing wider.**
-[Task 076](tasks/v1.0/076-behavioral-evidence-explorer.md) added `session_id`,
-`trace_id` and `fingerprint_id` as optional, mutually exclusive equality
-predicates on the run-scoped observation route — applied in storage before the
-page bound, through 067's existing digest indexes and against the original value
-beside each key. No table, no index and no migration was added, and the browser
-that consumes them holds no resolution logic: which observations support a
-finding is [task 085](tasks/v1.0/085-evidence-resolution.md)'s answer, computed
-in the control plane.
-[ADR 0049](adr/0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md)
-records why a combination of narrowings is refused rather than answered, and why
-the explorer answers a behavioral question rather than a trace question.
-
-The adapter lives inside package `platform` rather than a subpackage, because
-the aggregate and snapshot carry private bound markers and restoring them from
-outside would require a public evidence-forging constructor. The cost is a
-driver dependency in that package; the boundary check still holds, and the
-core's build graph contains none of it. See
-[ADR 0030](adr/0030-local-persistence-stores-authoritative-bounded-state.md).
-
-[Task 064](tasks/v1.0/064-postgresql-platform-backend.md) added a second
-implementation of the same three capabilities:
-
-```text
-        ControlStore · EvaluationStore · EvaluationIngestStore
-                    ╱                             ╲
-              SQLiteStore                    PostgresStore
-              local · default                shared · deployed
-```
-
-Both live in package `platform`, for the reason above — the private bound
-markers make a subpackage impossible without a public evidence-forging
-constructor. Backend selection exists in exactly one place,
-`localruntime`'s composition, and an architecture test fails if `httpapi`,
-`webui` or any service so much as names a backend. `/v1`, realtime, the CLI,
-the TUI and the WebUI cannot tell which one answered.
-
-One logical `SchemaVersion` governs both physical schemas. The types are chosen
-to preserve observable behaviour rather than to look idiomatic: timestamps and
-uint64 counters are `TEXT` on both backends, because `TIMESTAMPTZ` normalizes
-the caller's zone offset and truncates nanoseconds — both API-visible — and
-`BIGINT` is signed 64-bit while `NUMERIC` would launder the corruption signal a
-non-canonical counter raises. A shared conformance suite and a
-SQLite/PostgreSQL differential suite are what keep the two from drifting.
-
-SQLite's atomicity came from holding one connection; a pool has no such
-property, so every run-scoped write takes a row lock on its run before the reads
-it depends on. Isolation stays `READ COMMITTED`.
-[ADR 0037](adr/0037-postgresql-is-the-shared-platform-persistence-backend.md)
-records the reasoning.
-
-Task 078 added a fourth capability to both backends at schema 9:
-`ScenarioExecutionStore`, for persisted scenario executions. It is a capability
-of its own because an execution is control-plane metadata that names
-evaluation runs, and neither `ControlStore` nor `EvaluationStore` owns that.
-
-- The store records executions and their ordered run associations.
-- It assigns a per-project completion sequence under the project-row lock.
-- It answers "the latest completed execution in this scope".
-
-Schema 10 (task 101, [ADR 0063](adr/0063-recency-is-a-stored-sort-key-and-a-composite-cursor.md))
-adds a stored, fixed-width recency key to runs and executions — UTC Unix
-nanoseconds, zero-padded to 20 digits, so byte order is time order on both
-backends — and `RecentRunStore`, which lists a project's, an agent's or a
-candidate's runs newest first with a `(key, id)` keyset cursor. The key is
-derived from the stored time at every write and once by the migration's
-backfill; `created_at` remains the time.
-
-Schema 11 ([task 087](tasks/v0.12/087-performance-and-cost-evidence.md)) adds
-one column to the behavior entry table, `operational_counts`: each behavior's 31
-operational counters, as canonical decimal text in a documented order. Those
-counters are its duration buckets and statistics, span and HTTP status classes,
-429s and token sums. The column is decoded without allocating and validated on
-restore like every other counter, and the migration marks existing behaviors
-*not recorded*. It is one column rather than 31 because every ingest rewrites a
-run's entries and reads them back. A column per counter doubled ingest cost in
-the SQLite driver for values nothing queries in SQL. Comparisons sum these
-summaries in Go, per run, per target and over N runs, and price them on read
-when `trustvian-local --pricing` supplied a table. Nothing per target or per
-cost is stored.
-
-Schema 12 ([task 086](tasks/v0.12/086-scenario-and-input-versioning.md),
-[ADR 0067](adr/0067-scenario-provenance-is-recorded-per-execution-side.md))
-adds ten nullable columns to `platform_scenario_executions`. They hold, per
-side, the scenario and input digests the CLI computed and the model and prompt
-reference the side declared. NULL is "not recorded", so the migration
-backfills nothing. A reused reference side copies the referenced execution's
-values. Both backends implement `RunProvenanceStore`, one bounded query from
-runs to the provenance their executions recorded, which compare-repeated reads
-for its `sameness` block. No check reads that block.
-
-Whether that execution is a usable reference, and the verdict itself, stay in
-`ControlPlane`, which reuses `CompareRepeatedEvaluations` unchanged
-([ADR 0054](adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md)).
-
-**Realtime remains in-process.** Two control-plane processes sharing one
-PostgreSQL database share authoritative state and do *not* share realtime
-notifications. Cross-node realtime is [task 069](tasks/v1.0/).
-
-Task 058 added the first service layer and a transport over it:
-
-```text
-producer / CLI (060) · TUI (061) · WebUI (063)
-              │
-              ▼
-        HTTP / JSON  ← adapter only, in platform/httpapi
-              │
-              ▼
-         ControlPlane ← authoritative services
-              │
-              ▼
-     store capabilities → SQLite
-```
-
-`ControlPlane` owns every rule about what an evaluation is; the handler
-decodes, calls one method, and maps the result. The adapter lives in a
-subpackage so it cannot reach package-private state, and a source-scanning
-test fails if it ever references `CompareBehaviorSnapshots`,
-`NewEvaluationScorecard`, `EvaluateEvaluationGate` or a store type directly.
-
-Ingest consumes the public `DecisionRecord` and nothing else — the control
-plane is not a second engine host, and no route analyzes a raw `Event`. Since
-a duplicate record counts twice by design, retries are made safe by a
-monotonic per-run sequence plus the digest of the last accepted record: O(1)
-durable state, with gaps, stale numbers and divergent retries all failing
-closed. The schema moved to version 2 for that cursor, with a real migration
-from version 1. See
-[ADR 0031](adr/0031-control-plane-owns-ingest-and-http-is-an-adapter.md).
-
-[Task 073](tasks/v1.0/073-otel-collector-evaluation-ingest.md) added the
-second producer for that contract. Until then the only way to reach ingest was
-to embed the engine and post records yourself, so a workload observable only
-through OpenTelemetry could be scored on every span and evaluated on none. The
-Collector processor now projects the `Result` it already computed and posts it
-over `/v1`:
-
-```text
-OTLP ─▶ processor ─▶ Engine.Analyze ─▶ Result ─┬─▶ trustvian.* attributes ─▶ exporter
-                                               └─▶ DecisionRecord ──HTTP /v1──▶ ControlPlane
-```
-
-The edge is HTTP, exactly as it is for the CLI, and for the same reason:
-`trustvian-processor` importing `trustvian-platform` would put the platform's
-driver, schema and domain into every Collector distribution built from the
-component. A test in that module fails on the import, on a platform identifier
-in its source, and on the module appearing in its `go.mod` or `go.sum` —
-tests included, since `go.mod` does not distinguish a test-only dependency.
-See [ADR 0038](adr/0038-collector-evaluation-ingest-is-an-http-adapter.md).
-
-Task 059 added realtime as a third adapter over the same service:
-
-```text
-ControlPlane ──after a committed mutation──▶ RealtimePublisher
-                                                   │
-                                          InMemoryRealtimeBus
-                                          bounded / ephemeral
-                                                   │
-                                               SSE adapter
-```
-
-The relationship is one-directional: durable state is authoritative and
-realtime is notification. Publication happens only after a commit, and a
-delivery failure never changes a committed operation's outcome — reporting one
-as failed would make a client retry a write that landed.
-
-The bus retains no history. Each subscriber owns a bounded queue, the
-subscriber count is bounded too, and one that falls behind is disconnected
-rather than blocking the publisher or silently losing events. Every connection
-therefore resynchronizes from authoritative state before consuming
-incrementally. Filtering by project, agent or run happens before enqueue, so a
-busy run cannot overflow a subscriber watching a quiet one. See
-[ADR 0032](adr/0032-realtime-is-bounded-ephemeral-not-authoritative.md).
-
-The control plane holds a publisher and the transport holds a subscriber, so
-neither gains the other's authority — a transport able to publish could
-fabricate state.
-
-Still absent: promotion and event history. The API package itself binds no
-listener; task 062's local runtime composes one, it defaults to loopback, and
-task 063's browser UI is served from that same listener. A gate verdict still
-has no side effect: it is
-evidence about acceptance, not an action. This section records the boundary
-all of it respects, decided in
-[ADR 0022](adr/0022-core-platform-boundary.md).
-
-The two reducers are deliberately separate. An aggregate is O(1) in the record
-count and holds no per-behavior state; a diff needs exactly that state, so it
-carries its own bound (512 distinct behaviors) rather than reopening the
-aggregate's shape. The scorecard then composes both rather than re-reading
-records, and copies only summaries — so its construction cost is independent
-of both record count and behavioral cardinality, and it carries no verdict.
-The gate is where acceptance finally enters, and it stays separate for the
-same reason: the limits are a caller's policy, not a property of evidence.
-See [ADR 0026](adr/0026-evaluation-aggregation-is-bounded-evidence.md),
-[ADR 0027](adr/0027-behavioral-diff-compares-bounded-snapshots.md),
-[ADR 0028](adr/0028-scorecards-are-fixed-shape-comparative-evidence.md) and
-[ADR 0029](adr/0029-hard-gates-use-explicit-integer-evidence.md).
-
-`platform/` is a separate Go module at `trustvian-platform`. The path is
-deliberately not under `github.com/trustvian/trustvian`: Go's `internal/` rule
-turns on import-path ancestry rather than module membership, so a
-repository-prefixed path would be permitted to import the engine's internal
-packages, and this one is a compile error instead.
-
-It depends on the core's **public API only**. Task 053 introduced the
-dependency when aggregation needed `DecisionRecord`; task 054 also consumes
-`StableFeatures` and the public `event` types. Nothing under `internal/` is
-imported — the module path makes that a compile error, and
-`scripts/check-platform-boundary.sh` enforces it along with the reverse
-direction.
-
-Trustvian is becoming a two-layer product: the behavioral engine described
-above, and a platform that evaluates *candidates* — versions of an agent —
-and records promotion decisions. The layering is strictly one-directional:
-
-```text
-                    Platform / control plane
-                    ├── projects, agents, candidates
-                    ├── evaluation runs, scorecards, hard gates
-                    ├── environments and promotion
-                    ├── control API, realtime stream, dashboard
-                    └── control-plane persistence
-                                 │
-                                 │  public API only:
-                                 │  Engine, Result, event, alert, config
-                                 ▼
-                    ┌─────────────────────────┐
-                    │    Trustvian Core       │
-                    │  Event → … → Decision   │
-                    └─────────────────────────┘
-```
-
-Four rules make that arrow one-directional, and each is an invariant rather
-than a preference:
-
-1. **The platform may depend on the core. The core must never depend on the
-   platform.** Not by import, not by interface, not by configuration.
-2. **The platform must not import `internal/*`.** Enforced by an explicit
-   automated check, not by the module boundary — see below.
-3. **No platform-aware branches in the engine.** There is no
-   `if runningUnderControl`, no `EvaluationRunID` field on `Event`, and no
-   mode flag. An engine that behaves differently under the platform is an
-   engine nobody can reason about in isolation.
-4. **`Engine` stays an engine.** Project, Candidate, EvaluationRun, Scorecard,
-   Promotion, Environment, users, and access control are platform concepts and
-   do not appear in the core — not as types, not as fields, not as options.
-
-### What the core already provides the platform
-
-The platform is not blocked on new engine capability, which is why the
-boundary is affordable. It builds on properties that already exist:
-
-| Property | Why the platform needs it |
-|---|---|
-| `Analyze` is read-only; `Observe` is the only write path | An evaluation can score behavior without teaching the baseline |
-| Learning is gated against unsafe decisions | A candidate cannot train its way out of being blocked |
-| Behavioral state is bounded | An evaluation's cost is predictable |
-| Baselines are keyed `{Scope, ActorID, Environment}` | Learning isolation is a key dimension, not a platform concept the engine knows about |
-| `ActorTypeAIAgent`, and agents reuse the normal pipeline | No second engine for agents |
-| `Context.SessionID` correlates without entering the fingerprint | Runs can group events without creating behavioral identity |
-| `Context.DelegatedFrom`, bounded, behavioral | Delegation stability is measurable evidence |
-| `Context.ApprovalStatus`, enforceable by policy | Approval compliance is a gate input |
-| `Result` carries anomaly, confidence, trust, decision, contributors, explanation | A scorecard aggregates evidence that already exists |
-| PostgreSQL persistence; OTel ingestion | The runtime path is already production-shaped |
-| The core retains no raw event history | History is the platform's job, deliberately not the engine's — and the platform retains bounded *evidence* history (067), never raw events |
-| `Result.DecisionRecord()` — a serializable public projection | The platform persists, streams, and aggregates records without naming an internal type or re-declaring behavioral shapes |
-
-`DecisionRecord` is the read boundary itself: a fixed-shape projection of the
-evidence behind one decision, carrying no event payload and no consumer-side
-identifiers. It is a copy, not a second implementation — nothing in it is
-recomputed, and it shares no memory with the `Result` it came from.
-
-Fixed-shape is not size-bounded: caller-supplied strings inside it are not
-length-limited here. Excluding the attribute map removes the part that grows
-without limit; capping what remains is an ingest concern, and belongs to the
-control API rather than to the type.
-
-The event-history row is the load-bearing one. The engine holds learned state,
-not an event log. Any evaluation feature that needs to replay or diff raw events
-needs the platform to store them — and that is a boundary, not a gap.
+Hierarchy discovery uses four collection routes — `GET /v1/projects`,
+`/v1/projects/{id}/agents`, `/v1/agents/{id}/candidates` and
+`/v1/candidates/{id}/evaluation-runs` — with one paging design: `id` byte
+order, an exclusive `after` cursor, `limit` 1..64, and `next_after` present
+exactly when another row follows. `ControlStore` owns the Project, Agent and
+Candidate collections and `EvaluationStore` owns the EvaluationRun collection;
+`ControlPlane` composes both, and the HTTP adapter never learns they came from
+different capabilities. Discovery is bounded as a whole workflow rather than
+only per route: one collection request at startup and on every reconnect, zero
+automatic continuations, and lazy user-triggered descent. The Live view
+subscribes to `GET /v1/realtime` unfiltered
+([ADR 0041](adr/0041-bounded-hierarchy-collections-and-run-scoped-live-view.md)).
 
 ### Two CLI surfaces in one binary
 
-The `trustvian` binary now has two command groups that reach the system
-differently, and the difference is deliberate rather than transitional:
+The `trustvian` binary has two command groups that reach the system
+differently, and the difference is deliberate:
 
 ```text
-analyze / baseline / version   ──▶  root Engine, in process, no network
-project / agent / candidate    ──▶  HTTP /v1  ──▶  control plane
-eval
-tui                            ──▶  HTTP /v1 authoritative reads
-                                 +  SSE /v1/realtime notifications
+analyze / baseline / version     ──▶  root Engine, in process, no network
+project / agent / env / candidate
+promotion / eval / evidence      ──▶  HTTP /v1  ──▶  control plane
+status
+tui                              ──▶  HTTP /v1 authoritative reads
+                                   +  SSE /v1/realtime notifications
+dev                              ──▶  starts trustvian-local and trustvian-collector,
+                                      drives /v1, runs the workload
 ```
 
-[Task 062](tasks/v1.0/062-integrated-local-developer-workflow.md) adds the
-composition that makes those endpoints exist locally:
-
-```text
-Application / Agent
-      │  Engine.Analyze
-      ▼
-DecisionRecord
-      │  HTTP /v1
-      ▼
-┌───────────────────────────────┐
-│ Trustvian local runtime       │
-│                               │
-│ SQLite ← ControlPlane         │
-│             │                 │
-│             ├─ Realtime Bus ───── SSE ──▶ TUI
-│             │                 │
-│             └─ HTTP API ────────────────▶ CLI
-└───────────────────────────────┘
-```
-
-**The engine remains outside the platform service, and that distinction is
-load-bearing.** The runtime owns storage, the control plane, realtime and the
-listener; it does not analyze anything. A producer runs `Engine.Analyze` in its
-own process and posts a `DecisionRecord` — there is no server-side second
-engine, and no raw event route that would become one.
-
-The composition lives in `platform/cmd/trustvian-local`, inside the platform
-module, because the root module still must not import `trustvian-platform`.
-The CLI and TUI find the running endpoint through `.trustvian/runtime.json`
-rather than a Go import, which is what keeps the edge absent while the
-workflow is integrated. See
-[ADR 0035](adr/0035-local-runtime-composes-platform-without-reversing-modules.md).
-
-The engine commands are released offline tools: they run the pipeline against a
-file of events with no platform present. Rewriting them to go through HTTP
-would replace a working local tool with a service dependency and break every
-existing invocation, so they were left exactly as they were.
+The engine commands are offline tools: they run the pipeline against a file of
+events with no platform present.
 
 The control-plane commands are a client of the service layer. They compute no
-diff, no scorecard and no gate — the CLI reads `gate.verdict` from the response
-to choose an exit code and reproduces none of the logic behind it.
-
-`tui` ([task 061](tasks/v1.0/061-terminal-dashboard.md)) is the third shape: a
-long-lived client that holds one SSE subscription for notification and reads
-durable state over HTTP for truth. It is read-only — three GET endpoints — and
-the same edge applies:
-
-```text
-cmd/trustvian ──HTTP + SSE──▶ platform/httpapi ──▶ ControlPlane
-              ✗ Go import
-```
-
-It brings the repository's fourth third-party dependency, a terminal UI
-framework, confined to `cmd/trustvian`. The engine's package graphs stay free
-of it, which `go list -deps` and a test both check —
-[ADR 0034](adr/0034-tui-is-a-bounded-realtime-http-client.md) explains why a
-shipped user interface carrying a UI toolkit is a different claim from the
-behavioral engine depending on one.
-
-### Learning isolation, the core change the platform required
-
-Evaluating two candidates against one actor identity would train one baseline,
-so each candidate would teach the other and the evaluation would measure a
-baseline it had polluted. **Learning isolation is a prerequisite**, and task
-051 implemented it.
-
-The constraint on solving it: the mechanism must be generic. `SessionID` must
-not become baseline identity, an evaluation run must not become fingerprint
-identity, and candidate metadata — git SHA, artifact digest, model or tool-set
-hash — must never become a fingerprint dimension, or every deployment would
-look like a new actor. The engine must not learn what a Candidate is.
-
-`baseline.Key` was made composite in `v0.4` against exactly this kind of need,
-and task 051 extended it: a learning scope is now a key dimension, selected by
-`trustvian.WithLearningScope` and absent from behavioral identity — see
-[ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md).
-
-The platform names the same idea `BehavioralProfileRef` and keeps it separate
-from a candidate or a run, so that how profiles are allocated stays a decision
-a later task can make rather than one a convention already made.
-
-### Inside the platform: everything is an adapter
-
-The platform's own shape is decided in
-[ADR 0023](adr/0023-interfaces-are-adapters.md), and it matters here because
-it is what keeps the boundary above from being re-crossed by accident.
-
-Authoritative logic — evaluation, scoring, policy, behavioral diff, gate
-evaluation, promotion — lives in control-plane services. Three interfaces
-consume them and own none of it:
+diff, no scorecard and no gate. `tui` is a long-lived client that holds one
+SSE subscription for notification and reads durable state over HTTP for truth;
+it is read-only — `GET /v1/evaluation-runs/{id}`, `.../progress` and
+`/v1/realtime`. `dev` and `eval run` compose the runtime around a workload,
+as the [system diagram](#the-platform-system) shows. None of them imports the
+platform:
 
 ```text
-        CLI            TUI            WebUI
-         └──────────────┼──────────────┘
-                        ▼
-              Control-plane services
-                        │
-        ┌───────────────┼───────────────┐
-        ▼               ▼               ▼
-   RealtimeBus      capability       Core engine
-   (transport-       stores          (public API)
-    independent)  (Control/Evaluation/
-                   Behavior/Event)
-```
-
-Two consequences worth stating, because both are easy to erode:
-
-- **A rule implemented in one interface is a defect**, not a feature of that
-  interface. Three copies of a gate rule are three behaviors.
-- **Persistence is capabilities, not a database.** No generic `Database`
-  interface — the same reasoning
-  [ADR 0004](adr/0004-narrow-store-port-in-memory-only.md) used to keep
-  `internal/store.Store` at two methods, applied to a larger surface.
-  Capability interfaces are named once their call patterns are known, which
-  is why the evaluation domain is sequenced before local persistence.
-
-The realtime bus is defined by its abstraction rather than its wire format,
-and must answer bounded queues, slow consumers, subscriber isolation, and
-reconnect behavior as part of its design — not after its first outage.
-
-### Module boundary
-
-The platform lives in a **separate Go module inside this repository** —
-`platform/`, module path `trustvian-platform` — the same arrangement
-`processor/` and `examples/` already use. That choice and its trade-offs are
-argued in [ADR 0022](adr/0022-core-platform-boundary.md).
-
-As of task 053 it imports the core's **public API only** —
-`trustvian.DecisionRecord` and `event.ApprovalStatus` — and nothing under
-`internal/`. That dependency is the one task 050 was built for: the platform
-began consuming engine evidence without a single core change.
-
-Where the core keeps a type internal (`policy.Decision`, `trust.RiskLevel`,
-both carried on the record as `string`), the platform re-declares the small
-closed set of values rather than asking the core to widen its public surface.
-Restating four and six constants is cheaper than a public type nobody outside
-this repository needs.
-
-One thing the module boundary does **not** buy, stated here because it is easy
-to assume otherwise: it does not enforce rule 2. Go's `internal/` restriction
-turns on import-path ancestry rather than module membership, so a nested module
-whose path is `github.com/trustvian/trustvian/platform` could import
-`…/internal/store` and compile. That is why `processor/` and `examples/` are
-named `trustvian-processor` and `trustvian-examples` — their compiler
-enforcement comes from the module *path*, not from being modules.
-
-Rule 2 is therefore enforced by an explicit check in CI that no platform
-source imports `github.com/trustvian/trustvian/internal/…`. A non-prefixed
-module path is recommended alongside it as a second line of defence.
-`GOWORK=off` verification remains for a different purpose: proving the
-module's declared dependencies actually resolve, which a workspace hides.
-
-**The edge points one way, and task 060 is where that gets tested.** The
-developer CLI ships in the root module and drives the platform, which is
-exactly the shape that would tempt someone to import `trustvian-platform` from
-`cmd/trustvian`. That edge must not exist:
-
-```text
-cmd/trustvian ──HTTP /v1──▶ platform/httpapi ──▶ ControlPlane
+cmd/trustvian ──HTTP /v1 + SSE──▶ platform/httpapi ──▶ ControlPlane
               ✗ Go import
 ```
 
 Importing the platform would reverse the dependency, and would also pull the
 platform's implementation types, its SQLite driver and its schema into the root
 module's shipped release artifact. A client that imports the server's domain is
-additionally no longer evidence that the wire contract works.
+additionally no longer evidence that the wire contract works. So the
+control-plane commands use `net/http`, `encoding/json` and `net/url` with
+client-side DTOs, and a test in `cmd/trustvian` fails on a forbidden import, on
+a platform concept named in CLI source, and on `trustvian-platform` appearing
+in the root `go.mod` or `go.sum`
+([ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md)).
 
-So the CLI's control-plane commands use `net/http`, `encoding/json` and
-`net/url` with client-side DTOs, the root `go.mod` gains nothing, and a test in
-`cmd/trustvian` fails on a forbidden import, on a platform concept named in
-CLI source, and on `trustvian-platform` appearing in the root `go.mod` or
-`go.sum`. See
-[ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md).
+`trustvian-local` and `trustvian-collector` are separate binaries. `dev`
+finds each by its flag (`--local-bin`, `--collector-bin`), then its environment
+variable (`TRUSTVIAN_LOCAL_BIN`, `TRUSTVIAN_COLLECTOR_BIN`), then beside the
+`trustvian` executable, then on `$PATH`. The CLI finds a running control plane
+through `runtime.json` rather than a Go import
+([ADR 0035](adr/0035-local-runtime-composes-platform-without-reversing-modules.md)).
+The terminal UI framework is confined to `cmd/trustvian`; the engine's package
+graphs stay free of it, which `go list -deps` and a test both check
+([ADR 0034](adr/0034-tui-is-a-bounded-realtime-http-client.md)).
 
 ## Relationship to a future Alert & Notification layer
 
@@ -1242,8 +1285,7 @@ allocations. See [ADR 0005](adr/0005-fingerprint-computed-once-per-analyze.md).
 
 **Everything in this section is planning, not current architecture.**
 No type, package, or diagram element named here exists in source. See
-[docs/ROADMAP.md § Beyond v0.7 — Strategic Capability
-Direction](ROADMAP.md#beyond-v10) for
+[docs/ROADMAP.md § Beyond v1.0](ROADMAP.md#beyond-v10) for
 the product-level reasoning; this section carries only the durable
 architectural shape, so it doesn't need to be re-derived if the
 roadmap's own prose changes.

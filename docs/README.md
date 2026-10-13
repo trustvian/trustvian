@@ -11,10 +11,12 @@ earlier in the project's life is kept separately under
 
 1. [Project overview](../README.md) — what Trustvian is and the problem it
    solves.
-2. [Getting Started](getting-started.md) — install the CLI and SDK, run a
-   first analysis.
-3. Then pick your integration style: the [Go SDK](sdk-guide.md) to embed the
-   engine, or the [CLI](cli-guide.md) to analyze events from files.
+2. [Getting Started](getting-started.md) — run an agent you already have under
+   Trustvian from the release archive and gate a change to it, or install the
+   CLI and SDK and run a first analysis.
+3. Then pick your integration style: the [local platform](#use-the-local-platform)
+   to watch and gate an agent, the [Go SDK](sdk-guide.md) to embed the engine,
+   or the [CLI](cli-guide.md) to analyze events from files.
 
 ## Understand Trustvian
 
@@ -39,6 +41,15 @@ earlier in the project's life is kept separately under
 | [Collector Processor](../processor/README.md) | The standalone OTel Collector processor and its configuration |
 | [Examples](../examples/README.md) | Runnable programs, each demonstrating one behavior end to end |
 | [GitHub Actions](ci-github-action.md) | Running a behavioral scenario on every pull request: the run action, its permissions, what it preserves, and the offline renderer for its artifact |
+
+## Use the local platform
+
+| Document | What's in it |
+|---|---|
+| [Local Development](local-development.md) | `trustvian dev`: one command that runs your agent under a local control plane and Collector, what `make local` starts, and how clients discover it |
+| [Platform CLI](platform-cli.md) | `project`, `agent`, `candidate`, `env`, `promotion`, `eval` (`run`, `report`, `compare`, `compare-repeated`, `operational`), `evidence` and `status`, scenarios and their provenance, and the exit-code contract |
+| [Terminal Dashboard](tui.md) | `trustvian tui`: one evaluation run, live, in the terminal |
+| [Web Interface](webui.md) | The browser surface: Status, Live, Overview, Projects, Runs, Traces, Change Impact, Evidence, Promotions and Manage |
 
 ## Operate Trustvian
 
@@ -78,7 +89,7 @@ Two documents share a name and answer different questions:
 
 ## Project direction and decisions
 
-Four documents, four different questions. The distinction matters:
+Six documents, six different questions. The distinction matters:
 
 | Question | Document |
 |---|---|
@@ -87,6 +98,7 @@ Four documents, four different questions. The distinction matters:
 | What shipped, and when? | [CHANGELOG.md](../CHANGELOG.md) |
 | What is being built right now? | [Active tasks](tasks/README.md) |
 | Why is the architecture the way it is? | [Decision records](adr/README.md) |
+| What did a milestone measure? | [Results](results/2026-10-12-model-change-report/README.md) — the `v0.12.0` measured Model Change Report |
 
 The [Roadmap](ROADMAP.md) also defines the `v1.0` production-readiness gate.
 Its decomposition into implementation tasks lands in
@@ -103,6 +115,7 @@ Its decomposition into implementation tasks lands in
 | [Release Guide](release-guide.md) | **How** a release is produced and verified, and why it works that way |
 | [Branching Strategy](governance/branching.md) | Branches, release candidates, hotfixes, maintenance lines |
 | [Agent Governance](governance/agents.md) | What AI coding agents may and may not do, and the credential boundary |
+| [Trustvian Sentinel](sentinel.md) | The advisory Copilot code-review rubric, and how a human administrator activates it |
 
 Release *authority* and release *procedure* are deliberately separate
 documents. If the question is "am I allowed to do this", it is governance; if

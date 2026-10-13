@@ -55,7 +55,7 @@ and `event`.
    `policy.Policy`/`Rule`/`Condition` require Go code (closures,
    interfaces implemented per-rule) to construct, rather than being
    buildable as a plain value. That data-not-code property is what
-   will let a future YAML loader exist as a pure adapter.
+   lets the `config` package's YAML loader exist as a pure adapter.
 
 6. **OTel stays confined.** Grep for `go.opentelemetry.io/otel` outside
    `internal/otel`. Any hit is a violation of the "core engine has zero

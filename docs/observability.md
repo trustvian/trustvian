@@ -51,19 +51,24 @@ Using the Go SDK or the CLI directly, rather than the Collector? Then
 these metrics do not exist — they are a property of the long-lived
 runtime, not of the library.
 
-### The bundled demo collector records them into a no-op
+### The shipped collector records them into a no-op
 
-`processor/cmd/trustvian-collector` — the minimal binary the reference
-Docker Compose deployment runs — supplies a **no-op `MeterProvider`**. Its
-hand-built telemetry factory exists to keep the demo's dependency graph
-small: the Collector's own `otelconftelemetry` factory transitively pulls
-in AWS/Azure/GCP resource detectors and a Kubernetes client, which a
-minimal demo has no use for.
+`processor/cmd/trustvian-collector` — the minimal binary in the release
+archives and the official image, and the one the reference Docker Compose
+deployment builds — supplies a **no-op `MeterProvider`**. Its hand-built
+telemetry factory exists to keep its dependency graph small: the
+Collector's own `otelconftelemetry` factory transitively pulls in
+AWS/Azure/GCP resource detectors and a Kubernetes client, which a minimal
+collector has no use for.
 
 The consequence is worth stating plainly: **Trustvian records these
 metrics there, and nothing exports them.** `service.telemetry.metrics` is
 rejected by that binary for the same reason, since no telemetry factory
-claims the key.
+claims the key:
+
+```text
+'service.telemetry' has invalid keys: metrics
+```
 
 To actually collect them, build a Collector distribution the normal way —
 [`ocb`](https://opentelemetry.io/docs/collector/custom-collector/) with
@@ -377,6 +382,10 @@ HTTP server span through the full processor path — at `-benchtime
 | With instrumentation, no metrics pipeline | 1226 | 1352 | 33 |
 | With instrumentation and a real metrics SDK | 1562 | 1353 | 33 |
 
+Measured when the instrumentation was added. The span path has done more work
+since: at `v0.12.0`, `BenchmarkConsumeTraces` is 2,432 B/op and 46 allocs/op
+([Performance § v0.12 task 105](PERFORMANCE.md#v012-task-105-pipeline-status-surface)).
+
 Two things worth reading off that table:
 
 - **Instrumentation allocates nothing.** Allocations per span are
@@ -437,14 +446,17 @@ persistence contract behind readiness is in
 
 A runtime security engine that leaks is a security problem, so the
 long-lived runtime's resource ownership is audited rather than assumed.
-The most useful result is how little there is: non-test Trustvian code
-contains **one** goroutine, **zero** channels, **zero** tickers, and
-**zero** timers.
+The most useful result is how little there is. Without a `status:` block,
+the processor runs **one** goroutine and holds **zero** channels, **zero**
+tickers, and **zero** timers. A `status:` block adds the status reporter: one
+loop goroutine with one ticker and two channels, and one goroutine per report
+that ends with its request.
 
 | Resource | Bound | Shutdown owner |
 |---|---|---|
 | Health-server goroutine | One, with a bounded header-read timeout | `Shutdown` → `http.Server.Shutdown` |
-| Channels, queues, tickers, timers | None exist | — |
+| Status reporter (only with `status:`) | One loop goroutine and one ticker; one report in flight at a time, its request bounded by the smaller of the interval and 5 s, and its body by 256 KiB | `Shutdown` → `Stop`, before anything it reads is torn down |
+| Queues, timers | None exist | — |
 | PostgreSQL pool | `MaxConns`; connection lifetime 1h, idle 30m | `Shutdown` → `Close`, exactly once |
 | In-memory store | O(distinct actors), each actor's baseline capped | Process lifetime |
 | Meter and instruments | Fixed, 19 series (15 always, 4 evaluation-only) | **The Collector** — never Trustvian |

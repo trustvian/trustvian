@@ -53,7 +53,7 @@ Policy: rule "external-post-requires-approval" (external.post requires approval;
 
 Decision: block (rule "external-post-requires-approval": external.post requires approval; approval evidence was not Approved)
 
-Alert: alt_e69259f605ee60ea3b0402dd9bf0c2b6 severity=high reasons=[transition observed 20/40 (50.00%) of this fingerprint's outgoing transitions transition observed 20/40 (50.00%) of this fingerprint's outgoing transitions, carrying 1.00 bits of surprise under the learned first-order model behavioral sequence via fingerprints 851a5a2993ffb7ef -> 65be207313221b27 has never been observed leading to this one, for this actor delegator "unknown-agent" has never been observed for this actor policy rule "external-post-requires-approval": external.post requires approval; approval evidence was not Approved]
+Alert: alt_7dc321b115939f92becbc74d87e0d5bb severity=high reasons=[transition observed 20/40 (50.00%) of this fingerprint's outgoing transitions transition observed 20/40 (50.00%) of this fingerprint's outgoing transitions, carrying 1.00 bits of surprise under the learned first-order model behavioral sequence via fingerprints 851a5a2993ffb7ef -> 65be207313221b27 has never been observed leading to this one, for this actor delegator "unknown-agent" has never been observed for this actor policy rule "external-post-requires-approval": external.post requires approval; approval evidence was not Approved]
 ```
 
 (`Alert.ID` is randomly generated per run — see `alert.New`.
@@ -67,8 +67,9 @@ so both default to `0`.)
 
 - **`config.AnomalyConfig` closes the gap task 032 found.**
   `DelegationWeight`/`NGramWeight` are set through public config, not
-  an internal Go struct literal — the first example in this directory
-  to configure anomaly scoring at all, not just Policy.
+  an internal Go struct literal. With
+  [configured-engine](../configured-engine/), it is one of two examples
+  here that configure anomaly scoring at all.
   `config.CompileAnomaly(config.AnomalyConfig{})` (every field
   omitted) reproduces `anomaly.DefaultConfig()` byte-for-byte, proven
   by `TestCompileAnomalyZeroValueMatchesDefaultConfig` in

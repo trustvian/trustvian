@@ -46,24 +46,23 @@ routine traffic. There is no one weight that is right for a cron job, a
 chatty RPC poller, and a human-driven UI at once, so the project ships
 the mechanism rather than a guess.
 
-Enabling it is one `Option`, written from code inside the `trustvian`
-module:
+Enabling it is one `Option`, compiled through the public `config`
+package (see [docs/anomaly-config-guide.md](../../docs/anomaly-config-guide.md)):
 
 ```go
-cfg := anomaly.DefaultConfig()
-cfg.FrequencyWeight = 0.6 // after measuring your own fleet's jitter
-engine := trustvian.NewEngine(trustvian.WithAnomalyConfig(cfg))
+ac, err := config.CompileAnomaly(config.AnomalyConfig{
+	Version:         config.AnomalySchemaVersionV1,
+	FrequencyWeight: 0.6, // after measuring your own fleet's jitter
+})
+if err != nil {
+	log.Fatal(err)
+}
+engine := trustvian.NewEngine(trustvian.WithAnomalyConfig(ac))
 ```
 
-This program does not do that, and cannot: `examples/` is a separate Go
-module and therefore a genuinely external consumer, while
-`anomaly.Config` lives under `internal/`. That is the same boundary that
-flattens every example's `Decision` to `observe_only` — see
-[the examples index](../README.md#a-note-on-decision) and
-[ADR 0002](../../docs/adr/0002-public-api-boundary.md). What the example
-does instead is print the signal's `Value` and `Weight` side by side, so
-the distinction between "detected" and "counted" is visible in the
-output rather than only in prose.
+This program keeps the default on purpose. It prints the signal's
+`Value` and `Weight` side by side, so the distinction between "detected"
+and "counted" is visible in the output rather than only in prose.
 
 Run it:
 
@@ -90,7 +89,9 @@ frequency_deviation: value=1.00 weight=0.00 -> contributes 0.00 to Anomaly.Score
 Signal present in Contributors, as expected. Raise FrequencyWeight to make it count.
 ```
 
-Unlike the other five examples, this final event's `Anomaly.Confidence`
+Unlike the final events of `basic`, `credential-misuse`,
+`unexpected-dependency`, `external-destination` and `ai-agent`, this one's
+`Anomaly.Confidence`
 is `1.00` (the fingerprint is fully mature) and `categorical_novelty`
 does not appear in `Contributors` at all — the sole entry under
 `Detected:` is `frequency_deviation`, at its maximum value of `1.00`.

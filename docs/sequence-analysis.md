@@ -40,8 +40,10 @@ Anomaly.Score  (unchanged formula, one more Signal folded in)
 
 `transition_deviation` answers exactly one question: **has this exact
 predecessor fingerprint ever led to this destination fingerprint
-before, for this actor?** Not "how often" (no rarity threshold yet),
-not "how probable" (no Markov model yet) — just seen vs. never seen.
+before, for this actor?** Not "how often" (that is
+[`transition_rarity`](#transition-rarity-v06-task-026)), not "how
+surprising" (that is [`markov_surprisal`](#first-order-markov-surprisal-v06-task-028))
+— just seen vs. never seen.
 That is a deliberate scope boundary, not an oversight — see
 [task 025's Non-Goals](archive/tasks/v0.6/025-sequence-analysis-foundation.md#non-goals).
 
@@ -67,22 +69,24 @@ type FingerprintStats struct {
 }
 ```
 
-## Scope: `baseline.Key{ActorID, Environment}`
+## Scope: `baseline.Key{Scope, ActorID, Environment}`
 
 A transition is scoped to exactly the same key every other learned
 signal in this codebase already uses — no new identity concept, no
 mixing of unrelated actors' history. `svc-a`'s `read -> delete` and
 `svc-b`'s `read -> delete` are tracked completely independently,
 inherited for free from `internal/store`'s existing per-`Key` sharding.
+`Scope` is the Engine's learning scope (`WithLearningScope`, default
+`""`): two scopes keep separate sequence history for the same actor.
 
 ## Sequence length: one step
 
 The first detector operates on `E(n-1) -> E(n)` only — the smallest
 possible unit of order, and a deliberately narrow foundation (see
 [task 025's Non-Goals](archive/tasks/v0.6/025-sequence-analysis-foundation.md#non-goals)).
-A future n-gram or Markov task can generalize `LastFingerprintID` into
-a small, explicitly-bounded ring buffer without this design being
-reversed — the write path (`Baseline.Observe`) and read path
+The [3-gram detector](#bounded-3-gram-detection-v06-task-027) below
+extends this by exactly one more fingerprint (`PreviousFingerprintID`)
+without reversing it — the write path (`Baseline.Observe`) and read path
 (`anomaly.Score`) shapes stay the same; only how much history is kept
 grows.
 
@@ -159,11 +163,11 @@ engine := trustvian.NewEngine(trustvian.WithAnomalyConfig(ac))
 ```
 
 See [Anomaly Configuration Guide](anomaly-config-guide.md) for the
-full field reference. The Collector processor does not yet gain
-parity — `processor/go.mod` still pins `v0.5.0`, predating this
-capability (and every other `v0.6`/`v0.7` one) equally; that is
-separate, later work once the pinned dependency is bumped, not a gap
-specific to this signal.
+full field reference. The Collector processor has no anomaly
+configuration block: its config accepts `policy`, `storage`, `health`,
+`evaluation`, and `status`, so it scores with `anomaly.DefaultConfig()`,
+where every sequence weight is `0`. That holds for every `v0.6`/`v0.7`
+signal equally; it is not specific to this one.
 
 ## Transition rarity (`v0.6` task 026)
 
@@ -190,8 +194,9 @@ rarity(A -> B)     = 1 - frequency(A -> B)
   *predecessor's* own stats — giving an O(1) computation of the correct
   statistic, no scan of `Baseline.Fingerprints` required.
 - **Naming.** Called *frequency*/*rarity*, never *probability* — an
-  unsmoothed empirical ratio, not a Markov model (see ADR 0011 § Why
-  Markov still waits).
+  unsmoothed empirical ratio, not a Markov model. The
+  [Markov signal](#first-order-markov-surprisal-v06-task-028) below
+  reads the same ratio on a different curve.
 - **Minimum support.** `transition_rarity` only fires once
   `OutgoingTransitionTotal_A >= Config.MinTransitionObservations`
   (default `20`) — below that, a low frequency is evidence of too
@@ -277,12 +282,31 @@ frequency(A, B -> C) = TrigramCounts_C[{A,B}] / TrigramContinuationTotal_B[A]
   ac, err := config.CompileAnomaly(cfg)
   ```
 
-## What's next
+## First-order Markov surprisal (`v0.6` task 028)
 
-`docs/ROADMAP.md` § v0.6 lists the one remaining, unscoped slice beyond
-this foundation, transition rarity, and bounded 3-gram detection:
-Markov transition probabilities (a full `P(*|A)` row, with smoothing,
-over the same counters this and task 026 already established) — not
-implemented yet. This document describes what exists
-today, not what's planned; it will be updated as each slice actually
-ships, not before.
+`markov_surprisal` ([task 028](archive/tasks/v0.6/028-markov-transition-scoring.md),
+[ADR 0013](adr/0013-first-order-markov-surprisal-without-duplicate-evidence.md))
+reads the same evidence as `transition_rarity` — no new state — and
+scores it as surprisal:
+
+```
+P(B|A)      = PredecessorCounts_B[A] / OutgoingTransitionTotal_A
+S           = -log2(P(B|A))
+normalized  = S / (S + k),   k = log2(max(MinTransitionObservations, 2))
+```
+
+- **Not new evidence.** Surprisal and `1 - frequency` are monotonic
+  reparameterizations of one statistic. They never disagree on which
+  of two transitions is rarer; only the curve differs. So when
+  `MarkovWeight > 0`, `transition_rarity` is still reported in
+  `Anomaly.Contributors`, but its weight is forced to `0` — the two
+  cannot double-count, whatever weights are set.
+- **No zero probability, no smoothing.** It shares
+  `transition_rarity`'s gate: an unseen transition (`count == 0`) is
+  `transition_deviation`'s case, so `P(B|A)` is always `> 0`.
+- **Same minimum support.** It reuses `MinTransitionObservations`; no
+  separate threshold exists.
+- **First-order only.** The 3-gram signals above carry the
+  two-step context.
+- **Activation:** `MarkovWeight` (`markov_weight` in YAML), default
+  `0`. See the [Anomaly Configuration Guide](anomaly-config-guide.md).

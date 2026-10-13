@@ -29,8 +29,15 @@ trust 0.30 (high): identity confidence 0.30, anomaly 1.00 at 0% confidence, cont
 Anomaly score: 1.00 (confidence 0.00)
 Detected:
   - categorical_novelty: 1.00 (fingerprint never observed for this actor)
+  - transition_deviation: 1.00 (transition from fingerprint ed44f1240328faef has never been observed leading to this one)
+  - ngram_deviation: 1.00 (behavioral sequence via fingerprints ed44f1240328faef -> ed44f1240328faef has never been observed leading to this one, for this actor)
 Policy: default action (no policy rules configured; observing by default)
 ```
+
+`transition_deviation` and `ngram_deviation` are reported too: no
+warm-up event was ever followed by this fingerprint. `anomaly.DefaultConfig()`
+gives both signals a weight of `0`, so they explain the reading but add
+nothing to `Anomaly.Score`.
 
 This is the mechanism the project spec describes as "Trustvian evaluates
 runtime behavior instead of relying only on identity" — `Operation` and

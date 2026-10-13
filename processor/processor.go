@@ -593,9 +593,11 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 			zap.String("span", span.Name()), zap.Error(err))
 		return nil
 	}
-	p.analyzed.Add(1)
-	p.metrics.RecordAnalysis(ctx, metrics.OutcomeAnalyzed, analysisDuration)
-
+	// The breakdown is recorded before the span is counted evaluated, for the
+	// reason statusSnapshot reads analyzed before Fidelity: a snapshot that
+	// counts this span evaluated then always finds it in the breakdown. The
+	// other order lets a report land between the two and show fidelity summing
+	// to fewer spans than evaluated.
 	if p.statusTracker != nil {
 		p.statusTracker.ObserveEvaluated(status.Evaluated{
 			Semantic:  fidelityOf(result) == event.FidelitySemantic,
@@ -605,6 +607,8 @@ func (p *trustvianProcessor) processSpan(ctx context.Context, resourceAttrs pcom
 			Target:    result.Event.Target.Name,
 		})
 	}
+	p.analyzed.Add(1)
+	p.metrics.RecordAnalysis(ctx, metrics.OutcomeAnalyzed, analysisDuration)
 
 	SetAttributesFromResult(span.Attributes(), result)
 	p.recordDecision(string(result.Decision))

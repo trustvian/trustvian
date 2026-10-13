@@ -28,8 +28,15 @@ trust 0.35 (high): identity confidence 0.35, anomaly 1.00 at 0% confidence, cont
 Anomaly score: 1.00 (confidence 0.00)
 Detected:
   - categorical_novelty: 1.00 (fingerprint never observed for this actor)
+  - transition_deviation: 1.00 (transition from fingerprint 32484698f416a43f has never been observed leading to this one)
+  - ngram_deviation: 1.00 (behavioral sequence via fingerprints 32484698f416a43f -> 32484698f416a43f has never been observed leading to this one, for this actor)
 Policy: default action (no policy rules configured; observing by default)
 ```
+
+`transition_deviation` and `ngram_deviation` are reported too: no
+warm-up event was ever followed by this fingerprint. `anomaly.DefaultConfig()`
+gives both signals a weight of `0`, so they explain the reading but add
+nothing to `Anomaly.Score`.
 
 Notice `confidence` climbs from `0.00` to `1.00` across the warm-up loop
 as `payment-gateway -> POST /payment -> payment-service` matures (20

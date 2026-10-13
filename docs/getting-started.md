@@ -9,7 +9,7 @@ Two paths:
 
 ## Developer preview
 
-From `v0.10.0`. Run your agent under Trustvian, watch its behavior in a browser,
+From `v0.10.0`; the commands below install `v0.12.0`. Run your agent under Trustvian, watch its behavior in a browser,
 gate a change to it over repeated runs, then put that gate on your pull
 requests.
 
@@ -27,7 +27,7 @@ requests.
 ### 1. Install from the archive
 
 ```bash
-V=v0.10.0
+V=v0.12.0
 A=trustvian_${V}_linux_amd64          # or linux_arm64, darwin_amd64, darwin_arm64
 curl -sLO https://github.com/trustvian/trustvian/releases/download/$V/$A.tar.gz
 curl -sLO https://github.com/trustvian/trustvian/releases/download/$V/checksums.txt
@@ -37,7 +37,16 @@ export PATH="$PWD/$A:$PATH"
 trustvian version
 ```
 
-The archive holds three binaries, and they must stay side by side: `trustvian`
+```text
+trustvian_v0.12.0_darwin_arm64.tar.gz: OK
+trustvian v0.12.0
+  revision:  23beffc7a85db17cc22913769f6357953e88dfa0
+  committed: 2026-10-13T12:55:34Z
+  go:        go1.27.2
+  platform:  darwin/arm64
+```
+
+The archive holds three binaries, beside `LICENSE` and `README.md`, and they must stay side by side: `trustvian`
 finds the other two next to itself.
 
 ```text
@@ -59,10 +68,12 @@ trustvian-local
 
 ```text
 Trustvian local runtime
-API:   http://127.0.0.1:39529
-Web:   http://127.0.0.1:39529/
-...
+API:   http://127.0.0.1:62622
+Web:   http://127.0.0.1:62622/
+Store: sqlite
+State: .trustvian/platform.db
 Local clients in this directory can now omit --api-url.
+Press Ctrl-C to stop.
 ```
 
 It keeps its state in `.trustvian/` and binds loopback only. Ignoring that
@@ -76,14 +87,31 @@ In a second terminal, in the same directory, with the `API:` URL from step 2:
 
 ```bash
 OTEL_SERVICE_NAME=support-agent \
-  trustvian dev --api-url http://127.0.0.1:39529 -- ./agent.sh
+  trustvian dev --api-url http://127.0.0.1:62622 -- ./agent.sh
+```
+
+```text
+Trustvian dev
+
+  Project     my-agent
+  Agent       support-agent   (declared by the workload)
+  Candidate   git:d7623b1
+  Environment local
+  Run         dev-git-d7623b1-20261013T210951.574Z
+…
+  Attached to a control plane this command did not start.
+  Owner    existing   (auto: $OTEL_SERVICE_NAME is set)
+…
+Run dev-git-d7623b1-20261013T210951.574Z complete.
 ```
 
 `dev` prints the project, agent, candidate and run it provisioned. It runs your
 command unchanged with an OTLP receiver around it, and exits with your command's
 status. The browser's **Live** view shows the run as soon as telemetry arrives,
 with no identifier to type. Select it to see the agent, tool and service flow
-with the decision, risk, trust and anomaly the server computed.
+with the decision, risk, trust and anomaly the server computed. Several actors
+inside one run draw as one agent there; following one actor and pausing the
+view are planned ([task 109](ROADMAP.md#v0130--proposed)).
 
 `dev` does not use step 2's discovery file. Without `--api-url` it starts a
 control plane of its own that stops when your command exits, which is too soon
@@ -94,7 +122,9 @@ Use one identity throughout: the defaults, with no `--project` or `--candidate`.
 An agent belongs to the project that first registered it. A scenario in step 4
 runs under the repository's name, so after a `dev --project other` run for the
 same agent it stops with `run is outside the scenario execution's scope`
-(exit `3`).
+(exit `3`). A candidate likewise belongs to the agent that first registered it,
+so two agents in one repository need distinct candidates (`--candidate`, or
+`candidate:` on a scenario side).
 
 ### 4. Gate a change with a scenario
 
@@ -127,17 +157,36 @@ echo $?    # 0 PASS, 1 gate FAIL, 2 usage, 3 operational
 ```
 
 `eval run` finds step 2's control plane on its own. It prints each repetition's
-`dev` output to stderr, then the behaviors with their presence counts and the
-gate's six checks:
+`dev` output to stderr. On stdout it prints what each side recorded, the
+behaviors with their presence counts, the gate's six checks, and whether both
+sides ran the same scenario, inputs, model and prompt reference:
 
 ```text
+export-tool   runs 3   (execution scn-export-tool-20261013T210554-7cce71d1)
+Recorded
+  reference: scenario sha256:83f685cef295de851a3e0a3e0c4c5c4c104957418ea84fe69f589b8992b89265   inputs not_declared   model not_recorded   prompt_ref not_recorded
+  candidate: scenario sha256:83f685cef295de851a3e0a3e0c4c5c4c104957418ea84fe69f589b8992b89265   inputs not_declared   model not_recorded   prompt_ref not_recorded
+
 Behavior                                  reference   candidate
   tool/crm_lookup → tools.localhost              3/3         3/3
   tool/export_customer → tools.localhost         0/3         3/3   + added
   tool/knowledge_search → tools.localho…         3/3         3/3
-...
+
+Gate (k = 1, j = 0)
+  PASS reference repetitions completed: 3 (== 3)
+  PASS candidate repetitions completed: 3 (== 3)
+  PASS repetitions failing minimum evidence: 0 (<= 0)
   FAIL repeatedly added behaviors: 1 (<= 0)
-...
+  PASS worst candidate block decisions: 0 (<= 0)   advisory: fresh scope
+  PASS worst candidate critical risk observations: 0 (<= 0)   advisory: fresh scope
+
+Sameness
+  same_scenario    true
+  same_inputs      true
+  same_model       not_recorded
+  same_prompt_ref  not_recorded
+…
+
 Gate: FAIL
 ```
 
@@ -145,7 +194,9 @@ Gate: FAIL
 the gate FAILs with exit `1`: the candidate added a behavior. `--json` writes
 the result document instead.
 
-Every field is required and nothing has a default; the format is in
+`version`, `name`, `runs`, each side's `command` and the five gate limits are
+required, and none has a default. `instrumentation` is optional. The format is
+in
 [Platform CLI § Behavioral scenarios](platform-cli.md#behavioral-scenarios-trustvian-eval-run).
 
 **More than one scenario:**
@@ -172,7 +223,7 @@ and its cost are in
 
 Copy
 [`examples/github-actions/behavioral-gate.yml`](../examples/github-actions/behavioral-gate.yml)
-to `.github/workflows/`, pin both `uses:` lines to a reviewed Trustvian commit,
+to `.github/workflows/`, pin both Trustvian `uses:` lines to a reviewed commit,
 and point `scenario:` (or `suite:` and `scenario-timeout:`) at your files. It
 has two jobs:
 - **`run`** runs the scenario on your pull request's code with read-only
@@ -194,7 +245,9 @@ producer emits `crm_lookup`, `knowledge_search` and `export_customer` as GenAI
 tool spans, `SPAN_COUNT` of them, in that order. To reproduce the walkthrough
 exactly, build it with Go from a clone
 (`cd processor && go build ./cmd/agent-producer`) and copy it into your
-directory beside this wrapper:
+directory beside this wrapper. Commit `agent.sh` and the scenario, and add
+`agent-producer` to `.gitignore`: an untracked file makes the candidate
+`git:<sha>+dirty`.
 
 ```sh
 #!/bin/sh

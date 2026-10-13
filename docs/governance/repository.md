@@ -15,12 +15,13 @@ readable by anyone with repository access.
 
 ## What is enforced
 
-Two repository rulesets and three repository settings.
+Three repository rulesets and four repository settings.
 
 | Ruleset | Applies to | Effect |
 |---|---|---|
 | `Protect main` | `refs/heads/main` | Pull request, checks, squash, linear history, no force push, no deletion |
-| `Protect release tags` | `refs/tags/v*` | No creation, deletion, update, or force-move — except by an Organization Admin |
+| `Release tags: creation` | `refs/tags/*` | No tag creation — except by the `trustvian-release` GitHub App |
+| `Release tags: immutable` | `refs/tags/*` | No tag deletion, update, or force-move — by anyone |
 
 | Repository setting | Value |
 |---|---|
@@ -285,13 +286,13 @@ CI itself is allowed to do.
 
 ## Bypass
 
-Both rulesets grant a bypass entry to **Organization Admin**, with different
-scopes:
+Each ruleset's bypass list is explicit:
 
 | Ruleset | Bypass actor | Mode | Effect |
 |---|---|---|---|
 | `Protect main` | Organization Admin | `pull_request` | May merge a pull request that does not satisfy the rules. **Cannot** push, force-push, or delete `main` directly — that is not a pull request |
-| `Protect release tags` | Organization Admin | `always` | May create, and if necessary correct, `v*` tags |
+| `Release tags: creation` | the `trustvian-release` GitHub App | `always` | May create a tag. Only the release workflow's `publish` job can mint its token, after an Organization Admin approved the `release` deployment |
+| `Release tags: immutable` | none | — | Nobody may update, delete, or force-move a tag, an Organization Admin included |
 
 Read `pull_request` mode precisely: it is not an exemption from the pull
 request *path*, it is an exemption available *within* it. Direct pushes to
@@ -338,17 +339,21 @@ The tag bypass is `always` rather than `pull_request` for a structural reason:
 **a tag is not a pull request**, so `pull_request` mode would grant nothing at
 all on a tag ruleset.
 
-With `creation` now restricted, some actor has to be able to create a release
-tag, or releases stop entirely. That authority is deliberately given to a
-human Organization Admin and to nobody else — not to CI, not to
-`GITHUB_TOKEN`, not to an agent. It is controlled release authority rather
-than a general protection bypass.
+With `creation` restricted, some actor has to be able to create a release
+tag, or releases stop entirely. That authority is given to the
+`trustvian-release` GitHub App and to nobody else — not to a person, not to
+`GITHUB_TOKEN`, not to an agent. Its private key is a secret of the `release`
+environment, so the App acts only inside a release run an Organization Admin
+approved. It is controlled release authority rather than a general protection
+bypass
+([ADR 0060](../adr/0060-agent-operated-releases-with-environment-approval.md)).
 
 ## Release tags
 
-Tags matching `v*` are protected against **creation**, deletion, update, and
-force-move. A human Organization Admin is the authorized bypass actor; every
-other identity is refused, including `GITHUB_TOKEN`.
+Every tag is protected against **creation**, deletion, update, and
+force-move. Only the `trustvian-release` App may create one; nobody may change
+or delete one. Every other identity is refused, including `GITHUB_TOKEN` and
+an Organization Admin.
 
 That makes published tags immutable in the strict sense: `v0.9.0`,
 `v0.9.0-rc.1`, `rc.2`, and `rc.3` cannot be moved or deleted by any normal
@@ -364,13 +369,16 @@ promotion, what a human must do rather than automation — is
 |---|---|---|
 | `ci.yml` | push / PR on `main` | `contents: read` |
 | `nightly.yml` | schedule, manual | `contents: read` |
-| `release.yml` | `workflow_dispatch` from `main` | `contents: read`; `build` `id-token`/`attestations: write`; `image` `packages: write` + `id-token: write`; only `publish` `contents: write` (+ `packages: write`), in the `release` environment that an Organization Admin approves |
+| `release.yml` | `workflow_dispatch` from `main` | `contents: read`; `build` `id-token`/`attestations: write`; `image` `packages: write` + `id-token: write`; `publish` `packages: write`, in the `release` environment that an Organization Admin approves. No job holds `contents: write` |
+| `release-audit.yml` | release events, weekly | `contents: read`; its job adds `attestations: read` and `issues: write` |
+| `trustvian-run-action.yml` | push / PR on `main`, when the CI actions change | `contents: read` per job; only its comment job adds `pull-requests: write` |
 
 No workflow merges pull requests or pushes to `main`: there is no `gh pr
 merge`, no `pulls.merge`, and no `git push origin main` anywhere in
-`.github/workflows/`. The only `contents: write` is the release job that
-creates a GitHub Release from a tag — and even that token cannot reach `main`,
-because `GITHUB_TOKEN` is not a bypass actor on the ruleset.
+`.github/workflows/`. The only `contents: write` is the `trustvian-release`
+App's token, minted inside the approved `publish` job to create the tag and
+the GitHub Release — and even that token cannot reach `main`, because the App
+is not a bypass actor on `Protect main`.
 
 Repository-wide, the default `GITHUB_TOKEN` is **read**, and **GitHub Actions
 may not approve pull requests**. That second setting matters more than it

@@ -12,7 +12,8 @@ echo '<the json below>' > /tmp/e.json
 ./bin/trustvian analyze /tmp/e.json
 ```
 
-Note: `analyze` is fully stateless — every event below is scored as
+Note: `analyze` never writes a baseline, and without
+`--storage-config` it has none to read — every event below is scored as
 the actor's first-ever observation (see
 [CLI Guide § trustvian analyze](cli-guide.md#trustvian-analyze)). What
 these scenarios demonstrate is the pipeline's *cold-start* behavior:
@@ -223,9 +224,35 @@ destination stays flagged **even once fully familiar** — see
 [Architecture § design choices](ARCHITECTURE.md#design-choices-worth-knowing-before-you-extend-this)
 and the end-to-end proof in
 [`engine_test.go`'s `TestAnalyzeSensitiveTargetFloorEndToEnd`](../engine_test.go).
-That's a Go-SDK-only capability today (see
-[the public/internal boundary](sdk-guide.md#configuring-from-outside-the-module)),
-not yet reachable from the CLI.
+The CLI reaches it through `--anomaly-config` and the
+`sensitive_target_floor` key (see the
+[Anomaly Configuration Guide](anomaly-config-guide.md#loading-from-a-yaml-file)).
+With that guide's `anomaly.yaml`, the same event reports the floor as a
+contributor:
+
+```bash
+trustvian analyze --anomaly-config anomaly.yaml /tmp/e.json
+```
+
+```
+Trustvian Behavioral Analysis
+
+Service: order-service
+Anomaly: 1.00
+Trust:   0.40
+Risk:    HIGH
+
+Detected:
+  ! fingerprint never observed for this actor
+  ! target "secrets-manager" carries a fixed risk floor regardless of baseline familiarity
+
+Decision: BLOCK
+Reason:   trust score indicates high or critical risk
+```
+
+At cold start the floor does not move `Trust`: anomaly confidence is
+zero. It matters once the fingerprint is familiar, which is what the
+end-to-end test proves.
 
 ## Valid identity, abnormal behavior
 
@@ -289,6 +316,6 @@ Learned:          3
 Skipped:          1 (flagged by policy; not learned from)
 ```
 
-(Corpus: three consistent `order-service` DB calls, one unrelated
+(Corpus: three consistent `svc-payment` DB calls, one unrelated
 low-confidence external-call event that gets correctly excluded from
 learning. See [`cmd/trustvian/testdata/corpus.json`](../cmd/trustvian/testdata/corpus.json).)

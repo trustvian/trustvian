@@ -18,7 +18,8 @@ import (
 // reporter goroutine reads the span counters while processSpan increments
 // them, and the reads are not one atomic snapshot. A report whose evaluated,
 // invalid or analyze_errors exceeds received is refused by the control plane,
-// so every snapshot taken under concurrent load must hold all three bounds.
+// so every snapshot taken under concurrent load must hold all three bounds. The
+// fidelity breakdown must also cover every span the snapshot counts evaluated.
 func TestStatusSnapshotCountsNeverContradictEachOther(t *testing.T) {
 	p, err := newTrustvianProcessor(componenttest.NewNopTelemetrySettings(), consumertest.NewNop(), &Config{
 		Status: &StatusConfig{APIURL: "http://127.0.0.1:1", Interval: time.Minute},
@@ -70,8 +71,15 @@ func TestStatusSnapshotCountsNeverContradictEachOther(t *testing.T) {
 	started := time.Now()
 	snapshots := 0
 	check := func() {
-		spans := p.statusSnapshot(started, time.Now()).Spans
+		snapshot := p.statusSnapshot(started, time.Now())
+		spans := snapshot.Spans
 		received, _ := strconv.ParseUint(spans.Received, 10, 64)
+		evaluated, _ := strconv.ParseUint(spans.Evaluated, 10, 64)
+		semantic, _ := strconv.ParseUint(snapshot.Fidelity.Semantic, 10, 64)
+		transport, _ := strconv.ParseUint(snapshot.Fidelity.Transport, 10, 64)
+		if semantic+transport < evaluated {
+			t.Fatalf("snapshot %d: fidelity %d+%d covers fewer spans than evaluated %d", snapshots, semantic, transport, evaluated)
+		}
 		for name, value := range map[string]string{
 			"evaluated": spans.Evaluated, "invalid": spans.Invalid, "analyze_errors": spans.AnalyzeErrors,
 		} {

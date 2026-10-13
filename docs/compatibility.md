@@ -55,7 +55,7 @@ reconstructed later. Everything else in this table is already released.
 | Configuration defaults | STABLE WITH DEPRECATION | A default is not changed silently | Documented default changes in a minor, called out in CHANGELOG | See [behavioral compatibility](#behavioral-compatibility) |
 | CLI commands and flags | OPERATIONALLY STABLE | `analyze`, `baseline`, `version`, `--config`, `--anomaly-config`, `--storage-config` keep working | New commands and flags | Major to remove or repurpose |
 | `dev --instrumentation` values | OPERATIONALLY STABLE | `existing`, `none` and `auto` keep their meaning; `auto` never injects on absence of evidence | New modes — `python-zero-code` is reserved and currently refused | Major to remove or repurpose a value |
-| CLI exit codes | OPERATIONALLY STABLE | Scoped by command family; `1` means gate failure only for `eval compare` — see [CLI](#cli) | Adding a code, or a new family with its own scoped contract | Major |
+| CLI exit codes | OPERATIONALLY STABLE | Scoped by command family; `1` means gate failure only for `eval compare`, `eval compare-repeated` and `eval run` — see [CLI](#cli) | Adding a code, or a new family with its own scoped contract | Major |
 | `trustvian-run` GitHub Action inputs and outputs | OPERATIONALLY STABLE | See [GitHub Action](#github-action) | New inputs and outputs | Major to remove or repurpose |
 | `trustvian-run` artifact (`result.json`, `trustvian-run.json` v`1`) | OPERATIONALLY STABLE | See [GitHub Action](#github-action) | New metadata fields | Major, or a new metadata version |
 | `trustvian-run` job summary | OBSERVATIONAL | Not a machine interface | Any change | None |
@@ -735,7 +735,8 @@ the life of `v1`.
 
 Metric names, types, and label keys are dashboard contracts. Today:
 `trustvian.analyses`, `trustvian.decisions`, `trustvian.observations`,
-`trustvian.analysis.duration`, `trustvian.observe.duration`, with the
+`trustvian.analysis.duration`, `trustvian.observe.duration`,
+`trustvian.evaluation.records`, `trustvian.evaluation.duration`, with the
 label keys `trustvian.decision` and `trustvian.outcome`.
 
 - Adding a metric or a label key: minor.
@@ -777,10 +778,10 @@ carry no promise beyond pointing at a signed image — production
 deployments should pin the immutable tag.
 
 Release artifacts are named `trustvian_<version>_<os>_<arch>` with a
-`.tar.gz` or `.zip` extension, published alongside `checksums.txt`, an
-SBOM, provenance attestations, and a Cosign signature. The naming
-pattern and the presence of those files are stable; the internal layout
-of an archive is not.
+`.tar.gz` or `.zip` extension, published alongside `checksums.txt`, with
+build provenance attestations for each. The image carries the SBOM, its
+provenance and the Cosign signature. The naming pattern and the presence
+of those files are stable; the internal layout of an archive is not.
 
 ## GitHub Action
 

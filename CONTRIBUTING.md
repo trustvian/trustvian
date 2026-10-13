@@ -56,7 +56,7 @@ Trustvian is four Go modules, and they are separate on purpose:
 | `.` (root) | The engine, CLI, and public API |
 | `processor/` | The OpenTelemetry Collector processor |
 | `examples/` | Runnable examples — and proof the public API works from outside |
-| `platform/` | The control-plane domain (evaluation), which the engine never depends on |
+| `platform/` | The control plane — evaluation domain, SQLite and PostgreSQL stores, the `/v1` API, the WebUI and `trustvian-local` — which the engine never depends on |
 
 All three nested modules resolve the core through a `replace` directive.
 **Always verify them with the workspace disabled**:
@@ -97,7 +97,7 @@ Not every test runs on every commit:
 
 | Tier | Runs | What it covers |
 |---|---|---|
-| **Pull request / push** | `main` | Format, vet, build, tests, race, and `govulncheck` — all four modules. PostgreSQL integration with `-short`. Backup, restore, and upgrade from the previous release against PostgreSQL 17. Release-matrix dry run, container build (amd64), module consistency, workflow action references, Compose config validation. |
+| **Pull request / push** | `main` | Format, vet, build, tests, race, and `govulncheck` — all four modules. PostgreSQL integration with `-short`. Backup, restore, and upgrade from the previous release against PostgreSQL 17. The core/platform boundary. Release-matrix dry run, container build (amd64), module consistency, workflow action references, release tooling tests, the pull request title, Compose config validation. |
 | **Nightly** | Scheduled, or on demand | The full PostgreSQL stress tier (high-contention writes, concurrent first-writes, bounded row counts), database-restart durability, the reference deployment's end-to-end smoke test, and its recovery drill. |
 
 The split is by cost, not by importance. Correctness gates belong on pull
@@ -168,11 +168,14 @@ shows how.
 |---|---|---|
 | `.github/workflows/ci.yml` | push / PR on `main` | Quality gates |
 | `.github/workflows/nightly.yml` | schedule, manual | Expensive tiers |
-| `.github/workflows/release.yml` | version tag only | Release artifacts, container image, signing |
+| `.github/workflows/release.yml` | manual dispatch from `main` (`make release`) | Release artifacts, container image, signing; publishes only after an Organization Admin approves the `release` deployment |
+| `.github/workflows/release-audit.yml` | release events, weekly | Checks every published release's author, tag and provenance |
+| `.github/workflows/trustvian-run-action.yml` | push / PR on `main`, when the CI actions change | End-to-end test of the `trustvian-run` and `trustvian-comment` actions |
 
 `ci.yml` and `nightly.yml` are read-only, need no secrets, and publish
 nothing, so pull requests from forks run the full gate set with nothing to
-leak. Only `release.yml` publishes, and only on a tag — see
+leak. Only `release.yml` publishes, and only after that approval — see
+[docs/release-runbook.md](docs/release-runbook.md) and
 [docs/release-guide.md](docs/release-guide.md).
 
 If CI fails on formatting, run `make fmt` — CI reports violations but never
@@ -182,13 +185,14 @@ rewrites your code.
 
 This repository publishes exactly one Go module — the root,
 `github.com/trustvian/trustvian`. The `processor`, `examples`, and `platform`
-modules are repository-internal: their module paths are not resolvable and
-they are built from a clone.
+modules are repository-internal: their module paths are not resolvable, and
+they are built from a clone. The release archives carry the binaries two of
+them build, `trustvian-local` and `trustvian-collector`.
 
 All three resolve the core through a local `replace`. `platform` requires it
-at the zero placeholder Go writes for a fully replaced dependency, because the
-`DecisionRecord` API it consumes has not been published in any tag — naming a
-released version would be a claim that is false.
+at the zero placeholder Go writes for a fully replaced dependency: it always
+builds against the core in the same checkout, never a published tag, so naming
+a released version would be a claim that is false.
 
 `platform`'s module path also sits outside `github.com/trustvian/trustvian` on
 purpose, which is what makes a core `internal/*` import a compile error rather

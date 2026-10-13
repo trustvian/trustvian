@@ -28,21 +28,27 @@ trust 0.40 (high): identity confidence 0.40, anomaly 1.00 at 0% confidence, cont
 Anomaly score: 1.00 (confidence 0.00)
 Detected:
   - categorical_novelty: 1.00 (fingerprint never observed for this actor)
+  - transition_deviation: 1.00 (transition from fingerprint c0400b6d1425679c has never been observed leading to this one)
+  - ngram_deviation: 1.00 (behavioral sequence via fingerprints c0400b6d1425679c -> c0400b6d1425679c has never been observed leading to this one, for this actor)
 Policy: default action (no policy rules configured; observing by default)
 ```
+
+`transition_deviation` and `ngram_deviation` are reported too: no
+warm-up event was ever followed by this fingerprint. `anomaly.DefaultConfig()`
+gives both signals a weight of `0`, so they explain the reading but add
+nothing to `Anomaly.Score`.
 
 The RPC-to-inventory-service fingerprint matures to full confidence over
 the warm-up loop, same as the other maturity-loop examples. The secrets
 access is a different operation category (`external` vs. `rpc`) against
 a different target entirely, so it's scored as a brand-new fingerprint —
 `Trust` collapses to the actor's degraded `IdentityConfidence` (`0.40`).
-See [Architecture § design choices](../../docs/ARCHITECTURE.md#design-choices-worth-knowing-before-you-extend-this)
-for `anomaly.Config.SensitiveTargetFloor`, a stronger, Go-SDK-only
-version of this scenario where a sensitive destination stays flagged
-even once fully familiar — out of scope for this example, since building
-it requires an `anomaly.Config` from `internal/anomaly`, which (per
-[Non-Goals](../../docs/archive/tasks/v0.1/010-examples.md)) this example, as a true
-external module, cannot construct. See
+A stronger version of this scenario sets a sensitive-target floor
+(`config.AnomalyConfig.SensitiveTargetFloor`, compiled with
+`config.CompileAnomaly`), so a sensitive destination stays flagged even
+once fully familiar — see
+[docs/anomaly-config-guide.md](../../docs/anomaly-config-guide.md). This
+example keeps the default, empty floor. See
 [the examples index](../README.md#a-note-on-decision) for why `Decision`
 here is `observe_only` rather than the `BLOCK` shown in
 [docs/use-cases.md](../../docs/use-cases.md#service-to-service-security).

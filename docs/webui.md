@@ -26,17 +26,20 @@ where you already have one, from a log or a CI job.
 ## Quick start
 
 ```bash
-make local
+trustvian-local
 ```
 
 ```text
 Trustvian local runtime
-API:   http://127.0.0.1:54321
-Web:   http://127.0.0.1:54321/
+API:   http://127.0.0.1:62748
+Web:   http://127.0.0.1:62748/
+Store: sqlite
 State: .trustvian/platform.db
+Local clients in this directory can now omit --api-url.
+Press Ctrl-C to stop.
 ```
 
-Open the `Web:` URL. No browser is launched for you, and there is no `--open`
+From a source checkout, `make local` runs the same runtime. Open the `Web:` URL. No browser is launched for you, and there is no `--open`
 flag — a security tool that opens windows by itself is a surprise.
 
 **Nothing needs to be typed.** The page subscribes to all local activity and
@@ -70,8 +73,8 @@ work that does not exist yet: an empty destination teaches a reader that the
 product is thinner than it is.
 
 What it deliberately cannot do: ingest decision records (that is the job of the
-application under evaluation, through the CLI or the API), or manage
-environments (task 065).
+application under evaluation, through the CLI or the API), or create and
+configure environments (that is `trustvian env` or `/v1`).
 
 ## The Status view
 
@@ -114,10 +117,16 @@ health score, no traffic light and no history. Operation names at transport
 fidelity are counted and never shown, because a span name can carry a URL path
 or a query.
 
-Every bound is named at the foot of the page: 16 Collectors; per Collector 64
-producers, 64 models and 64 transport targets; 16 scopes per producer; 32
-distinct operations counted per HTTP target; 64 suggestions; reporting within 30 s;
-forgotten after 300 s.
+Every bound is a field of the document's `bounds`. The foot of the page names
+16 Collectors; per Collector 64 producers, 64 models and 64 transport targets;
+16 scopes per producer; 64 suggestions; reporting within 30 s; forgotten after
+300 s. The Fidelity section names the 32 distinct operations counted per HTTP
+target.
+
+A Collector reports on a timer (every ten seconds by default) and sends no final report
+when it stops. After a run shorter than one interval, Status can show a
+Collector whose span counters are still `0` while the run's own progress counts
+its records.
 
 ## The Overview
 
@@ -131,7 +140,7 @@ already chosen from any other destination — and six panels summarise them:
 | Runs | the newest runs of the deepest level chosen — project, agent or candidate | every run newest first, or the newest page when more exist; **Load next page** reads on |
 | Newest run / Chosen run | that run's progress and first page of behaviors | one run; the newest by creation time unless you chose one |
 | Latest comparison | the first row of the project's scenario executions, narrowed to the agent when one is chosen, and that execution's report when it completed | the newest execution: its recorded verdict or *not recorded*, the four sameness answers, the first suggestion, and its added, removed and lost behaviors — the report's own `comparison.counts`, which the control plane computes; the panel counts nothing. **Open in Change Impact** reads it whole |
-| Gate verdicts | the first page of the project's promotion decisions | identifier order, not newest first |
+| Gate verdicts | the first page of the project's promotion decisions | identifier order, not newest first; a tally of the outcomes on that page, labelled *on this page* when more exist |
 | Environments | the project's whole environment collection | every environment |
 
 Every panel prints when it was **read** as a clock time, has its own loading,
@@ -143,12 +152,15 @@ the change affects.
 Everything links to the record behind it. A run's chip chooses it for the
 evidence panel and **Open** goes to its workspace; **Reference** and
 **Candidate** assign it as a side in Change Impact's run comparison, which is then ready with both
-runs chosen; a verdict's **Open** opens its decision; a live card's **Watch**
-selects it in Live.
+runs chosen (the panel's link to it is still labelled **Open Compare**); a
+verdict's **Open** opens its decision; a live card's **Watch** selects it in
+Live.
 
-**Charts are a second rendering of printed numbers.** The status bar counts the
-rows on the runs page and says so. The behavior bars are each behavior's
-authoritative observation count, ordered within the first page. Counters stay
+**Charts are a second rendering of printed numbers.** The Overview is the one
+destination that counts: the runs-by-status bars and the verdict tally count
+the rows on the page they read, and each says it is a count of that page. The
+behavior bars are each behavior's authoritative observation count, ordered
+within the first page. Counters stay
 decimal strings: a bar's length is drawn from the leading digits, never by
 converting the counter to a number, and the exact figure is printed beside it.
 A figure the server did not return reads *not available*, never `0`.
@@ -178,38 +190,48 @@ open /
   → click a behavior to inspect what Trustvian decided
 ```
 
-The layout is four regions:
+The view is a summary strip, three columns and a stream:
 
 ```text
 ┌───────────────────────────────────────────────────────────────┐
-│ Trustvian  ● LIVE   support-agent · local   127 obs · 5 behav. │
+│ Agent · Environment · Run · Seen on this connection ·         │
+│ Observations · Behaviors · Evidence                           │
 ├──────────────┬───────────────────────────────┬────────────────┤
 │ Active now   │ Behavior flow                 │ Inspector      │
-│ ● support-   │                               │                │
-│   agent      │   support-agent ──POST──▶ …   │ POST           │
-│ ○ invoice-   │                    ──GET───▶ … │ export.local…  │
-│   agent      │                               │ NEW BEHAVIOR   │
+│ support-     │                               │ Behavior       │
+│   agent      │ support-agent ─tool crm_l…─▶  │ tool crm_lookup│
+│ 3 seen live  │               tools.localhost │ tools.localhost│
+│              │                               │ NEW …          │
 ├──────────────┴───────────────────────────────┴────────────────┤
-│ Live stream · current connection                              │
+│ Live stream                                                   │
+├───────────────────────────────────────────────────────────────┤
+│ Watch one run                                                 │
 └───────────────────────────────────────────────────────────────┘
 ```
 
-On a narrow screen these stack in reading order rather than compressing into
-three unreadable columns.
+On a narrow screen the columns stack in reading order rather than compressing
+into three unreadable columns.
 
-**The header is operational.** A connection chip — `LIVE`, `SYNCING`,
-`RECONNECTING`, `DISCONNECTED` — the agent being watched, and the run's
-observation and distinct-behavior counts. Those counts are read from
+**The connection state is in the sidebar.** A chip beside the wordmark says
+`Connecting`, `Syncing`, `Live`, `Reconnecting` or `Disconnected` in words; its
+dot is decoration.
+
+**The strip is operational.** It names the agent being watched, its
+environment and run, how many frames arrived for it on this connection, and the
+run's observation and distinct-behavior counts and whether its behavior
+evidence is complete. Those counts are read from
 `GET /v1/evaluation-runs/{id}/progress`, never accumulated from the stream: a
 count derived from frames would drift the moment one was dropped, and the
-stream's own bound makes dropping possible by design. A card's own number is
-labelled *seen live* and is a frame count, which is a different fact.
+stream's own bound makes dropping possible by design. The frame count is
+labelled *Seen on this connection* on the strip and *seen live* on a card,
+which is a different fact.
 
 The page subscribes to `GET /v1/realtime` with no filter. An empty filter is
 unconstrained on every dimension — that is what the server already means by it
 — so one subscription receives all local activity, and every frame carries the
 project, agent, candidate, run, environment and behavioral profile it belongs
-to. A card appears for each, with no database read per event and no identifier
+to. A card appears for each, with no database read per event — one
+`GET /v1/agents/{id}` per newly seen agent, for its name — and no identifier
 typed by anyone.
 
 **Live activity is a current viewport, not event history.** The stream keeps
@@ -227,7 +249,8 @@ activity, a hierarchy row is durable state.
 The most recently active run is selected and drawn. When you click a different
 card, that choice is **pinned** — activity elsewhere raises its own card and
 never takes the graph you are reading. The rail says which mode it is in, in
-words, and offers **Follow active** to go back.
+words (*Following newest activity* or *Pinned to your selection*), and offers
+**Follow active** to go back.
 
 This state is ephemeral. A reload starts following again, which is correct:
 nothing about which run somebody was reading is platform state.
@@ -247,22 +270,22 @@ but never takes the graph you are reading.
 ### What the graph shows
 
 ```text
-                 POST
-support-agent ───────────▶ ollama.localhost
-             ├─ GET  ────▶ crm.localhost
-             ├─ GET  ────▶ knowledge.localhost
-             ├─ POST ────▶ mail.localhost
-             └─ POST ────▶ export.localhost   NEW
+                ┌─ tool crm_lookup ───────┐
+support-agent ──┼─ tool knowledge_search ─┼──▶ tools.localhost   NEW
+                └─ tool export_customer ──┘
 ```
 
-The source is the agent from the event's scope; the edge is the operation
-category and name; the target is the target name and category. All six come
-from `StableFeatures` as the observation carried them.
+The source is the agent from the event's scope. Each edge is one behavioral
+fingerprint, labelled with the operation category and name, with the decision
+and risk level beneath. The target is the target name and category. Those four
+come from the observation's behavior descriptor (`StableFeatures`) exactly as
+it carried them.
 
-**No semantic names are invented.** If telemetry proves only
-`POST → export.localhost`, that is exactly what is drawn — never
-`export_customer`. Richer semantic fidelity is task 075's, and guessing one
-here would assert something no evidence supports.
+**No semantic names are invented.** The descriptor names a tool only when the
+producer's telemetry named one (task 075); if telemetry proves only `POST`
+against `export.localhost`, that is exactly what is drawn — never
+`export_customer`. The server says which in `fidelity`, and the inspector
+states it.
 
 Each received observation produces **one** pulse along its edge, and the edge
 brightens for the length of that traversal. Nothing animates without a frame
@@ -270,34 +293,45 @@ behind it: no ambient loop, no idle motion, no simulated packets, and no replay
 after a reconnect. A quiet agent draws a still graph, which is the correct
 picture.
 
-A behavior the run had not shown before gets a persistent `NEW` badge on both
-the edge and its target, a `NEW` column in the timeline, and — if you are not
-already reading something else — the inspector opens it. `NEW` means new: it is
-never labelled dangerous, malicious or unsafe, because those would be
-judgements the server did not make.
+A behavior the server marked `new_behavior` keeps that state for the
+connection: its edge is drawn dashed and its accessible name says *new
+behavior*, its target carries a `NEW` word, its timeline row a `NEW` column,
+and — if you are not already reading something else — the inspector opens it.
+`NEW` means new: it is never labelled dangerous, malicious or unsafe, because
+those would be judgements the server did not make.
 
 ### The inspector
 
-Clicking an edge, a timeline row or a target opens the evidence for that
-behavior:
+Clicking an edge or a timeline row opens the evidence for that behavior. A
+target node is focusable and named, but opens nothing: several behaviors can
+share one target.
 
 ```text
-POST
-export.localhost
+Behavior
+tool crm_lookup
+tools.localhost
+Actor type    ai_agent
+Environment   local
+Semantic fidelity: the agent's own instrumentation named this operation.
+Tool call: the producer named a tool, agent or workflow the agent invoked.
+NEW This behavior was not already represented in the run's evidence when it was first observed.
 
-NEW  This behavior was not already represented in the run's evidence.
-
-Decision   alert        Risk   high
-Trust      0.61  ▓▓▓▓▓▓░░░░
-Anomaly    0.82  ▓▓▓▓▓▓▓▓░░
-Confidence 0.74  ▓▓▓▓▓▓▓░░░
+Observed state
+Decision observe_only    Risk low
+Trust       0.90  ▓▓▓▓▓▓▓▓▓░
+Anomaly     0.96  ▓▓▓▓▓▓▓▓▓▓
+Confidence  0.10  ▓░░░░░░░░░
+1 observation of this behavior on the current connection. Authoritative counts come from /v1.
 ```
 
-Every value is the server's, rendered. Nothing is computed, combined,
-thresholded or ranked here, and there is deliberately **no aggregate health
-score** — five independent readings collapsed into one red/amber/green verdict
-would be the browser inventing a judgement the platform never made. The bars
-are a second rendering of the same numbers, which stay printed beside them.
+The values are those of a `trustvian dev` run's first observation
+(`trust_score` 0.904, `anomaly_score` 0.96, `anomaly_confidence` 0.1 on the
+stream). Every value is the server's, rendered: the three scores are printed to
+two decimal places, and nothing is computed, combined, thresholded or ranked
+here. There is deliberately **no aggregate health score** — five independent
+readings collapsed into one red/amber/green verdict would be the browser
+inventing a judgement the platform never made. The bars are a second rendering
+of the same numbers, which stay printed beside them.
 
 Identifiers appear at the bottom of the panel as technical detail. They are not
 the visual hierarchy: what you are reading is what the agent did.
@@ -329,9 +363,10 @@ the platform:
 
 ### Browsing what exists
 
-Opening the page reads **one** page of `GET /v1/projects` and nothing else. No
-child level is fetched and no continuation is followed until you ask, and the
-same budget applies to every reconnect.
+Opening the page reads **one** page of `GET /v1/projects` and one
+`GET /v1/status` (which decides between Live and Status), and nothing else. No
+child level is fetched and no continuation is followed until you ask, and a
+reconnect reads the same one page of projects again.
 
 That bound is deliberate. Each route caps a page at 64, but a route that is
 bounded does not make a *workflow* bounded: 64 projects × 64 agents × 64
@@ -357,8 +392,8 @@ preselecting below itself, so choosing a project with one agent reads that
 agent's runs once and nothing wider. A failed page shows its error with
 **Try again** and is never retried by itself.
 
-The filter boxes on **Projects** and **Runs** narrow the rows already on
-screen. They never ask the server for a page it was not going to fetch, and the
+The filter boxes on **Projects** and **Runs**, and the status chips on
+**Runs**, narrow the rows already on screen. They never ask the server for a page it was not going to fetch, and the
 line beside them always says whether you are looking at the whole collection or
 one page of it.
 
@@ -405,16 +440,17 @@ the decision, the risk level, the `NEW` badge, the connection state — remains
 as text or a badge.
 
 Nothing is conveyed by colour alone: every state carries a word or a marker.
-Graph edges and target nodes are focusable and activate on Enter or Space with
-accessible names describing the operation, target, decision, risk and
-new-behavior state. The rail is a listbox whose cards report `aria-selected`.
+Graph edges are focusable and activate on Enter or Space, with accessible
+names describing the operation, new-behavior state, decision, risk and how many
+times the edge was observed on this stream. Target nodes are focusable and
+named by the target and its category. The rail is a listbox whose cards report `aria-selected`.
 Timeline rows are focusable and readable without the graph, and selecting one
 moves focus to the inspector.
 
 The timeline deliberately carries **no** `aria-live`: a busy agent produces
 many observations per second and announcing each would make a screen reader
 unusable. Connection state — the thing actually worth announcing — stays in the
-header's `role="status"` region.
+sidebar connection chip's `role="status"` region.
 
 ## Manage — the administrative surface
 
@@ -430,22 +466,21 @@ right shape here because these are inputs, not navigation. Where the console
 already knows a value — the scoped project, the chosen agent or candidate — the
 field is filled for you and stays editable.
 
-**The forms explain themselves now.** A field labelled "Candidate ID" beside an
-empty box told a developer nothing about what belonged there. Each caller-owned
-identifier carries inline help and an example:
+**The forms explain themselves.** Each caller-owned identifier carries inline
+help and an example. The candidate form's identifier field reads:
 
 ```text
-Candidate ID
-A stable identifier for the version being evaluated.
-Example: git:43af19c
+ID
+A stable identifier for the version being evaluated. Example: git:43af19c
 ```
 
 Where a form needs an existing record rather than a new name, it offers a
 searchable selector instead of a text box — see
 [Choosing a record without typing it](#choosing-a-record-without-typing-it).
 The search is over the pages a selector has loaded; there is still no
-server-side search. Every collection is parent-scoped, ordered by an immutable
-identifier in byte order, and bounded per page.
+server-side search. Every collection is parent-scoped and bounded per page;
+projects, agents and candidates are ordered by identifier in byte order, and
+runs are read newest first (see below).
 
 You open things by the ID you already know, which is the same ID the CLI
 uses:
@@ -518,9 +553,10 @@ metadata and a failure reason are inputs, not choices.
 |---|---|
 | Live → Watch one run | the newest runs in scope |
 | Evidence → Run history | the newest runs in scope |
-| Evidence → Provenance | Compare's two sides; the newest runs in scope |
+| Traces | the newest runs in scope |
+| Evidence → Provenance | the run comparison's two sides; the newest runs in scope |
 | Promotions → History | projects; each row opens its decision |
-| Promotions → Record one | Compare's two sides; the newest runs in scope; the project's environments |
+| Promotions → Record one | the run comparison's two sides; the newest runs in scope; the project's environments |
 | Manage → Agents / Candidates / Evaluations | projects / agents / candidates and environments |
 | Manage → Lifecycle | the newest runs in scope |
 
@@ -539,7 +575,8 @@ loaded. Each row shows the scenario name, status, verdict, repetition count,
 environment, agent, start time and the execution it reused.
 
 Opening one shows its scope, times and repetitions, each run a link to its
-workspace. **Check eligibility** asks the control plane whether
+workspace, and a completed one offers **Open in Change Impact** for its
+report. **Check eligibility** asks the control plane whether
 `trustvian eval run --reference <id>` would accept it — the same validation the
 CLI runs, unchanged — and shows its answer: usable, or not with the server's
 own reason, and the conditions the answer holds under (the execution's `runs`,
@@ -582,7 +619,9 @@ run as it happens.
 ### Live rows are a viewport, not history
 
 The observation table shows at most the **100 most recent observations of the
-current connection**, and it is **cleared whenever the stream restarts**.
+current connection**, and it is **cleared whenever the stream restarts**. Its
+time column is the browser's own clock when the frame arrived, because an
+observation frame carries no timestamp.
 
 That is not a shortcoming to work around. The realtime bus keeps no history and
 there is nothing to replay, so joining two connections into one apparent
@@ -601,7 +640,7 @@ database's.
 
 | What happened | What the page does |
 |---|---|
-| Never synchronized | Shows **Failed** and stops retrying. Use **Reconnect now** |
+| Never synchronized | Stops retrying: the connection chip says `Disconnected`. For a single-run watch, the state line says *Failed* and **Reconnect** tries again; for the global Live stream, reload the page |
 | Was live, then disconnected | Reconnects with bounded backoff: 250ms, 500ms, 1s, 2s, 4s, capped at 5s |
 | Heartbeats but no `stream_ready` | Treated as a failure after a finite handshake window, not as a healthy stream |
 | More than 64 events buffered during a read | Abandons the stream and resynchronizes — never silently drops one |
@@ -641,6 +680,11 @@ as long as the measured duration. A row with no measured duration is a dashed
 marker, never a zero-width bar; a row without a readable timestamp has no bar.
 Producers' clocks can disagree and nothing corrects for it. A trace longer than
 64 actions is paged.
+
+The waterfall derives figures from recorded values, and says so: the window's length above the bars and each action's *From trace
+start* offset in the details panel are differences between recorded
+timestamps on the page, labelled as such. They place bars; they are not
+latency, and they never feed a decision.
 
 **Details.** Clicking a row, or pressing Enter on it, opens the action beside
 the waterfall: the decision, timing, recorded structure, behavior, scores and
@@ -704,8 +748,8 @@ There is no identifier field for either side and no menu standing in for one.
 The identifier is still the value the server receives — the contract is
 unchanged — but nobody has to find one, copy one or recognise one in a list.
 
-Compare keeps its own agent and candidate lists rather than sharing the **Runs**
-destination's. Sharing them would mean that choosing a comparison moved your
+The run comparison keeps its own agent and candidate lists rather than sharing
+the **Runs** destination's. Sharing them would mean that choosing a comparison moved your
 place in the run table, and that changing that table silently changed what a
 pending comparison meant.
 
@@ -724,12 +768,22 @@ route, since its evidence is the comparison's counted changes.
 The verdict shown is the server's `gate.verdict`. The browser does no gate
 arithmetic — it renders the checks the control plane returned, with the actual
 and the bound for each, and the counted-change check's state as the server
-named it.
+named it. A mark and a word carry the verdict, then one row per check:
 
 ```text
-Gate: PASS   ✓        Added behaviors: 2 / max 3
-Gate: FAIL   ✗        Critical observations: 0 / max 0
+✓ Gate: PASS
+
+Check                        Actual  Bound  Result
+Reference evidence           …       …      pass
+Candidate evidence           …       …      pass
+Added behaviors              …       …      pass
+Block decisions              …       …      pass
+Critical risk observations   …       …      pass
+Added behavior changes       —       not set  not evaluated
 ```
+
+An **Evidence** column beside the result opens each check's finding. A check
+the response did not carry shows `—` in every cell rather than a result.
 
 A gate result is a deterministic outcome under **the limits you supplied**. It
 is not a judgement that a candidate is safe, unsafe, secure or ready for
@@ -752,7 +806,7 @@ A gate FAIL names a count. **Evidence** is where that count becomes the
 observations behind it.
 
 ```text
-Compare               gate FAIL · added_behaviors 2 / max 0
+Change Impact         run comparison: gate FAIL · Added behaviors 2, bound 0
   → Evidence          the two behavioral identities that contributed
   → Evidence          the retained observations that carried one of them
   → Run history       that observation's session · trace · behavior
@@ -929,8 +983,10 @@ observer that could confirm a deployment happened, so the UI never says a
 candidate was deployed, released, rolled out, or is now running or live
 anywhere.
 
-The form asks for the two run IDs, the target environment and the three gate
-limits, and nothing else. The source environment is not a field: the server
+The form asks for an identifier for the decision, the two runs, the target
+environment, the three required gate limits and the optional fourth, and
+nothing else. A project identifier under **Advanced** only loads the
+environment list; it is not part of the decision. The source environment is not a field: the server
 infers it from the environment the two runs share. Neither is the outcome —
 that comes from the gate verdict alone, and a browser cannot propose one.
 
@@ -973,16 +1029,20 @@ for the same reason.
 ### Large counters
 
 Counters and gate limits are exact decimal integers up to
-`18446744073709551615`. The UI keeps them as text end to end and never converts
-them to JavaScript numbers, which cannot represent values that large without
-rounding.
+`18446744073709551615`. The UI keeps every counter it prints as text end to
+end and never converts it to a JavaScript number, which cannot represent values
+that large without rounding. Two places read digits as numbers: the Overview's
+bar lengths, from the leading nine digits and never printed, and the Traces
+waterfall's placement and its offsets from trace start, exact up to 2^53
+nanoseconds (about 104 days).
 
 ## Security
 
-**The local runtime is unauthenticated.** It binds numeric loopback only, has
-no flag to change that, and loopback is the entire security boundary. Do not
-expose it, and do not put a reverse proxy in front of it. Authentication, TLS
-and remote access are [task 070](tasks/v1.0/).
+**The local runtime is unauthenticated.** It binds numeric loopback only — its
+`--listen` flag refuses any other address — and loopback is the entire security
+boundary. Do not expose it, and do not put a reverse proxy in front of it.
+Authentication, TLS and remote access are planned
+([task 070, ROADMAP](ROADMAP.md)).
 
 What the browser side adds:
 
@@ -1094,15 +1154,16 @@ What it prevents, each of which was a real defect:
 Two rules follow from it. **Everything scoped to a subject is cleared when
 the subject changes** — opening a run clears both tab pages, their cursors,
 the narrowing, the selection and the strip's counts in one step, and changing
-project clears Compare's lists, both assigned comparison sides and the
-promotion cursor. And **a cache is valid for an identity, not for a
-boolean**: Compare and Promotions ask whether what they hold describes the
+project clears the run comparison's lists, both assigned comparison sides and
+the promotion cursor. And **a cache is valid for an identity, not for a
+boolean**: the run comparison and Promotions ask whether what they hold describes the
 project they are scoped to, because "have I loaded before?" is still true
 after a project change.
 
 Surfaces are independent. The three reads of a run workspace, the three
-lists in Compare, and Promotions each hold their own ticket, so fetching one
-never abandons another's outstanding work.
+lists in the run comparison, Change Impact's execution list and its report,
+and Promotions each hold their own ticket, so fetching one never abandons
+another's outstanding work.
 
 ## What a surface looks like when it has no records
 
@@ -1126,8 +1187,9 @@ same. They are now different answers, and a guard keeps them that way.
 
 ### Severity is three carriers, and the word is the one that counts
 
-A decision shows as a gutter down the row's leading edge, a tint behind the
-row, and a mark beside the word in its own column.
+A decision shows as a gutter down the row's leading edge, a tint behind a row
+whose decision flags or blocks, and a mark (an inline icon) beside the word in
+its own column.
 
 ```text
 ▏1  09:11:01  POST /chat        ✓ allow    low

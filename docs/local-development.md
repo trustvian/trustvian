@@ -5,34 +5,49 @@ around it, and your repository is never written to.
 
 ## Quick start
 
+In your agent's git repository, with the release archive's binaries on your
+`PATH` ([Getting Started](getting-started.md#developer-preview)):
+
 ```bash
-make dev ARGS='-- python agent.py'
+trustvian dev -- python agent.py
 ```
 
 That is the whole loop. `trustvian dev` starts a local control plane and an OTLP
 receiver, provisions the project / agent / candidate / run hierarchy from your
 git repository, points your workload's OpenTelemetry exporter at the receiver,
-runs your command unchanged, and prints a URL to watch it:
+runs your command unchanged, and prints a URL to watch it. With the repository's
+test producer standing in for `python agent.py`:
 
 ```text
 Trustvian dev
 
-  Project     checkout-agent
-  Agent       checkout-agent   (declared by the workload)
-  Candidate   git:43af19c+dirty   uncommitted changes
+  Project     my-agent
+  Agent       support-agent   (declared by the workload)
+  Candidate   git:188ac38
   Environment local
-  Run         dev-git-43af19c-dirty-20260927T101500.000Z
+  Run         dev-git-188ac38-20261013T212105.524Z
 
-  State    ~/.trustvian/dev/9f2c1ab04e7d/
-  Baseline ~/.trustvian/dev/9f2c1ab04e7d/baseline-git_3a43af19c_2bdirty.json
-  API      http://127.0.0.1:54321
-  OTLP     http://127.0.0.1:54322  (gRPC 127.0.0.1:54323)
-  Web      http://127.0.0.1:54321/
+  State    ~/.trustvian/dev/382774ec0ca4
+  Baseline ~/.trustvian/dev/382774ec0ca4/baseline-git_3a188ac38.json
+  API      http://127.0.0.1:63349
+  OTLP     http://127.0.0.1:63351  (gRPC 127.0.0.1:63352)
+  Web      http://127.0.0.1:63349/
   Owner    existing   (auto: $OTEL_SERVICE_NAME is set)
-  Set      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_SERVICE_NAME OTEL_RESOURCE_ATTRIBUTES
+  Set      OTEL_BSP_SCHEDULE_DELAY OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS OTEL_EXPORTER_OTLP_PROTOCOL OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_HEADERS OTEL_EXPORTER_OTLP_TRACES_PROTOCOL OTEL_LOGS_EXPORTER OTEL_METRICS_EXPORTER OTEL_RESOURCE_ATTRIBUTES OTEL_SEMCONV_STABILITY_OPT_IN OTEL_TRACES_EXPORTER TRUSTVIAN_DEV_OTLP_GRPC_ENDPOINT
 
-Running python agent.py
+Running agent.sh
+…
+Run dev-git-188ac38-20261013T212105.524Z complete.
 ```
+
+A worktree with uncommitted changes reads `git:<sha>+dirty`. The control plane
+this starts stops when your command exits; to keep watching afterwards, start
+`trustvian-local` yourself and pass its `API:` URL with `--api-url`, as
+[Getting Started](getting-started.md#3-run-your-agent-under-trustvian) does.
+
+From a Trustvian checkout, `make dev ARGS='-- <command>'` builds all three
+binaries into `bin/` and runs `dev` in the checkout's own directory, so it suits
+a workload that lives there.
 
 Your command's exit status is `dev`'s own, so the wrapper is transparent to
 scripts. `Ctrl-C` goes to your workload; the run is completed either way.
@@ -107,11 +122,12 @@ so clients in that directory need no `--api-url`:
 ```
 
 **Create the hierarchy and start a run.** `dev` does this for you; by hand it is
-the five commands below. The candidate id is the learning scope, so use the same
-one for runs you want compared:
+the six commands below. A run may only name an environment its project owns, so
+the environment comes first. The behavioral profile is the learning scope:
 
 ```bash
 ./bin/trustvian project create --id proj-1 --name Checkout
+./bin/trustvian env create --project-id proj-1 --ref local --name Local
 ./bin/trustvian agent create --id agent-1 --project-id proj-1 --name "Checkout agent"
 ./bin/trustvian candidate create --id cand-1 --agent-id agent-1
 ./bin/trustvian eval create --id run-1 --candidate-id cand-1 \
@@ -120,12 +136,47 @@ one for runs you want compared:
 ```
 
 **Terminal B — the receiver.** `trustvian-collector` needs a configuration
-naming the run; `processor/config.yaml` is a working example, and
-[OpenTelemetry](OPENTELEMETRY.md) documents the keys:
+whose `evaluation:` block names the running run. `processor/config.yaml` has
+none: it only enriches spans. Add the block, with the `API:` URL from terminal
+A; [`processor/README.md`](../processor/README.md#configuration) documents the
+keys:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  trustvian:
+    evaluation:
+      api_url: http://127.0.0.1:63309      # terminal A's API: URL
+      run_id: run-1
+      behavioral_profile: checkout
+      required: true
+      pending_state_path: .trustvian/run-1.pending.json
+
+exporters:
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [trustvian]
+      exporters: [debug]
+```
 
 ```bash
-./bin/trustvian-collector --config processor/config.yaml
+./bin/trustvian-collector --config=collector.yaml
 ```
+
+The flag takes `=`. `--config collector.yaml`, with a space, is not read, and the
+Collector falls back to `./config.yaml`.
 
 **Terminal C — your workload**, pointed at the receiver:
 
@@ -157,6 +208,7 @@ Then, in another terminal **in the same directory**:
 
 ```bash
 ./bin/trustvian project create --id proj-1 --name Checkout
+./bin/trustvian env create --project-id proj-1 --ref local --name Local
 ./bin/trustvian agent create --id agent-1 --project-id proj-1 --name "Checkout agent"
 ./bin/trustvian candidate create --id cand-1 --agent-id agent-1
 ./bin/trustvian eval create --id run-1 --candidate-id cand-1 \
@@ -195,11 +247,11 @@ The engine stays outside it. Your application analyzes events, serializes a
 The shortest useful loop, with nothing typed into the browser:
 
 ```bash
-make dev ARGS='-- python agent.py'    # prints the URL
+trustvian dev -- python agent.py    # prints the URL
 ```
 
-Or, with the parts running separately, `make local` in terminal A and your
-instrumented agent in terminal B.
+Or, with the parts running separately, `trustvian-local` in terminal A, the
+Collector in terminal B and your instrumented agent in terminal C.
 
 Then open the `Web:` URL. The page lands on the **Live Observatory**, already
 connected, and each active agent appears as a card the moment telemetry for it
@@ -336,13 +388,17 @@ discovery file, because an empty value almost always means an unset variable:
 
 ```text
 $ ./bin/trustvian eval get --id run-1
-trustvian: no local Trustvian runtime found; start one with `make local` or pass --api-url
+trustvian: no local runtime was found.
+  .trustvian/runtime.json: no local Trustvian runtime found; start one with `make local` or pass --api-url
+  ~/.trustvian/dev/bafb746f7eb5/runtime.json: no local Trustvian runtime found; start one with `make local` or pass --api-url
+Start one with 'make local' or 'trustvian dev', or pass --api-url
 $ echo $?
 3
 ```
 
 Exit **3**, not 2 — the command was valid and the environment was not. Exit `1`
-still means a failed gate, and only for `eval compare`.
+still means a failed gate, and only for `eval compare`, `eval compare-repeated`
+and `eval run`.
 
 ## Security
 

@@ -31,7 +31,7 @@ cd examples/persistent-baseline && go run .
 process 1, event  1: confidence=0.00 trust=0.95
 process 1, event 12: confidence=0.55 trust=0.71
 
-state file written: 998 bytes
+state file written: 1009 bytes
 
 process 2 (fresh Engine, same state file):
 Decision: observe_only
@@ -96,16 +96,18 @@ database that is unreachable, unauthenticated, or missing its DSN yields an
 error and no Store — never a substitute. See
 [`main_test.go`](main_test.go)'s own
 `TestPublicConfigPostgresFailsClosedWhenUnreachable`,
-`TestPublicConfigSelectsPostgresStoreAcrossRestart`,
+`TestPublicConfigPostgresMissingDSNFailsClosed`,
+`TestPublicConfigSelectsPostgresStoreAcrossRestart` (skipped unless
+`TRUSTVIAN_TEST_POSTGRES_DSN` is set),
 and `TestPublicConfigMemoryStoreDoesNotPersist` (the control proving the
 durable case is genuinely doing something).
 
 ## What this example does not show
 
-PostgreSQL. It is the documented next slice
-([CHANGELOG.md § v0.8](../../CHANGELOG.md#v080--production-runtime--storage)),
-not yet implemented — this slice deliberately established the contract
-and the public boundary first, so the backend that follows has an
-executable target (`TestStoreContract` in
-[`internal/store/contract_test.go`](../../internal/store/contract_test.go))
-rather than a hand-written test suite of its own.
+PostgreSQL. The program itself uses `type: file`, so it runs with no
+database. The PostgreSQL store (`type: postgres`) is covered by the
+`main_test.go` tests above, and the contract every store implements is
+executable: `TestStoreContract` in
+[`internal/store/contract_test.go`](../../internal/store/contract_test.go)
+runs the same assertions against the in-memory and file stores, and
+against PostgreSQL when `TRUSTVIAN_TEST_POSTGRES_DSN` is set.
