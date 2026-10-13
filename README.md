@@ -587,30 +587,79 @@ change first.
 ## Architecture
 
 ```mermaid
-flowchart TD
-    A["Applications · Services · AI Agents"] -->|"telemetry"| B["OpenTelemetry Collector<br/>(optional)"]
-    A -->|"Go SDK, direct"| C
-    B --> C["Trustvian Engine"]
-    C --> D["Features → Fingerprint"]
-    D --> E["Baseline"]
-    E --> F["Anomaly"]
-    F --> G["Trust"]
-    G --> H["Policy → Decision"]
-    E <--> I["Store port"]
-    I --> J["InMemory"]
-    I --> K["FileStore"]
-    I --> L["PostgreSQL"]
+flowchart LR
+    Agent["your agent<br/>(any OpenTelemetry SDK)"]
+    Dev["trustvian dev<br/>(cmd/trustvian)"]
+
+    subgraph collector["trustvian-collector"]
+        Receiver["OTLP receiver"]
+        Processor["Trustvian processor<br/>Engine: Analyze, then Observe"]
+    end
+
+    subgraph local["trustvian-local (control plane)"]
+        Ingest["ingest"]
+        Status["status"]
+        API["/v1 API"]
+        Realtime["realtime"]
+        Store[("store<br/>SQLite or PostgreSQL")]
+    end
+
+    WebUI["WebUI<br/>(browser)"]
+    CLI["trustvian CLI<br/>eval, status, tui"]
+
+    subgraph ci["GitHub Actions"]
+        Run["trustvian-run<br/>trustvian eval run --json"]
+        Render["trustvian-ci-render"]
+        Comment["trustvian-ci-comment"]
+    end
+
+    PR["pull request comment"]
+
+    Dev -->|"starts the workload, sets OTEL_EXPORTER_OTLP_*"| Agent
+    Dev -->|"starts with collector.yaml (file)"| collector
+    Dev -->|"/v1: creates, starts and completes the run"| API
+    Agent -->|"OTLP gRPC or HTTP"| Receiver
+    Receiver --> Processor
+    Processor -->|"POST /v1/evaluation-runs/{id}/records"| Ingest
+    Processor -->|"POST /v1/collectors/{id}/status"| Status
+    Ingest --> Store
+    Ingest -.->|"notification after commit"| Realtime
+    Status -->|"GET /v1/status"| API
+    API --> Store
+    API -->|"/v1 JSON"| WebUI
+    Realtime -->|"SSE GET /v1/realtime"| WebUI
+    API -->|"/v1 JSON"| CLI
+    Realtime -->|"SSE GET /v1/realtime"| CLI
+    Run -->|"/v1 scenario-executions"| API
+    Run -->|"result.json (artifact)"| Render
+    Render -->|"Markdown (file)"| Comment
+    Comment -->|"GitHub REST API"| PR
 ```
+
+Drawn from `cmd/trustvian/dev.go`, `cmd/trustvian/dev_collector.go`, `cmd/trustvian/eval_run.go`, `processor/processor.go`, `processor/internal/status/reporter.go`, `platform/localruntime/runtime.go`, `platform/httpapi/handler.go`, `.github/actions/` at v0.12.0.
+
+```text
+Event → Features → Fingerprint → Baseline(read) → Anomaly → Trust → Policy → Decision
+```
+
+On the platform path the engine runs inside the Collector, in the Trustvian
+processor. It scores each span, then posts the decision record to the control
+plane over `/v1`. The control plane stores records, computes comparisons and
+gates, and streams notifications. It runs no engine of its own. The WebUI, the
+CLI and the CI renderer show what `/v1` returns: no verdict, score or gate is
+computed outside the control plane. The engine also runs in-process wherever
+you call the Go SDK or `trustvian analyze`.
 
 The engine is a hexagonal core: each pipeline stage is a small package built
 around a pure function, and storage sits behind a two-method port. The core
 carries no database, OpenTelemetry, or transport dependency — adapters
 depend on the core, never the reverse.
 
-The platform is a separate Go module that depends on the core's public API and
-imports nothing under `internal/`, and the core does not depend on the platform
-at all. `make check-platform-boundary` asks the module graph rather than
-trusting review, and CI runs it on every pull request.
+The platform (`platform/`) and the processor (`processor/`) are separate Go
+modules. They depend on the core's public API and import nothing under
+`internal/`, and the core depends on neither. `make check-platform-boundary`
+asks the module graph rather than trusting review, and CI runs it on every
+pull request.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and the
 [decision records](docs/adr/).
