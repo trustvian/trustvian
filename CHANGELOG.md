@@ -230,6 +230,20 @@ actually depend on.
   `same_scenario: "false"`.
 - **Upgrade the control plane before the CLI.** A control plane older than task 086 refuses the `provenance` field that `trustvian eval run` sends when it begins a scenario execution, and the run fails with `400` before any workload starts. `trustvian dev` itself sends no provenance and is unaffected.
 
+### Fixed
+
+- **A cancellation is no longer lost while `trustvian-run` stops its control
+  plane.** Bash 5.2, as on `ubuntu-24.04` runners, could drop a SIGINT or
+  SIGTERM that arrived while the step was expanding a command substitution.
+  The stop then ran its full 10s, and the step reported the CLI's code instead
+  of `130`/`143`. Bash could also abort the step with exit `2` and no SIGKILL
+  fallback, which left the control plane running. The bug dates from #141 and
+  #157, and it is rare. Of 1,200 cancellations sent at random moments of the
+  stop, 1 aborted the step. With the stop's sleeps skipped to widen the
+  window, 5 of 200 were lost. No path a cancellation can interrupt runs a
+  command substitution any more. A step whose shell exits in the middle of the
+  stop now kills the control plane on the way out.
+
 ## v0.11.0 — webui feature
 
 ### Added

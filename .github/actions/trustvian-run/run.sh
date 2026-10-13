@@ -120,16 +120,26 @@ stopping=""
 readonly stop_grace_ms=10000 cancel_budget_ms=5000 kill_wait_ms=2000
 cancel_deadline_ms=""
 
-# now_ms prints the wall clock in milliseconds: bash 5's EPOCHREALTIME,
-# whatever the locale's decimal separator, or whole seconds from date on an
+# Signals and command substitution. Bash 5.2 can lose a trapped SIGINT or
+# SIGTERM that arrives while it is expanding a command substitution, or run
+# the trap's text through the half-finished parse of that substitution and
+# abort with "unexpected EOF while looking for matching `)'", exit 2. So no
+# path a cancellation can interrupt — from the traps being set until the
+# control plane is stopped — and nothing a trap calls uses $(...): a value is
+# set in a variable, or a command's output goes to a file under the
+# invocation directory and is read back with `read`.
+
+# set_now_ms sets now_ms to a clock in milliseconds: bash 5's EPOCHREALTIME,
+# whatever the locale's decimal separator, or the shell's whole SECONDS on an
 # older bash. Bash offers no monotonic clock; a deadline is only ever compared
 # with a later reading taken within the same few seconds.
-now_ms() {
+now_ms=0
+set_now_ms() {
     if [ -n "${EPOCHREALTIME:-}" ]; then
         local us="${EPOCHREALTIME//[!0-9]/}"
-        echo $((10#$us / 1000))
+        now_ms=$((10#$us / 1000))
     else
-        echo $(($(date +%s) * 1000))
+        now_ms=$((SECONDS * 1000))
     fi
 }
 
@@ -151,15 +161,16 @@ stop_control_plane() {
     [ -n "$control_plane_pid" ] || return 0
     [ -z "$stopping" ] || return 0
     stopping=1
-    local pid="$control_plane_pid" deadline now
-    deadline=$(($(now_ms) + stop_grace_ms))
+    local pid="$control_plane_pid" deadline
+    set_now_ms
+    deadline=$((now_ms + stop_grace_ms))
     ! owns_child "$pid" || kill -TERM "$pid" 2>/dev/null || true
     while kill -0 "$pid" 2>/dev/null; do
-        now=$(now_ms)
+        set_now_ms
         if [ -n "$cancel_deadline_ms" ] && [ "$cancel_deadline_ms" -lt "$deadline" ]; then
             deadline=$cancel_deadline_ms
         fi
-        [ "$now" -lt "$deadline" ] || break
+        [ "$now_ms" -lt "$deadline" ] || break
         sleep 0.1
     done
     if owns_child "$pid"; then
@@ -171,9 +182,11 @@ stop_control_plane() {
         kill -KILL "$pid" 2>/dev/null || true
         # SIGKILL cannot be caught; this bounds only how long the kernel
         # takes to deliver it.
-        deadline=$(($(now_ms) + kill_wait_ms))
-        while kill -0 "$pid" 2>/dev/null && [ "$(now_ms)" -lt "$deadline" ]; do
+        set_now_ms
+        deadline=$((now_ms + kill_wait_ms))
+        while kill -0 "$pid" 2>/dev/null && [ "$now_ms" -lt "$deadline" ]; do
             sleep 0.05
+            set_now_ms
         done
         ! kill -0 "$pid" 2>/dev/null || warn "the control plane $pid did not exit after SIGKILL"
     fi
@@ -185,10 +198,14 @@ stop_control_plane() {
 }
 
 # owns_child reports whether pid is still a process this shell started — not
-# a later process that has reused the number.
+# a later process that has reused the number. ps writes to a file, not a
+# command substitution (see "Signals and command substitution").
 owns_child() {
+    local ppid=""
     kill -0 "$1" 2>/dev/null &&
-        [ "$(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ')" = "$$" ]
+        ps -o ppid= -p "$1" >"$invocation/ppid" 2>/dev/null &&
+        read -r ppid <"$invocation/ppid" &&
+        [ "$ppid" = "$$" ]
 }
 
 # Cancellation. GitHub cancels a step by signalling its process, which —
@@ -216,7 +233,8 @@ exit_cancelled() {
 on_signal() {
     if [ -z "$cancel_signal" ]; then
         cancel_signal="$1"
-        cancel_deadline_ms=$(($(now_ms) + cancel_budget_ms))
+        set_now_ms
+        cancel_deadline_ms=$((now_ms + cancel_budget_ms))
     fi
     signals_seen=$((signals_seen + 1))
     if [ -n "$cli_pid" ]; then
@@ -231,7 +249,18 @@ on_signal() {
     # CLI's PID is known.
 }
 
+# A stop still marked as under way when the shell exits was cut short: the
+# script itself never exits from inside one, but bash can — an error it
+# raises itself, or a signal nothing traps. stop_control_plane would return at
+# once, so the control plane is killed here rather than outlive the step.
 on_exit() {
+    if [ -n "$stopping" ] && [ -n "$control_plane_pid" ]; then
+        warn "the control plane's stop was interrupted; killing it"
+        ! owns_child "$control_plane_pid" || kill -KILL "$control_plane_pid" 2>/dev/null || true
+        wait "$control_plane_pid" 2>/dev/null || true
+        control_plane_pid=""
+        stopping=""
+    fi
     stop_control_plane
     [ -z "$cancel_signal" ] || exit_cancelled
 }
@@ -255,10 +284,11 @@ else
     # The control plane publishes the endpoint it bound in its state
     # directory, exactly as `make local` does, once it is serving.
     discovered=""
-    for _ in $(seq 1 600); do
+    for _ in {1..600}; do
         if [ -f "$state_dir/runtime.json" ]; then
-            discovered="$(jq -r 'if .version == "1" and (.api_url | type) == "string" then .api_url else "" end' \
-                "$state_dir/runtime.json" 2>/dev/null || true)"
+            jq -r 'if .version == "1" and (.api_url | type) == "string" then .api_url else "" end' \
+                "$state_dir/runtime.json" >"$invocation/api-url" 2>/dev/null || true
+            read -r discovered <"$invocation/api-url" || true
             [ -z "$discovered" ] || break
         fi
         kill -0 "$control_plane_pid" 2>/dev/null || break

@@ -11,11 +11,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io/fs"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -586,13 +589,15 @@ type shutdownStep struct {
 	cmd        *exec.Cmd
 	exited     chan error
 	logPath    string
+	errPath    string
 	termMarker string
 	output     string
 	cpPID      int
 	decoy      *exec.Cmd
 }
 
-func startShutdownStep(t *testing.T) shutdownStep {
+// adjust, if given, changes the step's environment before it starts.
+func startShutdownStep(t *testing.T, adjust ...func(vars map[string]string)) shutdownStep {
 	t.Helper()
 	// A process the action did not start, which must survive it.
 	decoy := exec.Command("sleep", "60")
@@ -608,6 +613,9 @@ func startShutdownStep(t *testing.T) shutdownStep {
 	e.vars["FAKE_CP_TERM_MARKER"] = termMarker
 	abs, _ := filepath.Abs(actionDir)
 	e.vars["GITHUB_ACTION_PATH"] = abs
+	for _, a := range adjust {
+		a(e.vars)
+	}
 	if err := os.WriteFile(e.output, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -624,6 +632,15 @@ func startShutdownStep(t *testing.T) shutdownStep {
 	}
 	t.Cleanup(func() { _ = logFile.Close() })
 	cmd.Stdout = logFile
+	// stderr is kept apart from the step log: an error bash itself prints,
+	// such as a parse error that aborts it, appears only here.
+	errPath := filepath.Join(t.TempDir(), "step.err")
+	errFile, err := os.Create(errPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = errFile.Close() })
+	cmd.Stderr = errFile
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -641,7 +658,7 @@ func startShutdownStep(t *testing.T) shutdownStep {
 	})
 
 	waitForFile(t, termMarker, 20*time.Second)
-	return shutdownStep{cmd: cmd, exited: exited, logPath: logPath, termMarker: termMarker,
+	return shutdownStep{cmd: cmd, exited: exited, logPath: logPath, errPath: errPath, termMarker: termMarker,
 		output: e.output, cpPID: readPID(t, f.cpPID), decoy: decoy}
 }
 
@@ -757,6 +774,191 @@ func TestRunActionCancellationDuringShutdownStillStopsTheControlPlane(t *testing
 			t.Logf("the step exited %s after the first signal", time.Since(start))
 			s.assertCancelledCleanly(t, tt.want)
 		})
+	}
+}
+
+// A step whose shell exits from inside the stop — an error bash raises
+// itself, as the parse error a signal during a command substitution caused,
+// or a signal nothing traps — still kills the control plane on the way out,
+// rather than leave it running because the stop is marked as under way. The
+// step is interrupted by a SIGUSR1, which it does not trap, sent by a `sleep`
+// it runs once the control plane has its SIGTERM.
+func TestRunActionInterruptedStopStillKillsTheControlPlane(t *testing.T) {
+	requireTools(t)
+	realSleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim := t.TempDir()
+	once := filepath.Join(t.TempDir(), "interrupted")
+	write(t, filepath.Join(shim, "sleep"), `#!/usr/bin/env bash
+if [ -f "$FAKE_CP_TERM_MARKER" ] && [ "$PPID" != "$(cat "$FAKE_CP_PID")" ] && mkdir "$FAKE_INTERRUPT_ONCE" 2>/dev/null; then
+    kill -USR1 "$PPID"
+fi
+exec '`+realSleep+`' "$@"
+`)
+	s := startShutdownStep(t, func(vars map[string]string) {
+		vars["PATH"] = shim + string(os.PathListSeparator) + vars["PATH"]
+		vars["FAKE_INTERRUPT_ONCE"] = once
+	})
+	if !s.waitExit(5 * time.Second) {
+		t.Fatalf("the step did not exit within 5s of its interruption:\n%s", readFile(t, s.logPath))
+	}
+	if _, err := os.Stat(once); err != nil {
+		t.Fatal("the stop was never interrupted")
+	}
+	log := readFile(t, s.logPath)
+	if got := s.cmd.ProcessState.ExitCode(); got == 0 {
+		t.Errorf("an interrupted step exited 0:\n%s", log)
+	}
+	if !strings.Contains(log, "the control plane's stop was interrupted; killing it") {
+		t.Errorf("the interrupted stop was not reported:\n%s", log)
+	}
+	if got := readFile(t, s.termMarker); got != "TERM\n" {
+		t.Errorf("the control plane received %q, want exactly one SIGTERM", got)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for syscall.Kill(s.cpPID, 0) == nil && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := syscall.Kill(s.cpPID, 0); err == nil {
+		t.Errorf("the control plane the step started (%d) outlived the step", s.cpPID)
+	}
+	if !alive(s.decoy.Process.Pid) {
+		t.Error("an unrelated process was stopped")
+	}
+}
+
+// No command substitution runs where a cancellation can interrupt it: from
+// the traps being set until the control plane is stopped, nor in anything
+// a trap calls. Bash 5.2 can lose a trapped signal during one, or abort with
+// a parse error (TestRunActionCancellationDuringShutdownStress finds it).
+func TestRunActionCancellablePathHasNoCommandSubstitution(t *testing.T) {
+	commandSubstitution := regexp.MustCompile("\\$\\([^(]|`")
+	code := func(text string) string {
+		var lines []string
+		for _, line := range strings.Split(text, "\n") {
+			if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+				lines = append(lines, line)
+			}
+		}
+		return strings.Join(lines, "\n")
+	}
+	between := func(text, from, to string) string {
+		t.Helper()
+		i := strings.Index(text, from)
+		if i < 0 {
+			t.Fatalf("no %q", from)
+		}
+		j := strings.Index(text[i:], to)
+		if j < 0 {
+			t.Fatalf("no %q after %q", to, from)
+		}
+		return text[i : i+j]
+	}
+	run := readFile(t, filepath.Join(actionDir, "run.sh"))
+	lib := readFile(t, filepath.Join(actionDir, "lib.sh"))
+	regions := map[string]string{
+		// set_now_ms through the traps and the launch, to the last stop
+		// before the result is preserved.
+		"run.sh, while cancellable": between(run, "set_now_ms() {", "set_output exit-code"),
+		"lib.sh fail and warn":      between(lib, "fail() {", "# annotation_text"),
+	}
+	for name, region := range regions {
+		for _, m := range commandSubstitution.FindAllString(code(region), -1) {
+			t.Errorf("%s has a command substitution: %q", name, m)
+		}
+	}
+}
+
+// A cancellation can land at any instant of the stop, not only the moments
+// the tests above happen to choose. Bash 5.2 can lose a trapped signal that
+// arrives while it is expanding a command substitution, or abort with a parse
+// error in the trap; the window is a few milliseconds per pass of the stop's
+// wait, and under 1 trial in 1000 lands in it. So the stop's own sleeps are
+// skipped: the step imports a `sleep` shell function (BASH_FUNC_sleep%%)
+// that returns at once while the control plane is stopping, and the wait
+// becomes a tight loop of its own commands. The function runs no command
+// substitution, so it adds no window of its own. Each trial
+// is the shutdown harness above, sent one SIGINT or SIGTERM at a random
+// offset into the stop, and is counted as one of:
+//
+//   - lost: the step is still running, and has not logged that it saw the
+//     signal, 2s after it was sent;
+//   - aborted: the step exited with a status other than the signal's;
+//   - clean: assertCancelledCleanly holds.
+//
+// Skipped unless TRUSTVIAN_STRESS=1. TRUSTVIAN_STRESS_RUNS sets the number of
+// trials (default 200).
+func TestRunActionCancellationDuringShutdownStress(t *testing.T) {
+	if os.Getenv("TRUSTVIAN_STRESS") != "1" {
+		t.Skip("set TRUSTVIAN_STRESS=1 to run")
+	}
+	requireTools(t)
+	runs := 200
+	if v := os.Getenv("TRUSTVIAN_STRESS_RUNS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			t.Fatalf("TRUSTVIAN_STRESS_RUNS=%q is not a positive number", v)
+		}
+		runs = n
+	}
+	const seen = "while the control plane is stopping"
+	// Exported to every bash the test starts; the control plane's own sleeps
+	// and every sleep before the stop are the real one.
+	const skipStopSleeps = `() { if [ -f "$FAKE_CP_TERM_MARKER" ] && read -r fake_cp_pid <"$FAKE_CP_PID" && [ "$fake_cp_pid" != "$$" ]; then return 0; fi; command sleep "$@"; }`
+	var lost, aborted atomic.Int64
+	t.Run("trials", func(t *testing.T) {
+		for i := range runs {
+			t.Run(strconv.Itoa(i), func(t *testing.T) {
+				t.Parallel()
+				sig, name, want := syscall.SIGINT, "SIGINT", 130
+				if rand.IntN(2) == 1 {
+					sig, name, want = syscall.SIGTERM, "SIGTERM", 143
+				}
+				// Well inside the stop's 10s grace, which began with the
+				// control plane's SIGTERM.
+				offset := rand.N(3 * time.Second)
+				s := startShutdownStep(t, func(vars map[string]string) {
+					vars["BASH_FUNC_sleep%%"] = skipStopSleeps
+				})
+				time.Sleep(offset)
+				if err := s.cmd.Process.Signal(sig); err != nil {
+					t.Fatal(err)
+				}
+				deadline := time.Now().Add(2 * time.Second)
+				for {
+					if strings.Contains(readFile(t, s.logPath), seen) {
+						break
+					}
+					if s.waitExit(20 * time.Millisecond) {
+						aborted.Add(1)
+						t.Fatalf("aborted: %s %s into the stop; the step exited %d without logging it, want %d\nstdout:\n%s\nstderr:\n%s",
+							name, offset, s.cmd.ProcessState.ExitCode(), want, readFile(t, s.logPath), readFile(t, s.errPath))
+					}
+					if time.Now().After(deadline) {
+						lost.Add(1)
+						t.Fatalf("lost: %s %s into the stop; the step is still running and has not logged it\nstdout:\n%s\nstderr:\n%s",
+							name, offset, readFile(t, s.logPath), readFile(t, s.errPath))
+					}
+				}
+				window := runnerSIGINTTimeout + runnerSIGTERMTimeout
+				if !s.waitExit(window) {
+					t.Fatalf("%s %s into the stop: the step did not exit within %s:\n%s", name, offset, window, readFile(t, s.logPath))
+				}
+				if got := s.cmd.ProcessState.ExitCode(); got != want {
+					aborted.Add(1)
+				}
+				s.assertCancelledCleanly(t, want)
+				if t.Failed() {
+					t.Logf("%s %s into the stop; stderr:\n%s", name, offset, readFile(t, s.errPath))
+				}
+			})
+		}
+	})
+	t.Logf("%d trials: %d lost, %d aborted", runs, lost.Load(), aborted.Load())
+	if n := lost.Load() + aborted.Load(); n > 0 {
+		t.Errorf("%d of %d cancellations during the stop were lost or aborted the step", n, runs)
 	}
 }
 

@@ -316,6 +316,17 @@ step killed there could leave its control plane running. Stopping by 5s
 leaves the rest of that 10s window for the kill, the reap and the exit. Every
 deadline is measured as elapsed time, and a later signal never extends one.
 
+From the moment the traps are set until the control plane is stopped,
+`run.sh` runs no command substitution, and nothing a trap calls runs one.
+Bash 5.2 can lose a trapped signal that arrives while it is expanding
+`$(...)`, or abort with a parse error. A value is set in a variable instead,
+or a command writes to a file under the invocation directory. If the shell
+still exits in the middle of the stop, its exit trap kills the control plane.
+`TRUSTVIAN_STRESS=1 go test ./scripts -run CancellationDuringShutdownStress`
+sends 200 cancellations at random moments of the stop (`TRUSTVIAN_STRESS_RUNS`
+sets the count). It skips the stop's sleeps to widen the window, and reports
+how many cancellations were lost or aborted the step.
+
 `working-directory` is a literal path: a relative one is resolved against the
 job's directory, never through `CDPATH`, and a name such as `-P` is a
 directory, not an option.
