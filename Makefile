@@ -9,7 +9,7 @@ GO       := go
 .PHONY: help build run demo baseline-demo test test-race bench vet fmt fmt-check tidy coverage install clean check examples \
 	compose-up compose-down compose-smoke recovery-drill integration-postgres \
 	local check-modules check-platform-boundary release-dry-run release-prep release vulncheck container-build container-scan sbom \
-	pr-title
+	pr-title docs-links
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -123,6 +123,9 @@ sbom: ## Build with an SPDX SBOM attestation and extract it to dist/ (needs a do
 
 check-platform-boundary: ## Verify the core/platform boundary (see docs/adr/0022-core-platform-boundary.md)
 	./scripts/check-platform-boundary.sh
+
+docs-links: ## Check every relative link and anchor in the current documentation (CI runs it in go test ./...)
+	$(GO) test ./scripts -run 'TestCurrentDocumentationLinksResolve' -count=1
 
 check-modules: ## Verify module publication invariants (see docs/release-guide.md)
 	./scripts/check-modules.sh
