@@ -1398,6 +1398,7 @@ and render the golden model-change report (51 KB), 275,328–281,141 ns/op,
 renders to 9,234 bytes of Markdown with nothing shed: `present_in`, which is
 most of its size, is not rendered.
 
+## Reading the numbers
 
 **Session-to-session `ns/op` moved broadly; allocation counts didn't —
 that split tells you what's real.** This table was re-measured for

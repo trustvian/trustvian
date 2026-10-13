@@ -35,7 +35,15 @@ full field reference.
   approval context — see [AI Agent behavioral
   context](#ai-agent-behavioral-context) below for which of these
   affect `Fingerprint` identity (none of them, deliberately) and which
-  don't.
+  don't. Task 084 adds `ParentSpanID` and `SpanLineage` (`root`, `child`,
+  or nothing established): a trace-scoped reference, never a standalone
+  key, and never identity.
+- **Execution** — operational evidence about one occurrence (task 084):
+  the observed duration (bounded by `event.MaxDurationNanos`) and the
+  producer's span status (`unset`, `ok`, `error`, or the empty value when
+  nothing established one — neither empty nor `unset` is success). It
+  lives outside `Operation` on purpose: a slower call is the same
+  behavior, so nothing here reaches `StableFeatures` or a fingerprint.
 - **Metadata (`Attributes`)** — an open `map[string]any`. Two keys
   carry defined meaning (`duration_ms`, `error` — see
   [Go SDK Guide](sdk-guide.md#the-event-type)); everything else passes
@@ -221,9 +229,12 @@ against. See
 ### What persists, and the contract it persists under
 
 A `Baseline` is **current learned state**, not an event history — it is
-bounded by construction (one `FingerprintStats` per distinct
-`Fingerprint`, with every per-entry map capped: `maxPredecessors`,
-`maxTrigramPredecessors`, `maxDelegators`, all 64). Nothing persists raw
+bounded by construction: at most 512 `FingerprintStats` entries
+(`maxFingerprints`, enforced by refusing admission of a new fingerprint
+at capacity, never by evicting a learned one — see
+[ADR 0019](adr/0019-bounded-fingerprint-admission.md)), with every
+per-entry map capped too: `maxPredecessors`, `maxTrigramPredecessors`,
+`maxDelegators`, all 64. Nothing persists raw
 events, prompt text, tool arguments, secret values, or request bodies;
 there is no retention policy because there is no growing history to
 retain. Trustvian is not a SIEM or event lake.
@@ -243,8 +254,9 @@ concurrent `Observe` calls for the same key lose no updates.
 That last guarantee is why the port's shape matters. Because `Observe`
 receives the observation rather than a finished `Baseline`, the whole
 read-modify-write cycle happens inside one implementation call and can
-be made atomic there — a per-key mutex in `store.InMemory` today, a
-row-locked transaction in a future database backend. See [ADR
+be made atomic there — a per-key mutex in `store.InMemory` and
+`store.FileStore`, and a transaction holding the row with `SELECT … FOR
+UPDATE` in `internal/store/postgres`. See [ADR
 0018](adr/0018-production-store-boundary-and-postgresql-direction.md).
 
 Which implementation an `Engine` uses is selected via public
@@ -401,15 +413,17 @@ terms:
 - **Policy is data**, not code: an ordered `[]Rule` plus a mandatory
   default, not per-rule Go closures.
 - **Input** carries what a `Condition` can match against:
-  `features.StableFeatures`, `trust.Trust`, and — since task 006 —
-  `Attributes map[string]any`, the raw `Event.Attributes` passed
-  through unchanged by `Engine.Analyze`. This is what lets
+  `features.StableFeatures`, `trust.Trust`, `Attributes
+  map[string]any` (since task 006) — the raw `Event.Attributes` passed
+  through unchanged by `Engine.Analyze` — and the event's
+  `ApprovalStatus` (since task 030). `Attributes` is what lets
   `Condition.Attributes` match a specific key/value pair (e.g.
   `tool.category: secrets`) without inventing a general policy
   language; see [Policy Guide § matching
   Event.Attributes](policy-guide.md#example-matching-eventattributes).
-- **Decision** is one of `ALLOW`, `OBSERVE_ONLY`, `ALERT`,
-  `CHALLENGE`, `REQUIRE_APPROVAL`, `BLOCK`.
+- **Decision** is one of `allow`, `observe_only`, `alert`,
+  `challenge`, `require_approval`, `block` — written in upper case
+  (`ALLOW`, `BLOCK`, …) in prose throughout these docs.
 - **Evaluation is first-match-wins**, deterministic, and fails closed:
   an unconfigured or misconfigured policy resolves to `BLOCK`, never a
   silent `ALLOW`.
@@ -442,11 +456,11 @@ caller outside this module via type inference (received from
 `CompilePolicy`, passed straight into `trustvian.WithPolicy`) without
 that caller ever importing `internal/policy` — a real Go property,
 verified empirically, not assumed; see ADR 0008 for the experiment.
-This is the concrete fix for `processor/`'s documented "runs the
-default `Policy` only" limitation, though wiring `processor/` itself
-to use `config` is separate, later work — [task
-019](archive/tasks/v0.5/019-policy-config-model.md) only builds the model and
-compiler.
+[Task 019](archive/tasks/v0.5/019-policy-config-model.md) built the
+model and compiler. The Collector processor now uses the same path: its
+optional `policy:` block is decoded into `config.PolicyConfig` and
+compiled with `config.CompilePolicy` (`processor/processor.go`), and
+without the block it runs the default `Policy`.
 
 ## Alert
 
@@ -472,7 +486,7 @@ full architecture; in domain terms:
 - **Severity is a genuinely new concept**, distinct from every other
   output value: `severity != risk`, `severity != anomaly score`,
   `severity != trust score`, `severity != decision`. It is one of
-  `INFO`/`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`, and is always exactly what
+  `info`/`low`/`medium`/`high`/`critical`, and is always exactly what
   the matched `Rule` configured — never inferred from
   risk/decision/anomaly/trust by an implicit mapping. A `BLOCK` at
   `RiskCritical` might always be `CRITICAL` by an operator's own rule; a
@@ -658,8 +672,9 @@ not** — the central design question this task answers explicitly:
 | `Context.SessionID` | **No** (new, `v0.7`) |
 | `Context.DelegatedFrom` | **No** (new, `v0.7`) |
 | `Context.ApprovalStatus` | **No** (new, `v0.7`) |
+| `Context.ParentSpanID`, `Context.SpanLineage`, `Event.Execution` | **No** (task 084) — properties of one occurrence |
 
-**`v1.0` fills those dimensions better without changing which ones they are.**
+**Telemetry conventions fill those dimensions better without changing which ones they are.**
 [Task 075](tasks/v1.0/075-ai-semantic-telemetry-normalization.md) reads
 agent-oriented telemetry conventions at the adapter boundary, so
 `Operation.Category`/`Name` and `Target.Name` can carry `tool · export_customer →
@@ -673,7 +688,8 @@ expect to be identity and which deliberately is not:
 
 | Value | Affects `Fingerprint`? |
 |---|---|
-| The **fidelity** a behavior was derived at (`transport` / `semantic`) | **No** (`v1.0`) — it would reset every baseline the day a producer upgraded its instrumentation |
+| The **fidelity** a behavior was derived at (`transport` / `semantic`) | **No** (task 075) — it would reset every baseline the day a producer upgraded its instrumentation |
+| The **behavior layer** (`model` / `tool` / `retrieval` / `transport`) | **No** (task 083) — same reason |
 | Any content attribute a convention defines — prompts, completions, tool arguments, retrieved documents | **No**, and none is read at all — see [ADR 0045](adr/0045-conventions-are-read-frameworks-are-not.md) |
 
 - **`SessionID`** groups events belonging to one bounded
@@ -819,8 +835,8 @@ expect to be identity and which deliberately is not:
 ## The control-plane domain (`platform/`)
 
 The concepts above are the *behavioral* domain: what an actor did and how much
-it is trusted. `v1.0` adds a second, separate vocabulary in the `platform/`
-module — what is being evaluated, and by whom:
+it is trusted. The `platform/` module holds a second, separate vocabulary —
+what is being evaluated, and by whom:
 
 ```text
 Project
@@ -829,7 +845,9 @@ Project
   │       └─ EvaluationRun ──▶ EnvironmentRef
   │                       └──▶ BehavioralProfileRef
   ├─ Environment ◀──────────────────┘
-  └─ Promotion ──▶ two EvaluationRuns, two Environments, one gate result
+  ├─ Promotion ──▶ two EvaluationRuns, two Environments, one gate result
+  └─ ScenarioExecution ──▶ N reference + N candidate EvaluationRuns,
+                           one recorded gate result
 ```
 
 - **Project** — a local control-plane workspace owning agents. Not a tenant,
@@ -851,11 +869,17 @@ Project
 - **EnvironmentRef** — the reference a run records and the environment's
   identity, not a separate identifier. Still an open set: `local`, `staging`,
   `production` are plausible values, not a closed enum.
-- **BehavioralProfileRef** — an opaque reference. How behavioral profiles are
-  allocated remains a later task, and an environment is not that choice.
+- **BehavioralProfileRef** — an opaque reference. The platform does not
+  allocate one; the client that creates the run does. `trustvian dev` uses
+  the candidate identifier unless told otherwise, and `trustvian eval run`
+  gives every repetition its own (`<execution>-<side>-p<i>`). An environment
+  is not that choice.
 - **Promotion** — one immutable record that a candidate's evidence was gated
   and the verdict accepted or refused advancement from one environment toward
   another. It is a record of a **decision**, not of a deployment: see below.
+- **ScenarioExecution** — one `trustvian eval run` invocation: N repetitions
+  per side under one scope (project, agent, environment), compared once. See
+  [Scenario executions](#scenario-executions) below.
 
 **These two domains never merge, and the separation is the point.** No
 platform identifier is a behavioral dimension: a candidate is not an actor, a
@@ -866,7 +890,8 @@ The relationship runs one way through a reference:
 
 ```text
 platform BehavioralProfileRef
-        ↓  a later service decides the allocation
+        ↓  the client that runs the workload chooses it; the Collector's
+        ↓  evaluation.behavioral_profile selects the Engine's scope
 core     trustvian.WithLearningScope(string)
 ```
 
@@ -892,8 +917,10 @@ Engine ──▶ DecisionRecord ──▶ EvaluationAggregate
 
 It counts observations, decisions by category, risk levels, approval evidence,
 and policy-selection shape; it summarizes the five numeric signals as
-`{Count, Sum, Min, Max}` with an explicitly-absent mean when empty; and it
-bounds the evidence in event time.
+`{Count, Sum, Min, Max}` with an explicitly-absent mean when empty; it
+summarizes observed durations as integer nanoseconds and counts span statuses
+(task 084), with an observation that reported no duration or no status
+counted as such rather than as zero; and it bounds the evidence in event time.
 
 Three properties define it:
 
@@ -959,12 +986,15 @@ predicate before the page bound and scoped inside one run. More than one is
 refused rather than answered — see
 [ADR 0049](adr/0049-the-evidence-explorer-narrows-retained-history-and-answers-a-behavioral-question.md).
 
-**Two facts about an observation are not retained, and both matter to a
-reader.** Fidelity (task 075) and behavioral layer (task 083) travel beside a
-record at ingest and on the realtime frame and have no column here, so a
-historical read cannot say whether an operation's identity came from
-agent-oriented telemetry or from its transport. Sequence signals live in the
-anomaly contributors, which are excluded, so nothing durable says whether an
+**Two facts about an observation are not retained on its row, and both matter
+to a reader.** Fidelity (task 075) and behavioral layer (task 083) travel beside
+a record at ingest and on the realtime frame and have no column here, so a
+retained observation cannot say whether its operation's identity came from
+agent-oriented telemetry or from its transport. Since schema 13 (task 081,
+[ADR 0068](adr/0068-fidelity-and-layer-are-persisted-as-per-behavior-counts.md))
+the answer is kept per behavior instead, as counts on the behavior snapshot —
+see [Behavioral comparison](#behavioral-comparison). Sequence signals live in
+the anomaly contributors, which are excluded, so nothing durable says whether an
 order departed from what was learned. Consumers state both absences rather than
 inferring either.
 
@@ -997,6 +1027,22 @@ different shapes fails closed rather than merging them.
 Like the aggregate, it reports facts and no verdict: no score, severity,
 threshold, or promotability. See
 [ADR 0027](adr/0027-behavioral-diff-compares-bounded-snapshots.md).
+
+Each snapshot entry (`BehaviorEntry`) also carries two fixed-shape sets of
+counts about the observations it counted. Neither is identity:
+
+- **Operational evidence** (task 087) — an 11-bucket duration histogram with
+  fixed upper-inclusive boundaries (1, 5, 10, 50, 100, 250, 500, 1 000,
+  2 500 and 10 000 ms, then everything above), span-status counts, HTTP
+  status classes with 429 counted on its own, and token counts. Every group
+  partitions the entry's observations, so an observation that stated nothing
+  is counted as unobserved, never as a measured zero. No percentile, mean or
+  rate.
+- **Fidelity and layer** (task 081) — counts per fidelity (`semantic`,
+  `transport`, `unrecorded`) and per layer. A behavior's reported fidelity is
+  the lowest level seen. An observation recorded before schema 13, or whose
+  envelope did not state the pair, is `unrecorded`; a contradictory pair is
+  refused rather than counted.
 
 ### Evaluation scorecards
 
@@ -1142,22 +1188,187 @@ identity — an audit field nobody authenticates is one that can say anything.
 
 See [ADR 0040](adr/0040-promotions-are-immutable-evidence-backed-platform-decisions.md).
 
-### Local persistence
+### Repeated evaluation
 
-Task 057 makes the values above survive a restart, behind two narrow
-capabilities rather than a generic database:
+One run of a model-driven agent is not evidence: an unchanged agent's behavior
+set moves between isolated runs. `CompareRepeatedEvaluations` (task 078,
+[ADR 0053](adr/0053-repeated-evaluation-counts-identities-across-isolated-repetitions.md))
+asks the question over N repetitions per side (1 ≤ N ≤ 64) and answers it in
+integers:
 
 ```text
-ControlStore     Project, Agent, Candidate
+reference_runs_present   how many of the N reference runs showed the behavior
+candidate_runs_present   how many of the N candidate runs showed it
+```
+
+- **Presence, never pairing.** Reference repetition *i* is never compared with
+  candidate repetition *i*, so the counts do not depend on order.
+- **Isolation is checked, not trusted.** Each repetition must run under its own
+  behavioral profile, or repetition *i* is scored against what 1…*i*−1 taught
+  the engine. Shared profiles are refused (`ErrRepeatedIsolation`).
+- **Classification uses caller-owned k and j** (1 ≤ k ≤ N, 0 ≤ j < k):
+  `added` is candidate ≥ k and reference ≤ j, `removed` the mirror image, and
+  every other behavior is `neither`. `removed` is reported and gates nothing.
+- **Six named checks, all evaluated on every call:** both sides completed N
+  repetitions, no repetition failing minimum evidence, repeatedly added
+  behaviors within limit, and the worst candidate repetition's block decisions
+  and critical-risk observations within limit. At N > 1 the last two carry the
+  advisory `fresh_scope`: against per-repetition scopes the engine has learned
+  nothing. At N = 1, k = 1, j = 0 the verdict equals the single-run gate's.
+- **Four optional frequency checks** (tasks 106 and 081):
+  `min_candidate_frequency`, `max_lost_behaviors`, `max_calls_per_run` (per
+  named target, at most 16 targets, [ADR 0066](adr/0066-a-per-target-call-limit-is-one-named-check-over-a-bounded-list.md))
+  and `max_llm_calls_per_run`. Omitted means `not_evaluated` and leaves the
+  verdict alone. Supplied but without the evidence it needs means `deferred`,
+  which names what was missing and **fails** the verdict: PASS would answer a
+  question nobody had evidence for. A named target neither side called is
+  `not_observed` and fails too, so a misspelled target cannot pass silently.
+
+Frequency is evidence beside presence. Per behavior and per target, each side
+reports calls per run as a minimum, a maximum and a floored mean in
+thousandths, over its completed repetitions; a run where the behavior did not
+appear is a run of zero calls. A target's call ratio is an integer permille,
+and with a reference total of zero there is no ratio. A behavior present in all
+N reference runs and missing from at least one candidate run is `lost`, a flag
+beside the classification rather than a fourth value of it. Lost transitions
+are reported as `not_recorded`: nothing records a sequence per execution.
+
+### Scenario executions
+
+`ScenarioExecution` (task 078,
+[ADR 0054](adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md))
+persists one `trustvian eval run`: its scenario name, scope, N, the ordered
+repetitions of each side with their runs and profiles, the execution whose
+reference side it reused (if any), its lifecycle and its verdict.
+
+```text
+running ──complete──▶ completed   the comparison was evaluated: PASS or FAIL
+   └─────fail──────▶ failed       no verdict
+```
+
+- **Completed is not passed.** A FAIL is a completed execution and a usable
+  reference. Running and failed executions never are.
+- **The control plane resolves every reference.** `last` is the completed
+  execution of the same scenario name, project, agent and environment with the
+  highest completion sequence — an integer assigned per project when the
+  completion commits, not a clock. If its N differs or its evidence is
+  unusable, the error names it; an older execution is never substituted. When a
+  reference is reused, the control plane supplies its runs and refuses any the
+  client sends.
+- **Metadata only.** No scenario command, no environment variable value, no
+  limit a later execution could inherit, and no content.
+
+Four recorded facts sit beside that. None is identity, and none reaches a
+fingerprint or a baseline key:
+
+| Fact | Since | What it is |
+|---|---|---|
+| Provenance, per side (task 086, [ADR 0067](adr/0067-scenario-provenance-is-recorded-per-execution-side.md)) | schema 12 | `scenario_digest` and `input_digest` (`sha256:` digests the CLI computes, because it reads the files — the control plane validates their format and cannot recompute them), and the declared model and prompt reference (a name and a digest, never prompt text). Environment variable values are excluded from the digest |
+| The gate record ([ADR 0069](adr/0069-a-completed-execution-records-the-gate-it-consumed.md)) | schema 14 | The limits, every check with its state, actual value, bound and outcome, and the verdict, as one canonical text that must re-encode to itself and agree with itself. A report reads it and never re-evaluates the gate |
+| CLI version and reference mode (`execution` or `last`) | schema 15 | What the runner said about itself when it began |
+
+Each fact recorded before its schema step reads `not_recorded`, never an empty
+or zero value.
+
+**Sameness** compares the two sides' provenance: `same_scenario`,
+`same_inputs`, `same_model` and `same_prompt_ref`, each `true`, `false` or
+`not_recorded`. A value missing on either side is never `false`. A `false`
+adds a warning (`scenario_differs`, `inputs_differ`, `model_differs`,
+`prompt_ref_differs`) that states the fact and gives no advice. No check
+reads sameness and it never changes a verdict.
+
+**The report** (`GET /v1/scenario-executions/{id}/report`, `trustvian eval
+report`) is result document version `"2"`, assembled by the control plane from
+the persisted runs, the execution's provenance and its gate record. It adds no
+evidence: row totals, per-repetition presence and display strings are
+computed server-side beside the integers they format, so no client counts
+or computes anything.
+
+### Operational, frequency and cost evidence
+
+A comparison carries three operational sections — latency, errors and tokens
+(task 087) — each a reference side and a candidate side summed from the
+persisted behavior entries. A section is comparable only when both sides
+carry its evidence. Otherwise it says which side did not
+(`reference_unavailable`, `candidate_unavailable`, `both_unavailable`) and
+carries no delta at all: a delta against "nothing was measured" would read as
+a change nobody observed. Gates read none of these sections.
+
+Cost is optional. Given an operator-supplied pricing table
+(`trustvian-local --pricing <file>`: integer micro-units per million tokens,
+with a `pricing_version`, a `source` and a currency), a side's cost is the sum
+over priced models of `floor((input × input price + output × output price) /
+1 000 000)`, in integer micro-units. Tokens of a model the table does not price,
+and every total reported without an input/output split, are `unpriced` and
+never given a guessed price. Every figure travels with the table's version,
+source and digest. A figure past `uint64` is refused, never wrapped. Without a
+table there is no cost section, and there is no cost gate.
+
+### Suggestions are rule-table outputs
+
+A suggestion ([ADR 0064](adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md))
+is the output of one named, versioned rule over the evidence of the document it
+sits in, rendered from a fixed template whose only substitutions are the
+evidence values it names. Rules compare integers and closed categories, combine
+nothing into a score, and never fire on evidence that was not reported. There is
+no severity and no ranking; table order is the only order.
+
+| Table | Rules |
+|---|---|
+| Pipeline status | `status.no_collector`, `status.no_producer`, `status.spans_without_service_name`, `status.collapsed_http_operations`, `status.admission_near_bound` |
+| Repeated comparison | `compare.added_in_all_runs`, `compare.target_load_with_429`, `compare.lost_in_half` |
+
+Each document carries at most 64, with a `suggestions_truncated` flag.
+Suggestions sit beside the evidence and are read by nothing — no check, no
+verdict, no exit code, no stored record — and tests prove that removing either
+table changes nothing else. Sameness warnings are not suggestions.
+
+### Pipeline status
+
+`PipelineStatus` (task 105,
+[ADR 0065](adr/0065-collectors-report-pipeline-status-the-control-plane-holds-it-in-memory.md))
+explains an empty Live view. A Collector configured with a `status:` block
+reports what reached it on a fixed interval (10 s by default): counts, ages,
+learning outcomes, and the identity metadata a producer declares
+(`service.name`, instrumentation scope, `telemetry.sdk.*`) — nothing a span
+says about its subject.
+
+- **Held in memory, never persisted.** The latest report per Collector, at most
+  16 Collectors; a 17th is refused rather than one evicted. A Collector that
+  stops reporting is `stale` after 30 s and forgotten after 5 minutes. A
+  restart loses everything, and nothing — no gate, no promotion — reads it.
+- **The control plane's clock.** Reports carry ages, not timestamps, so a
+  skewed Collector cannot make a producer look fresh or stale.
+- **Landing.** `live` when a reporting Collector saw a producer, or an ingest
+  record committed, within 30 s; `status` otherwise. Decided once, here.
+- **Engine facts are `unavailable`.** The engine exposes no accessor for its
+  baseline count, maturity or fingerprint admission, and the document says so
+  rather than approximating them.
+
+### Local persistence
+
+Task 057 makes the values above survive a restart, behind narrow
+capabilities rather than a generic database. Two carry the core of it:
+
+```text
+ControlStore     Project, Agent, Candidate, Environment, Promotion
 EvaluationStore  EvaluationRun, and one run's evidence
 ```
 
+Later capabilities sit beside them, each for one need: ingest state, retained
+observations and the views over them (traces, sessions, recent runs), and
+scenario executions. The schema is at version 15 on both backends, SQLite and
+PostgreSQL.
+
 What is persisted is what cannot be rebuilt: the entities, the
-`EvaluationAggregate`, and the `BehaviorSnapshot` with its bounded entries.
-`BehaviorDiff`, `EvaluationScorecard` and `EvaluationGateResult` are
-deterministic functions of those, so they are recomputed on demand — storing
-them would create a second thing that can be true, and the first disagreement
-would have no principled resolution.
+`EvaluationAggregate`, the `BehaviorSnapshot` with its bounded entries, and
+the bounded observation history. `BehaviorDiff`, `EvaluationScorecard` and a
+run comparison's `EvaluationGateResult` are deterministic functions of those,
+so they are recomputed on demand — storing them would create a second thing
+that can be true, and the first disagreement would have no principled
+resolution. The two exceptions are decisions, not derived reads: a promotion
+and a completed scenario execution each keep the gate result they consumed, so
+history survives a later fix to the gate.
 
 Four rules shape the adapter:
 
@@ -1173,8 +1384,9 @@ Four rules shape the adapter:
   or not at all, evidence never moves backwards, and saturation is sticky: an
   incomplete snapshot stays incomplete across a restart.
 
-Raw event history is deliberately absent — no table grows per event. Core
-baseline state stays in the engine's own stores.
+No raw event is stored. The one table that grows per accepted record is the
+retained observation history, a fixed-column allowlist bounded at 4096 rows
+per run. Core baseline state stays in the engine's own stores.
 
 See [ADR 0030](adr/0030-local-persistence-stores-authoritative-bounded-state.md).
 
@@ -1199,8 +1411,8 @@ older, or a gap              → conflict
 
 Durable state is two values per run: the next sequence and the digest of the
 last accepted record. Task 053 made duplicates count twice on purpose, so
-something had to own retry semantics; this does, in O(1), without keeping any
-record.
+something had to own retry semantics; this does, in O(1), without consulting
+any retained record.
 
 **Saturation degrades rather than fails.** The 513th distinct behavior is
 still applied to the aggregate; the snapshot stops being the whole truth and
@@ -1222,12 +1434,17 @@ committed state**, never a second source of truth: the bus retains nothing
 after delivery, and a subscriber that falls behind resynchronizes from the
 control plane rather than replaying.
 
-Six kinds, each corresponding to a mutation that committed:
+Seven kinds. Six correspond to a mutation that committed; the seventh says the
+in-memory pipeline status document changed:
 
 ```text
 evaluation_created   evaluation_started   observation
 evaluation_completed evaluation_failed    evaluation_cancelled
+status_changed
 ```
+
+`status_changed` (task 105) carries only the identifier of the Collector whose
+report moved — a reader re-reads `GET /v1/status`, which is the authority.
 
 Deliberately absent: `policy_violation` (a blocked decision is the policy
 engine working, and "violation" implies severity nothing models),
@@ -1236,8 +1453,9 @@ engine working, and "violation" implies severity nothing models),
 not durable state).
 
 An **observation** is a bounded projection of one applied record — sequence,
-record count, completeness, fingerprint, behavioral shape, decision, risk,
-approval, the three numeric signals, and whether the behavior was new. Not the
+record count, completeness, fingerprint, behavioral shape, fidelity, behavior
+layer, decision, risk, approval, the three numeric signals (trust score,
+anomaly score, anomaly confidence), and whether the behavior was new. Not the
 record itself: no attributes, arguments, prompts, completions, contributors or
 policy reason, so task 050's privacy boundary holds here too.
 
@@ -1246,16 +1464,16 @@ unseen behavior still reports `NewBehavior=true` with
 `BehaviorComplete=false` — a live fact, even though the bounded snapshot
 cannot retain it.
 
-Every event carries its full immutable hierarchy, so a subscriber filters by
-project, agent or run without reading the database.
+Every evaluation event carries its full immutable hierarchy, so a subscriber
+filters by project, agent or run without reading the database. A
+`status_changed` event has an empty scope and reaches only unfiltered
+subscriptions.
 
 See [ADR 0032](adr/0032-realtime-is-bounded-ephemeral-not-authoritative.md).
 
 See [ADR 0025](adr/0025-platform-domain-values-with-caller-owned-identity.md)
 and [task 052](tasks/v1.0/052-evaluation-domain.md).
 
-This document describes the domain model as it exists today. Planned
-extensions to it (further v0.7 agent-behavioral-detection scenarios,
-further v0.6 sequence detectors, and others) are scoped in
-[ROADMAP.md](ROADMAP.md) and [`tasks/`](tasks/) — each will update
-this document when it actually ships, not before.
+This document describes the domain model as it ships in `v0.12.0`. Planned
+extensions to it are scoped in [ROADMAP.md](ROADMAP.md) and
+[`tasks/`](tasks/) — each updates this document when it ships, not before.

@@ -5,9 +5,15 @@ what to back up, how to restore it without making things worse, how to
 upgrade without silently resetting what Trustvian has learned, and how to
 roll back when an upgrade goes wrong.
 
-Everything here uses PostgreSQL's own tools. There is no Trustvian backup
+Two databases hold Trustvian state: the engine's learned baselines, and the
+control plane's evaluation state. Most of this document is about the first.
+[The control plane's database](#the-control-planes-database) covers the
+second, including the one-way schema 10 → 15 upgrade into `v0.12.0`.
+
+Everything here uses the databases' own tools. There is no Trustvian backup
 format, service, or scheduler — two small scripts wrap `pg_dump` and
-`pg_restore` to make the dangerous mistakes hard to make.
+`pg_restore` for the baseline tables to make the dangerous mistakes hard to
+make.
 
 > **Why this matters more than it looks.** A lost baseline does not make
 > Trustvian fail. It makes every actor look brand new: anomaly confidence
@@ -28,9 +34,10 @@ format, service, or scheduler — two small scripts wrap `pg_dump` and
 | Learning freeze flags | Process memory only | Not backed up | Re-apply after restart (per-process by design) |
 | `file` store | One JSON file | File copy | As for baselines |
 | `memory` store | Process memory | **Impossible** | Lost on every restart |
+| **Control plane evaluation state** — runs, scenario executions, their recorded evidence | `platform.db` (SQLite) or `platform_*` tables (PostgreSQL) | **Database copy or dump** ([below](#the-control-planes-database)) | Gates lose their references and history. Not reconstructable. |
 
-Trustvian stores no raw events, decisions, alerts, or sessions — so there is
-no history to back up beyond the baseline itself
+The engine stores no raw events, decisions, alerts, or sessions — so there
+is no engine history to back up beyond the baseline itself
 ([storage guide](storage-guide.md#what-is-not-stored)).
 
 **A database backup restores what was learned, never how decisions are
@@ -304,12 +311,15 @@ Start a runtime against the target *without* sending it production traffic —
 a second Collector instance, or the CLI:
 
 ```bash
-cat > restored.yaml <<'EOF'
+# The shell writes the DSN into the file: the storage loader expands no ${…}.
+# The file then holds a secret, so it is created private.
+(umask 077 && cat > restored.yaml <<EOF
 version: v1
 type: postgres
 postgres:
   dsn: ${TRUSTVIAN_RESTORED_DSN}
 EOF
+)
 ```
 
 With health enabled (`health:` block in the processor config):
@@ -415,9 +425,8 @@ track, which is bounded by your deployment, not by traffic.
 **Several replicas.** If the target release changes the schema version, stop
 **all** old replicas before starting any new one. If it does not (see the
 [matrix](#compatibility-matrix)), a rolling replacement is safe: old and new
-binaries read and write the same state identically — tested for `v0.8.0` and
-this release, alternating on one database. Running replicas of mixed versions
-across a schema-version change is never safe.
+binaries read and write the same state identically. Running replicas of mixed
+versions across a schema-version change is never safe.
 
 ### Container upgrade
 
@@ -476,6 +485,8 @@ Configuration is not rewritten automatically. Since `v0.8.0`:
 | Change | Kind | Action |
 |---|---|---|
 | Processor `health:` block (`endpoint`, `readiness_timeout`) | **New, optional** | None required; add it to get `/livez` and `/readyz` |
+| Processor `evaluation:` block (`api_url`, `run_id`, `behavioral_profile`, `required`, `pending_state_path`) | **New, optional** | None required; add it to feed a control plane's evaluation run |
+| Processor `status:` block (`api_url`, `collector_id`, `interval`, `receiver_endpoints`) | **New, optional** | None required; add it to report to a control plane's `GET /v1/status` |
 | Removed or renamed fields | None | — |
 | Changed defaults | None | — |
 
@@ -559,9 +570,75 @@ silently resets or reinterprets learned state.
 | `memory` store, any version | Nothing survives to upgrade | — |
 | PostgreSQL major upgrade | Via dump/restore into the new server, or `pg_upgrade` | PostgreSQL's own mechanisms; tested only on 17 |
 
-The schema version today is `2`. It was `1` from `v0.8.0` through `v0.9.x`
-and moved once, in `v0.10.0`, to add the learning-scope column
-([ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md)).
+The baseline schema version today is `2`. It was `1` from `v0.8.0` through
+`v0.9.x` and moved once, in `v0.10.0`, to add the learning-scope column
+([ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md)). The
+control plane's schema is numbered separately, and is `15`
+([below](#the-control-planes-database)).
+
+## The control plane's database
+
+`trustvian-local` and `trustvian dev` keep evaluation state — runs, scenario
+executions, their recorded evidence — in a database of their own, separate
+from the baselines above:
+
+| Backend | Where |
+|---|---|
+| SQLite (the default) | `platform.db` under `--state-dir` (default `.trustvian/`); under `trustvian dev`, `~/.trustvian/dev/<hash>/` ([where state lives](local-development.md#state)) |
+| PostgreSQL (`--backend postgres`) | `platform_*` tables in the current schema of `TRUSTVIAN_PLATFORM_POSTGRES_DSN`'s database |
+
+Its schema version is its own, in `platform_schema_version`, independent of
+the baseline schema and of the release version. At `v0.12.0` it is `15` on
+both backends.
+
+### Migrations are forward-only
+
+Every start brings an older recorded schema forward, step by step, in one
+transaction. Nothing ever moves a schema back. A database recorded at a
+version newer than the binary fails startup and is left as it was:
+
+```text
+trustvian-local: opening platform database: platform: unsupported persistence schema: database reports version 16, this build supports 15
+```
+
+### Upgrading into `v0.12.0`: schema 10 → 15 is one-way
+
+`v0.11.0` wrote schema `10`. The first start of `v0.12.0` migrates it through
+11 to 15 in one step, on SQLite and on PostgreSQL. From then on, `v0.11.0`
+refuses the database as newer than it supports. **There is no downgrade: the
+only way back is a copy taken before the upgrade, so take one first.**
+Records and executions from before each step read *not recorded* for that
+step's evidence, never zero.
+
+Stop the runtime before the copy. For SQLite, copy the state directory:
+
+```bash
+cp -R .trustvian /secure/backups/trustvian-platform-pre-v0.12.0
+```
+
+Or take a consistent copy of the database file while it runs, with SQLite's
+own `VACUUM INTO`:
+
+```bash
+sqlite3 .trustvian/platform.db "VACUUM INTO '/secure/backups/platform-pre-v0.12.0.db'"
+```
+
+For PostgreSQL, dump the platform tables, with the
+[standard libpq environment](https://www.postgresql.org/docs/current/libpq-envars.html)
+set as for the baseline backup:
+
+```bash
+pg_dump -w --format=custom --table='platform_*' --file=/secure/backups/platform-pre-v0.12.0.dump
+```
+
+To roll back, put the copy back — a stopped state directory, or the file as
+`platform.db` — or `pg_restore` the dump into a new, empty database, and run
+`v0.11.0` against it. Treat a copy as sensitive, like a baseline backup.
+
+`backup-postgres.sh` and `restore-postgres.sh` do not cover these tables:
+they back up and verify the baseline tables, and refuse a database without
+them. Platform backup, restore and upgrade tooling is planned
+([ROADMAP](ROADMAP.md), task 071).
 
 ## Recovery drill
 
@@ -599,6 +676,12 @@ The repository runs this drill automatically:
   equivalence after restore, consistency under concurrent writes, every
   failure mode above, and the upgrade/rollback path from the real `v0.8.0`
   release.
+- **`platform/drill_test.go`** (`TestPlatformDrill*`) — on every pull
+  request, for the control plane's database on SQLite and PostgreSQL: a schema
+  `10` backup written by the real `v0.11.0` `trustvian-local`, and backups at
+  `12`, `13` and `14`, restore and migrate to `15`; a backup at `15` restores
+  with every count and recorded fact intact. Backups are taken with
+  `VACUUM INTO` and `pg_dump`, as above.
 
 ```bash
 # Locally, with PostgreSQL 17 client tools on PATH:
@@ -613,9 +696,19 @@ TRUSTVIAN_TEST_UPGRADE_FROM_BINARY=/tmp/trustvian-v0.8.0 TRUSTVIAN_TEST_UPGRADE_
 TRUSTVIAN_TEST_BACKUP_RESTORE=1 TRUSTVIAN_TEST_POSTGRES_DSN='…' \
   go test -race -run Upgrade ./scripts/
 
+# The control plane's drill, with PostgreSQL 17 client tools on PATH and a
+# trustvian-local built at v0.11.0:
+(cd platform && TRUSTVIAN_TEST_PLATFORM_DRILL=1 TRUSTVIAN_TEST_POSTGRES_DSN='…' \
+  TRUSTVIAN_TEST_PLATFORM_UPGRADE_FROM_BINARY=/tmp/trustvian-local-v0.11.0 \
+  GOWORK=off go test -race -run TestPlatformDrill .)
+
 # The full drill on the reference deployment (Docker only):
 make recovery-drill
 ```
+
+`make recovery-drill` runs `deployments/docker-compose/recovery-drill.sh`. It
+starts with `docker compose down -v`, so it deletes whatever the reference
+deployment's volume already holds, and removes its own volume when it ends.
 
 ## What Trustvian deliberately does not do
 

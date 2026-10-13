@@ -29,9 +29,13 @@ here, not moved or rewritten.
 | Threat | Test(s) |
 | --- | --- |
 | Shared PostgreSQL backend keeps credentials and internals off every surface | `TestPostgresErrorsNeverCarryTheDSN`, `TestPostgresIdentifierOrderingIsByteOrder`, `TestPostgresBuildsNoSQLFromNonConstants`, `TestPostgresRunScopedWritesTakeTheRowLock`, `TestPostgresUsesReadCommitted`, `TestPostgresRefusesANewerSchema`, `TestPostgresRefusesTablesWithoutAVersionRow`, `TestPostgresConcurrentInitializationYieldsOneSchema`, `TestPostgresMigrationDoesNotBlockOnTheEngineLock` in [`platform/postgres_internal_test.go`](../platform/postgres_internal_test.go), [`postgres_concurrency_test.go`](../platform/postgres_concurrency_test.go) and [`postgres_schema_test.go`](../platform/postgres_schema_test.go); `TestRuntimeErrorsNeverCarryTheDSN`, `TestUnknownBackendFailsClosed`, `TestPostgresBackendWithoutDSNFailsBeforeTheListener`, `TestDiscoveryNeverCarriesBackendConfiguration`, `TestRuntimeOnPostgresServesTheRealAPI`, `TestBackendSelectionDoesNotLeakAboveComposition` in [`platform/localruntime/backend_test.go`](../platform/localruntime/backend_test.go) and [`architecture_test.go`](../platform/localruntime/architecture_test.go) |
-| Recorded promotion decisions cannot be forged, rewritten, or re-derived | `TestRestorePreservesAHistoricallyInconsistentCheck`, `TestRestoreDoesNotRecomputeTheVerdictFromTheFlags`, `TestGateRestoreEvaluatesNothing`, `TestPromotionDeclaresNoDeploymentOrApprovalField`, `TestPromotionTypesAreTheOnesTask066Specified` in [`platform/promotion_test.go`](../platform/promotion_test.go), [`promotion_internal_test.go`](../platform/promotion_internal_test.go) and [`gate_internal_test.go`](../platform/gate_internal_test.go); `TestPostgresPromotionCommitWindowIsMutuallyExclusive`, `TestPostgresPromotionWaitsForTheLockAndSeesTheNewState`, `TestPostgresPromotionLocksEnvironmentsInByteOrder`, `TestPostgresPromotionLocksTwoEnvironmentRowsAndNothingElse` in [`platform/postgres_concurrency_test.go`](../platform/postgres_concurrency_test.go); `TestPostgresMigratesV3ToV4AddingAnEmptyHistory` in [`platform/postgres_schema_test.go`](../platform/postgres_schema_test.go), `TestSchemaV3MigratesToV4PreservingContent` in [`platform/promotion_migration_test.go`](../platform/promotion_migration_test.go); `TestPromotionUIDecidesNothing`, `TestPromotionUIClaimsNoDeployment` in [`platform/webui/assets_test.go`](../platform/webui/assets_test.go) |
+| Recorded promotion decisions cannot be forged, rewritten, or re-derived | `TestRestorePreservesAHistoricallyInconsistentCheck`, `TestRestoreDoesNotRecomputeTheVerdictFromTheFlags`, `TestGateRestoreEvaluatesNothing`, `TestPromotionDeclaresNoDeploymentOrApprovalField`, `TestPromotionTypesAreTheOnesTask066Specified` in [`platform/promotion_test.go`](../platform/promotion_test.go), [`promotion_internal_test.go`](../platform/promotion_internal_test.go) and [`gate_internal_test.go`](../platform/gate_internal_test.go); `TestPostgresPromotionCommitWindowIsMutuallyExclusive`, `TestPostgresPromotionWaitsForTheLockAndSeesTheNewState`, `TestPostgresPromotionLocksEnvironmentsInByteOrder`, `TestPostgresPromotionLocksTwoEnvironmentRowsAndNothingElse` in [`platform/postgres_concurrency_test.go`](../platform/postgres_concurrency_test.go); `TestPostgresMigratesV3ToV4AddingAnEmptyHistory` in [`platform/postgres_schema_test.go`](../platform/postgres_schema_test.go), `TestSchemaV3MigratesForwardPreservingContent` in [`platform/promotion_migration_test.go`](../platform/promotion_migration_test.go); `TestPromotionUIDecidesNothing`, `TestPromotionUIClaimsNoDeployment` in [`platform/webui/assets_test.go`](../platform/webui/assets_test.go) |
 | Browser control plane renders untrusted text inertly | `TestShippedScriptsUseNoDangerousRenderingPrimitive`, `TestShippedScriptsDoNotEnumerateServerObjects`, `TestFieldAllowlistsExcludeEverySensitiveField`, `TestPrivacyFixtureFieldsAreUnreachable`, `TestContentSecurityPolicyForbidsEveryEscapeHatch`, `TestNoBrowserPersistenceOfPlatformState`, `TestUint64CountersAreNeverParsedAsNumbers`, `TestGateVerdictComesFromTheServer` in [`platform/webui/assets_test.go`](../platform/webui/assets_test.go) and [`handler_test.go`](../platform/webui/handler_test.go); `TestHandlerConstructorTakesNoControlPlane`, `TestDependencyGraphContainsNoPlatformOrStoreCode` in [`platform/webui/architecture_test.go`](../platform/webui/architecture_test.go); `TestUnknownAPIRoutesNeverReturnTheShell`, `TestWebUIResponsesCarryNoCORSHeader` in [`platform/localruntime/runtime_test.go`](../platform/localruntime/runtime_test.go); `TestHostileServerStringsSurviveTheAPIAsData` in [`platform/localruntime/endtoend_test.go`](../platform/localruntime/endtoend_test.go) |
 | Browser evidence views decide nothing and reach no content | `TestEvidenceSurfaceDecidesNothing`, `TestEvidenceRenderingHoldsNoRetainedFieldItMustNotShow`, `TestHistoricalViewsStateThatFidelityWasNotRetained`, `TestParentageIsNeverInferredFromTimeOrAdjacency`, `TestNoRenderedSentenceAssertsReasoningIntentOrCausality`, `TestEvidenceGenerationTokenGuardsEveryAsyncContinuation`, `TestEvidenceSurfaceControllerBehavior` in [`platform/webui/evidence_test.go`](../platform/webui/evidence_test.go); `TestResolvedEvidenceRendersWhatTheRouteReturned`, `TestCorrelatedHistoryRendersWhatTheRouteReturned` in [`platform/httpapi/webui_evidence_render_test.go`](../platform/httpapi/webui_evidence_render_test.go); `TestSemanticPathLeaksNoContentToAnyV1Payload` in [`platform/httpapi/privacy_semantic_test.go`](../platform/httpapi/privacy_semantic_test.go) |
+| Collector status is content-free and decides nothing; suggestions change nothing they sit beside | `TestRemovingTheRuleTableChangesNothingElse`, `TestSuggestionsAreBounded` in [`platform/status_rules_internal_test.go`](../platform/status_rules_internal_test.go); `TestSuggestionsChangeNothingElse`, `TestComparisonSuggestionsAreBounded` in [`platform/comparison_rules_test.go`](../platform/comparison_rules_test.go); `TestUnfilteredAndFilteredSubscribersCoexist` in [`platform/realtime_unfiltered_test.go`](../platform/realtime_unfiltered_test.go); `TestStatusViewComputesNothing` in [`platform/webui/status_view_test.go`](../platform/webui/status_view_test.go) |
+| Scenario executions keep the gate they consumed and never re-derive it | `TestGateRecordRefusesDamage`, `TestNewScenarioGateRecordRefusesContradictions`, `TestStoredGateRecordIsHeldToItsExecution` in [`platform/scenario_gate_record_test.go`](../platform/scenario_gate_record_test.go); `TestReportOfAnExecutionCompletedBeforeSchema14`, `TestReportCountsAreTheRowsTotals` in [`platform/httpapi/scenario_report_test.go`](../platform/httpapi/scenario_report_test.go); `TestComparisonSamenessAnswers` in [`platform/sameness_internal_test.go`](../platform/sameness_internal_test.go); `TestChangeImpactComputesNothing` in [`platform/webui/change_impact_test.go`](../platform/webui/change_impact_test.go) |
+| Unavailable is not zero; a supplied limit without its evidence fails | `TestDeferredChecksFailTheVerdict`, `TestOmittedFrequencyLimitsLeaveTheVerdictAlone` in [`platform/frequency_gate_test.go`](../platform/frequency_gate_test.go); `TestNoPricingIsNoCostSection`, `TestModelCostRoundsDownOnceAndRefusesOverflow` in [`platform/cost_test.go`](../platform/cost_test.go) |
+| CI actions keep the workload and the write token apart | `TestRunJobsHoldNoWriteScope`, `TestCommentJobsRunNoPullRequestCode`, `TestNoWorkflowRunsOnAPrivilegedEvent` in [`scripts/trustvian_ci_workflows_test.go`](../scripts/trustvian_ci_workflows_test.go); `TestCommentActionNeverReadsTheWorkspace` in [`scripts/trustvian_comment_action_test.go`](../scripts/trustvian_comment_action_test.go); `TestRunActionRuntimePin` in [`scripts/trustvian_run_action_test.go`](../scripts/trustvian_run_action_test.go); `TestRendererParsesNoCount` in [`cmd/trustvian-ci-render/main_test.go`](../cmd/trustvian-ci-render/main_test.go), `TestRenderNeverRecomputes`, `TestRenderMakesHostileStringsInert` in [`cmd/trustvian-ci-render/render_test.go`](../cmd/trustvian-ci-render/render_test.go); `TestPostFollowsNoRedirect`, `TestPostNeverEditsACommentItDoesNotOwn` in [`cmd/trustvian-ci-comment/post_test.go`](../cmd/trustvian-ci-comment/post_test.go) |
 | Identity confusion (cross-actor isolation) | `TestAnalyzeCrossActorIsolation` in [`engine_test.go`](../engine_test.go) |
 | Baseline poisoning | `TestObserveLearnsOnlyFromEligibleDecisions`, `TestAnalyzeSensitiveTargetFloorEndToEnd` in [`engine_test.go`](../engine_test.go); `TestFingerprintStatsIgnoresNonPositiveInterval`, `TestFingerprintStatsOutOfOrderObservationDoesNotDistortNextInterval` in [`internal/baseline/baseline_test.go`](../internal/baseline/baseline_test.go); `TestScoreFrequencyDeviation` (negative-interval subtests) in [`internal/anomaly/anomaly_test.go`](../internal/anomaly/anomaly_test.go) |
 | Malicious agents / privilege escalation | `TestAnalyzeSensitiveTargetFloorEndToEnd` in [`engine_test.go`](../engine_test.go) |
@@ -43,7 +47,7 @@ here, not moved or rewritten.
 | Alert/notification delivery integrity | `TestSendSignsPayloadCorrectly`, `TestSendTamperedPayloadFailsVerification`, `TestSendDoesNotLeakSecret`, `TestNewWebhookSinkRejectsNonHTTPS`, `TestNewWebhookSinkRejectsLoopbackDestination`, `TestSendRespectsTimeout`, `TestSendPayloadTooLargeMakesNoNetworkCall` in [`alert/webhook_test.go`](../alert/webhook_test.go) |
 | Configuration-input validation | `TestValidateRejectsUnsupportedVersion`, `TestValidateRejectsInvalidDefaultDecision`, `TestValidateRejectsInvalidRuleDecision`, `TestValidateRejectsInvalidActorType`, `TestValidateRejectsInvalidOperationCategory`, `TestValidateRejectsInvalidRiskLevel`, `TestValidateRejectsDuplicateRuleName`, `TestValidateRejectsEmptyRuleName`, `TestValidateRejectsTooManyRules`, `TestValidateRejectsOverlongName` in [`config/validate_test.go`](../config/validate_test.go); `TestLoadRejectsUnknownTopLevelField`, `TestLoadRejectsUnknownNestedField`, `TestLoadRejectsDuplicateYAMLKeys`, `TestLoadFileRejectsOversizedFile`, `TestLoadRejectsEmptyInput`, `TestLoadDoesNotPanicOnArbitraryInput`, `FuzzLoad` in [`config/load_test.go`](../config/load_test.go)/[`config/fuzz_test.go`](../config/fuzz_test.go) |
 | Anomaly configuration-input validation — weight/threshold ranges, negative-into-`uint64` rejection, backward-compatible zero-value default (`v0.7` task 033) | `TestValidateAnomalyConfigRejectsInvalidWeight`, `TestValidateAnomalyConfigRejectsInvalidPointerWeight`, `TestValidateAnomalyConfigRejectsInvalidZThreshold`, `TestValidateAnomalyConfigAcceptsZeroMinObservations`, `TestValidateAnomalyConfigRejectsInvalidSensitiveTargetFloor` in [`config/anomaly_test.go`](../config/anomaly_test.go); `TestCompileAnomalyZeroValueMatchesDefaultConfig`, `TestCompileAnomalyTranslatesEveryField` in [`config/anomaly_compile_test.go`](../config/anomaly_compile_test.go); `TestLoadAnomalyRejectsNegativeIntoUnsignedField`, `TestLoadAnomalyRejectsUnknownField`, `FuzzLoadAnomaly` in [`config/anomaly_load_test.go`](../config/anomaly_load_test.go) |
-| Storage configuration & persistence contract — fail-closed on unbuildable store, no implicit backend, no lost updates under concurrency, load-failure propagation (`v0.8` task 034) | `TestStoreContract` (incl. its same-key-concurrency guarantee), `TestStoreContractImplementationsAgreeOnLogicalState` in [`internal/store/contract_test.go`](../internal/store/contract_test.go); `TestCompileStoragePostgresFailsClosedNeverFallsBack`, `TestCompileStorageInvalidConfigReturnsNilStore`, `TestCompileStorageFilePropagatesLoadFailure`, `TestValidateStorageConfigRejectsMissingType`, `FuzzLoadStorage` in [`config/storage_test.go`](../config/storage_test.go); `TestRunAnalyzeUnimplementedStorageBackendFailsClosed`, `TestRunAnalyzeInvalidStorageConfigFailsClosed`, `TestBaselineBuildThenAnalyzePersistsAcrossCommands` in [`cmd/trustvian/main_test.go`](../cmd/trustvian/main_test.go) |
+| Storage configuration & persistence contract — fail-closed on unbuildable store, no implicit backend, no lost updates under concurrency, load-failure propagation (`v0.8` task 034) | `TestStoreContract` (incl. its same-key-concurrency guarantee), `TestStoreContractImplementationsAgreeOnLogicalState` in [`internal/store/contract_test.go`](../internal/store/contract_test.go); `TestCompileStoragePostgresFailsClosedNeverFallsBack`, `TestCompileStorageInvalidConfigReturnsNilStore`, `TestCompileStorageFilePropagatesLoadFailure`, `TestValidateStorageConfigRejectsMissingType`, `FuzzLoadStorage` in [`config/storage_test.go`](../config/storage_test.go); `TestRunAnalyzeUnreachablePostgresFailsClosed`, `TestRunAnalyzeInvalidStorageConfigFailsClosed`, `TestBaselineBuildThenAnalyzePersistsAcrossCommands` in [`cmd/trustvian/main_test.go`](../cmd/trustvian/main_test.go) |
 | Alert configuration-input validation | `TestValidateAlertConfigRejectsUnsupportedVersion`, `TestValidateAlertConfigRejectsInvalidSeverity`, `TestValidateAlertConfigRejectsInvalidDecision`, `TestValidateAlertConfigRejectsInvalidRiskLevel`, `TestValidateAlertConfigRejectsInvalidActorType`, `TestValidateAlertConfigRejectsInvalidTargetCategory`, `TestValidateAlertConfigRejectsInvalidMinAnomalyScore`, `TestValidateAlertConfigRejectsInvalidMaxTrustScore`, `TestValidateAlertConfigRejectsDuplicateRuleName`, `TestValidateAlertConfigRejectsEmptyRuleName`, `TestValidateAlertConfigRejectsTooManyRules` in [`config/alert_test.go`](../config/alert_test.go); `TestLoadAlertsRejectsUnknownField`, `TestLoadAlertsRejectsDuplicateYAMLKeys`, `TestLoadAlertsFileRejectsOversizedFile`, `TestLoadAlertsRejectsEmptyInput`, `FuzzLoadAlerts` in [`config/alert_load_test.go`](../config/alert_load_test.go) |
 | Runtime health endpoints — no information leak, liveness independent of the store, bounded probes, no fallback (`v0.9` task 042) | `TestHandlerLeaksNothing`, `TestFailingProbeDoesNotAffectLiveness`, `TestReadyIsBoundedByProbeTimeout`, `TestDrainingIsNeitherLiveNorReady` in [`processor/internal/health/`](../processor/internal/health/); `TestNoHealthConfigServesNothing`, `TestShutdownTransitionsReadinessBeforeClosingStore`, `TestDoubleShutdownIsSafe` in [`processor/lifecycle_test.go`](../processor/lifecycle_test.go); `TestPingReportsDatabaseUsability` in [`internal/store/postgres/hardening_test.go`](../internal/store/postgres/hardening_test.go) |
 | Operational metrics privacy and cardinality (`v0.9` task 043) | `TestNoForbiddenAttributes`, `TestUnknownDecisionIsFolded` in [`processor/internal/metrics/metrics_test.go`](../processor/internal/metrics/metrics_test.go); `TestObserveErrorRecordsBoundedCategory`, `TestMetricsUnderConcurrentSpans` in [`processor/metrics_test.go`](../processor/metrics_test.go) |
@@ -81,9 +85,9 @@ a transport/collection-layer concern.
 environments/tenants) collide on the same behavioral history, letting
 one actor's baseline apply to another.
 
-**Status: implemented, and verified end-to-end.** `baseline.Key{ActorID,
-Environment}` is a composite key from the start, not a bare actor-ID
-string — even though the OSS engine is single-tenant today. This is
+**Status: implemented, and verified end-to-end.** `baseline.Key{Scope,
+ActorID, Environment}` is a composite key, not a bare actor-ID string —
+even though the OSS engine is single-tenant today. This is
 deliberately cheap now and expensive to retrofit later (see
 [ADR 0004](adr/0004-narrow-store-port-in-memory-only.md)). A future
 multi-tenant `TenantID` dimension is an additive extension of the same
@@ -107,8 +111,12 @@ artificially reinforce a baseline or repeat a decision.
 this is an adapter/collection-layer concern (where events first enter
 the system), not something `Engine.Analyze`/`Observe` currently do —
 the core engine is stateless per call except for the `Baseline` it's
-explicitly asked to update. **Future work:** dedup at the OTel adapter
-or Collector processor layer.
+explicitly asked to update. The platform's ingest path is sequenced
+rather than deduplicated: a retry of the last accepted record replays
+without re-aggregating, and any other repeat is refused (see [the local
+control-plane API](#the-local-control-plane-api-bounds-what-it-accepts-and-reveals)).
+That protects evaluation evidence, not the engine's baseline. **Future
+work:** dedup at the OTel adapter or Collector processor layer.
 
 ### Baseline poisoning
 
@@ -221,7 +229,7 @@ established baseline. Either is [baseline
 poisoning](#baseline-poisoning) reached by a different route: not by
 wearing down a profile, but by picking a different one.
 
-**Status: prevented structurally.** `v1.0`'s learning scope
+**Status: prevented structurally.** The learning scope
 ([ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md)) is
 `Engine` configuration, supplied once at construction through
 `trustvian.WithLearningScope`. There is no path from event content to
@@ -255,7 +263,7 @@ isolation](#future-multi-tenant-isolation).
 
 **Threat:** the control-plane domain (`platform/`, task 052) accepts
 caller-supplied strings — identifiers, names, candidate metadata, failure
-reasons — that will eventually arrive over an API and land in storage.
+reasons — that arrive over the `/v1` API and land in storage.
 Unbounded or malformed values there become a resource problem, a log-injection
 problem, or two identities a human reads as one.
 
@@ -274,8 +282,9 @@ The shape carries as much of the guarantee as the limits do. There is no map,
 no `any`, no raw payload field, and no prompt, completion, or tool-argument
 field anywhere in the domain — candidate metadata is a fixed set of optional
 descriptive fields, so its total size is bounded by construction rather than
-by a counted limit. Event history is deliberately absent and belongs behind a
-later capability boundary.
+by a counted limit. Raw events are deliberately absent; the bounded
+per-observation history task 067 retains is a fixed-column allowlist (see
+[local persistence](#local-persistence-fails-closed-and-stores-no-raw-history)).
 
 **What this is not:** an authorization boundary. A `Project` is a workspace,
 not a tenant, and carries no access control. Multi-tenancy remains
@@ -514,8 +523,95 @@ scorecard with explicit caller-owned limits and returns PASS or FAIL.
 
 ### Local persistence fails closed and stores no raw history
 
-Task 067 added bounded per-observation history and does not change that
-sentence. What it retains is an allowlist of the identifiers, scores and
+**Threat:** durable platform state becomes a way to forge evidence, adopt a
+database nobody vetted, silently rewrite what a finished run was evaluated
+against, or accumulate the event history this design deliberately does not
+keep.
+
+**Status: every path is closed at the adapter boundary.**
+[Task 057](tasks/v1.0/057-local-platform-persistence.md) adds SQLite behind
+narrow capabilities — there is no generic `Database` interface, and no
+`Query`/`Exec`/`Put(any)` a caller could aim anywhere.
+
+- **Caller input reaches SQL only as a bound parameter.** Every identifier,
+  name, metadata string, failure reason, environment, profile, fingerprint,
+  operation and target name is a parameter; only compile-time table and column
+  names appear in assembled SQL. A project named
+  `agent'; DROP TABLE platform_projects; --` round-trips as data.
+- **Foreign keys enforce ownership** — agent→project, candidate→agent,
+  run→candidate, evidence→run. `PRAGMA foreign_keys` is per-connection, so the
+  connection model is constrained to make that true for every statement rather
+  than for whichever connection happened to run a pragma, and a test asserts
+  the database itself refuses an orphan.
+- **Create never overwrites.** A duplicate identity returns an error and
+  leaves the stored row untouched, even when the incoming value differs. The
+  case that matters is a `CandidateID` arriving with a different artifact
+  digest: silently rewriting it would change what a finished run was evaluated
+  against.
+- **The store generates no platform identity.** No autoincrement domain ID, no
+  `last_insert_rowid`, no generated UUID. An identity minted by storage is one
+  nobody chose, and it would differ between two backends holding the same
+  logical data.
+- **Unknown, ambiguous and incomplete schema states fail closed.** A version
+  this build does not support is refused. So are recognized tables with no
+  version metadata — stamping those as fresh would silently adopt data this
+  code has never seen. So is metadata claiming v1 beside a schema missing
+  required tables: a version row is a claim, not proof, and accepting a
+  partial restore moves the failure from open to the first write. Nothing is
+  recreated; there is no repair migration. Schema creation and version
+  recording commit together, and a racing initializer is resolved by
+  re-inspecting the committed schema rather than by matching an error string.
+- **Aggregate and snapshot update atomically.** They are two views of one run;
+  written separately, an aggregate from observation N could commit beside a
+  snapshot from N−1 and become durable truth. One transaction covers the
+  aggregate, the header and every entry.
+- **Restored evidence is validated before it is trusted, and bound back to
+  its run.** Category totals, metric counts and ranges, finite floats, entry
+  uniqueness, the behavior-to-fingerprint relation in both directions,
+  environment agreement and exact observation sums are all re-proved before
+  the private bound marker is set — and the restored pair must then match the
+  persisted `EvaluationRun`. Two halves agreeing with each other proves only
+  that they were edited consistently. Half a pair present is corruption, never
+  "no evidence yet": treating it as first-write state would let the next save
+  complete the record and erase every trace that anything went wrong, so it is
+  refused on read and on save alike. The stored completeness flag is parsed as
+  exactly 0 or 1, because reading it as `== 1` would normalize a corrupt value
+  into the safer-looking answer.
+  Corrupt rows return an error and no partial value; nothing is clamped or
+  repaired, because a patched metric produces evidence that looks measured and
+  is invented. Runs are rebuilt by replaying their domain transitions, so a
+  corrupt chronology fails the same invariant a live value would.
+- **Full `uint64` counters are never narrowed.** SQLite `INTEGER` is signed
+  64-bit, so `int64(value)` would corrupt everything above `MaxInt64` —
+  silently, and only for large values. Counters are canonical base-10 text,
+  round-tripped across the whole `0 … MaxUint64` domain and tested at the
+  boundary.
+- **Raw events are intentionally absent.** No `Event` or `DecisionRecord`
+  table exists, and no diff, scorecard, gate-result or gate-policy table: the
+  derived values of a run comparison are recomputed from evidence, so there is
+  one source of truth. An allowlist test (`TestSchemaContainsNoAccidentalHistory`)
+  fails if such a table ever appears. The one per-record table is task 067's
+  bounded observation history, below. Two decisions keep the gate result they
+  consumed, by design rather than as a cache: a promotion (ADR 0040) and a
+  completed scenario execution ([ADR 0069](adr/0069-a-completed-execution-records-the-gate-it-consumed.md)).
+  Neither is ever read as a limit for a later decision.
+- **Core baseline state is not duplicated.** `baseline.Key`, learned
+  fingerprints, sequence and delegation state stay in the engine's own stores.
+  Two learned-state authorities would silently change the engine's durability
+  model.
+- **Snapshot capacity stays 512**, and **incomplete evidence stays
+  incomplete**: a saturated snapshot persists as a diagnostic, restores with
+  `Complete() == false`, is still refused by `CompareBehaviorSnapshots`, and
+  cannot be rewritten as complete by a later write. Saturation is a fact about
+  what was observed.
+- **Stale evidence cannot overwrite newer evidence.** A lower observation
+  count is refused, an identical rewrite is idempotent, and two divergent
+  views at the same count are refused rather than silently resolved.
+- **There is no listener.** Task 057 adds no network surface, no server, no
+  port, and no background goroutine. It is a file.
+
+Task 067 added bounded per-observation history and does not change the
+raw-event rule above. What it retains is an allowlist of the identifiers, scores and
 correlation fields `DecisionRecord` already publishes, expressed as columns —
 there is no attribute map, no span-event list and no payload column, so a
 prompt, completion, tool argument, tool result, retrieved document, HTTP body
@@ -524,7 +620,7 @@ those fields live, which is why the content tripwire sweep was extended to the
 retained rows and the route that reads them rather than left to the contract.
 
 Task 076 added three narrowings of that route — by session, trace or behavioral
-identity — and no column, so the sentence still holds. Each narrowing is a bound
+identity — and no column, so the rule still holds. Each narrowing is a bound
 parameter filtered in storage, matched through 067's digest index **and** against
 the original value beside it, so a digest collision cannot return another
 session's or another trace's rows. The tripwire sweep covers each narrowed read
@@ -632,88 +728,6 @@ promotion — because the gate limits are caller-owned, and a history of
 acceptances only would hide a caller retrying with progressively looser limits
 until one passed.
 
-**Threat:** durable platform state becomes a way to forge evidence, adopt a
-database nobody vetted, silently rewrite what a finished run was evaluated
-against, or accumulate the event history this design deliberately does not
-keep.
-
-**Status: every path is closed at the adapter boundary.**
-[Task 057](tasks/v1.0/057-local-platform-persistence.md) adds SQLite behind
-narrow capabilities — there is no generic `Database` interface, and no
-`Query`/`Exec`/`Put(any)` a caller could aim anywhere.
-
-- **Caller input reaches SQL only as a bound parameter.** Every identifier,
-  name, metadata string, failure reason, environment, profile, fingerprint,
-  operation and target name is a parameter; only compile-time table and column
-  names appear in assembled SQL. A project named
-  `agent'; DROP TABLE platform_projects; --` round-trips as data.
-- **Foreign keys enforce ownership** — agent→project, candidate→agent,
-  run→candidate, evidence→run. `PRAGMA foreign_keys` is per-connection, so the
-  connection model is constrained to make that true for every statement rather
-  than for whichever connection happened to run a pragma, and a test asserts
-  the database itself refuses an orphan.
-- **Create never overwrites.** A duplicate identity returns an error and
-  leaves the stored row untouched, even when the incoming value differs. The
-  case that matters is a `CandidateID` arriving with a different artifact
-  digest: silently rewriting it would change what a finished run was evaluated
-  against.
-- **The store generates no platform identity.** No autoincrement domain ID, no
-  `last_insert_rowid`, no generated UUID. An identity minted by storage is one
-  nobody chose, and it would differ between two backends holding the same
-  logical data.
-- **Unknown, ambiguous and incomplete schema states fail closed.** A version
-  this build does not support is refused. So are recognized tables with no
-  version metadata — stamping those as fresh would silently adopt data this
-  code has never seen. So is metadata claiming v1 beside a schema missing
-  required tables: a version row is a claim, not proof, and accepting a
-  partial restore moves the failure from open to the first write. Nothing is
-  recreated; there is no repair migration. Schema creation and version
-  recording commit together, and a racing initializer is resolved by
-  re-inspecting the committed schema rather than by matching an error string.
-- **Aggregate and snapshot update atomically.** They are two views of one run;
-  written separately, an aggregate from observation N could commit beside a
-  snapshot from N−1 and become durable truth. One transaction covers the
-  aggregate, the header and every entry.
-- **Restored evidence is validated before it is trusted, and bound back to
-  its run.** Category totals, metric counts and ranges, finite floats, entry
-  uniqueness, the behavior-to-fingerprint relation in both directions,
-  environment agreement and exact observation sums are all re-proved before
-  the private bound marker is set — and the restored pair must then match the
-  persisted `EvaluationRun`. Two halves agreeing with each other proves only
-  that they were edited consistently. Half a pair present is corruption, never
-  "no evidence yet": treating it as first-write state would let the next save
-  complete the record and erase every trace that anything went wrong, so it is
-  refused on read and on save alike. The stored completeness flag is parsed as
-  exactly 0 or 1, because reading it as `== 1` would normalize a corrupt value
-  into the safer-looking answer.
-  Corrupt rows return an error and no partial value; nothing is clamped or
-  repaired, because a patched metric produces evidence that looks measured and
-  is invented. Runs are rebuilt by replaying their domain transitions, so a
-  corrupt chronology fails the same invariant a live value would.
-- **Full `uint64` counters are never narrowed.** SQLite `INTEGER` is signed
-  64-bit, so `int64(value)` would corrupt everything above `MaxInt64` —
-  silently, and only for large values. Counters are canonical base-10 text,
-  round-tripped across the whole `0 … MaxUint64` domain and tested at the
-  boundary.
-- **Raw event history is intentionally absent.** No table grows per event. No
-  `DecisionRecord`, `Event`, diff, scorecard, gate result or gate policy is
-  stored; the derived values are recomputed from evidence so there is one
-  source of truth. An allowlist test fails if such a table ever appears.
-- **Core baseline state is not duplicated.** `baseline.Key`, learned
-  fingerprints, sequence and delegation state stay in the engine's own stores.
-  Two learned-state authorities would silently change the engine's durability
-  model.
-- **Snapshot capacity stays 512**, and **incomplete evidence stays
-  incomplete**: a saturated snapshot persists as a diagnostic, restores with
-  `Complete() == false`, is still refused by `CompareBehaviorSnapshots`, and
-  cannot be rewritten as complete by a later write. Saturation is a fact about
-  what was observed.
-- **Stale evidence cannot overwrite newer evidence.** A lower observation
-  count is refused, an identical rewrite is idempotent, and two divergent
-  views at the same count are refused rather than silently resolved.
-- **There is no listener.** Task 057 adds no network surface, no server, no
-  port, and no background goroutine. It is a file.
-
 ### The local control-plane API bounds what it accepts and reveals
 
 **Threat:** a network-facing surface becomes a way to smuggle payloads past
@@ -793,15 +807,19 @@ service layer and an HTTP adapter over it.
 - **HTTP computes no business logic.** Handlers call one service method and
   map the result; a source-scanning test fails if the adapter ever references
   the comparison, scorecard or gate constructors, or a store type.
-- **No realtime, and no listener.** No SSE, WebSocket, pub/sub or polling
-  loop; requests are synchronous. The adapter binds no port — composing a
-  server is a later task, and it must default to loopback.
-- **No CORS wildcard**, because there is no browser caller yet. A permissive
-  origin with no consumer is a permission granted to nobody in particular.
+- **The adapter binds no port.** The HTTP handler is a library; the local
+  runtime composes it onto a loopback-only listener (see [the local
+  runtime](#the-local-runtime-is-unauthenticated-and-loopback-is-the-boundary)).
+  Its one streaming route, `GET /v1/realtime`, is covered in
+  [Realtime](#realtime-is-bounded-ephemeral-and-never-authoritative).
+- **No CORS header**, wildcard or otherwise. The only browser caller is the
+  same-origin WebUI, and a permissive origin would make an unauthenticated
+  local control plane reachable from any page a developer visits.
 - **No authentication or access control is claimed.** Local `v1` mode does not
   require it, and inventing users, tokens, sessions or roles here would be a
-  security model nobody reviewed. That is a later task's decision, and this
-  API should not be exposed beyond loopback until it is made.
+  security model nobody reviewed. Authentication is planned (task 070, see
+  [ROADMAP.md](ROADMAP.md)), and this API should not be exposed beyond
+  loopback until it ships.
 
 ### Realtime is bounded, ephemeral, and never authoritative
 
@@ -815,8 +833,8 @@ instead of the database.
 committed mutation, over an in-memory bus with no history.
 
 - **No raw event payload.** An observation is a bounded projection —
-  fingerprint, behavioral shape, decision, risk, approval and three numeric
-  signals. No `Event.Attributes`, tool arguments, prompts, completions,
+  fingerprint, behavioral shape, fidelity, behavior layer, decision, risk,
+  approval and three numeric signals. No `Event.Attributes`, tool arguments, prompts, completions,
   contributors, `PolicyReason` or raw record, so task 050's boundary holds on
   this path. A test drives a real engine with a distinctive attribute value
   and asserts it never reaches the wire.
@@ -898,10 +916,15 @@ a reported policy result that a CI job then acts on.
 [Task 060](tasks/v1.0/060-developer-cli.md) consumes the `/v1` API and nothing
 else; see [ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md).
 
-- **The API URL is explicit.** `--api-url` is required on every control-plane
-  command. No default address or port is chosen, and no environment variable
-  is read — task 062 owns integrated local startup, and a default frozen
-  before the thing that binds it exists is far harder to change later.
+- **The API URL is explicit or discovered, never defaulted.** `--api-url`
+  always wins, including an explicitly empty one, which is a usage error that
+  reads no file. Without it, the CLI reads the local runtime's discovery file
+  — `.trustvian/runtime.json` in the working directory, then the state
+  directory `trustvian dev` keeps for this working directory
+  (`~/.trustvian/dev/<key>/runtime.json`) — under the stricter rules in [the
+  local runtime](#the-local-runtime-is-unauthenticated-and-loopback-is-the-boundary).
+  No default address or port is chosen, no environment variable is read, and
+  no parent directory or network is searched.
 - **Credentials in the URL are rejected**, and the diagnostic does not repeat
   the value. A URL is the wrong place for a secret, and a refusal that echoed
   it into shell history, CI logs and terminal scrollback would have protected
@@ -940,11 +963,16 @@ else; see [ADR 0033](adr/0033-developer-cli-is-a-thin-http-adapter.md).
   acquires states its own code believes impossible.
 - **No listener is bound.** The CLI is a client; task 062 owns the local
   runtime. A test fails the build on `ListenAndServe` in shipped CLI source.
+  `trustvian dev` starts `trustvian-local` and `trustvian-collector` as child
+  processes and serves nothing itself; it opens loopback sockets only for a
+  moment, to pick free ports for the Collector.
 - **No work outlives a command.** No background goroutine, no cache, no retry
   state, no sequence cursor written to disk.
 - **API errors never masquerade as gate failure.** For the control-plane
   families, exit `3` covers every transport, timeout, redirect and HTTP error;
-  exit `1` means a gate FAIL, and only on `trustvian eval compare`. This is
+  exit `1` means a gate FAIL, and only on the commands that read a verdict —
+  `trustvian eval compare`, `eval compare-repeated` and `eval run` (a suite
+  exits with its most severe member). This is
   the load-bearing one: CI scripts are habitually written as "non-zero means
   the gate failed", and conflating the two would report a broken network as a
   policy violation — or teach a team to ignore the code that means their agent
@@ -1078,8 +1106,9 @@ runtime; see
 - **The discovery file is read under a 4 KiB bound**, checked before opening
   and again while decoding, because a project-local file is not necessarily
   trustworthy.
-- **No CORS.** Task 062's clients are a CLI and a TUI, not a browser; task 063
-  can define browser-origin requirements against an interface that exists.
+- **No CORS.** The runtime's browser client is the WebUI it serves itself,
+  same-origin, so no `Access-Control-*` header is ever sent (see [the browser
+  control plane](#the-browser-control-plane-renders-untrusted-text-inertly-and-stores-nothing)).
 - **Platform state is separate from engine state.** `.trustvian/platform.db`
   holds evaluation evidence and never becomes the engine's baseline store —
   different lifecycles, different correctness properties, and a test asserts
@@ -1187,6 +1216,13 @@ a second source of truth that disagrees with the database.
   a test scans for the comparison shapes that would constitute recomputation.
   Lifecycle legality is the server's — the page shows the actions and renders
   the refusal. An operational failure is never presented as a gate FAIL.
+- **The browser computes nothing.** Change Impact renders the execution
+  report's own figures and display strings — row totals, presence, calls per
+  run, ratios, cost and sameness come from the server — and its source holds
+  no arithmetic on them, no number parsing and no request of its own
+  (`TestChangeImpactComputesNothing`). The Status view renders the server's
+  figures in the server's order and names no health verdict
+  (`TestStatusViewComputesNothing`).
 - **The evidence surface resolves nothing and retains nothing.**
   [Task 076](tasks/v1.0/076-behavioral-evidence-explorer.md) added a view over
   retained history and task 085's resolution, and the boundary is the same one:
@@ -1208,8 +1244,8 @@ a second source of truth that disagrees with the database.
 
 **Not claimed:** CSP is browser hardening, not authentication. It bounds what
 the page may do and says nothing about who may open it. The runtime remains
-unauthenticated and loopback-only, and
-[task 070](tasks/v1.0/) owns remote authenticated access.
+unauthenticated and loopback-only. Remote authenticated access is planned
+(task 070, see [ROADMAP.md](ROADMAP.md)).
 
 ### The shared PostgreSQL backend keeps credentials and internals off every surface
 
@@ -1284,11 +1320,12 @@ connection.
   configured through the DSN (`sslmode`, `sslrootcert`) and nothing defaults it
   to `disable`.
 
-**Not claimed:** this adds no authentication, no RBAC and no TLS policy — task
-070 owns those. And two control-plane processes sharing one PostgreSQL database
-share authoritative state but **not** realtime notifications: each keeps its own
-in-process bus, which is a documented limitation of task 064 rather than a
-defect. Task 069 owns cross-node realtime.
+**Not claimed:** this adds no authentication, no RBAC and no TLS policy —
+planned under task 070. And two control-plane processes sharing one PostgreSQL
+database share authoritative state but **not** realtime notifications or
+pipeline status: each keeps its own in-process bus and its own in-memory
+status registry, a documented limitation of task 064 rather than a defect.
+Cross-node realtime is planned under task 069 (see [ROADMAP.md](ROADMAP.md)).
 
 ### Platform identity cannot become behavioral identity
 
@@ -1313,6 +1350,196 @@ An event producer cannot supply a platform identifier either: `event.Event`
 has no field for one, and none is derived from `SessionID`, `TraceID`, or
 `Attributes` — the same trust boundary [learning-scope
 selection](#learning-scope-selection) already draws one layer down.
+
+### A Collector feeding an evaluation learns only what the run recorded
+
+**Threat:** a Collector configured to feed an evaluation run (`evaluation:`
+block) trains its engine on a record the run never accepted, or the run holds
+a record the engine never learned from — so a durable baseline and a run's
+evidence silently disagree after a crash or a lost response.
+
+**Status: delivery and learning are ordered, and nothing is dropped
+silently.** See [ADR 0038](adr/0038-collector-evaluation-ingest-is-an-http-adapter.md).
+
+- **Learning waits for confirmation.** The eligibility gate in
+  `Engine.Observe` still decides *whether* a result may be learned; the
+  Collector applies it only after the control plane has confirmed that
+  record, never for one it declined and never while the outcome is unknown.
+- **An unknown outcome is not a failure.** Before a record is sent, its
+  sequence and its pending learning are written to `pending_state_path`; a
+  restart reconciles them against the server's same-sequence digest replay
+  rather than guessing. One record is in flight at most, and there is no
+  queue and no blind retry.
+- **The configuration states the guarantee.** `required: true` and
+  `pending_state_path` are both mandatory, and an invalid block fails
+  Collector startup rather than the first span. `api_url` is an absolute
+  `http` or `https` URL with a host and nothing else — no path, query,
+  fragment or credentials. Requests are bounded at 256 KiB, the server's own
+  limit, and 30 s.
+- **The behavioral profile is bound twice.** It travels beside every record
+  and must match the run's, and it selects the Engine's learning scope, so
+  one durable store does not train one baseline across every candidate it
+  evaluates.
+
+### Pipeline status is in memory, content-free, and decides nothing
+
+**Threat:** a status surface that explains an empty Live view becomes a
+second store of telemetry, a way for one reporter to hide another, or a
+verdict about pipeline health that something then acts on.
+
+**Status: bounded, ephemeral and advisory.** See
+[ADR 0065](adr/0065-collectors-report-pipeline-status-the-control-plane-holds-it-in-memory.md)
+and [ADR 0064](adr/0064-suggestions-are-rule-table-outputs-beside-the-evidence.md).
+
+- **Content-free by construction.** A Collector's report
+  (`POST /v1/collectors/{collector_id}/status`, at most 256 KiB) carries
+  counts, ages and the identity metadata a producer declares — `service.name`,
+  instrumentation scope, `telemetry.sdk.*`. Nothing a span says about its
+  subject.
+- **Held in memory and never persisted.** At most 16 Collectors, each report
+  bounded per list (64 producers, 16 scopes per producer, 64 models, 64
+  transport targets). A 17th Collector is refused rather than one evicted, so a
+  reporter cannot hide another by connecting. A delayed report from the same
+  process is ignored rather than rolling counters back. Silence makes a
+  Collector `stale` after 30 s and forgets it after 5 minutes; a restart loses
+  everything.
+- **The control plane's clock.** Reports carry ages, not timestamps, so a
+  Collector with a skewed clock cannot make a producer look fresh or stale.
+- **Nothing reads it.** No gate, promotion, exit code or stored record reads
+  the status document. Its realtime notification, `status_changed`, carries
+  only the Collector's identifier and reaches only unfiltered subscriptions.
+- **Engine facts are `unavailable`, and say so.** The engine exposes no
+  accessor for its baseline count, maturity or fingerprint admission, and the
+  document states that rather than approximating them.
+- **Suggestions are rule-table outputs, not verdicts.** Each is one named,
+  versioned rule over the document's own evidence, rendered from a fixed
+  template; rules compare integers and closed categories, never fire on
+  evidence that was not reported, and are capped at 64 per document with a
+  truncation flag. Removing the table changes nothing else in the document
+  (`TestRemovingTheRuleTableChangesNothingElse`). The comparison's rule table
+  holds to the same rules (`TestSuggestionsChangeNothingElse`). The WebUI's
+  Status view renders the server's figures and order and applies no operator
+  to a counter (`TestStatusViewComputesNothing`).
+
+### Scenario executions resolve references on the server and keep the gate they consumed
+
+**Threat:** a CI gate over repeated scenarios is only as good as what it is
+compared against and what it records. A client could mix reference runs from
+two executions, fall back to an older reference when the latest is unusable,
+smuggle a scenario's secrets into the control plane, or a report could
+re-derive yesterday's verdict with today's code and limits.
+
+**Status: the control plane decides, and history is recorded rather than
+recomputed.** See
+[ADR 0054](adr/0054-scenario-executions-are-persisted-and-references-resolved-by-the-control-plane.md),
+[ADR 0067](adr/0067-scenario-provenance-is-recorded-per-execution-side.md) and
+[ADR 0069](adr/0069-a-completed-execution-records-the-gate-it-consumed.md).
+
+- **References are resolved and validated by the control plane**, before any
+  candidate workload runs. `last` is the completed execution with the highest
+  completion sequence in the same scenario, project, agent and environment; a
+  different N or unusable evidence is an error that names it, and an older
+  execution is never substituted. When a reference is reused, the control
+  plane supplies its runs and refuses any the client sends. Running and failed
+  executions are never references.
+- **Isolation is checked, not trusted.** Repetitions that shared a behavioral
+  profile are refused, because a later repetition would be scored against what
+  an earlier one taught the engine.
+- **Metadata only.** An execution stores no scenario command, no environment
+  variable value and no content. The scenario digest covers environment
+  variable *keys* only: values commonly hold secrets, and a digest of a short
+  secret can be brute-forced. A model is an identifier and a prompt reference
+  is a name and a digest, each without whitespace, so neither can hold prompt
+  text.
+- **A digest is as trustworthy as the client that sent it.** The CLI computes
+  the scenario and input digests because it reads the files; the control plane
+  validates their format and cannot recompute them.
+- **Sameness informs and never decides.** `same_scenario`, `same_inputs`,
+  `same_model` and `same_prompt_ref` are `true`, `false` or `not_recorded` — a
+  value missing on either side is never `false`. A difference adds a warning
+  and changes no verdict.
+- **The gate a completed execution consumed is recorded, field for field.** The
+  limits, every check with its state, actual value and bound, and the verdict
+  are stored as one canonical text. A stored value that does not re-encode to
+  itself byte for byte, or whose checks contradict its limits, its N or its
+  verdict, is refused as corrupt (`TestGateRecordRefusesDamage`). The report
+  reads that record and never re-evaluates the gate; an execution completed
+  before schema 14 reports `not_recorded` rather than a verdict derived from
+  today's code (`TestReportOfAnExecutionCompletedBeforeSchema14`). A recorded
+  limit is never read by a later execution.
+- **Exit codes keep their meaning.** `trustvian eval run` exits `1` only on a
+  gate FAIL the control plane returned; usage is `2` and anything operational —
+  an unusable reference included — is `3`.
+
+### Operational, frequency and cost evidence: unavailable is not zero
+
+**Threat:** a comparison reports a measured zero where nothing was measured —
+a zero error rate from spans that never stated a status, a latency delta
+against a side with no durations, a cost from guessed prices — or a configured
+limit passes because the evidence it needed was absent.
+
+**Status: absence is a state of its own, everywhere.**
+
+- **Every counter group partitions its observations.** An observation that
+  stated no duration, status code or token count is counted as unobserved or
+  unavailable, never as zero, and neither an empty nor an `unset` span status
+  is success.
+- **No delta against nothing.** A latency, error or token section is
+  comparable only when both sides carry its evidence; otherwise it names the
+  side that did not and carries no delta.
+- **Integers only, and overflow is refused.** Duration buckets, counts,
+  per-run maxima, a floored mean in thousandths and a permille ratio — no
+  percentile and no float. A figure past `uint64` is an error, never a wrapped
+  value. No gate reads a mean, a ratio, latency, errors, tokens or cost.
+- **A supplied limit without its evidence fails.** An optional frequency check
+  whose evidence is absent is `deferred`, names what was missing and fails the
+  verdict (`TestDeferredChecksFailTheVerdict`); a `max_calls_per_run` target
+  neither side called is `not_observed` and fails too, so a misspelled target
+  cannot pass silently.
+- **Cost is never guessed.** Trustvian bundles no prices. With no pricing
+  table there is no cost section (`TestNoPricingIsNoCostSection`); with one,
+  tokens of an unpriced model and totals without an input/output split are
+  reported as unpriced, and every figure carries the table's version, source
+  and digest.
+
+### The CI actions keep the workload and the write token in different jobs
+
+**Threat:** a pull request's code runs in the job that can write to the pull
+request, or the comment job trusts an artifact the workload wrote — so
+untrusted code edits other comments, forges a PASS, or exfiltrates a token.
+
+**Status: separated by job, by action and by source.** See
+[ADR 0056](adr/0056-the-run-action-builds-a-pinned-source-commit.md),
+[ADR 0057](adr/0057-the-ci-renderer-is-a-standalone-offline-transcriber.md)
+and [ADR 0058](adr/0058-the-comment-job-is-a-separate-action-that-posts-from-pinned-source.md).
+
+- **Two jobs, two actions.** `trustvian-run` runs the workload with
+  `contents: read` and no write scope. `trustvian-comment` holds
+  `pull-requests: write`, checks nothing out and never builds or reads
+  anything from the workspace. Both refuse `pull_request_target` and
+  `workflow_run`. Structural tests assert all of it
+  (`TestRunJobsHoldNoWriteScope`, `TestCommentJobsRunNoPullRequestCode`,
+  `TestNoWorkflowRunsOnAPrivilegedEvent`, `TestCommentActionNeverReadsTheWorkspace`).
+- **Everything is built from a pinned commit.** Both actions build their
+  binaries from the Trustvian commit and Go toolchain pinned in
+  `runtime.env` — the toolchain checked against go.dev's SHA-256, every Go and
+  Git command run in a cleared environment, and every binary's build
+  information required to record that commit with `vcs.modified=false`.
+- **The artifact is untrusted; the event is not.** The head commit, pull
+  request, run id and the run job's exit code come from the event and the
+  runner. The renderer requires the artifact to agree with them, reads only
+  two fixed regular files under fixed bounds, parses strict JSON, refuses
+  values outside closed vocabularies, and transcribes every count and verdict
+  as stored — it computes nothing (`TestRendererParsesNoCount`,
+  `TestRenderNeverRecomputes`) and renders hostile strings inertly
+  (`TestRenderMakesHostileStringsInert`). A digest match proves only that the
+  two files agree, not that either is authentic.
+- **The poster cannot be redirected and edits only its own comment.** The
+  token is read from the environment, the API base must be a bare `https://`
+  host, and no redirect is followed (`TestPostFollowsNoRedirect`). A comment
+  is the poster's only when its author is `github-actions[bot]` and its first
+  line is the marker. If the pull request's head moved, the poster writes
+  nothing rather than replace a newer verdict with an older one.
 
 ### Sequence state
 
@@ -1339,19 +1566,17 @@ these follow from:
   [`internal/store/store_test.go`](../internal/store/store_test.go),
   and directly by `TestBaselineObservePredecessorCountsIsBounded` in
   [`internal/baseline/baseline_test.go`](../internal/baseline/baseline_test.go).
-  `Baseline.Fingerprints` itself remains unbounded, as it already was
-  before this task (see [Resource exhaustion](#resource-exhaustion)
-  below) — this task does not newly introduce that characteristic, only
-  bounds the one genuinely new structure it does add.
+  `Baseline.Fingerprints` itself is bounded separately, at 512 identities
+  (see [Resource exhaustion](#resource-exhaustion) below).
 - **High-cardinality identities.** Unaffected beyond the existing
-  `Baseline.Fingerprints` characteristic: sequence state adds two
+  `Baseline.Fingerprints` bound: sequence state adds two
   scalar fields (`LastFingerprintID`, `LastFingerprintTime`) per
   `baseline.Key`, not per identity value observed — no new
   cardinality-sensitive structure.
 - **Cross-actor contamination.** Structurally impossible by
   construction, not merely policy: every new field lives inside
   `Baseline`, which is already scoped to exactly one
-  `baseline.Key{ActorID, Environment}` and stored behind
+  `baseline.Key{Scope, ActorID, Environment}` and stored behind
   `internal/store`'s existing per-`Key` sharded lock. There is no
   code path where one actor's `LastFingerprintID` or
   `PredecessorCounts` could be read or written while processing a
@@ -1376,7 +1601,7 @@ these follow from:
 - **Process-local scope, no distributed guarantee claimed.** This state
   does not survive across instances any differently than the rest of
   `Baseline` does: `InMemory` does not survive a restart, `FileStore`
-  does (see the Persistence-adjacent note above) — no new claim about
+  and the PostgreSQL store do (see the Persistence-adjacent note above) — no new claim about
   cross-instance consistency is made or implied. See ADR 0010 § "Why
   process-local."
 - **Cold-start safety.** A never-before-seen transition scores as
@@ -1427,7 +1652,7 @@ inherits every mitigation above unchanged rather than needing new ones:**
   no new learning path for an attacker to target. Proven by
   `TestObserveTransitionRarityLearnsOnlyFromEligibleDecisions`.
 - **Actor/environment isolation, inherited.** `OutgoingTransitionTotal`
-  lives inside the same `baseline.Key{ActorID, Environment}`-scoped
+  lives inside the same `baseline.Key{Scope, ActorID, Environment}`-scoped
   `FingerprintStats` every other learned field already uses — no new
   code path crosses actors. Proven by
   `TestAnalyzeTransitionRarityCrossActorIsolation`.
@@ -1492,7 +1717,7 @@ needing new ones:**
   never normalize.
 - **Actor/environment isolation, inherited.** `PreviousFingerprintID`
   and both new maps live inside the same
-  `baseline.Key{ActorID, Environment}`-scoped `Baseline`/`FingerprintStats`
+  `baseline.Key{Scope, ActorID, Environment}`-scoped `Baseline`/`FingerprintStats`
   every other learned field already uses — no new code path crosses
   actors. Proven by `TestAnalyzeNGramCrossActorIsolation`, which checks
   not merely that no signal leaks but that a fresh actor's identical
@@ -1824,14 +2049,15 @@ Implemented now:
   `TestStoreContract`'s same-key-concurrency guarantee requires N
   goroutines × M observations to yield exactly N×M. This is the
   assertion a naive read-then-compute-then-write database
-  implementation fails, and it exists before that implementation does.
+  implementation fails, and every implementation, PostgreSQL included,
+  is held to it.
 - **Same config-input hardening as every other document.** Strict
   decoding (unknown fields, duplicate keys), bounded file read,
   `ErrEmptyInput`, and `FuzzLoadStorage` — reusing the identical
   `go.yaml.in/yaml/v3` path, not a second parser.
 - **Bounded state unchanged.** Persistence stores current learned
-  `Baseline` state only. Every existing cardinality bound
-  (`maxPredecessors`, `maxTrigramPredecessors`, `maxDelegators`, all 64)
+  `Baseline` state only. Every cardinality bound (`maxFingerprints`, 512;
+  `maxPredecessors`, `maxTrigramPredecessors`, `maxDelegators`, all 64)
   applies unchanged, and no raw-event history is persisted — Trustvian
   is not a SIEM or event lake, so there is no unbounded write path and
   no retention policy to get wrong.
@@ -1868,12 +2094,15 @@ than left to discretion:
   outage — `pgxpool` reconnects within a pool as ordinary pool behavior,
   and Trustvian adds no layer above it. Retry ownership sits with the
   deployment platform.
-- **Schema version mismatch fails closed.** A database recorded at a
-  different `SchemaVersion` aborts startup with
-  `ErrSchemaVersionMismatch` rather than being silently upgraded or
-  misread — the same discipline `FileStore` already applied to an unknown
-  `fileSnapshotVersion`. Migration is transactional and serialized across
-  concurrently starting processes by a transaction-scoped advisory lock.
+- **Schema version mismatch fails closed.** The store is at
+  `SchemaVersion` 2. A database at version 1 — the layout before learning
+  scopes ([ADR 0024](adr/0024-learning-scope-is-a-baseline-key-dimension.md))
+  — is the one version it upgrades, inside the migration transaction. Any
+  other recorded version aborts startup with `ErrSchemaVersionMismatch`
+  rather than being guessed at or misread — the same discipline `FileStore`
+  already applied to an unknown `fileSnapshotVersion`. Migration is
+  transactional and serialized across concurrently starting processes by a
+  transaction-scoped advisory lock.
 - **Database privilege scope.** DML on its own two tables; DDL only at
   migration time. Automatic creation means the runtime role needs
   table-creation rights on first run; [`storage-guide.md`](storage-guide.md)
@@ -1891,7 +2120,7 @@ is a test, not an intention.
 | **Lost updates under contention** | 32 writers × 100 observations at one key, three rounds: every observation present, none lost. 96 concurrent *first* writes at an absent row, five rounds: all present, exactly one row. Task 035's mutation testing already showed this fails loudly when the row lock or the pre-insert is removed. |
 | **State corruption via partial write** | A transaction failing immediately before commit (injected with a PostgreSQL trigger) leaves the previous baseline byte-identical. The store remains usable afterwards — a failed transaction does not poison the pool. |
 | **Silent behavioral-memory loss** | An unreadable stored baseline produces `ErrCorruptState` on `Observe` and is **never overwritten with a fresh one**. Resetting would erase an actor's learned history and destroy the evidence needed to diagnose it. `Get` reports absence — fail-safe upward, since the actor then reads as unfamiliar — and never writes. |
-| **Schema downgrade / unknown-layout mutation** | A recorded schema version newer than the binary fails startup closed. So does an older or unrecognized one. An older binary never mutates state whose layout it does not understand. |
+| **Schema downgrade / unknown-layout mutation** | A recorded schema version newer than the binary fails startup closed. So does an unrecognized older one; version 1, the pre-learning-scope layout, is the only one upgraded, transactionally. An older binary never mutates state whose layout it does not understand. |
 | **Ambiguous schema metadata** | Two silently-accepted gaps found and fixed by this task, both now `ErrAmbiguousSchemaState`: baseline data present with no recorded version (previously stamped with the current version, letting an old binary adopt newer state after a partial restore), and multiple version rows (previously resolved by an unordered `LIMIT 1`, observed accepting a database marked version 99). Recovery is an operator decision; guessing is what the check exists to prevent. |
 | **Migration leaving a half-built schema** | Migration runs as one transaction with transactional DDL. An aborted migration is verified to leave no table behind and to damage nothing pre-existing. Twelve simultaneous initializations produce exactly one logical initialization and one version row. |
 | **Connection exhaustion / denial of service** | With the pool exhausted, operations wait for capacity and then fail on the caller's deadline — bounded and reportable, never an unbounded hang. Measured: 2.0001 s against a 2 s deadline. A transaction waiting on a row lock is cancellable and returns promptly (5.4 ms). No connection is stranded on any success or failure path, verified against a single-connection pool where one leak would be immediately fatal. |
@@ -1926,8 +2155,9 @@ smuggle bad data past validation.
 accepted behavior, not gaps.**
 
 - `Event.Validate()` rejects empty required fields, out-of-range
-  `IdentityConfidence` (including `NaN`, `+Inf`, `-Inf`), and invalid
-  enum values. The `NaN` case was a genuine, empirically-confirmed gap
+  `IdentityConfidence` (including `NaN`, `+Inf`, `-Inf`), invalid
+  enum values, a timestamp RFC 3339 cannot represent, and an
+  `Execution` duration above `event.MaxDurationNanos`. The `NaN` case was a genuine, empirically-confirmed gap
   closed by this task: Go's `NaN < 0`/`NaN > 1` are both always false,
   so the pre-existing range check silently passed a `NaN`
   `IdentityConfidence` through `Actor.validate()` (`event/event.go`)
@@ -1942,8 +2172,8 @@ accepted behavior, not gaps.**
   deliberate current behavior per [task 012](archive/tasks/v0.1/012-security-tests.md)'s
   Non-Goals (no length limit added absent a concrete DoS vector), stated
   explicitly rather than left an untested assumption.
-- A negative `duration_ms` attribute is not rejected by `Validate` (only
-  `IdentityConfidence` and enum fields are checked there) and flows
+- A negative `duration_ms` attribute is not rejected by `Validate`
+  (`Attributes` is never validated there) and flows
   through `features.Extract` into `internal/anomaly`'s latency z-score
   math as a negative `time.Duration`. This was traced through
   empirically, not assumed: `(currentNS - mean) / stddev` is a
@@ -2031,7 +2261,7 @@ Evidence, asserting the bound rather than the absence of a panic:
 | `TestKnownFingerprintKeepsLearningAtCapacity` (same file) | A full baseline is not a frozen one — known fingerprints keep accumulating evidence |
 | `TestRejectionDoesNotMoveTheHistoryWindow` (same file) | A refused fingerprint cannot re-enter through the predecessor path |
 | `TestFingerprintFloodStaysBoundedEndToEnd` ([`engine_test.go`](../engine_test.go)) | The bound holds through the real gated `Analyze`/`Observe` loop, and the pipeline keeps deciding normally while admission is refused |
-| `TestInMemoryStoreStaysBoundedUnderFingerprintFlood`, `TestFileStoreRoundTripsOversizedLegacyBaseline` ([`internal/store/admission_persistence_test.go`](../internal/store/admission_persistence_test.go)) | The bound survives persistence, and a pre-`v1.0` baseline holding more than 512 is loaded whole rather than truncated |
+| `TestInMemoryStoreStaysBoundedUnderFingerprintFlood`, `TestFileStoreRoundTripsOversizedLegacyBaseline` ([`internal/store/admission_persistence_test.go`](../internal/store/admission_persistence_test.go)) | The bound survives persistence, and a baseline learned before the bound existed (before `v0.10.0`) holding more than 512 is loaded whole rather than truncated |
 
 `TestAnalyzeLargeAttributesMapDoesNotPanic` in
 [`engine_test.go`](../engine_test.go) still covers the other half of
@@ -2043,9 +2273,9 @@ that remains a deliberate open decision rather than a shipped control.
 
 `BenchmarkInMemoryMemoryGrowth` measures `store.InMemory.Observe`
 against stores pre-populated with 100, 1,000, and 10,000 distinct keys;
-per-call cost is flat (464 B, 3 allocs at every key count), so an
-attacker cannot degrade per-event throughput by inflating the key
-space. See
+per-call cost is flat (704 B, 3 allocs at every key count, measured at
+`v0.12.0` on an Apple M3 Pro), so an attacker cannot degrade per-event
+throughput by inflating the key space. See
 [PERFORMANCE.md § measured results](PERFORMANCE.md#measured-results).
 
 **What remains unbounded, stated plainly:** the number of distinct
@@ -2056,13 +2286,13 @@ dimension owned by whoever provisions the deployment, not a per-request
 denial-of-service one, and behavioral-state lifecycle is tracked as
 separate work rather than solved here.
 
-`v0.6`'s new `FingerprintStats.PredecessorCounts` (see [Sequence
-state](#sequence-state) above) is a deliberate exception to "unbounded
-by design" above: unlike `Baseline.Fingerprints` itself, it *is*
-capped (64 distinct entries), specifically because it compounds the
-existing unbounded-map characteristic with a second, per-entry
-dimension an attacker could otherwise inflate independently by varying
-the *previous* action on every call.
+Inside each fingerprint entry, the sequence and delegation maps
+(`PredecessorCounts`, `TrigramCounts`, `TrigramContinuationTotal`,
+and the per-actor `DelegatorCounts`) carry their own caps of 64
+entries (see [Sequence state](#sequence-state) above), because each
+adds a second dimension an attacker could otherwise inflate
+independently — by varying the *previous* action on every call, for
+example.
 
 ### Future multi-tenant isolation
 
@@ -2417,8 +2647,10 @@ driven by attacker-chosen actor IDs.
 
 - **Closed vocabularies only.** Two attribute keys exist
   (`trustvian.outcome`, `trustvian.decision`), each with a fixed value set;
-  an unrecognized decision records as `other`. Total cardinality is 15 time
-  series regardless of traffic. `TestNoForbiddenAttributes`,
+  an unrecognized decision records as `other`. Total cardinality is 19 time
+  series regardless of traffic: 15 from analysis, decisions and
+  observations, and 4 from evaluation ingest, only in a Collector configured
+  to feed an evaluation run. `TestNoForbiddenAttributes`,
   `TestUnknownDecisionIsFolded`, `TestObserveErrorRecordsBoundedCategory`.
 - **No subject data.** Actor IDs, trace IDs, raw errors, DSNs, and
   behavioral payload cannot become attributes — asserted against recorded
@@ -2483,16 +2715,18 @@ Same word, different layer.
 
 | Property | Mechanism |
 |---|---|
-| Artifact matches the release source | The release workflow validates the tag as SemVer, verifies the checked-out commit equals the tagged commit, and builds binaries and the container image from that commit |
-| Release gates cannot be bypassed | Gates re-run against the tagged source rather than trusting an earlier workflow run on a different commit |
+| Artifact matches the release source | `make release` dispatches the release workflow from `main` with a version and a full commit SHA. Preflight refuses any ref but `main` and any commit that is not `main`'s head at dispatch, and every archive and the container image are built from that commit |
+| Release gates cannot be bypassed | Preflight requires CI and Nightly to have passed on the commit, and the gates whose inputs move without a commit — the vulnerability database above all — re-run against it |
+| A human publishes | Every job up to the approval summary builds, signs and verifies; the image is pushed by digest with no tag. Only the `publish` job makes anything public, and it runs in the `release` environment, waiting for an Organization Admin's approval. It then creates the annotated tag and the GitHub Release with the `trustvian-release` GitHub App's token — the only actor the tag ruleset lets create a tag ([ADR 0060](adr/0060-agent-operated-releases-with-environment-approval.md)) |
 | Binary integrity | SHA-256 checksum manifest published with every release |
-| Artifact traceability | `trustvian version` reports the module version, commit revision, and whether the build tree was modified, read from Go's own build information |
+| Binary origin is verifiable | A build provenance attestation over every archive and the checksum manifest (`gh attestation verify`) |
+| Artifact traceability | `trustvian version` reports the module version, commit revision, commit time, and — when the build tree was modified — says so, read from Go's own build information |
 | Container contents are known | SPDX SBOM attached to the image as an attestation |
 | Container origin is verifiable | SLSA provenance attestation, plus keyless Cosign signature over the image digest |
-| No key material to compromise | Signing uses GitHub OIDC (Sigstore keyless); no signing key exists in the repository or in a secret |
+| No signing key to compromise | Signing and attestation use GitHub OIDC (Sigstore keyless); no signing key exists in the repository or in a secret. The one private key in the pipeline is the release App's, a secret of the `release` environment that exists only in the approved `publish` job |
 | No long-lived registry credential | Publishing authenticates to GHCR with the workflow-scoped token |
 | Known vulnerabilities are gated | `govulncheck` fails on any *reachable* Go vulnerability; Trivy fails on fixable `CRITICAL`/`HIGH` in the image |
-| Least privilege | Normal CI and nightly workflows are `contents: read`. `packages: write` and `id-token: write` exist only in the container-publishing job. No `pull_request_target` anywhere |
+| Least privilege | Normal CI and nightly workflows are `contents: read`. In the release workflow, `id-token: write` exists only in the archive-build and image jobs, `packages: write` only in the image and `publish` jobs, and no job holds `contents: write`. No workflow uses `pull_request_target` |
 | Minimal runtime surface | The image runs non-root with no shell, no package manager, and no added capabilities |
 
 Two limits stated plainly:

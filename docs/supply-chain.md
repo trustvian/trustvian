@@ -22,10 +22,7 @@ service this repository produces. The `trustvian` CLI is a batch tool and
 ships as a signed-checksum binary instead; see the
 [release guide](release-guide.md).
 
-> **No image has been published yet.** The pipeline below is implemented and
-> verified locally, and runs on the next version tag. Until then, `docker
-> pull` of any tag will fail — the examples in this document describe what
-> will work after the first release, not what works today.
+Every release from `v0.9.0` publishes it. The current release is `v0.12.0`.
 
 ### Tags
 
@@ -53,7 +50,7 @@ Built from `Dockerfile` at the repository root, on
 
 | Property | Value |
 |---|---|
-| Size | ~43 MB |
+| Size | ~47 MB (`linux/amd64`), ~44 MB (`linux/arm64`) |
 | User | `nonroot` (uid 65532) |
 | Shell | **none** |
 | Package manager | **none** |
@@ -308,12 +305,11 @@ adding the helpers to the archives did not change what it contains.
 
 ## Verifying a published image
 
-These commands apply once a release exists. Use **Cosign v3 or newer** (see
-above).
+Use **Cosign v3 or newer** (see above).
 
 ```bash
 IMAGE=ghcr.io/trustvian/trustvian-collector
-TAG=v0.10.0   # substitute a real released tag
+TAG=v0.12.0   # any release from v0.10.0; v0.9.0 and earlier: see below
 
 # Resolve the immutable digest, and use it for everything below.
 DIGEST=$(docker buildx imagetools inspect "$IMAGE:$TAG" --format '{{.Manifest.Digest}}')
@@ -412,8 +408,8 @@ provenance against the same run: `release.yml`, dispatched on `main`, at the
 tagged commit.
 
 ```bash
-V=v0.10.0
-A=trustvian_${V}_linux_amd64.tar.gz
+V=v0.12.0
+A=trustvian_${V}_linux_amd64.tar.gz   # or your platform's archive
 SHA=$(git ls-remote https://github.com/trustvian/trustvian "refs/tags/$V^{}" | cut -f1)
 
 sha256sum -c checksums.txt --ignore-missing
@@ -443,7 +439,7 @@ only inside a workflow run.
 make container-build   # multi-stage build, nothing pushed
 make container-scan    # Trivy, same gate as CI
 make sbom              # SPDX SBOM extracted to dist/sbom.spdx.json
-make vulncheck         # govulncheck across both modules
+make vulncheck         # govulncheck across all four modules
 ```
 
 `make sbom` writes the SBOM to `dist/`, which is git-ignored: SBOMs are
@@ -470,11 +466,11 @@ doing so — running the repository should never require a published image,
 and demonstrating the source-to-running-system path is that deployment's
 purpose.
 
-After releases exist, an operator may substitute the official image:
+An operator may substitute the official image:
 
 ```yaml
   otel-collector:
-    image: ghcr.io/trustvian/trustvian-collector:v0.9.0   # once released
+    image: ghcr.io/trustvian/trustvian-collector:v0.12.0
     # build:                     # replaces the from-source build
     #   context: ../..
 ```
