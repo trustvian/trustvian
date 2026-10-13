@@ -12,7 +12,7 @@ implementation's details — package structure, dependency direction,
 domain model, security model, measured performance, and why
 significant decisions were made — see `docs/` (`ARCHITECTURE.md`,
 `DOMAIN.md`, `SECURITY.md`, `PERFORMANCE.md`, `ROADMAP.md`, `adr/`,
-`tasks/`) and `.Codex/rules/`. `docs/tasks/NNN-*.md` are the current,
+`tasks/`) and `.claude/rules/`. `docs/tasks/<version>/NNN-*.md` (and the unversioned `docs/tasks/NNN-*.md`) are the current,
 independently-scoped implementation tasks — check there before
 starting new work to see if it's already planned and scoped. Keep
 `docs/` in sync with the code: when an

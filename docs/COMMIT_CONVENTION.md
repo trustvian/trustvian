@@ -104,6 +104,8 @@ config        config
 alert         alert
 cli           cmd/trustvian
 processor     the OpenTelemetry Collector processor module
+platform      the platform module: control plane, stores, /v1 API, trustvian-local
+webui         the browser interface, platform/webui
 examples      the examples module
 deploy        deployments/
 scripts       repository scripts

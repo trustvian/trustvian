@@ -33,10 +33,9 @@ today — item 089, optional quality evaluation, inside
 carries it because it contradicts
 [What Trustvian is not becoming](#what-trustvian-is-not-becoming) as written.
 
-`v0.10.0` — the [developer preview](#v0100--developer-preview) — and `v0.11.0`
-— the [WebUI experience](#v0110--webui-experience) — have SHIPPED.
-`v0.12.0` — [Change Impact](#v0120--change-impact) — is IMPLEMENTED on `main`
-and awaiting its release, and `v1.0`
+`v0.10.0` — the [developer preview](#v0100--developer-preview) — `v0.11.0`
+— the [WebUI experience](#v0110--webui-experience) — and `v0.12.0` —
+[Change Impact](#v0120--change-impact) — have SHIPPED, and `v1.0`
 is the release gate beyond them. Track B is **partly implemented**: the
 evaluation foundation, local persistence, the local control-plane API and
 realtime, the developer CLI, the TUI, the WebUI, the PostgreSQL backend, the
@@ -49,8 +48,8 @@ and evaluation depth — and implements nothing.
 On `main`, a developer can run an instrumented agent under `trustvian dev`, watch
 it in the WebUI, gate a candidate over repeated scenarios with `trustvian eval
 run`, and post the verdict on a pull request with the CI action — see
-[Current State](#current-state). It shipped in `v0.10.0`, and the WebUI
-experience in `v0.11.0`. Everything under
+[Current State](#current-state). It shipped in `v0.10.0`, the WebUI
+experience in `v0.11.0`, and Change Impact in `v0.12.0`. Everything under
 [Beyond v1.0](#beyond-v10) is FUTURE.
 
 ## Product Direction
@@ -162,7 +161,7 @@ laptop without an account.
 
 ## Current State
 
-**Current stable line: `v0.11.x`.** SHIPPED.
+**Current stable line: `v0.12.x`.** SHIPPED.
 
 The pre-`v1.0` core provides:
 
@@ -210,8 +209,8 @@ today, by task:
   evidence resolution (083–085).
 - **`trustvian dev`** (077) runs an existing instrumented agent with one
   command. It composes the local control plane and a Collector around it. On
-  macOS and Linux, the release archive carries both helpers from the next
-  release on (#114).
+  macOS and Linux, the release archive carries both helpers, from `v0.10.0`
+  on (#114).
 - **`trustvian eval run`** (078) runs a scenario N times per side under isolated
   profiles and gates the difference over k-of-N evidence. It persists each
   execution, reuses a recorded reference with `--reference`, and runs a
@@ -233,8 +232,8 @@ task 062's runtime composes one, on loopback by default.
 **`v0.10.0` was the first release to carry the platform**, and `v0.11.0` the
 WebUI experience (097–104).
 
-**On `main`, not yet released: `v0.12.0` — Change Impact** (105–107, 081, 086,
-087; [section](#v0120--change-impact)). The pipeline status surface and
+**`v0.12.0` — Change Impact** (105–107, 081, 086,
+087; [section](#v0120--change-impact)) is the current release. The pipeline status surface and
 `trustvian status`; frequency, operational and cost evidence on a comparison;
 scenario, input and prompt provenance with sameness; persisted per-behavior
 fidelity; a recorded gate on every completed execution; the scenario
@@ -273,6 +272,7 @@ specifications behind each are in [`archive/tasks/`](archive/tasks/README.md).
 | `v0.9.0` | Operational readiness: CI quality gates, release artifacts, supply-chain signing, health endpoints, self-observability, backup and restore |
 | `v0.10.0` | Developer preview: the platform ships — `trustvian dev`, the local control plane and WebUI, `eval run` with scenario suites and k-of-N gating, and the CI action with its pull request comment |
 | `v0.11.0` | WebUI experience: themes, searchable selectors, the Overview, trace investigation, recency-ordered run discovery, scenario execution and session selection (schema v10) |
+| `v0.12.0` | Change Impact: the pipeline status surface, frequency, operational and cost evidence, scenario and input provenance with sameness, persisted fidelity, the recorded gate and the scenario execution report, and the Change Impact view (schema 15) |
 
 ## v0.10.0 — Developer Preview
 
@@ -521,7 +521,7 @@ per observation (076). Each is stated on screen where it applies.
 
 ## v0.12.0 — Change Impact
 
-**IMPLEMENTED on `main`; release pending.** Tasks 081, 086, 087 and 105–107 are specified in
+**SHIPPED** (2026-10-13): tasks 081, 086, 087 and 105–107 are in `v0.12.0`. They are specified in
 [`tasks/v0.12/`](tasks/v0.12/README.md). 105, 087, 106, 086 and 081 are
 implemented, and so is 107 in its three parts: the report's identity and JSON (107-A), one renderer and the comment's report (107-B), and Change Impact with the Overview panel (107-C). The engine is
 unchanged. The platform gains:
@@ -679,7 +679,7 @@ closing change. "Met" only where the evidence shows it.
 
 ## v0.13.0 — proposed
 
-**PROPOSED.** Nothing here is scheduled until `v0.12.0` ships. Tasks are in
+**PROPOSED.** Nothing here is scheduled. Tasks are in
 [`tasks/v0.13/`](tasks/v0.13/README.md).
 
 | Task | What it is | Status |

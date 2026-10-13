@@ -16,7 +16,8 @@ Or open the form directly:
 Only the maintainers can see a private report. Please include what you can
 of:
 
-- the affected component (engine, CLI, Collector processor, container image,
+- the affected component (engine, CLI, Collector processor, local control
+  plane and WebUI, GitHub Actions in `.github/actions/`, container image,
   backup/restore scripts, release artifacts) and version or commit;
 - the impact — what an attacker gains or what guarantee breaks;
 - steps to reproduce, or a proof of concept;
@@ -42,8 +43,9 @@ procedure.
 
 ## Scope
 
-In scope: this repository's code, the released CLI binaries, and the official
-container image `ghcr.io/trustvian/trustvian-collector`.
+In scope: this repository's code, the released binaries (`trustvian`,
+`trustvian-local` and `trustvian-collector`), and the official container image
+`ghcr.io/trustvian/trustvian-collector`.
 
 Useful context before reporting:
 

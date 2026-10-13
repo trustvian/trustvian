@@ -69,8 +69,9 @@ symmetry with some hypothetical CRUD need.
 `policy.Policy` is a plain value (`Rules []Rule` + a mandatory
 `DefaultAction`/`DefaultReason`), evaluated by a generic,
 first-match-wins `Evaluate`. It is not a set of Go closures or a
-strategy interface. This is what lets a future YAML/file loader exist
-as a pure adapter that produces the same `Policy` value, without
+strategy interface. This is what lets the YAML loader (`config.LoadFile`
+→ `config.CompilePolicy`) exist as a pure adapter that produces the same
+`Policy` value, without
 touching the evaluator — and it's why a misconfigured `Policy` (empty
 or invalid `DefaultAction`, empty `DefaultReason`) fails closed to
 `BLOCK` inside `Evaluate` itself rather than relying on every caller to
@@ -80,10 +81,10 @@ validate their own config.
 
 `internal/otel` is the *only* package in this module allowed to import
 `go.opentelemetry.io/otel*`. The core engine (`event` through
-`internal/policy`, and the root `Engine`) has zero OTel awareness. A
-future OTel Collector processor is explicitly a separate deliverable —
-it needs the heavy `otelcol-builder` toolchain, which must never leak
-into this module's dependency graph.
+`internal/policy`, and the root `Engine`) has zero OTel awareness. The
+OTel Collector processor is a separate module, `processor/`, because the
+Collector's heavy dependency tree must never leak into this module's
+dependency graph.
 
 ## Composition root
 

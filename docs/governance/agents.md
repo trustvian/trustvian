@@ -365,7 +365,7 @@ Workflow privilege is scoped per job, not per repository:
 |---|---|---|
 | `ci.yml` | push / PR on `main` | `contents: read` only — no secrets, nothing to leak to a fork pull request |
 | `nightly.yml` | schedule, manual | `contents: read` only |
-| `release.yml` | `workflow_dispatch` from `main` (`make release`) | `contents: read` by default; `build` adds `id-token: write` and `attestations: write`, `image` adds `packages: write` and `id-token: write` for a digest-only push and keyless signing, and only `publish` adds `contents: write` (with `packages: write` to tag the verified digest). Every job runs in the `release-build` environment except `publish`, which runs in `release` and waits for an Organization Admin's approval, then creates the tag |
+| `release.yml` | `workflow_dispatch` from `main` (`make release`) | `contents: read` by default; `build` adds `id-token: write` and `attestations: write`, `image` adds `packages: write` and `id-token: write` for a digest-only push and keyless signing, and `publish` adds `packages: write` to tag the verified digest. No job holds `contents: write`: `publish` creates the tag and the GitHub Release with the `trustvian-release` App's token, minted from a `release` environment secret. Every job runs in the `release-build` environment except `publish`, which runs in `release` and waits for an Organization Admin's approval |
 
 Rules for changing this:
 
@@ -386,11 +386,12 @@ Recovery from a governance mistake is a deliberate human action: a signed-in
 administrator editing the ruleset in the GitHub UI, where the change is
 recorded in the repository's rule history.
 
-A scoped bypass entry also exists on both rulesets, held by Organization
-Admin: pull-request-only on `main`, and unrestricted on `v*` tags so that a
-human can create a release. Neither is available through an agent credential,
-and an agent must never use one even while running under a credential that
-technically holds it. Their scope and the reason each exists are in
+A scoped bypass entry also exists on `Protect main`, held by Organization
+Admin, in pull-request-only mode. The tag rulesets have no Organization Admin
+bypass: only the `trustvian-release` App may create a tag, and nobody may move
+or delete one. The `main` bypass is not available through an agent credential,
+and an agent must never use it even while running under a credential that
+technically holds it. Its scope, and the reason each bypass exists, are in
 [Repository Governance](repository.md#bypass).
 
 The distinction still worth keeping: a bypass applies whenever its holder
