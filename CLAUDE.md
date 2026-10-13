@@ -20,6 +20,11 @@ architectural change lands, update the relevant `docs/` file(s) and
 add an ADR under `docs/adr/` if a future developer would reasonably
 ask "why did we do this?"
 
+Never publish machine-identifying data in documentation: no home
+directories, usernames, hostnames or temp paths from the machine that
+produced an example. Anonymize pasted output (`~/...`, `/Users/you`).
+See `.claude/rules/docs.md`; `go test ./scripts` enforces the path part.
+
 ## Language
 
 Go.
