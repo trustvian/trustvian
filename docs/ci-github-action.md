@@ -105,8 +105,9 @@ likely to be deleted as noise:
   dependency it loads could read it. The scenario needs the source, not the
   ability to push it.
 - **No checkout, and no step of your own, in the comment job.** The action
-  builds the renderer and the poster from the Trustvian commit you pinned,
-  never from the pull request, and reads the artifact as data. A checkout or a
+  builds the renderer and the poster from the commit that the Trustvian
+  revision you pinned names in `runtime.env` — see [The runtime](#the-runtime)
+  — never from the pull request, and reads the artifact as data. A checkout or a
   build step added there would put the pull request's code beside the write
   token.
 - **`needs: run` and `if: ${{ !cancelled() }}`.** The comment job runs after a
@@ -556,6 +557,114 @@ version 1 and the comment renders it as before; the action's end-to-end
 workflow proves, with this repository's own runtime, that the uploaded
 document is then the report and the comment its version 2 rendering.
 
+At v0.12.0, `runtime.env` pins `5521759bb115744498946bfd03d7dd45f688caac`
+(pull request #140), which predates task 107-B. So the actions at v0.12.0
+upload version 1 and post the version 1 rendering.
+
+### An example
+
+The comment for a scenario whose candidate adds one tool — the
+`export-tool` scenario of [Getting started](getting-started.md) — produced the
+way the action produces it: `run.sh` run in that workload's checkout as a
+`pull_request` event, then `trustvian-ci-render` on the artifact it wrote.
+The poster adds the marker line above it.
+
+With the runtime `runtime.env` pins at v0.12.0, the version 1 rendering.
+These binaries were built from a source archive, so they record no commit
+and report `(devel)`; the action's own build records the pinned commit:
+
+````markdown
+### Trustvian behavioral gate — FAIL
+
+**Commit** `3c3d7872020779c72e53439732c312797525c71c` · [workflow run](https://github.com/owner/name/actions/runs/123/attempts/1)
+
+CLI exit code: 1
+
+**Scenario** `export-tool` · **runs** 3 · **execution** `scn-export-tool-20261013T210941-6d1e41a3`
+
+Added: present in at least 1 of 3 candidate runs and at most 0 of 3 reference runs. Removed: present in at least 1 of 3 reference runs and at most 0 of 3 candidate runs.
+
+| Behavior | Fingerprint | Reference | Candidate | Classification |
+|---|---|---|---|---|
+| `ai_agent` · `tool` · `crm_lookup` · `tools.localhost` · `local` | `3e2da711ec218a24` | 3/3 | 3/3 | unclassified |
+| `ai_agent` · `tool` · `export_customer` · `tools.localhost` · `local` | `533ccc6e34dafddc` | 0/3 | 3/3 | **+ added** |
+| `ai_agent` · `tool` · `knowledge_search` · `tools.localhost` · `local` | `8dcf62b0a624c416` | 3/3 | 3/3 | unclassified |
+
+| Gate check | Actual | Rule | Bound | Outcome | Advisory |
+|---|---|---|---|---|---|
+| reference repetitions completed | 3 | equals | 3 | pass |  |
+| candidate repetitions completed | 3 | equals | 3 | pass |  |
+| repetitions failing minimum evidence | 0 | at most | 0 | pass |  |
+| repeatedly added behaviors | 1 | at most | 0 | **FAIL** |  |
+| worst candidate block decisions per run | 0 | at most | 0 | pass | fresh scope |
+| worst candidate critical-risk observations per run | 0 | at most | 0 | pass | fresh scope |
+
+*Fresh scope:* each repetition learns in a scope of its own, so the engine has learned nothing there and these checks cannot answer the learned-policy question. The marker changes no verdict.
+
+The scenario's limits: at most 0 repeatedly added behaviors; at most 0 block decisions and 0 critical-risk observations in any one candidate run.
+
+Produced by `trustvian` `(devel)` and control plane `(devel)`.
+````
+
+With the v0.12.0 release binaries as the runtime, the uploaded document is
+the version 2 report, and the rendering is:
+
+````markdown
+### Trustvian behavioral gate — FAIL
+
+**Commit** `3c3d7872020779c72e53439732c312797525c71c` · [workflow run](https://github.com/owner/name/actions/runs/123/attempts/1)
+
+CLI exit code: 1
+
+**Scenario** `export-tool` · **runs** 3 · **execution** `scn-export-tool-20261013T210846-d72f7ce2`
+
+#### Sameness
+
+| | Reference | Candidate | Same |
+|---|---|---|---|
+| Scenario | `sha256:83f685cef295de851a3e0a3e0c4c5c4c104957418ea84fe69f589b8992b89265` | `sha256:83f685cef295de851a3e0a3e0c4c5c4c104957418ea84fe69f589b8992b89265` | same |
+| Inputs | none declared | none declared | same |
+| Model | not recorded | not recorded | not recorded |
+| Prompt reference | not recorded | not recorded | not recorded |
+
+No sameness warning.
+
+#### Behaviors
+…
+
+#### Gate
+
+**Verdict: FAIL**, as the execution recorded it when it completed.
+
+| Gate check | Actual | Rule | Bound | Outcome | Note |
+|---|---|---|---|---|---|
+| reference repetitions completed | 3 | equals | 3 | pass |  |
+| candidate repetitions completed | 3 | equals | 3 | pass |  |
+| repetitions failing minimum evidence | 0 | at most | 0 | pass |  |
+| repeatedly added behaviors | 1 | at most | 0 | **FAIL** |  |
+| worst candidate block decisions per run | 0 | at most | 0 | pass | fresh scope |
+| worst candidate critical-risk observations per run | 0 | at most | 0 | pass | fresh scope |
+| minimum candidate presence of reference behaviors | | | | not configured | |
+| lost behaviors | | | | not configured | |
+| calls per run | | | | not configured | |
+| model calls per run | | | | not configured | |
+…
+
+#### Suggestions
+
+Rule outputs beside the evidence; none changes the verdict.
+
+- `compare.added_in_all_runs`: `tool/export_customer → tools.localhost was added in 3/3 candidate runs. If this was expected, add it to the scenario; otherwise investigate before promoting.`
+  Evidence: `fingerprint_id` `533ccc6e34dafddc` · `behavior` `tool/export_customer → tools.localhost` · `candidate_runs_present` `3` · `reference_runs_present` `0` · `runs` `3`
+
+Produced by `trustvian` `v0.12.0 23beffc7a85db17cc22913769f6357953e88dfa0` and control plane `(devel) 23beffc7a85db17cc22913769f6357953e88dfa0`.
+````
+
+That comment is exactly what
+`trustvian-ci-render --document result.json` and
+`trustvian eval report <execution> --format md` print for the same document,
+with the commit, the run link and the CLI exit code inserted after the heading.
+
 ## The comment job
 
 `.github/actions/trustvian-comment` is the second job's one step
@@ -672,8 +781,13 @@ reasons in [task 079](tasks/v1.0/079-ci-integration-github-action.md#token-permi
 
 ### This repository's own end-to-end test
 
-`.github/workflows/trustvian-run-action.yml` runs both actions against the
-real API on this repository's pull requests:
+`.github/workflows/trustvian-run-action.yml` runs the run action against
+model-free scenarios — a PASS, a suite with a FAIL member, an operational
+failure and a usage error — and renders every artifact it uploads. A separate
+job runs the action's run script with this commit's own runtime and asserts
+that the artifact is the version 2 report and the comment its version 2
+rendering. Its comment job runs both actions against the real API on this
+repository's pull requests:
 
 1. It posts a PASS under the marker `trustvian-run-action-e2e`.
 2. It reads the comments back and asserts exactly one marker comment, holding

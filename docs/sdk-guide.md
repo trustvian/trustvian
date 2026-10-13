@@ -21,6 +21,7 @@ type Event struct {
 	Target     Target          // optional
 	Attributes map[string]any  // optional
 	Context    Context         // optional
+	Execution  Execution       // optional: operational evidence, never behavioral identity
 }
 
 type Actor struct {
@@ -41,11 +42,29 @@ type Target struct {
 }
 
 type Context struct {
-	Environment string
-	TraceID     string
-	SpanID      string
+	Environment    string
+	TraceID        string
+	SpanID         string
+	SessionID      string         // groups one bounded interaction, e.g. one agent conversation
+	DelegatedFrom  string         // the delegating Actor.ID, for one delegation hop
+	ApprovalStatus ApprovalStatus // not_required | required | approved | denied | "" (not recorded)
+	ParentSpanID   string         // trace-scoped; meaningful only beside TraceID
+	SpanLineage    SpanLineage    // root | child | "" (not built from a span)
+}
+
+type Execution struct {
+	DurationNanos    uint64     // meaningful only when DurationObserved is true
+	DurationObserved bool
+	Status           SpanStatus // unset | ok | error | "" (unavailable)
 }
 ```
+
+Of `Context`, only `Environment` enters the fingerprint; the other
+fields, and all of `Execution`, are per-occurrence correlation and
+evidence, not what kind of behavior the event is. `DelegatedFrom` feeds
+the delegation signal. `Execution` is carried onto the decision record
+and feeds no anomaly signal — latency and error come from `Attributes`,
+below.
 
 `Event` carries `json` struct tags (snake_case field names) so it can
 be read from a file — this is what the CLI does; see
@@ -56,13 +75,16 @@ picked up by `internal/features`:
 
 | Key | Type | Meaning |
 |---|---|---|
-| `duration_ms` | `float64`/`int`/`int64` | operation latency, feeds the anomaly latency signal |
+| `duration_ms` | `float64`/`float32`/`int`/`int32`/`int64` | operation latency, feeds the anomaly latency signal |
 | `error` | `bool` | whether the operation errored, feeds the anomaly error signal |
 
 Call `ev.Validate()` (or just call `Analyze`, which does this for you)
 to check required fields are set — `ID`, `Timestamp`,
-`Actor.ID`/`Type`/`IdentityConfidence`, `Operation.Category`/`Name`.
-`Target`, `Attributes`, and `Context` are optional.
+`Actor.ID`/`Type`/`IdentityConfidence`, `Operation.Category`/`Name`
+(and a valid `Operation.Direction` if set). `Target`, `Attributes`,
+`Context`, and `Execution` are optional; an observed
+`Execution.DurationNanos` above `event.MaxDurationNanos` returns
+`event.ErrInvalidDuration`.
 
 `Timestamp` is also checked for encodability: a year outside `[0,9999]` or a
 zone offset of 24 hours or more is constructible in Go but cannot be written
@@ -129,8 +151,14 @@ hand-assembling the components yourself:
 
 ```go
 fmt.Println(result.Trust.Explain())
-// "trust 0.35 (high): identity confidence 0.97, anomaly 0.91 at full confidence, context risk 0.10"
+// trust 0.08 (critical): identity confidence 0.97, anomaly 0.92 at full confidence, context risk 0.00
 ```
+
+That line is from the program under
+[Watching trust mature](#watching-trust-mature), after its 25 warm-up
+events, analyzing one more `SELECT orders` call that took 900 ms and
+failed: latency (weight 0.6) and error (weight 0.8) combine to
+`1 - 0.4 × 0.2 = 0.92`.
 
 `result.Explain() string` renders the *whole* decision — not just
 `Trust` — as a multi-line, human-readable summary: the `Decision`,
@@ -304,8 +332,9 @@ filling one scope does not consume another's.
 ### Configuring from outside the module
 
 Every option is configurable from a third-party module. Four take a
-value produced by the public `config` package; the fifth takes a
-callback over `trustvian.StableFeatures`, a public type.
+value produced by the public `config` package; `WithContextRisk` takes a
+callback over `trustvian.StableFeatures`, a public type; and
+`WithLearningScope` takes a plain string.
 
 ```go
 policy, err := config.CompilePolicy(config.PolicyConfig{

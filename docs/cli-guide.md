@@ -8,8 +8,14 @@ go install github.com/trustvian/trustvian/cmd/trustvian@latest
 ```
 trustvian analyze [--config <path>] [--anomaly-config <path>] [--storage-config <path>] <events.json>
 trustvian baseline build [--config <path>] [--anomaly-config <path>] [--storage-config <path>] <events.json>
+trustvian version
 trustvian help
 ```
+
+These run the engine in process against a file of events. The control-plane
+commands (`project`, `agent`, `candidate`, `env`, `promotion`, `eval`,
+`evidence`, `status`), `dev` and `tui` are in [Platform CLI](platform-cli.md)
+and [Terminal dashboard](tui.md).
 
 By default, the CLI uses a built-in starter policy (block on
 high/critical risk, alert on medium, allow otherwise) — see
@@ -176,15 +182,15 @@ Learned:          3
 Skipped:          1 (flagged by policy; not learned from)
 ```
 
-**This result does not persist.** The only `Store` implementation
-today is in-memory, so a `Baseline` doesn't survive the process exiting
-— running `baseline build` and then a separate `analyze` invocation
-gets you a *fresh*, empty baseline in the second process. `baseline
-build` is useful for proving out the learning mechanism on a fixture,
-not (yet) for pre-seeding a baseline a later CLI invocation can use. A
-real deployment builds its baseline once, inside the long-running
-process that then serves `Analyze` calls — i.e., via the Go SDK, not
-this CLI. See the [Go SDK Guide](sdk-guide.md).
+**Without `--storage-config`, this result does not persist.** The CLI
+then uses an in-memory store, so a `Baseline` doesn't survive the
+process exiting — running `baseline build` and then a separate
+`analyze` invocation gets you a *fresh*, empty baseline in the second
+process. To pre-seed a baseline a later invocation reads, pass the same
+`--storage-config` to both, as
+[above](#--storage-config-path). A long-running service builds its
+baseline inside the process that serves `Analyze` calls — see the
+[Go SDK Guide](sdk-guide.md).
 
 ## Event JSON format
 

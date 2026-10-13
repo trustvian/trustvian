@@ -389,6 +389,4 @@ also consumes this same schema (a `policy:` block matching
 already parses its own YAML before the processor ever sees it, so the
 processor decodes that already-parsed structure directly into a
 `PolicyConfig` value (see [task
-022](archive/tasks/v0.5/022-collector-config-integration.md) for why, and its
-caveat on what's not yet resolvable through `processor/go.mod`'s
-committed dependency).
+022](archive/tasks/v0.5/022-collector-config-integration.md) for why).

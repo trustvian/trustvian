@@ -80,10 +80,10 @@ duplicated.
 `policy` and `storage` each declare real Trustvian configuration in exactly
 the same schema the Go SDK and the CLI already consume — see the core
 repository's [Policy Guide](../docs/policy-guide.md) and [Storage
-Guide](../docs/storage-guide.md) for the field references. `health` and
-`evaluation` decode directly through their own `mapstructure` tags instead:
-neither has a canonical Trustvian type to defer to, because each is a
-property of this runtime rather than of the engine.
+Guide](../docs/storage-guide.md) for the field references. `health`,
+`evaluation` and `status` decode directly through their own `mapstructure`
+tags instead: none has a canonical Trustvian type to defer to, because each
+is a property of this runtime rather than of the engine.
 
 `storage` (added by core task 037) is what lets a Collector persist. Before
 it, this processor called `NewEngine` with at most `WithPolicy` and never
@@ -193,7 +193,7 @@ baseline.
 
 The record posted is `Result.DecisionRecord()` projected from the same
 `Result` that produced the `trustvian.*` attributes. `Analyze` runs once, and
-nothing is reconstructed from those attributes — they are five values, and a
+nothing is reconstructed from those attributes — they are seven values, and a
 record carries contributors, policy reason, confidence and context risk that
 none of them contains.
 
@@ -393,19 +393,18 @@ duplicate policy model anywhere in this module.
 
 `processor/go.mod` carries a `replace` directive pointing at the
 repository root, so this module builds against the core module's source
-rather than a published tag. That changed in core task 037: the `storage`
-field needs `config.StorageConfig`, which does not exist in any released
-version (the newest tag is `v0.7.0`, and the `require` line still reads
-`v0.5.0` as a floor). Writing `require ... v0.8.0` before that tag exists
-would make this file assert something untrue.
+rather than a published tag. That is its distribution model, not a
+temporary state: the module path `trustvian-processor` is not resolvable,
+the module has never been tagged, and it is built from a clone. The
+`require` line, `github.com/trustvian/trustvian v0.8.0`, is a truthful
+floor — the first release with the `config.StorageConfig` /
+`config.CompileStorage` API the `storage` field uses — not what gets
+compiled. `scripts/check-modules.sh` enforces both. Publishing the module
+is described in [the release guide](../docs/release-guide.md).
 
-`GOWORK=off go build ./... && GOWORK=off go test -race ./...` still
-succeeds, and still proves what it did before — that this module needs no
-Go workspace — but it now resolves the core module through the replace
-rather than the module proxy. Core task 038 owns the release-time decision:
-bump to `v0.8.0` and drop the replace once tagged, or keep it. See task
-022's own "Release / Module Compatibility" section for this dependency's
-earlier history.
+`GOWORK=off go build ./... && GOWORK=off go test -race ./...` proves that
+this module needs no Go workspace; it resolves the core module through the
+replace rather than the module proxy.
 
 ## `trustvian.behavior.id`
 
@@ -427,24 +426,28 @@ go run ./cmd/trustvian-collector --config=config.yaml
 ```
 
 Then point any OTel-SDK-instrumented application at `localhost:4317`
-(OTLP/gRPC) or `localhost:4318` (OTLP/HTTP). Enriched spans are logged
-to stdout by the debug exporter, e.g.:
+(OTLP/gRPC) or `localhost:4318` (OTLP/HTTP). The debug exporter logs each
+enriched span through the Collector's logger, which writes JSON lines to
+stderr; the span is the `msg` field of one line. Its attributes, for one
+span from `cmd/demo-producer`:
 
 ```
 Attributes:
-     -> http.request.method: Str(POST)
-     -> server.peer.name: Str(checkout-frontend)
+     -> db.system.name: Str(postgresql)
+     -> db.namespace: Str(orders-db)
      -> trustvian.anomaly.score: Double(1)
      -> trustvian.trust.score: Double(1)
      -> trustvian.risk.level: Str(low)
      -> trustvian.decision: Str(observe_only)
-     -> trustvian.fingerprint.id: Str(b106dcd5d46d7ef7)
+     -> trustvian.fingerprint.id: Str(447a1d9d8f3ace1d)
+     -> trustvian.fidelity: Str(transport)
+     -> trustvian.behavior.layer: Str(transport)
 ```
 
-(captured from a real run of this exact `config.yaml` against a real
-`go.opentelemetry.io/otel/sdk` span, sent over real OTLP/gRPC — not
-hand-written, matching the core repository's own documentation
-standard.)
+(captured from a real run of this `config.yaml`, with only the receiver
+ports changed, against one span `cmd/demo-producer` sent over OTLP/gRPC —
+not hand-written. `trustvian.fidelity` and `trustvian.behavior.layer` say
+where the operation's identity came from; see `attributes.go`.)
 
 The binary's own internal telemetry (its logger, tracer, meter
 providers) uses a small hand-built `telemetry.Factory`

@@ -6,9 +6,10 @@ The `trustvian` binary has two surfaces.
 process** against a file of events. They need no network and no server, and
 nothing on this page changes them.
 
-`project`, `agent`, `candidate` and `eval` drive a **local control plane** over
-its `/v1` HTTP API. They are what this page is about: one request per command,
-machine-readable output, and exit codes a CI job can branch on.
+`project`, `agent`, `candidate`, `env`, `promotion`, `eval`, `evidence` and
+`status` drive a **local control plane** over its `/v1` HTTP API. They are what
+this page is about: one request per command, machine-readable output, and exit
+codes a CI job can branch on.
 
 `dev` is neither: it is a process supervisor that composes the other two for one
 run of your workload. It is documented [below](#trustvian-dev), and
@@ -20,13 +21,16 @@ the control plane's, and the CLI reports what it returned. See
 
 ## Finding the control plane
 
-`--api-url` is optional. When `make local` is running from the same working
-directory, platform commands discover `.trustvian/runtime.json` automatically;
-pass an endpoint to reach anything else.
+`--api-url` is optional. When `trustvian-local` (or `make local`) is running
+from the same working directory, platform commands discover
+`.trustvian/runtime.json` automatically; pass an endpoint to reach anything
+else.
 
 ```text
 --api-url given    → that endpoint, always
---api-url omitted  → ./.trustvian/runtime.json
+--api-url omitted  → ./.trustvian/runtime.json, then the runtime.json in
+                     this directory's `trustvian dev` state
+                     (~/.trustvian/dev/<hash of this directory>/)
 ```
 
 *Given* means present on the command line, not non-empty. `--api-url ""` is a
@@ -44,16 +48,17 @@ trustvian project get --api-url "https://control.example" --id proj-1
 
 Explicit input always wins, which is what keeps CI and sandbox invocations
 unaffected by whatever happens to be checked out. There is no environment
-variable, no parent-directory search and no `$HOME` lookup — exactly
-`./.trustvian/runtime.json`.
+variable and no parent-directory search: exactly those two files, the
+project-local one first.
 
 A **discovered** URL is held to a stricter rule than one you type: `http` on a
 numeric loopback address, nothing else. A repository that ships its own runtime
 file cannot redirect your commands to someone else's server.
 
 With neither available the command exits **3**, not 2: the invocation was valid
-and the runtime was missing, which is operational rather than a usage error.
-See [local development](local-development.md).
+and the runtime was missing, which is operational rather than a usage error. The
+message names both files it tried. See
+[local development](local-development.md).
 
 The URL must be absolute `http` or `https`, with a host and no path, query,
 fragment, or embedded credentials. A URL carrying a password is rejected — and
@@ -139,8 +144,21 @@ trustvian promotion create --id <id> --reference-run <id> --candidate-run <id>
 trustvian promotion get    --id <id>
 trustvian promotion list   --project-id <id>
 
+trustvian evidence behaviors    --reference-run <id> --candidate-run <id>
+                                (--check <name> | --behavior <fingerprint>)
+                                [--side reference|candidate]
+                                [--after <cursor>] [--limit <n>]
+trustvian evidence observations --reference-run <id> --candidate-run <id>
+                                (--check <name> | --behavior <fingerprint>)
+                                [--side reference|candidate]
+                                [--after <cursor>] [--limit <n>]
+
 trustvian status
 ```
+
+Every command above additionally accepts `[--api-url <url>]` and `[--json]`.
+`trustvian dev` is [below](#trustvian-dev), and `trustvian tui` is the
+[terminal dashboard](tui.md).
 
 ### Pipeline status: `trustvian status`
 
@@ -175,10 +193,6 @@ Branch on its `rule`, never on its `text`. `trustvian status` exits `0` whenever
 the document was read, whatever it says, and `3` when the control plane could
 not be reached.
 
-Every command additionally accepts `[--api-url <url>]` and `[--json]`.
-
-All of them accept `--json`.
-
 Candidate metadata is descriptive only. The CLI runs no `git` command and
 computes no digests: a value it derived would claim a provenance it cannot
 actually vouch for.
@@ -192,7 +206,7 @@ tool  · export_customer                 one identity
 http  · POST → export.localhost      another identity
 ```
 
-So one act can consume two of this budget, and `trustvian compare` now prints
+So one act can consume two of this budget, and `trustvian eval compare` prints
 both units so the difference is visible:
 
 ```text
@@ -230,7 +244,7 @@ neither replaces the other.
 ```text
 Gate checks:
   PASS Added behaviors: 2 (maximum 5)
-  ...
+  …
   PASS Added behavior changes: 1 (maximum 1)            evaluated, passed
   ---- Added behavior changes: not evaluated (no limit supplied)
   ---- Added behavior changes: not recorded (decided before this check existed)
@@ -320,15 +334,18 @@ mode the run recorded at begin (D14).
 trustvian eval report scn-support-20261011T105259-d4334c77 --json
 ```
 
-The command prints the document unchanged in both output modes; the human mode
-adds nothing computed. It is a read, not a gate: exit `0` when the report was
+Without a flag, with `--json` and with `--format json` it prints the same
+bytes: the document, unchanged. There is no separate human rendering, and the
+command computes nothing. It is a read, not a gate: exit `0` when the report was
 read, whatever verdict it records; `2` usage (no execution id, a second
 positional argument, an unknown flag); `3` an API or network failure — an
 unknown execution (`404`) or one still running or failed (`409`) among them —
-with nothing on stdout.
+with nothing on stdout. A `--format` other than `md` or `json` is `2`.
 
+The GitHub actions at v0.12.0 build an earlier pinned runtime and post the
+version 1 rendering; see [GitHub Actions](ci-github-action.md#the-runtime).
 `--format md` prints the report as Markdown, rendered by `internal/cirender` —
-the renderer the pull request comment uses:
+the renderer `trustvian-ci-render` uses:
 
 ```text
 trustvian eval report scn-support-20261011T105259-d4334c77 --format md
@@ -339,7 +356,7 @@ same document, and the comment's with the commit, run link and CLI exit code
 added after the heading. Every figure in it is a string or integer from the
 document. A document the renderer refuses still prints its no-verdict
 rendering, and the command exits `3`. `--format md` cannot be combined with
-`--json`; `--format json` is the default.
+`--json` (exit `2`).
 
 The gate in the report is the one the execution **recorded when it completed**
 (schema 14, [ADR 0069](adr/0069-a-completed-execution-records-the-gate-it-consumed.md)),
@@ -384,32 +401,39 @@ prints a number; this turns the number into the evidence behind it, in two steps
 carried them.
 
 ```console
-$ trustvian eval compare --reference-run run-ref --candidate-run run-cand     --max-added-behaviors 0 --max-block-decisions 0     --max-critical-risk-observations 0
-GATE   FAIL
-  added_behaviors        actual 2   maximum 0   FAIL
+$ trustvian eval compare --reference-run run-ref --candidate-run run-cand \
+    --max-added-behaviors 0 --max-block-decisions 0 \
+    --max-critical-risk-observations 0
+…
+Gate checks:
+  PASS Reference evidence: 1 (minimum 1)
+  PASS Candidate evidence: 2 (minimum 1)
+  FAIL Added behaviors: 1 (maximum 0)
+…
+Gate: FAIL
 
-$ trustvian evidence behaviors --reference-run run-ref --candidate-run run-cand     --check added_behaviors
+$ trustvian evidence behaviors --reference-run run-ref --candidate-run run-cand \
+    --check added_behaviors
 STATUS  resolved
 SIDE    candidate
-RECORDED 2
+RECORDED 1
 
-BEHAVIORS (2)
-  fp-delete         added     tool · delete_customer
-  fp-export         added     tool · export_customer → export.localhost
+BEHAVIORS (1)
+  533ccc6e34dafddc  added     tool · export_customer → tools.localhost
 
-HISTORY complete (4 retained)
+HISTORY complete (2 retained)
 
-$ trustvian evidence observations --reference-run run-ref     --candidate-run run-cand --behavior fp-export
+$ trustvian evidence observations --reference-run run-ref \
+    --candidate-run run-cand --behavior 533ccc6e34dafddc
 STATUS  resolved
 SIDE    candidate
-RECORDED 2
+RECORDED 1
 EXHAUSTIVE true
 
-OBSERVATIONS (2)
-  seq 2      2026-03-04T05:06:07Z   block    critical tool · export_customer → export.localhost
-  seq 4      2026-03-04T05:06:09Z   block    low      tool · export_customer → export.localhost
+OBSERVATIONS (1)
+  seq 2      2026-10-13T21:12:46.841151Z    observe_only low      tool · export_customer → tools.localhost
 
-HISTORY complete (4 retained)
+HISTORY complete (2 retained)
 ```
 
 `--check` takes the gate's own check names. Three of the five resolve to
@@ -447,12 +471,18 @@ observations of it, and those two sets are what you are comparing — so the
 control plane refuses to pick one for you:
 
 ```console
-$ trustvian evidence observations --reference-run run-ref     --candidate-run run-cand --behavior fp-shared
-trustvian: behavior "fp-shared" is present in both runs; name the side to
-resolve — reference or candidate
+$ trustvian evidence observations --reference-run run-ref \
+    --candidate-run run-cand --behavior 3e2da711ec218a24
+trustvian: invalid_request: platform: invalid finding reference: behavior "3e2da711ec218a24" is present in both runs; name the side to resolve — reference or candidate
 
-$ trustvian evidence observations --reference-run run-ref     --candidate-run run-cand --behavior fp-shared --side reference
+$ trustvian evidence observations --reference-run run-ref \
+    --candidate-run run-cand --behavior 3e2da711ec218a24 --side reference
+STATUS  resolved
+SIDE    reference
+…
 ```
+
+The refusal exits `3`, like every error the control plane returns.
 
 An added or removed behavior needs no `--side`: it exists in one run only, and
 naming the other is refused rather than silently honoured. A `--check` never
@@ -493,6 +523,7 @@ first attempt landed.
 URL="http://127.0.0.1:8080"
 
 trustvian project   create --api-url "$URL" --id proj-1  --name "Checkout"
+trustvian env       create --api-url "$URL" --project-id proj-1 --ref local --name "Local"
 trustvian agent     create --api-url "$URL" --id agent-1 --project-id proj-1 --name "Checkout agent"
 trustvian candidate create --api-url "$URL" --id cand-2  --agent-id agent-1 \
     --label "v2" --source-ref "$GIT_SHA"
@@ -509,6 +540,9 @@ trustvian eval ingest --api-url "$URL" --id run-42 \
 trustvian eval complete --api-url "$URL" --id run-42
 trustvian eval progress --api-url "$URL" --id run-42
 ```
+
+A run may only name an environment its project owns, so `env create` comes
+before `eval create`; without it, `eval create` exits `3` with `not_found`.
 
 ## Ingest and the sequence
 
@@ -551,13 +585,14 @@ Identity, each derived when not given:
 | `--agent <id>` | the workload's own `OTEL_SERVICE_NAME`, or `service.name` in `OTEL_RESOURCE_ATTRIBUTES` — **required** when it declares neither |
 | `--candidate <id>` | `git:<short sha>`, plus `+dirty` when the worktree has uncommitted changes |
 | `--environment <ref>` | `local` |
-| `--run-id <id>` | `dev-<candidate>-<UTC timestamp to milliseconds>` |
+| `--behavioral-profile <ref>` | the candidate |
+| `--run-id <id>` | `dev-<candidate>-<UTC timestamp to milliseconds>`, e.g. `dev-git-d7623b1-20261013T210951.574Z` |
 
-The candidate is also the behavioral profile, which is the learning scope — so
-two runs of one commit meet one baseline. `--agent` is the one derivation that
-refuses rather than guessing: the processor derives the actor from the arriving
-`service.name`, and an invented Agent id would produce a run whose evidence
-cannot be attributed to it.
+By default the candidate is also the behavioral profile, which is the learning
+scope — so two runs of one commit meet one baseline. `--agent` is the one
+derivation that refuses rather than guessing: the processor derives the actor
+from the arriving `service.name`, and an invented Agent id would produce a run
+whose evidence cannot be attributed to it.
 
 ### Checking the pipeline: `--check`
 
@@ -622,15 +657,15 @@ Every variable `dev` adds to the workload's environment is printed on the banner
 by name. With ownership `existing` the three that matter are:
 
 ```text
-OTEL_EXPORTER_OTLP_TRACES_ENDPOINT   the composed receiver
-OTEL_SERVICE_NAME                    the Agent identity dev resolved
-OTEL_RESOURCE_ATTRIBUTES             deployment.environment.name=<environment>
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT   the composed receiver, over OTLP/HTTP
+OTEL_SERVICE_NAME                    the Agent, only when the workload declares none
+OTEL_RESOURCE_ATTRIBUTES             deployment.environment.name=<environment>, appended
 ```
 
-`TRUSTVIAN_DEV_OTLP_ENDPOINT` and `TRUSTVIAN_DEV_OTLP_GRPC_ENDPOINT` are also
-exported, for a workload that builds its exporter in code and chooses its own
-transport, alongside the protocol, exporter-selection and semantic-convention
-variables the banner lists.
+`TRUSTVIAN_DEV_OTLP_GRPC_ENDPOINT` names the gRPC receiver, for a workload that
+builds a gRPC exporter in code; it is dev's own variable, not an OpenTelemetry
+one. The banner also lists `OTEL_EXPORTER_OTLP_ENDPOINT`, the protocol,
+header, exporter-selection, batch-delay and semantic-convention variables.
 
 **`--instrumentation none` still declares identity.** It means `dev` routes no
 telemetry — it does not mean `dev` sets nothing. Two variables remain, for
@@ -674,7 +709,8 @@ teardown is not delivered to `dev`, because the terminal is already back — see
 
 Windows is refused rather than partially supported: there is no `SIGTERM`
 delivery, no `os.Interrupt` for another process, and no `Setpgid`, so a wrapper
-could not stop what it started. Use WSL2, or run the parts separately.
+could not stop what it started. Use WSL2, or
+[run the parts separately](local-development.md#running-the-parts-separately).
 
 ### Exit codes, before the command starts
 
@@ -694,13 +730,14 @@ reading once rather than assuming.
 | Commands | 0 | 1 | 2 | 3 |
 |---|---|---|---|---|
 | `analyze`, `baseline`, `version` | success | command failed | top-level usage | — |
-| `project`, `agent`, `candidate`, most of `eval` — `eval report` included | success | *unused* | usage | API or network failure |
-| `eval compare` | gate **PASS** | gate **FAIL** | usage | API or network failure |
+| `project`, `agent`, `candidate`, `env`, `promotion`, `evidence`, `tui`, most of `eval` — `eval report` and `eval operational` included | success | *unused* | usage | API or network failure; for `tui`, also a stream, protocol or terminal failure |
+| `eval compare`, `eval compare-repeated` | gate **PASS** | gate **FAIL** | usage | API or network failure; for `compare-repeated`, also a verdict it does not recognize |
 | `status`, `dev --check` | the document was read; for `--check`, and its Collector reported | *unused* | usage | API or network failure; for `--check`, a helper that could not start or a Collector that did not report within the wait (the document is still printed) |
 | `eval run` | gate **PASS** | gate **FAIL** | usage — the scenario, the suite or `--reference`, before anything runs | API or network failure, a reference the control plane refused (before any workload), a repetition whose workload or run failed, or a scenario past its `--scenario-timeout`. A suite exits with its most severe scenario: 3, then 2, then 1, then 0 |
 | `dev` | the command’s own | the command’s own | usage | could not start |
 
-**Exit 1 means gate failure only for `eval compare` and `eval run`.** It does not change what
+**Exit 1 means gate failure only for `eval compare`, `eval compare-repeated` and
+`eval run`.** A rejected promotion exits `0`. None of this changes what
 `1` has always meant for `analyze` and `baseline`.
 
 `dev` is the exception to the whole table: once the command it wraps has started,
@@ -780,15 +817,19 @@ gate:
 trustvian eval run --scenario scenarios/support-login.yaml --json > result.json
 ```
 
-**Every field and `runs` is required, and nothing has a default.**
+**`version`, `name`, `runs`, each side's `command` and the five gate limits are
+required, and none has a default.** `instrumentation`, `project`, `agent`,
+`environment`, `inputs`, each side's `env` and `candidate`, the provenance
+fields and the four limits below are optional.
 - `1 <= runs <= 64` and `0 <= j < k <= runs`.
 - Unknown fields are refused, and every error names its field.
 - `runs` and every gate value must be a YAML integer. `5.9`, `-0.5`, `1e1` and
   a value past 64 bits are refused rather than converted. This includes values
   that arrive through a `<<` merge or an alias.
 - Any of these is exit `2` before a repetition starts.
-- Three **optional** frequency limits go under `gate:` too (task 106). Each is
-  omitted by default, and omitted means it is not evaluated — never defaulted:
+- Four **optional** limits go under `gate:` too: task 106's three frequency
+  limits and task 081's `max_llm_calls_per_run`. Each is omitted by default,
+  and omitted means it is not evaluated — never defaulted:
 
   ```yaml
     min_candidate_frequency: 4        # every behavior in all N reference runs is in >= 4 candidate runs
@@ -858,7 +899,7 @@ counts nothing.
   repetition was empty, repeatedly added behaviors against
   `max_repeated_added_behaviors`, and the worst candidate repetition's block
   decisions and critical-risk observations against the two `_per_run` limits.
-  Any of the three frequency limits the scenario sets is evaluated too, and
+  Any of the four optional limits the scenario sets is evaluated too, and
   printed under the six.
 - It also reports how often (task 106), all as integers:
   - per behavior and side: `calls_total`, `calls_per_run_min`/`max` and
@@ -870,17 +911,38 @@ counts nothing.
     and no verdict.
 
 ```text
-support-login   runs 5
+export-tool   runs 3   (execution scn-export-tool-20261013T211000-fe57f950)
+Recorded
+  reference: scenario sha256:83f685cef295de851a3e0a3e0c4c5c4c104957418ea84fe69f589b8992b89265   inputs not_declared   model not_recorded   prompt_ref not_recorded
+  candidate: scenario sha256:83f685cef295de851a3e0a3e0c4c5c4c104957418ea84fe69f589b8992b89265   inputs not_declared   model not_recorded   prompt_ref not_recorded
 
 Behavior                                  reference   candidate
-  tool/crm_lookup                               5/5         5/5
-  tool/export_customer                          0/5         5/5   + added
+  tool/crm_lookup → tools.localhost              3/3         3/3
+  tool/export_customer → tools.localhost         0/3         3/3   + added
+  tool/knowledge_search → tools.localho…         3/3         3/3
 
 Gate (k = 1, j = 0)
-  PASS reference repetitions completed: 5 (== 5)
-  ...
+  PASS reference repetitions completed: 3 (== 3)
+  PASS candidate repetitions completed: 3 (== 3)
+  PASS repetitions failing minimum evidence: 0 (<= 0)
   FAIL repeatedly added behaviors: 1 (<= 0)
   PASS worst candidate block decisions: 0 (<= 0)   advisory: fresh scope
+  PASS worst candidate critical risk observations: 0 (<= 0)   advisory: fresh scope
+
+Sameness
+…
+Gate: FAIL
+```
+
+That is [Getting Started](getting-started.md#4-gate-a-change-with-a-scenario)'s
+scenario. With optional limits set, each prints under the six:
+
+```text
+  PASS min candidate frequency: 2 (>= 2)
+  PASS max lost behaviors: 0 (<= 0)
+  PASS max calls per run
+      tools.localhost: 3 (<= 6)   pass
+  FAIL max llm calls per run: deferred — run "scn-freq-prov-20261013T211148-ad4aabeb-candidate-1" has no model-layer observation; model calls cannot be counted (2 of 2 candidate runs have none)
 ```
 
 - **`max_repeated_added_behaviors` counts behavioral identities**, the unit of
@@ -894,8 +956,9 @@ Gate (k = 1, j = 0)
 - At `runs: 1, k: 1, j: 0` the verdict is exactly `eval compare`'s, check for
   check.
 
-**`--json`** writes the result document: the scenario name and `runs`, the
-execution id, both producer versions (`cli_version`, `control_plane_version`),
+**`--json`** writes the result document — version 2, byte for byte what
+[`eval report`](#one-executions-report-eval-report) serves for the execution: the
+scenario name and `runs`, the execution id, both producer versions (`cli_version`, `control_plane_version`),
 `provenance` as the control plane recorded it (task 086), and the server's
 repeated result under `comparison`. With `--reference` it also carries
 `reference`: the mode asked for and the execution that was reused.
@@ -969,9 +1032,9 @@ begins. The human result prints what was recorded and the `sameness` block:
 
 ```text
 Recorded
-  reference: scenario sha256:f9a2…0e8d   inputs not_declared   model llama3.2   prompt_ref not_recorded
-  candidate: scenario sha256:f9a2…0e8d   inputs not_declared   model gemma3:4b   prompt_ref not_recorded
-
+  reference: scenario sha256:cdebb1fa7d1d44a75468e1daf39e6edf093fb838849fbb280a815d01b2be8482   inputs sha256:05c8d2c9b43db3d5e9cdf4f5f992f17c4f697d28f29a5bc7e7af5f9b2d3f5bc9   model llama3.2   prompt_ref not_recorded
+  candidate: scenario sha256:cdebb1fa7d1d44a75468e1daf39e6edf093fb838849fbb280a815d01b2be8482   inputs sha256:05c8d2c9b43db3d5e9cdf4f5f992f17c4f697d28f29a5bc7e7af5f9b2d3f5bc9   model gemma3:4b   prompt_ref support/system@v14@sha256:0000000000000000000000000000000000000000000000000000000000000000
+…
 Sameness
   same_scenario    true
   same_inputs      true
@@ -980,6 +1043,11 @@ Sameness
   …
   warning model_differs: The reference and candidate sides declared different models.
 ```
+
+Here the reference stated `model: llama3.2`, and the candidate named
+`model_env: OLLAMA_MODEL` with `OLLAMA_MODEL: "gemma3:4b"` in its `env` and
+stated a `prompt_ref`. `same_prompt_ref` is `not_recorded` because the reference
+declared none.
 
 Each answer is `true`, `false` or `not_recorded`. A value missing on either
 side is `not_recorded`, never `false`. That covers an execution from before

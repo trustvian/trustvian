@@ -32,18 +32,22 @@ convention for, e.g., "this span represents an AI-agent tool call").
 |---|---|
 | `ID`, `Context.SpanID` | `span.SpanContext().SpanID()` |
 | `Context.TraceID` | `span.SpanContext().TraceID()` |
+| `Context.ParentSpanID`, `Context.SpanLineage` | the span's parent: `root` when it has none, else `child` with the parent's span id |
+| `Context.SessionID` | `gen_ai.conversation.id`, or OpenInference `session.id` (see [Agent-oriented conventions](#agent-oriented-conventions--implemented)) |
 | `Timestamp` | `span.StartTime()` |
-| `Operation.Name` | `span.Name()` |
-| `Operation.Category` | `http.request.method` → `http`; `db.system.name` → `db`; `rpc.system.name` → `rpc`; else falls back to `rpc` (see below) |
+| `Operation.Name` | `span.Name()`, unless an agent-oriented convention names the operation |
+| `Operation.Category` | an agent-oriented convention's category if one matched; else `http.request.method` → `http`; `db.system.name` → `db`; anything else falls back to `rpc` (see below) |
 | `Operation.Direction` | `span.SpanKind()`: `Server`/`Consumer` → `inbound`, `Client`/`Producer` → `outbound`, else unspecified |
-| `Target.Name` | `service.peer.name`, then `db.namespace`, then `server.address` — most specific first |
+| `Target.Name` | an agent-oriented convention's target if it names one; else `service.peer.name`, then `db.namespace`, then `server.address` — most specific first |
 | `Actor.ID` | resource `service.name` |
-| `Actor.Type` | defaults to `service` |
+| `Actor.Type` | `ai_agent` when the span carries an agent identity (`gen_ai.agent.name` or `gen_ai.agent.id`; OpenInference `agent.name`); else `service` |
 | `Actor.IdentityConfidence` | defaults to `1.0` |
 | `Context.Environment` | resource `deployment.environment.name` |
+| `Execution` | start and end timestamps, and the status code — see [Correlation and operational evidence](#correlation-and-operational-evidence) |
 | `Attributes` | every span attribute, unmapped or not — nothing is dropped |
 | `Attributes["duration_ms"]` | `span.EndTime().Sub(span.StartTime())`, only if positive |
 | `Attributes["error"]` | `true` if `span.Status().Code == codes.Error` |
+| `Attributes["trustvian.fidelity"]`, `Attributes["trustvian.behavior.layer"]` | the [fidelity](#fidelity) and [layer](#behavioral-layer) of the mapping, written by the adapter |
 
 **Why the RPC fallback.** A span matching none of HTTP/DB/RPC's
 semantic conventions falls back to `Operation.Category = "rpc"` — the
@@ -115,13 +119,15 @@ verified via `go list -deps` to introduce no import cycle and to leave
 | `trustvian.risk.level` | `Trust.Risk` |
 | `trustvian.decision` | `Result.Decision` |
 | `trustvian.fingerprint.id` | `Fingerprint.ID` |
+| `trustvian.fidelity` | the [fidelity](#fidelity) the input adapter recorded; `transport` when none |
+| `trustvian.behavior.layer` | the [behavioral layer](#behavioral-layer) the input adapter recorded; empty when none |
 
 Do not confuse these *output* attributes with the four *input* override
 attributes above (`trustvian.actor.id`, etc.) — the two serve opposite
 directions of the same adapter boundary.
 
 **`trustvian.behavior.id` is deliberately not implemented.** The
-original project spec named it alongside the five above, but never
+original project spec named it alongside the first five above, but never
 defined what it means beyond "carried over from the spec's original
 naming." [Task 008](archive/tasks/v0.2/008-otel.md) resolved this by tracing every
 plausible reading back to `Fingerprint.ID`: `internal/fingerprint`'s
@@ -157,9 +163,10 @@ intentionally **not** part of this module:
 - It depends on the `go.opentelemetry.io/collector/*` component APIs, a
   materially heavier dependency tree than the lightweight OTel API/SDK
   packages `internal/otel` uses.
-- It imports this module's public API (`github.com/trustvian/trustvian`,
-  for `Engine`/`Result`) via a `replace` directive during development,
-  the same relationship any other embedder has — not a privileged
+- It imports this module's public API (`github.com/trustvian/trustvian`
+  for `Engine`/`Result`, plus `event` and `config`) through a `replace`
+  directive in `processor/go.mod`, the same relationship any other
+  embedder has — not a privileged
   internal dependency. `go list -deps ./...` in *this* module's root
   confirms `go.mod`/`go.sum` here are completely unaffected by
   `processor/`'s existence.
@@ -195,10 +202,7 @@ zero-configuration default (`trustvian.decision = "observe_only"` for
 every span). See
 [`processor/README.md` § Configuration](../processor/README.md#configuration)
 for the full reasoning, including why `Config.Policy` is decoded as a
-generic map rather than embedding `config.PolicyConfig` directly, and
-task 022's own "Release / Module Compatibility" section for why this
-is implemented and tested but not yet resolvable through
-`processor/go.mod`'s committed dependency.
+generic map rather than embedding `config.PolicyConfig` directly.
 
 See [ADR 0003](adr/0003-opentelemetry-adapter-single-module.md) for why
 this lives in a separate module at all, and
@@ -230,21 +234,31 @@ at `basic` verbosity (so span attributes are never printed), and configures a
 baseline.
 
 The variables `dev` sets in the workload's environment are the ordinary
-specification ones, and all three matter:
+specification ones, plus one of its own. Three carry the routing and identity:
 
 ```text
-OTEL_EXPORTER_OTLP_TRACES_ENDPOINT   the composed receiver, signal-specific
-OTEL_SERVICE_NAME                    becomes the resource service.name
-OTEL_RESOURCE_ATTRIBUTES             deployment.environment.name=<environment>
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT   the composed HTTP receiver, signal-specific
+OTEL_SERVICE_NAME                    the provisioned agent, only when the workload declares none
+OTEL_RESOURCE_ATTRIBUTES             deployment.environment.name=<environment>, appended
 ```
 
-The endpoint variable is the **signal-specific** one rather than
-`OTEL_EXPORTER_OTLP_ENDPOINT`, so a workload that also exports metrics or logs
-somewhere keeps doing so. `deployment.environment.name` is not optional in
-practice: without it the engine cannot fill the record's environment, and the
-platform refuses a record whose environment differs from the run's — which
-surfaces as a run with no usable evidence rather than as an error naming the
-cause.
+The rest make the routing hold: the generic `OTEL_EXPORTER_OTLP_ENDPOINT` and
+both `…_PROTOCOL` variables (`http/protobuf`), both `…_HEADERS` variables
+cleared, `OTEL_TRACES_EXPORTER=otlp`, `OTEL_METRICS_EXPORTER=none`,
+`OTEL_LOGS_EXPORTER=none`, `OTEL_BSP_SCHEDULE_DELAY=200`, `http` appended to
+`OTEL_SEMCONV_STABILITY_OPT_IN`, and `TRUSTVIAN_DEV_OTLP_GRPC_ENDPOINT` for a
+workload that builds a gRPC exporter in code. `dev` prints the set it applied:
+
+```text
+  Set      OTEL_BSP_SCHEDULE_DELAY OTEL_EXPORTER_OTLP_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS OTEL_EXPORTER_OTLP_PROTOCOL OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_EXPORTER_OTLP_TRACES_HEADERS OTEL_EXPORTER_OTLP_TRACES_PROTOCOL OTEL_LOGS_EXPORTER OTEL_METRICS_EXPORTER OTEL_RESOURCE_ATTRIBUTES OTEL_SEMCONV_STABILITY_OPT_IN OTEL_TRACES_EXPORTER TRUSTVIAN_DEV_OTLP_GRPC_ENDPOINT
+```
+
+That run's workload declared its own `OTEL_SERVICE_NAME`, so `dev` did not set
+it. Metrics and logs are switched off because the composed pipeline is
+traces-only. `deployment.environment.name` is not optional in practice: without
+it the engine cannot fill the record's environment, and the platform refuses a
+record whose environment differs from the run's — which surfaces as a run with
+no usable evidence rather than as an error naming the cause.
 
 `dev` never *attaches* an SDK. It configures one that already exists, or it
 stops — see
@@ -258,8 +272,9 @@ for why the CLI supervises this processor instead of opening its own receiver.
 Since [task 075](tasks/v1.0/075-ai-semantic-telemetry-normalization.md),
 Trustvian reads agent-oriented telemetry when a producer emits it. Both
 conventions are read by **one** table, `internal/semconv`, which both
-`internal/otel` and the Collector processor call — so the two adapters cannot
-drift into two conventions.
+`internal/otel` and the Collector processor call — the processor through the
+public `event.NormalizeSpan` — so the two adapters cannot drift into two
+conventions.
 
 ```text
 telemetry says                               Trustvian records
@@ -319,9 +334,12 @@ Twenty-two content attributes, enumerated in `internal/semconv/content.go`:
 `retrieval.documents`, both `reranker.*_documents` keys, `tool.parameters`,
 `input.images`, `output.images`, `metadata` and `user.id`.
 
-A tool *name* is what the agent did; a tool *argument* is what it said. See
-[Privacy](SECURITY.md) for where that boundary binds and what it does **not**
-claim.
+A tool *name* is what the agent did; a tool *argument* is what it said. "Not
+read" is precise: like every span attribute, these still ride in the in-process
+`Event.Attributes`. Nothing reads them into `StableFeatures`, the fingerprint or
+the `DecisionRecord`, which has no attribute map —
+`internal/otel/privacy_test.go` asserts each. See [Privacy](SECURITY.md) for
+where that boundary binds and what it does **not** claim.
 
 ### Read for the status surface only
 
@@ -530,12 +548,12 @@ Gaps, recorded here because "not in the table" and "deliberately excluded" are
 different statements and a reader cannot tell them apart from silence. None is a
 content attribute; all are metadata, and each has an owner. Token usage was one
 until task 087 read it — see
-[Usage and HTTP status code](#usage-and-http-status-code) — and the latency and
-error comparison row below is now implemented.
+[Usage and HTTP status code](#usage-and-http-status-code) — and both rows below
+are now implemented.
 
 | Gap | State | Owner |
 |---|---|---|
-| **Per-observation history** | Not retained. The record now *carries* correlation and operational evidence (task 084), and the platform aggregates it per run; storing one row per observation is task 067's, so a trace tree still cannot be reconstructed from retained evidence | [067](ROADMAP.md#milestone-sequence) |
+| **Per-observation history** | Retained, bounded, since task 067: at most 4096 observations per run, the first ones admitted, each with its correlation and operational evidence. No attributes, resource attributes or content are retained, so a retained trace is the evaluated actions of a trace, not the distributed trace | [067](tasks/v1.0/067-event-history-capability-boundary.md) |
 | **Latency and error *comparison*** | Implemented by task 087: per-behavior duration buckets and status counts, compared per run and per target, with HTTP status classes from [Usage and HTTP status code](#usage-and-http-status-code) | [087](tasks/v0.12/087-performance-and-cost-evidence.md) |
 
 The bridging is described under
@@ -626,8 +644,8 @@ unrecorded. Behaviors recorded before schema 13 read `unrecorded`.
 ### No framework is named
 
 Trustvian reads conventions, not frameworks. No framework appears in any type,
-field or branch, and `scripts/check-platform-boundary.sh` fails the build if one
-appears in non-test source. `openinference` is the convention's own published
+field or branch, and `scripts/check-platform-boundary.sh`
+(`make check-platform-boundary`) fails if one appears in non-test source. `openinference` is the convention's own published
 attribute name, not a framework.
 
 The design reasoning is

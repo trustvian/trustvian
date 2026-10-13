@@ -12,9 +12,13 @@ For scripting and CI, use [the CLI](platform-cli.md). The TUI is for watching.
 
 ## You need a control plane running
 
-Start one with `make local` ([local development](local-development.md)) and the
-dashboard finds it: the runtime publishes its endpoint to
-`.trustvian/runtime.json`, and the TUI reads it from the current directory.
+Start one with `trustvian-local` or `make local`
+([local development](local-development.md)) and the dashboard finds it: the
+runtime publishes its endpoint to `.trustvian/runtime.json`, and the TUI reads
+it from the current directory. A control plane `trustvian dev` started is found
+too, through that directory's `dev` state — the same
+[discovery](platform-cli.md#finding-the-control-plane) every platform command
+uses.
 
 To watch a run on a different control plane, name it:
 
@@ -39,25 +43,29 @@ The TUI starts no server of its own and binds no port.
 ## What it shows
 
 ```text
-Trustvian — Evaluation run-42
+Trustvian — Evaluation run-live
 Connection: LIVE
 
 Candidate: cand-2
 Environment: local
-Behavioral profile: checkout-agent
+Behavioral profile: live-prof
 Status: running
 
 Authoritative snapshot
-Records: 18
-Distinct behaviors: 11
+Records: 1
+Distinct behaviors: 1
 Behavior evidence: complete
-Next sequence: 19
+Next sequence: 2
 
 Live observations — current stream
 SEQ      NEW  DECISION  RISK      TRUST  ANOMALY  BEHAVIOR
-18       yes  ALLOW     medium    0.81   0.22     tool/shell.execute → build-host
-17       no   ALLOW     low       0.88   0.11     http/POST /pay → payment-db
+2        yes  OBSERVE_… low       0.90   1.00     tool/knowledge_search → tools.localhost
+3        yes  OBSERVE_… low       0.90   1.00     tool/export_customer → tools.localhost
 ```
+
+Captured with records 2 and 3 ingested while the dashboard was live: the
+snapshot still reads `Records: 1` because nothing has resynced since. A column
+wider than its cell is cut with `…`.
 
 Layout is observational and may change. The machine interface is the `/v1` API,
 not this screen.
@@ -93,7 +101,11 @@ is what it is:
 Realtime retains no history server-side either — see
 [ADR 0032](adr/0032-realtime-is-bounded-ephemeral-not-authoritative.md). If you
 look away, what you missed is gone from this screen; the authoritative summary
-is what bridges the gap. Durable event history is task 067.
+is what bridges the gap. The control plane's bounded per-observation history
+(task 067) is read with
+[`trustvian evidence`](platform-cli.md#following-a-finding-to-its-evidence) and
+the [web interface](webui.md), not here. The TUI has no pause and no per-actor
+view.
 
 ## Reconnect and resync
 
@@ -170,9 +182,9 @@ Those are CLI commands, typed deliberately, where they appear in shell history.
 3  startup, HTTP, SSE, protocol or terminal failure
 ```
 
-`1` is never returned. It means a failed gate, and only for
-`trustvian eval compare` — a disconnected dashboard must not look like a policy
-result. See [the compatibility contract](compatibility.md#cli).
+`1` is never returned. It means a failed gate, and only for `trustvian eval
+compare`, `eval compare-repeated` and `eval run` — a disconnected dashboard must
+not look like a policy result. See [the compatibility contract](compatibility.md#cli).
 
 ## No authentication yet
 
