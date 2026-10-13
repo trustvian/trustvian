@@ -5,7 +5,7 @@ a well-established, high-confidence service account (`order-service`,
 `identity_confidence: 0.98`) performs an operation it has never performed
 before — a five-second bulk export from `payment-db`.
 
-Unlike the other four ported examples, this use-cases.md section shows a
+Unlike the other three ported examples, this use-cases.md section shows a
 single event, not a normal/anomalous pair — so there is no
 baseline-maturity warm-up loop here, only one `Analyze` call, faithfully
 matching the source scenario's cold-start framing.

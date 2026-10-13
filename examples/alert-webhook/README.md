@@ -6,9 +6,9 @@ end to end, entirely through the direct Go SDK — no OTel adapter and no
 Collector processor involved anywhere in this program.
 
 A cold-start (never-before-seen) event runs through the normal `Engine`
-pipeline, producing an `OBSERVE_ONLY` `Decision` (the only `Decision` a
-default, rule-less `Policy` ever produces from a genuinely external
-module — see [the examples index](../README.md#a-note-on-decision)).
+pipeline, producing an `OBSERVE_ONLY` `Decision` (the only `Decision` the
+default, rule-less `Policy` ever produces — see
+[the examples index](../README.md#a-note-on-decision)).
 One `alert.Rule` matches on anomaly score, not `Decision` — the point
 this example exists to make concrete: `Decision` and `Alert` are
 different questions
@@ -42,7 +42,7 @@ Detected:
 Policy: default action (no policy rules configured; observing by default)
 
 Alert matched: severity=high decision=observe_only reasons=[fingerprint never observed for this actor policy default: no policy rules configured; observing by default]
-Receiver: signature verified, payload version=1 alert.id=alt_aa70dbf69f75fe97efdb3fe940d915d2
+Receiver: signature verified, payload version=1 alert.id=alt_d38fb13c20d0017bdcf4d6698b5271b5
 Webhook delivered and signature verified by the receiver.
 ```
 

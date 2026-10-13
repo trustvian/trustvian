@@ -86,9 +86,9 @@ jobs:
 
     # No actions/checkout, and no step of your own. The action downloads the
     # run job's artifact as data, and builds the renderer and the poster from
-    # the Trustvian commit you pinned — never from the pull request. Adding a
-    # checkout or a build step here would put the pull request's code next to
-    # a write-scoped token.
+    # the commit the Trustvian revision you pinned names in its runtime.env —
+    # never from the pull request. Adding a checkout or a build step here
+    # would put the pull request's code next to a write-scoped token.
     steps:
       - uses: trustvian/trustvian/.github/actions/trustvian-comment@REPLACE_WITH_A_REVIEWED_TRUSTVIAN_COMMIT_SHA
         with:

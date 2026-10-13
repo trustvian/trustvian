@@ -5,9 +5,10 @@ options, analyze one well-formed HTTP event, print the `Result` via
 `Result.Explain()`, then `Observe` it so it would count toward a future
 baseline.
 
-This corresponds to Example 1 in [docs/archive/tasks/v0.1/010-examples.md](../../docs/archive/tasks/v0.1/010-examples.md)
-and mirrors the exact program shown in
-[docs/sdk-guide.md § Analyze](../../docs/sdk-guide.md#analyze).
+This corresponds to Example 1 in [docs/archive/tasks/v0.1/010-examples.md](../../docs/archive/tasks/v0.1/010-examples.md).
+It is the full program around the calls shown in
+[docs/sdk-guide.md § Constructing an Engine](../../docs/sdk-guide.md#constructing-an-engine)
+and [§ Analyze](../../docs/sdk-guide.md#analyze).
 
 Run it:
 
@@ -32,9 +33,10 @@ so `Trust` doesn't collapse: the engine correctly treats "this is
 unfamiliar" and "how much should I trust that reading" as two separate
 questions. See [Architecture § cold start](../../docs/ARCHITECTURE.md#cold-start-two-numbers-not-one).
 
-`Decision` is `observe_only` for every example in this directory —
-`NewEngine()`'s default `Policy` has no rules and always falls through to
-its `observe_only` default. Getting `ALLOW`/`BLOCK` differentiation like
+`Decision` is `observe_only` because `NewEngine()`'s default `Policy`
+has no rules and always falls through to its `observe_only` default.
+Getting `ALLOW`/`BLOCK` differentiation like
 [docs/use-cases.md](../../docs/use-cases.md) requires a custom `Policy`,
-which today can only be constructed by code living inside this module
-(see [the examples index](../README.md#a-note-on-decision) for why).
+which an external module compiles with `config.CompilePolicy` — see
+[the examples index](../README.md#a-note-on-decision) and
+[ai-agent-security](../ai-agent-security/).
