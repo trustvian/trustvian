@@ -275,6 +275,13 @@ func (m *tuiModel) resync() tea.Cmd {
 }
 
 func (m *tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Once quitting, nothing changes the frame the program leaves behind. q
+	// closes the stream, and the read still outstanding reports that end with
+	// the current generation; handled now, it would print RECONNECTING as the
+	// last frame of a session the user ended.
+	if m.quitting {
+		return m, nil
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height

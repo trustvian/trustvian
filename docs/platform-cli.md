@@ -542,7 +542,15 @@ trustvian eval progress --api-url "$URL" --id run-42
 ```
 
 A run may only name an environment its project owns, so `env create` comes
-before `eval create`; without it, `eval create` exits `3` with `not_found`.
+before `eval create`; without it, `eval create` exits `3` and names what is
+missing:
+
+```text
+trustvian: not_found: environment "local" does not exist in project "p1"; create it with `trustvian env create --project-id p1 --ref local --name <name>`
+```
+
+With `--json` it prints the control plane's own envelope, whose message is
+generic.
 
 ## Ingest and the sequence
 

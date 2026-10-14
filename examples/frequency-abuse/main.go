@@ -1,5 +1,5 @@
 // Command frequency-abuse demonstrates the frequency_deviation anomaly
-// signal (docs/tasks/004-anomaly.md), the one scenario in examples/ with
+// signal (docs/archive/tasks/v0.1/004-anomaly.md), the one scenario in examples/ with
 // no existing docs/use-cases.md section to port, since that signal did
 // not exist when use-cases.md was written.
 //
@@ -22,18 +22,18 @@
 // routine, on-cadence events (see
 // internal/anomaly.Config.FrequencyWeight's doc comment).
 //
-// Enabling it is one Option, from code inside the trustvian module:
+// Enabling it is one Option, compiled through the public config package
+// (docs/anomaly-config-guide.md):
 //
-//	cfg := anomaly.DefaultConfig()
-//	cfg.FrequencyWeight = 0.6 // after measuring your own fleet's jitter
-//	engine := trustvian.NewEngine(trustvian.WithAnomalyConfig(cfg))
+//	ac, err := config.CompileAnomaly(config.AnomalyConfig{
+//		Version:         config.AnomalySchemaVersionV1,
+//		FrequencyWeight: 0.6, // after measuring your own fleet's jitter
+//	})
+//	engine := trustvian.NewEngine(trustvian.WithAnomalyConfig(ac))
 //
-// This program cannot do that, and the omission is not an oversight:
-// examples/ is a separate Go module (see examples/README.md), so it is a
-// genuinely external consumer, and anomaly.Config lives under internal/.
-// The same restriction is why every example here prints an observe_only
-// Decision rather than a custom policy's — see the examples index's
-// "A note on Decision" and docs/adr/0002-public-api-boundary.md.
+// This program keeps the default on purpose, and prints the signal's
+// Value and Weight side by side so "detected" and "counted" differ
+// visibly in the output.
 package main
 
 import (

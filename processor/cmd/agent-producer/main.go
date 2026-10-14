@@ -150,11 +150,30 @@ func run() error {
 		return fmt.Errorf("build resource: %w", err)
 	}
 
-	// WithSyncer, not batching: it makes the span count this producer reports the
-	// span count the Collector received, with no flush timing to reason about.
+	if err := emit(ctx, exporter, res, mode, count); err != nil {
+		return fmt.Errorf("send spans to %s: %w", endpoint, err)
+	}
+
+	log.Printf("agent-producer: sent %d %s spans to %s as actor %q in environment %q",
+		count, mode, endpoint, serviceName, environment)
+	return nil
+}
+
+// emit sends count spans through exporter and fails unless every one was
+// delivered.
+//
+// WithSyncer, not batching: it makes the span count this producer reports the
+// span count the Collector received, with no flush timing to reason about. But
+// the SDK hands an export error to the global error handler, which only logs
+// it, and Shutdown still succeeds — so a producer with no Collector to reach
+// printed "sent" and exited 0. Each export's outcome is counted here instead: a
+// producer that exits 0 without delivering its spans makes every downstream
+// assertion meaningless.
+func emit(ctx context.Context, exporter sdktrace.SpanExporter, res *resource.Resource, mode string, count int) error {
+	counted := &countingExporter{SpanExporter: exporter}
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithResource(res),
-		sdktrace.WithSyncer(exporter),
+		sdktrace.WithSyncer(counted),
 	)
 	tracer := tp.Tracer("trustvian-agent-producer")
 
@@ -167,18 +186,34 @@ func run() error {
 		}
 	}
 
-	// Shutdown flushes, and its error is returned rather than logged: a producer
-	// that exits 0 without delivering its spans makes every downstream assertion
-	// meaningless.
 	shutdownCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if err := tp.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("flush spans to %s: %w", endpoint, err)
+		return fmt.Errorf("flush: %w", err)
 	}
-
-	log.Printf("agent-producer: sent %d %s spans to %s as actor %q in environment %q",
-		count, mode, endpoint, serviceName, environment)
+	if counted.delivered != count {
+		return fmt.Errorf("%d of %d spans delivered: %w", counted.delivered, count, counted.lastErr)
+	}
 	return nil
+}
+
+// countingExporter records how many spans its exporter accepted. WithSyncer
+// calls it from the goroutine that ends each span, one span at a time, so the
+// counts need no lock.
+type countingExporter struct {
+	sdktrace.SpanExporter
+	delivered int
+	lastErr   error
+}
+
+func (c *countingExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
+	err := c.SpanExporter.ExportSpans(ctx, spans)
+	if err != nil {
+		c.lastErr = err
+	} else {
+		c.delivered += len(spans)
+	}
+	return err
 }
 
 func env(key, fallback string) string {

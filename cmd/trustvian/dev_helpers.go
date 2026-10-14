@@ -70,12 +70,10 @@ type helper struct {
 //
 //  1. the flag              a caller who said where it is
 //  2. the environment       what `make dev` sets
-//  3. beside this binary    what a release archive shipping all three would
-//     satisfy with no configuration at all
+//  3. beside this binary    what every release archive since v0.10.0
+//     satisfies with no configuration at all: it ships all three
 //  4. $PATH                 an installation that put them there
 //
-// Step 3 is the one worth keeping even though no release ships that way today:
-// it costs nothing now and is the whole mechanism if the archive ever grows.
 // Nothing searches the working directory or infers a repository layout — a tool
 // that guessed would find the wrong build of itself in someone's checkout.
 func (h helper) resolve() (string, error) {

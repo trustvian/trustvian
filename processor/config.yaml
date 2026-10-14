@@ -1,6 +1,6 @@
 # Example Collector deployment config demonstrating the trustvian
 # processor in a real pipeline: OTLP in, scored and enriched by
-# Trustvian, logged to stdout by the debug exporter.
+# Trustvian, logged to stderr by the debug exporter.
 #
 # Run against ../cmd/trustvian-collector (see its own doc comment):
 #
@@ -9,9 +9,8 @@
 # Then send it trace data — e.g. any application instrumented with the
 # OpenTelemetry SDK and pointed at localhost:4317 (OTLP/gRPC) or
 # localhost:4318 (OTLP/HTTP) — and watch enriched spans (with
-# trustvian.anomaly.score, trustvian.trust.score, trustvian.risk.level,
-# trustvian.decision, trustvian.fingerprint.id attributes) appear in
-# this process's own stdout via the debug exporter.
+# the seven trustvian.* attributes, processor/attributes.go) appear in
+# this process's own stderr via the debug exporter.
 receivers:
   otlp:
     protocols:

@@ -416,6 +416,23 @@ func TestTUIModelKeybindings(t *testing.T) {
 		}
 	})
 
+	t.Run("the frame q leaves is not RECONNECTING", func(t *testing.T) {
+		// q closes the stream, and the read still outstanding then reports its
+		// end with the current generation. Handled after q, it turned a live
+		// session's last frame into RECONNECTING (finding F17 of #175).
+		model := newTUIModel(context.Background(), "run-42", nil, nil)
+		model.state = stateLive
+		model.everLive = true
+		_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+		_, cmd := model.Update(streamEndedMsg{err: io.EOF, generation: model.generation})
+		if model.state != stateLive || strings.Contains(model.View(), "RECONNECTING") {
+			t.Errorf("after q the state is %s, want LIVE, and the frame reads:\n%s", model.state, model.View())
+		}
+		if cmd != nil {
+			t.Error("a stream end after q scheduled a reconnect")
+		}
+	})
+
 	t.Run("? toggles help", func(t *testing.T) {
 		model := newTUIModel(context.Background(), "run-42", nil, nil)
 		_, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})

@@ -9,7 +9,7 @@ import (
 	"trustvian-processor/internal/evaluation"
 )
 
-// Trustvian output attributes — the same five names and meanings as
+// Trustvian output attributes — the same seven names and meanings as
 // internal/otel.AttributesFromResult in the core module (see
 // docs/OPENTELEMETRY.md there), necessarily reimplemented here for the
 // same module-boundary reason as EventFromSpan (see mapping.go):
