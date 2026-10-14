@@ -111,7 +111,8 @@ processors:
       receiver_endpoints: ["127.0.0.1:4318", "127.0.0.1:4317"]   # optional, at most 4
 ```
 
-Every `interval`, one goroutine posts one report to
+At start, every `interval`, and once more at shutdown (bounded by 2 s, so a
+run shorter than one interval still reports its counts), one report is posted to
 `POST /v1/collectors/{collector_id}/status`: cumulative span counts, the
 producers seen (resource `service.name`, instrumentation scope, `telemetry.sdk.*`),
 the model calls and fidelity the convention table established, the distinct

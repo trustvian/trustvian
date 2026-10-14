@@ -32,26 +32,40 @@ const (
 	// report but never stack them: the loop below is synchronous, and a
 	// request outliving its interval would be the only way two could overlap.
 	maxRequestTimeout = 5 * time.Second
+
+	// finalReportTimeout bounds the one report Stop sends, which is what a
+	// short run's counts ride on: without it, a workload shorter than one
+	// interval leaves the control plane holding only the zero-count report
+	// sent at start. It is time added to every shutdown against a control
+	// plane that is not answering, so it is kept well inside what the
+	// processes that stop a Collector allow — `trustvian dev` sends SIGTERM
+	// and kills after 10 s, `docker stop` after 10 s — and the status report
+	// is a few kilobytes to a control plane that, in every documented
+	// deployment, answers within milliseconds. Stop's own context still
+	// applies when it is shorter.
+	finalReportTimeout = 2 * time.Second
 )
 
 // SnapshotFunc builds the body of the next report, minus its identity and
 // sequence, which the Reporter owns.
 type SnapshotFunc func(now time.Time) Report
 
-// Reporter pushes a status report to the control plane on a fixed interval.
+// Reporter pushes a status report to the control plane on a fixed interval,
+// and once more at Stop.
 //
 // One goroutine, one request at a time, no queue. Each tick builds a fresh
 // snapshot of cumulative counters, so a report that failed to send is simply
 // superseded by the next — there is nothing to retry, buffer or replay, and a
 // slow or absent control plane cannot grow this process's memory.
 type Reporter struct {
-	endpoint    string
-	collectorID string
-	instance    string
-	interval    time.Duration
-	snapshot    SnapshotFunc
-	client      *http.Client
-	now         func() time.Time
+	endpoint     string
+	collectorID  string
+	instance     string
+	interval     time.Duration
+	finalTimeout time.Duration
+	snapshot     SnapshotFunc
+	client       *http.Client
+	now          func() time.Time
 
 	// warn reports a failed send. Called on the first failure after a success
 	// (and on the first ever), never on each repeat, so an absent control
@@ -103,13 +117,14 @@ func NewReporter(
 		warn = func(error) {}
 	}
 	return &Reporter{
-		endpoint:    target.String(),
-		collectorID: collectorID,
-		instance:    instance,
-		interval:    interval,
-		snapshot:    snapshot,
-		now:         time.Now,
-		warn:        warn,
+		endpoint:     target.String(),
+		collectorID:  collectorID,
+		instance:     instance,
+		interval:     interval,
+		finalTimeout: finalReportTimeout,
+		snapshot:     snapshot,
+		now:          time.Now,
+		warn:         warn,
 		client: &http.Client{
 			Timeout: timeout,
 			CheckRedirect: func(req *http.Request, _ []*http.Request) error {
@@ -147,60 +162,54 @@ func (r *Reporter) loop() {
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 
-	r.send()
+	r.sendUntilStop()
 	for {
 		select {
 		case <-r.stop:
 			return
 		case <-ticker.C:
-			r.send()
+			r.sendUntilStop()
 		}
 	}
 }
 
-// Stop ends the loop and waits for it, bounded by ctx. Idempotent, and safe
-// to call on a Reporter that was never started.
+// Stop ends the loop, waits for it, and then sends one final report, all
+// bounded by ctx; the final report is further bounded by finalReportTimeout.
+// Idempotent — only the first call sends — and safe to call on a Reporter
+// that was never started, which sends nothing.
+//
+// The final report is what makes a short run visible: the counters it reads
+// are cumulative, so it carries everything counted since the last tick. It is
+// sent here, on the caller's goroutine after the loop has exited, so the
+// sequence and failure state it touches still have exactly one writer at a
+// time.
 func (r *Reporter) Stop(ctx context.Context) error {
-	r.stopOnce.Do(func() { close(r.stop) })
+	first := false
+	r.stopOnce.Do(func() {
+		close(r.stop)
+		first = true
+	})
 	if !r.started.Load() {
 		return nil
 	}
 	select {
 	case <-r.done:
-		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	if !first {
+		return nil
+	}
+	final, cancel := context.WithTimeout(ctx, r.finalTimeout)
+	defer cancel()
+	r.send(final)
+	return nil
 }
 
-// send builds and posts one report. Failures are reported through warn and
-// otherwise ignored: the next tick carries newer counters anyway.
-func (r *Reporter) send() {
-	r.sequence++
-	report := r.snapshot(r.now())
-	report.Version = WireVersion
-	report.CollectorID = r.collectorID
-	report.Instance = r.instance
-	report.Sequence = formatUint(r.sequence)
-
-	err := r.post(report)
-	switch {
-	case err != nil && !r.failing:
-		r.failing = true
-		r.warn(err)
-	case err == nil:
-		r.failing = false
-	}
-}
-
-func (r *Reporter) post(report Report) error {
-	body, err := fitReport(report, maxReportBody)
-	if err != nil {
-		return err
-	}
-
-	// Bounded by the client's own timeout, and abandoned at Stop: a shutdown
-	// must not wait on a control plane that is not answering.
+// sendUntilStop sends one report from the loop, abandoned at Stop: a shutdown
+// must not wait on a control plane that is not answering. Stop's own final
+// report is the one bounded send that replaces it.
+func (r *Reporter) sendUntilStop() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
@@ -210,6 +219,36 @@ func (r *Reporter) post(report Report) error {
 		case <-ctx.Done():
 		}
 	}()
+	r.send(ctx)
+}
+
+// send builds and posts one report within ctx. Failures are reported through
+// warn and otherwise ignored: the next tick carries newer counters anyway.
+func (r *Reporter) send(ctx context.Context) {
+	r.sequence++
+	report := r.snapshot(r.now())
+	report.Version = WireVersion
+	report.CollectorID = r.collectorID
+	report.Instance = r.instance
+	report.Sequence = formatUint(r.sequence)
+
+	err := r.post(ctx, report)
+	switch {
+	case err != nil && !r.failing:
+		r.failing = true
+		r.warn(err)
+	case err == nil:
+		r.failing = false
+	}
+}
+
+// post sends one encoded report, bounded by ctx and by the client's own
+// timeout.
+func (r *Reporter) post(ctx context.Context, report Report) error {
+	body, err := fitReport(report, maxReportBody)
+	if err != nil {
+		return err
+	}
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.endpoint, bytes.NewReader(body))
 	if err != nil {

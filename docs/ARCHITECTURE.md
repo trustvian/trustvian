@@ -538,7 +538,7 @@ bound, and the inventory is short enough to state in full:
 | Resource | Bound | Shutdown owner |
 |---|---|---|
 | Health-server goroutine | One, bounded header-read timeout | Trustvian (`Shutdown` → `http.Server.Shutdown`) |
-| Status reporter (when `status:` is configured) | One goroutine and one ticker, 1s to 1m interval (default 10s); each report bounded by the client timeout and abandoned at stop | Trustvian (`Shutdown` → `Reporter.Stop`) |
+| Status reporter (when `status:` is configured) | One goroutine and one ticker, 1s to 1m interval (default 10s); each report bounded by the client timeout and abandoned at stop, then one final report bounded by 2 s | Trustvian (`Shutdown` → `Reporter.Stop`) |
 | Other channels, queues, tickers, timers | None exist | — |
 | PostgreSQL pool | `MaxConns`; lifetime 1h, idle 30m | Trustvian (`Shutdown` → `Close`, exactly once) |
 | In-memory store | O(distinct actors), each capped | Process lifetime |

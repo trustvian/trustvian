@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -197,19 +198,19 @@ func TestReporterWarnsOncePerFailureStreak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reporter.send()
-	reporter.send()
+	reporter.send(context.Background())
+	reporter.send(context.Background())
 	if len(warnings) != 1 {
 		t.Fatalf("two failures produced %d warnings, want 1", len(warnings))
 	}
 	fail.Lock()
 	failing = false
 	fail.Unlock()
-	reporter.send()
+	reporter.send(context.Background())
 	fail.Lock()
 	failing = true
 	fail.Unlock()
-	reporter.send()
+	reporter.send(context.Background())
 	if len(warnings) != 2 {
 		t.Fatalf("a new failure streak produced %d warnings in total, want 2", len(warnings))
 	}
@@ -230,7 +231,9 @@ func TestReporterStopIsBoundedAndSafeUnstarted(t *testing.T) {
 }
 
 // TestReporterStopAbandonsAHungRequest proves a control plane that never
-// answers cannot hold Collector shutdown: Stop cancels the in-flight POST.
+// answers cannot hold Collector shutdown: Stop cancels the in-flight POST, and
+// the final report it then sends is bounded — by finalReportTimeout, or by
+// Stop's own context when that ends first.
 func TestReporterStopAbandonsAHungRequest(t *testing.T) {
 	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
@@ -243,20 +246,50 @@ func TestReporterStopAbandonsAHungRequest(t *testing.T) {
 	defer close(release)
 
 	base, _ := url.Parse(server.URL)
-	reporter, err := NewReporter(base, "c", time.Hour, func(time.Time) Report { return Report{} }, nil)
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name         string
+		finalTimeout time.Duration
+		stopTimeout  time.Duration
+		maxElapsed   time.Duration
+	}{
+		{
+			name:         "the default final-report bound",
+			finalTimeout: finalReportTimeout,
+			stopTimeout:  time.Minute,
+			maxElapsed:   finalReportTimeout + time.Second,
+		},
+		{
+			name:         "a final-report bound shorter than Stop's context",
+			finalTimeout: 100 * time.Millisecond,
+			stopTimeout:  time.Minute,
+			maxElapsed:   time.Second,
+		},
+		{
+			name:         "Stop's context shorter than the final-report bound",
+			finalTimeout: time.Minute,
+			stopTimeout:  100 * time.Millisecond,
+			maxElapsed:   time.Second,
+		},
 	}
-	reporter.Start()
-	time.Sleep(50 * time.Millisecond) // the first POST is now hanging
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	start := time.Now()
-	if err := reporter.Stop(ctx); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("Stop waited %s on a hung request", elapsed)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reporter, err := NewReporter(base, "c", time.Hour, func(time.Time) Report { return Report{} }, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reporter.finalTimeout = tt.finalTimeout
+			reporter.Start()
+			time.Sleep(50 * time.Millisecond) // the first POST is now hanging
+			ctx, cancel := context.WithTimeout(context.Background(), tt.stopTimeout)
+			defer cancel()
+			start := time.Now()
+			if err := reporter.Stop(ctx); err != nil {
+				t.Fatalf("Stop: %v", err)
+			}
+			if elapsed := time.Since(start); elapsed > tt.maxElapsed {
+				t.Fatalf("Stop waited %s on a hung control plane, want at most %s", elapsed, tt.maxElapsed)
+			}
+		})
 	}
 }
 
@@ -497,5 +530,72 @@ func TestSanitizedCollisionsMergeRatherThanDuplicate(t *testing.T) {
 		if want[x.ServiceName] != x.Spans {
 			t.Fatalf("a merged producer has %s spans, want %s", x.Spans, want[x.ServiceName])
 		}
+	}
+}
+
+// TestReporterStopSendsAFinalReport proves a run shorter than one interval
+// still reaches the control plane: what was counted after the last report is
+// carried by one more report sent at Stop, not lost with the process. Before
+// the final report existed, `trustvian status` read zero spans after any
+// `trustvian dev` workload shorter than the 10 s default interval.
+func TestReporterStopSendsAFinalReport(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []Report
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var report Report
+		if err := json.Unmarshal(raw, &report); err != nil {
+			t.Errorf("report is not JSON: %v", err)
+		}
+		mu.Lock()
+		bodies = append(bodies, report)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	received := func() int { mu.Lock(); defer mu.Unlock(); return len(bodies) }
+
+	var spans atomic.Uint64
+	base, _ := url.Parse(server.URL)
+	reporter, err := NewReporter(base, "c", time.Hour, func(time.Time) Report {
+		n := formatUint(spans.Load())
+		return Report{Spans: SpanCounts{Received: n, Evaluated: n}}
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reporter.Start()
+	waitFor(t, func() bool { return received() == 1 })
+
+	// The whole short run happens inside the first interval.
+	spans.Store(12)
+
+	if err := reporter.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := reporter.Stop(context.Background()); err != nil {
+		t.Fatalf("stopping twice: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 2 {
+		t.Fatalf("got %d reports, want the initial one and exactly one final one", len(bodies))
+	}
+	final := bodies[1]
+	if final.Spans.Received != "12" || final.Spans.Evaluated != "12" || final.Sequence != "2" {
+		t.Fatalf("final report spans %+v at sequence %q, want 12 received and evaluated at sequence 2",
+			final.Spans, final.Sequence)
+	}
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition not met within 5s")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

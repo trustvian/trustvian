@@ -123,10 +123,11 @@ Every bound is a field of the document's `bounds`. The foot of the page names
 300 s. The Fidelity section names the 32 distinct operations counted per HTTP
 target.
 
-A Collector reports on a timer (every ten seconds by default) and sends no final report
-when it stops. After a run shorter than one interval, Status can show a
-Collector whose span counters are still `0` while the run's own progress counts
-its records.
+A Collector reports when it starts, on a timer (every ten seconds by default),
+and once more when it stops, so a run shorter than one interval still shows its
+span counts. The report at stop is bounded by 2 s; a Collector killed rather
+than stopped, or whose control plane does not answer within that bound, keeps
+the counts of its last delivered report.
 
 ## The Overview
 
