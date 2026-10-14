@@ -28,12 +28,19 @@
 #
 # It leaves the environment clean: the volume is destroyed at the end, so
 # consecutive runs are independent.
+#
+# It runs as its own Compose project, trustvian-smoke, never as the reference
+# deployment's trustvian-reference: its `down -v` can remove only volumes this
+# script's own project created, never the state of a stack someone started with
+# `make compose-up`. That stack's host ports are the same, so with it running
+# this test fails at startup instead of touching it.
 
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-COMPOSE="docker compose"
+PROJECT="trustvian-smoke"
+COMPOSE="docker compose --project-name $PROJECT"
 SPANS=60
 # The core baseline schema version a fresh database is created at:
 # internal/store/postgres.SchemaVersion (not the platform's own schema).
@@ -56,9 +63,10 @@ trap cleanup_on_error EXIT
 
 # ---------------------------------------------------------------------
 step "0/7 Starting from a clean slate"
-# -v so a previous run's learned state cannot make this one pass.
+# -v so a previous run's learned state cannot make this one pass. Only this
+# script's own project: see the header.
 $COMPOSE down -v >/dev/null 2>&1 || true
-ok "no pre-existing volume"
+ok "no pre-existing $PROJECT volume"
 
 # ---------------------------------------------------------------------
 step "1/7 Compose startup and PostgreSQL health"
@@ -174,8 +182,7 @@ rm -f /tmp/tv-failclosed.log
 # ---------------------------------------------------------------------
 step "7/7 'down -v' destroys the persistent state"
 $COMPOSE down -v >/dev/null 2>&1
-volume_name="$($COMPOSE config --format json 2>/dev/null | grep -o '"trustvian-reference_postgres-data"' | head -1 || true)"
-if docker volume inspect trustvian-reference_postgres-data >/dev/null 2>&1; then
+if docker volume inspect "${PROJECT}_postgres-data" >/dev/null 2>&1; then
     fail "the postgres-data volume still exists after 'down -v'"
 fi
 ok "volume removed"

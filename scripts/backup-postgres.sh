@@ -186,7 +186,11 @@ schema_version="$(psql_query "SELECT version FROM $VERSION_TABLE" | tr -d '[:spa
 
 log "starting online backup to $output"
 
-pg_dump_version="$(pg_dump --version | awk '{print $NF}')"
+# The bare version: `pg_dump (PostgreSQL) 17.6`, or on a Debian build
+# `pg_dump (PostgreSQL) 17.6 (Debian 17.6-1.pgdg120+1)`, whose last field is
+# not a version at all.
+pg_dump_version="$(pg_dump --version | sed -n 's/^pg_dump (PostgreSQL) \([0-9][0-9.]*\).*/\1/p')"
+pg_dump_version="${pg_dump_version:-unknown}"
 
 # pg_dump itself refuses a server newer than itself ("server version
 # mismatch"), which is the dangerous direction; that error is surfaced as-is.

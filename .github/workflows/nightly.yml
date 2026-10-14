@@ -107,7 +107,8 @@ jobs:
         # stack or volume behind.
         if: always()
         working-directory: deployments/docker-compose
-        run: docker compose down -v
+        # The smoke test's own Compose project (see smoke-test.sh).
+        run: docker compose --project-name trustvian-smoke down -v
 
   # ---------------------------------------------------------------------
   # The recovery drill (task 044), on the real runtime: online backup ->

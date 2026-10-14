@@ -706,9 +706,10 @@ TRUSTVIAN_TEST_BACKUP_RESTORE=1 TRUSTVIAN_TEST_POSTGRES_DSN='…' \
 make recovery-drill
 ```
 
-`make recovery-drill` runs `deployments/docker-compose/recovery-drill.sh`. It
-starts with `docker compose down -v`, so it deletes whatever the reference
-deployment's volume already holds, and removes its own volume when it ends.
+`make recovery-drill` runs `deployments/docker-compose/recovery-drill.sh` as
+its own Compose project, `trustvian-recovery-drill`, so its `down -v` never
+touches the reference deployment's volume. It removes its own volume when it
+ends.
 
 ## What Trustvian deliberately does not do
 
