@@ -21,6 +21,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 )
@@ -36,6 +37,12 @@ const provisionTimeout = platformRequestTimeout
 type provisioner struct {
 	client   *platformClient
 	identity devIdentity
+
+	// candidateOwner is the agent the server reported for a candidate that
+	// already existed, and empty when ensureHierarchy created it. A candidate
+	// belongs to the agent that first registered it, so this can name another
+	// agent than identity.Agent; see foreignCandidateWarning.
+	candidateOwner string
 }
 
 // newProvisioner builds a client for the control plane dev is using.
@@ -66,7 +73,7 @@ func newProvisioner(apiURL string, identity devIdentity) (*provisioner, error) {
 // on the second run and take it down. Existence is asked of the server rather
 // than inferred from a fresh database, because the database may not be fresh.
 func (p *provisioner) ensureHierarchy(ctx context.Context) error {
-	if err := p.ensure(ctx,
+	if _, err := p.ensure(ctx,
 		"project", []string{"projects", p.identity.Project},
 		map[string]any{"id": p.identity.Project, "name": p.identity.ProjectName},
 		[]string{"projects"}); err != nil {
@@ -76,7 +83,7 @@ func (p *provisioner) ensureHierarchy(ctx context.Context) error {
 	// Before any run names it. A new environment is active on creation, which is
 	// the state a run requires; a run naming one its project does not own is
 	// refused.
-	if err := p.ensure(ctx,
+	if _, err := p.ensure(ctx,
 		"environment", []string{"projects", p.identity.Project, "environments", p.identity.Environment},
 		map[string]any{
 			"project_id": p.identity.Project,
@@ -87,7 +94,7 @@ func (p *provisioner) ensureHierarchy(ctx context.Context) error {
 		return err
 	}
 
-	if err := p.ensure(ctx,
+	if _, err := p.ensure(ctx,
 		"agent", []string{"agents", p.identity.Agent},
 		map[string]any{
 			"id":         p.identity.Agent,
@@ -98,47 +105,89 @@ func (p *provisioner) ensureHierarchy(ctx context.Context) error {
 		return err
 	}
 
-	return p.ensure(ctx,
+	existing, err := p.ensure(ctx,
 		"candidate", []string{"candidates", p.identity.Candidate},
 		map[string]any{
 			"id":       p.identity.Candidate,
 			"agent_id": p.identity.Agent,
 		},
 		[]string{"candidates"})
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		// The candidate response already carries agent_id; nothing beyond what
+		// the existence check returned is asked for. Decoded leniently: a body
+		// without it leaves the owner unknown, which warns about nothing.
+		var candidate candidateDTO
+		if json.Unmarshal(existing, &candidate) == nil {
+			p.candidateOwner = candidate.AgentID
+		}
+	}
+	return nil
+}
+
+// foreignCandidateWarning is the one stderr line dev prints when the candidate
+// already belongs to another agent, and empty otherwise.
+//
+// A warning and not a refusal. The run still works: the platform records it
+// under the candidate's owner, because a run's agent is its candidate's. What
+// breaks is later and elsewhere — a scenario for this agent in this project
+// checks that each candidate run belongs to the scenario's agent, and stops
+// with exit 3 (run is outside the scenario execution's scope). Saying so now,
+// while --candidate can still fix it, is cheaper than that exit 3.
+//
+// The owner comes from the server, so it is neutralized before it reaches a
+// terminal.
+func foreignCandidateWarning(identity devIdentity, owner string) string {
+	if owner == "" || owner == identity.Agent {
+		return ""
+	}
+	return fmt.Sprintf("trustvian dev: warning: candidate %q belongs to agent %q, not %q, "+
+		"so this run is recorded under %q and a later scenario for %q in project %q "+
+		"exits 3; pass --candidate to give %q its own",
+		identity.Candidate, sanitizeTerminalText(owner), identity.Agent,
+		sanitizeTerminalText(owner), identity.Agent, identity.Project, identity.Agent)
 }
 
 // ensure creates one object unless it already exists.
+//
+// existing is the body the server answered for an object that was already
+// there, and nil when ensure created it.
 //
 // GET first, then POST. The reverse — POST and tolerate 409 — reads as fewer
 // calls and is worse: it makes "already exists" indistinguishable from a
 // conflicting definition, and on a shared control plane the second run of a
 // stability sweep would have to treat a real conflict as success.
 func (p *provisioner) ensure(ctx context.Context, kind string,
-	getSegments []string, body map[string]any, postSegments []string) error {
+	getSegments []string, body map[string]any, postSegments []string) (existing []byte, err error) {
 	result, err := p.client.get(ctx, getSegments...)
 	if err != nil {
 		// A transport failure, not an answer. Reported as itself rather than
 		// treated as absence, because creating in response to an unreachable
 		// server is how a second object gets made.
-		return fmt.Errorf("checking whether the %s exists: %w", kind, err)
+		return nil, fmt.Errorf("checking whether the %s exists: %w", kind, err)
 	}
 	if result.status >= 200 && result.status < 300 {
-		return nil
+		if result.body == nil {
+			return []byte{}, nil
+		}
+		return result.body, nil
 	}
 	if result.status != http.StatusNotFound {
 		// Anything other than "it is not there" is a real failure and must not
 		// be papered over by an attempt to create.
-		return fmt.Errorf("checking whether the %s exists: %w", kind, checkStatus(result))
+		return nil, fmt.Errorf("checking whether the %s exists: %w", kind, checkStatus(result))
 	}
 
 	created, err := p.client.post(ctx, body, postSegments...)
 	if err != nil {
-		return fmt.Errorf("creating the %s: %w", kind, err)
+		return nil, fmt.Errorf("creating the %s: %w", kind, err)
 	}
 	if err := checkStatus(created); err != nil {
-		return fmt.Errorf("creating the %s: %w", kind, err)
+		return nil, fmt.Errorf("creating the %s: %w", kind, err)
 	}
-	return nil
+	return nil, nil
 }
 
 // startRun creates the evaluation run and moves it to running.

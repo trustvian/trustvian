@@ -598,6 +598,81 @@ func TestDevAttachesToAnExistingRuntimeWithoutStartingOne(t *testing.T) {
 	}
 }
 
+// TestDevWarnsWhenTheCandidateBelongsToAnotherAgent covers a candidate some
+// other agent registered first. The run still proceeds — refusing it would be a
+// behavior change no patch release may make — but its evidence is recorded under
+// the owning agent, so a scenario for this agent later stops with exit 3. dev
+// says so, once, while the developer can still pick another --candidate.
+func TestDevWarnsWhenTheCandidateBelongsToAnotherAgent(t *testing.T) {
+	tests := []struct {
+		name  string
+		owner string // "" leaves the candidate absent, for dev to create
+		warn  bool
+	}{
+		{name: "owned by another agent", owner: "other-agent", warn: true},
+		{name: "owned by this agent", owner: "test-agent", warn: false},
+		{name: "not yet registered", owner: "", warn: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			api := newFakeDevAPI(t)
+			defer api.Close()
+			if tt.owner != "" {
+				api.present["/v1/candidates/test-candidate"] = map[string]any{
+					"version": "1", "id": "test-candidate", "agent_id": tt.owner,
+				}
+			}
+
+			t.Setenv(localRuntimeBinaryEnv, filepath.Join(t.TempDir(), "does-not-exist"))
+			withFakeCollector(t, "")
+			t.Setenv("HOME", t.TempDir())
+			t.Chdir(t.TempDir())
+
+			dir := t.TempDir()
+			withDevStdio(t, nil, newTempFile(t, dir, "stdout"), newTempFile(t, dir, "stderr"))
+
+			var out, errOut strings.Builder
+			code := runDev(streams{out: &out, err: &errOut},
+				append(explicitDevFlags(), "--api-url", api.URL,
+					"--", "sh", "-c", "exit 0"))
+
+			// A warning, not a refusal: no new exit code, and the run happened.
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0\nstderr: %s", code, errOut.String())
+			}
+			if api.posts("/v1/evaluation-runs") != 1 {
+				t.Errorf("the run was not created; order was %v", api.postOrder())
+			}
+
+			var warnings []string
+			for line := range strings.Lines(errOut.String()) {
+				if strings.Contains(line, "warning") {
+					warnings = append(warnings, line)
+				}
+			}
+			if !tt.warn {
+				if len(warnings) != 0 {
+					t.Errorf("warned about a candidate this agent may use:\n%s", errOut.String())
+				}
+				return
+			}
+			if len(warnings) != 1 {
+				t.Fatalf("got %d warning lines, want exactly 1:\n%s", len(warnings), errOut.String())
+			}
+			for _, fact := range []string{
+				`agent "other-agent"`,    // the owner
+				`not "test-agent"`,       // this agent
+				`project "test-project"`, // where the consequence lands
+				"exits 3",                // the consequence
+			} {
+				if !strings.Contains(warnings[0], fact) {
+					t.Errorf("the warning does not state %q:\n%s", fact, warnings[0])
+				}
+			}
+		})
+	}
+}
+
 func TestDevFailsBeforeTheChildWhenTheRuntimeCannotStart(t *testing.T) {
 	// The spec's rule: a workload with nowhere to report has produced nothing,
 	// so it must never be launched. A child that would leave a marker proves it

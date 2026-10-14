@@ -452,6 +452,11 @@ func composeAndRunResult(s streams, config devConfig) devResult {
 	if err := provision.ensureHierarchy(relay.Context()); err != nil {
 		return devResult{code: session.fail(err)}
 	}
+	// Warned, not refused: the run still works, and refusing it would change
+	// what an existing invocation does.
+	if warning := foreignCandidateWarning(identity, provision.candidateOwner); warning != "" {
+		fmt.Fprintln(s.err, warning)
+	}
 	if err := provision.startRun(relay.Context()); err != nil {
 		return devResult{code: session.fail(err)}
 	}

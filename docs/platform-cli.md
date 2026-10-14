@@ -594,6 +594,16 @@ derivation that refuses rather than guessing: the processor derives the actor
 from the arriving `service.name`, and an invented Agent id would produce a run
 whose evidence cannot be attributed to it.
 
+A candidate belongs to the agent that first registered it, and a run belongs to
+its candidate's agent. When the candidate already belongs to another agent, `dev`
+still runs, and prints one line to stderr before the workload starts:
+
+```text
+trustvian dev: warning: candidate "git:d7623b1" belongs to agent "billing-agent", not "support-agent", so this run is recorded under "billing-agent" and a later scenario for "support-agent" in project "my-agent" exits 3; pass --candidate to give "support-agent" its own
+```
+
+That scenario's exit 3 is `run is outside the scenario execution's scope`.
+
 ### Checking the pipeline: `--check`
 
 ```text

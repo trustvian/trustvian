@@ -124,7 +124,9 @@ runs under the repository's name, so after a `dev --project other` run for the
 same agent it stops with `run is outside the scenario execution's scope`
 (exit `3`). A candidate likewise belongs to the agent that first registered it,
 so two agents in one repository need distinct candidates (`--candidate`, or
-`candidate:` on a scenario side).
+`candidate:` on a scenario side). `dev` still runs against a candidate another
+agent registered, but prints one `warning:` line to stderr naming the owning
+agent, this agent, and that a later scenario for this agent exits `3`.
 
 ### 4. Gate a change with a scenario
 

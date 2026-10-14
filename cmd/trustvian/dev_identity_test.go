@@ -512,6 +512,43 @@ func TestProvisioningReportsAServerFailureRatherThanCreatingTwice(t *testing.T) 
 	}
 }
 
+// TestForeignCandidateWarning pins when dev warns about a candidate's owner, and
+// that a server-supplied agent id cannot write control sequences to a terminal.
+func TestForeignCandidateWarning(t *testing.T) {
+	identity := devIdentity{Project: "p", Agent: "a", Candidate: "c"}
+	tests := []struct {
+		name  string
+		owner string
+		want  []string // empty: no warning
+	}{
+		{name: "created by this run", owner: ""},
+		{name: "owned by this agent", owner: "a"},
+		{name: "owned by another agent", owner: "b",
+			want: []string{`candidate "c"`, `agent "b"`, `not "a"`, `project "p"`, "exits 3", "--candidate"}},
+		{name: "control characters neutralized", owner: "b\x1b[2J",
+			want: []string{`agent "b�[2J"`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := foreignCandidateWarning(identity, tt.owner)
+			if len(tt.want) == 0 {
+				if got != "" {
+					t.Fatalf("warned when it should not: %q", got)
+				}
+				return
+			}
+			if strings.ContainsAny(got, "\n\x1b") {
+				t.Errorf("the warning is not one clean line: %q", got)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("warning %q does not contain %q", got, want)
+				}
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------
 // Generated Collector configuration for a run
 // ---------------------------------------------------------------------
@@ -630,6 +667,10 @@ type fakeDevAPI struct {
 	bodies map[string]map[string]any
 	// existing is the set of paths the fake reports as already present.
 	existing map[string]bool
+	// present is the body a GET answers for a present path, when one is set;
+	// otherwise a bare id. It is how a test makes an object the server already
+	// holds carry fields, such as a candidate's agent_id.
+	present map[string]map[string]any
 }
 
 // newFakeAPI answers 404 for anything not yet created, and 200 after.
@@ -642,6 +683,7 @@ func newFakeDevAPI(t *testing.T) *fakeDevAPI {
 		seen:     map[string]int{},
 		bodies:   map[string]map[string]any{},
 		existing: map[string]bool{},
+		present:  map[string]map[string]any{},
 	}
 	fake.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fake.mu.Lock()
@@ -649,6 +691,10 @@ func newFakeDevAPI(t *testing.T) *fakeDevAPI {
 
 		switch r.Method {
 		case http.MethodGet:
+			if body, ok := fake.present[r.URL.Path]; ok {
+				writeJSON(w, http.StatusOK, body)
+				return
+			}
 			if fake.existing[r.URL.Path] {
 				writeJSON(w, http.StatusOK, map[string]any{"id": "present"})
 				return
