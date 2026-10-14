@@ -161,3 +161,23 @@ func goSourceWithoutComments(t *testing.T, name string) string {
 	}
 	return string(stripped)
 }
+
+// --version prints the version this binary reports as a producer: the release
+// version a release build is stamped with, or Go's build information
+// (finding F7 of #175).
+func TestVersionFlagPrintsTheReleaseVersion(t *testing.T) {
+	for _, tt := range []struct{ stamped, want string }{
+		{"v0.12.1", "trustvian-local v0.12.1"},
+		{"", "trustvian-local "},
+	} {
+		version = tt.stamped
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"--version"}, &stdout, &stderr); code != exitOK {
+			t.Fatalf("--version exited %d: %s", code, stderr.String())
+		}
+		if !strings.HasPrefix(stdout.String(), tt.want) {
+			t.Errorf("stamped %q: --version printed %q, want it to start with %q", tt.stamped, stdout.String(), tt.want)
+		}
+	}
+	version = ""
+}

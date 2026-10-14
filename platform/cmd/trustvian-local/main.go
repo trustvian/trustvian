@@ -24,8 +24,16 @@ import (
 	"syscall"
 
 	platform "trustvian-platform"
+	"trustvian-platform/httpapi"
 	"trustvian-platform/localruntime"
 )
+
+// version is the release version, written by the linker in a release build
+// (`-ldflags -X main.version=vX.Y.Z`: scripts/release-build.sh) and never at
+// run time. Go cannot stamp it from a tag: this module's path is not under the
+// repository's root module (ADR 0022). Empty in any other build, which then
+// reports Go's own build information.
+var version string
 
 // Exit codes match the platform command families: 0 clean, 2 invocation, 3
 // operational. Never 1 — that means gate FAIL for `trustvian eval compare`,
@@ -39,6 +47,7 @@ const (
 const usage = `usage:
   trustvian-local [--state-dir <dir>] [--listen <loopback-address>]
                   [--backend sqlite|postgres] [--pricing <file>]
+  trustvian-local --version
 
 Runs the local Trustvian control plane: persistence, realtime bus, and the /v1
 HTTP API on a loopback listener. Clients in the same directory discover it
@@ -51,6 +60,7 @@ through <state-dir>/runtime.json and need no --api-url.
                 cost section with the table's version, source and digest.
                 Without it there is no cost, and nothing else changes.
                 Trustvian ships no prices.
+  --version     print the version this control plane reports, and exit.
 
 The default needs no configuration at all: SQLite, one file under --state-dir.
 
@@ -89,6 +99,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	backend := fs.String("backend", "",
 		"persistence backend: sqlite (default) or postgres")
 	pricingPath := fs.String("pricing", "", "pricing table file (YAML)")
+	printVersion := fs.Bool("version", false, "print the version and exit")
 
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintf(stderr, "trustvian-local: %v\n%s\n", err, usage)
@@ -100,6 +111,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "trustvian-local: unexpected argument %q\n%s\n",
 			fs.Arg(0), usage)
 		return exitUsage
+	}
+	if *printVersion {
+		fmt.Fprintf(stdout, "trustvian-local %s\n", httpapi.BuildVersion(version))
+		return exitOK
 	}
 
 	// Read and validated before anything starts: a table that cannot be used
@@ -121,10 +136,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 
 	options := localruntime.Options{
-		StateDir:      *stateDir,
-		ListenAddress: *listen,
-		Backend:       *backend,
-		Pricing:       pricing,
+		StateDir:       *stateDir,
+		ListenAddress:  *listen,
+		Backend:        *backend,
+		Pricing:        pricing,
+		ReleaseVersion: version,
 	}
 	// The DSN is attached only when PostgreSQL was asked for, so an environment
 	// variable left set from something else cannot change which backend runs.

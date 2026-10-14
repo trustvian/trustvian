@@ -25,7 +25,7 @@ func TestParseArgs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseArgs(tt.args)
+			got, _, err := parseArgs(tt.args)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("parseArgs(%q) error = %v, want error %t", tt.args, err, tt.wantErr)
 			}

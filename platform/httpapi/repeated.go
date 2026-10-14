@@ -453,19 +453,28 @@ func newCompareRepeatedResponse(
 	}
 }
 
-// buildVersion is what this control plane reports as its producer version:
-// the main module's version and its VCS revision, from Go's own build
-// information — the same source `trustvian version` reads, without the
-// link-time stamping contract that would add. "unknown" when the binary
-// carries none (a test binary, or a build without VCS stamping).
-func buildVersion() string {
+// BuildVersion is what this control plane reports as its producer version:
+// the version and its VCS revision, from Go's own build information.
+// "unknown" stands in for a part the binary carries none of (a test binary,
+// or a build without VCS stamping).
+//
+// release, when not empty, is the version a release build was stamped with
+// (scripts/release-build.sh, the Dockerfile) and replaces the module version.
+// Go stamps a module's version from a tag only when its path lies under the
+// repository's root module, and this module's path, trustvian-platform, is
+// deliberately not (ADR 0022), so a release binary would otherwise report
+// "(devel)". The revision still comes from Go.
+func BuildVersion(release string) string {
 	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "unknown"
+	version := release
+	if version == "" && ok {
+		version = info.Main.Version
 	}
-	version := info.Main.Version
 	if version == "" {
 		version = "unknown"
+	}
+	if !ok {
+		return version
 	}
 	for _, setting := range info.Settings {
 		switch setting.Key {

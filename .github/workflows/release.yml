@@ -422,6 +422,7 @@ jobs:
         run: |
           docker buildx build \
             --platform linux/amd64 \
+            --build-arg VERSION="$VERSION" \
             --load \
             -t "$IMAGE:scan" \
             .
@@ -444,6 +445,7 @@ jobs:
           # and nothing else.
           docker buildx build \
             --platform linux/amd64,linux/arm64 \
+            --build-arg VERSION="$VERSION" \
             --sbom=true \
             --provenance=mode=max \
             --output "type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true" \
@@ -534,11 +536,22 @@ jobs:
             [ -x "$bin/$b" ] || { echo "::error::$name.tar.gz has no executable $b"; exit 1; }
           done
 
+          # Each binary reports the release version: trustvian from the tag
+          # Go read, the two helpers from the version release-build.sh wrote,
+          # each followed by its revision. Their first words only.
           got="$("$bin/trustvian" version | head -n 1)"
           if [ "$got" != "trustvian $VERSION" ]; then
             echo "::error::trustvian version printed '$got', want 'trustvian $VERSION'"
             exit 1
           fi
+          for b in trustvian-local trustvian-collector; do
+            helper="$("$bin/$b" --version | head -n 1)"
+            if [ "$(cut -d' ' -f1-2 <<<"$helper")" != "$b $VERSION" ]; then
+              echo "::error::$b --version printed '$helper', want '$b $VERSION …'"
+              exit 1
+            fi
+            echo "ok: $helper"
+          done
           echo "BIN=$bin" >> "$GITHUB_ENV"
           echo "ok: $name.tar.gz — checksums, three binaries, $got"
 
@@ -619,6 +632,20 @@ jobs:
             --certificate-github-workflow-trigger workflow_dispatch \
             --certificate-github-workflow-sha "$COMMIT" >/dev/null
           echo "ok: $IMAGE@$DIGEST is signed by release.yml on main at $COMMIT"
+
+      - name: The image's collector reports the release version
+        if: runner.os == 'Linux'
+        env:
+          IMAGE: ${{ needs.image.outputs.image }}
+          DIGEST: ${{ needs.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          got="$(docker run --rm "$IMAGE@$DIGEST" --version | head -n 1)"
+          if [ "$(cut -d' ' -f1-2 <<<"$got")" != "trustvian-collector $VERSION" ]; then
+            echo "::error::the image's trustvian-collector --version printed '$got', want 'trustvian-collector $VERSION …'"
+            exit 1
+          fi
+          echo "ok: $got"
 
   # ---------------------------------------------------------------------
   # f. Publish: the only irreversible job, and the only one with

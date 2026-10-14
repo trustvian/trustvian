@@ -136,6 +136,11 @@ type Options struct {
 	// Pricing is the operator's pricing table (task 087). The zero value means
 	// none, and then no comparison carries a cost section.
 	Pricing platform.Pricing
+
+	// ReleaseVersion is the version a release build was stamped with, reported
+	// as the control plane's producer version. Empty reports Go's build
+	// information (see httpapi.BuildVersion).
+	ReleaseVersion string
 }
 
 // PostgresOptions configure the shared backend.
@@ -249,7 +254,8 @@ func Start(ctx context.Context, options Options) (*Runtime, error) {
 		return nil, fmt.Errorf("constructing control plane: %w", err)
 	}
 
-	apiHandler, err := httpapi.NewHandler(plane, httpapi.WithRealtimeSubscriber(bus))
+	apiHandler, err := httpapi.NewHandler(plane, httpapi.WithRealtimeSubscriber(bus),
+		httpapi.WithReleaseVersion(options.ReleaseVersion))
 	if err != nil {
 		bus.Close()
 		store.Close()

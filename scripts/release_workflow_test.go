@@ -525,3 +525,43 @@ func stepsText(steps []any) string {
 	}
 	return b.String()
 }
+
+// Every released binary reports the release version. Go stamps trustvian's
+// from the runner-local tag; it cannot stamp the helpers', because their
+// module paths are not under the repository's root module (ADR 0022), so
+// through v0.12.0 trustvian-local reported "(devel)" and trustvian-collector a
+// hardcoded "0.0.0-dev" (finding F7 of #175). The archives and the image write
+// the version into each helper's main.version, and verify reads it back.
+func TestReleaseStampsTheHelpersVersion(t *testing.T) {
+	build := readFile(t, "release-build.sh")
+	if !strings.Contains(build, `-X main.version=$version`) || !strings.Contains(build, `helper_ldflags[@]`) {
+		t.Error("release-build.sh does not write the release version into the helpers' main.version")
+	}
+	dockerfile := readFile(t, "../Dockerfile")
+	if !strings.Contains(dockerfile, "ARG VERSION") || !strings.Contains(dockerfile, "-X=main.version=${VERSION}") {
+		t.Error("the Dockerfile does not write the VERSION build argument into trustvian-collector's main.version")
+	}
+
+	_, jobs := releaseJobs(t)
+	steps, _ := jobs["image"]["steps"].([]any)
+	builds := 0
+	for _, s := range steps {
+		run := stepRun(s.(map[string]any))
+		if strings.Contains(run, "docker buildx build") {
+			builds++
+			if !strings.Contains(run, `--build-arg VERSION="$VERSION"`) {
+				t.Errorf("an image build does not pass the release version:\n%s", run)
+			}
+		}
+	}
+	if builds == 0 {
+		t.Error("the image job builds nothing")
+	}
+
+	verify := stepsText(jobs["verify"]["steps"].([]any))
+	for _, want := range []string{`for b in trustvian-local trustvian-collector`, `--version`, `docker run --rm "$IMAGE@$DIGEST" --version`} {
+		if !strings.Contains(verify, want) {
+			t.Errorf("verify does not check the helpers' versions: missing %q", want)
+		}
+	}
+}
