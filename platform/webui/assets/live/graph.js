@@ -51,18 +51,22 @@ function svgText(x, y, content, className, extra = []) {
 
 // decisionToken gives every decision a short text token.
 //
+// The cases are the values the stream carries: policy's own lowercase wire
+// strings (internal/policy), which the realtime projection copies verbatim.
+// Any other spelling here is a token and a class that never apply.
+//
 // Presentational abbreviation of a value the server chose, not a judgement
-// about it: nothing here decides that BLOCK is worse than ALLOW, and an
+// about it: nothing here decides that block is worse than allow, and an
 // unrecognized decision renders as itself rather than as a default. Ranking
 // them would be policy, and policy is server-side.
 export function decisionToken(decision) {
   switch (decision) {
-    case "ALLOW": return "allow";
-    case "OBSERVE_ONLY": return "observe";
-    case "ALERT": return "alert";
-    case "CHALLENGE": return "challenge";
-    case "REQUIRE_APPROVAL": return "approval";
-    case "BLOCK": return "block";
+    case "allow": return "allow";
+    case "observe_only": return "observe";
+    case "alert": return "alert";
+    case "challenge": return "challenge";
+    case "require_approval": return "approval";
+    case "block": return "block";
     case "": return "";
     default: return decision;
   }
@@ -74,12 +78,12 @@ export function decisionToken(decision) {
 // string would let a hostile value select a rule this stylesheet did not
 // intend. An unknown value simply gets no state class and keeps its text.
 const DECISION_CLASSES = new Set([
-  "ALLOW", "OBSERVE_ONLY", "ALERT", "CHALLENGE", "REQUIRE_APPROVAL", "BLOCK",
+  "allow", "observe_only", "alert", "challenge", "require_approval", "block",
 ]);
 const RISK_CLASSES = new Set(["low", "medium", "high", "critical"]);
 
 export function decisionClass(decision) {
-  return DECISION_CLASSES.has(decision) ? `d-${decision.toLowerCase()}` : "";
+  return DECISION_CLASSES.has(decision) ? `d-${decision}` : "";
 }
 
 export function riskClass(risk) {
