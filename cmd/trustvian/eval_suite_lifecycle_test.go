@@ -2,8 +2,8 @@ package main
 
 // The suite's merge-readiness contracts: completion versus deadline is
 // settled by the server; errors are byte-bounded; preflight distinguishes
-// usage from operational failure; only suites are refused where deadlines
-// cannot be enforced; and only suite members give up signal ownership.
+// usage from operational failure; both modes are refused where `trustvian
+// dev` cannot run; and only suite members give up signal ownership.
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -266,9 +267,10 @@ func TestSuitePreflightSeparatesUsageFromOperationalFailure(t *testing.T) {
 	}
 }
 
-// Where deadlines cannot be enforced, a suite is refused before anything;
-// single-scenario mode keeps its earlier behavior and runs.
-func TestOnlySuitesAreRefusedOnAnUnsupportedPlatform(t *testing.T) {
+// Where `trustvian dev` is unsupported (Windows), every repetition would run
+// through a dev that cannot signal its workload, so both modes are refused the
+// same way: exit 2, before any workload or request, naming the mode.
+func TestEvalRunIsRefusedOnAnUnsupportedPlatform(t *testing.T) {
 	unsupported := func(r *scenarioRunner) {
 		r.platformSupported = func() error { return errors.New("not supported on Windows") }
 	}
@@ -279,6 +281,9 @@ func TestOnlySuitesAreRefusedOnAnUnsupportedPlatform(t *testing.T) {
 	if run.code != exitUsage || len(rec.calls) != 0 || len(api.captured()) != 0 {
 		t.Errorf("suite: exit %d after %d workloads and %d requests; want 2, 0, 0",
 			run.code, len(rec.calls), len(api.captured()))
+	}
+	if want := "--suite is not supported on this platform: not supported on Windows"; !strings.Contains(run.stderr, want) {
+		t.Errorf("suite: stderr does not say %q:\n%s", want, run.stderr)
 	}
 
 	single := &recorder{}
@@ -291,9 +296,38 @@ func TestOnlySuitesAreRefusedOnAnUnsupportedPlatform(t *testing.T) {
 	unsupported(&runner)
 	code := runner.main(streams{out: &out, err: &errOut},
 		[]string{"--api-url", singleAPI.url(), "--scenario", writeScenario(t, runScenarioYAML)}, testTimeout)
-	if code != exitOK || len(single.calls) != 6 {
-		t.Errorf("single scenario: exit %d after %d repetitions; want 0 and 6 — unchanged\n%s",
-			code, len(single.calls), errOut.String())
+	if code != exitUsage || len(single.calls) != 0 || len(singleAPI.captured()) != 0 {
+		t.Errorf("single scenario: exit %d after %d repetitions and %d requests; want 2, 0, 0\n%s",
+			code, len(single.calls), len(singleAPI.captured()), errOut.String())
+	}
+	if want := "--scenario is not supported on this platform: not supported on Windows"; !strings.Contains(errOut.String(), want) {
+		t.Errorf("single scenario: stderr does not say %q:\n%s", want, errOut.String())
+	}
+}
+
+// The production default, on the real platform: with no override the runner
+// asks devPlatformSupported, so `eval run` refuses exactly where `trustvian dev`
+// does. Portable — it runs on every GOOS, Windows included.
+func TestEvalRunPlatformRefusalMatchesGOOS(t *testing.T) {
+	for _, mode := range []string{"--scenario", "--suite"} {
+		err := scenarioRunner{}.refuseUnsupportedPlatform(mode)
+		if runtime.GOOS == "windows" {
+			if err == nil {
+				t.Fatalf("%s was not refused on Windows", mode)
+			}
+			if exitCodeFor(err) != exitUsage {
+				t.Errorf("%s refusal exits %d, want %d", mode, exitCodeFor(err), exitUsage)
+			}
+			for _, want := range []string{mode + " is not supported on this platform", "WSL2"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("%s refusal does not mention %q:\n%s", mode, want, err)
+				}
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s refused on %s: %v", mode, runtime.GOOS, err)
+		}
 	}
 }
 

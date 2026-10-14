@@ -882,6 +882,8 @@ fields and the four limits below are optional.
 - Each repetition is a full `trustvian dev` run against the one control plane
   `--api-url` resolves to. Each has a fresh run id and its own
   `--behavioral-profile`, so no repetition meets a baseline another one taught.
+  That is also why `eval run` is refused on Windows, where `dev` is: exit
+  **2**, before any request, with `--scenario` and `--suite` alike. Use WSL2.
 - The first repetition whose workload exits non-zero ends the scenario with exit
   **3**: the rest do not run and no verdict is produced. A broken workload is
   never a gate failure.
@@ -1231,7 +1233,8 @@ trustvian eval run --suite scenarios/ --scenario-timeout 10m --reference last --
   execution is complete and reusable as a reference, but no verdict was
   received for it.
 - **`--suite` is not supported on Windows** (exit `2`), because deadlines are
-  enforced by stopping process groups. Use WSL2. `--scenario` is unaffected.
+  enforced by stopping process groups. Use WSL2. Neither is `--scenario`, the
+  same way: every repetition runs `trustvian dev`, which Windows refuses.
 - **`--reference last`** is resolved per scenario: the most recent completed
   execution of *that* scenario's name, project, agent and environment, with
   its N. A missing or unusable one is that scenario's error, before it runs

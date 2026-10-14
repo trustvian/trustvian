@@ -14,8 +14,8 @@ gate a change to it over repeated runs, then put that gate on your pull
 requests.
 
 **You need:**
-- Linux or macOS, on amd64 or arm64. `trustvian dev` and `eval run --suite`
-  refuse to run on Windows; use WSL2 there.
+- Linux or macOS, on amd64 or arm64. `trustvian dev` and `eval run` (with
+  `--scenario` or `--suite`) refuse to run on Windows; use WSL2 there.
 - `git`. The agent's directory must be a git repository with at least one
   commit. Trustvian names the project after the repository and the candidate
   after the commit.

@@ -99,9 +99,27 @@ type scenarioRunner struct {
 	// outputLimit caps the encoded suite document; zero means
 	// maxSuiteDocumentBytes. Tests lower it to reach the overflow.
 	outputLimit int
-	// platformSupported refuses suites where deadlines cannot be enforced:
+	// platformSupported refuses both modes where `trustvian dev` cannot run:
 	// devPlatformSupported in production, replaced by tests.
 	platformSupported func() error
+}
+
+// refuseUnsupportedPlatform is the one refusal both modes share, as a usage
+// error naming the mode.
+//
+// Every repetition runs `trustvian dev` in-process, so where dev cannot signal
+// or stop its workload (Windows) neither a suite nor a single scenario can run
+// one honestly. Checked before any flag beyond the mode, any file, and any
+// request, so a refusal leaves nothing begun on the control plane.
+func (r scenarioRunner) refuseUnsupportedPlatform(mode string) error {
+	supported := r.platformSupported
+	if supported == nil {
+		supported = devPlatformSupported
+	}
+	if err := supported(); err != nil {
+		return usageErrorf("%s is not supported on this platform: %v", mode, err)
+	}
+	return nil
 }
 
 func runEvalRun(s streams, args []string, timeout time.Duration) int {
@@ -212,6 +230,9 @@ func (r scenarioRunner) main(s streams, args []string, timeout time.Duration) in
 			usageErrorf("--scenario-timeout and --fail-fast apply only to --suite"))
 	}
 	if err := requireAll(fs, map[string]string{"scenario": *scenarioPath}); err != nil {
+		return usageFailure(s, evalRunUsage, err)
+	}
+	if err := r.refuseUnsupportedPlatform("--scenario"); err != nil {
 		return usageFailure(s, evalRunUsage, err)
 	}
 	reference, err := parseReferenceFlag(*referenceFlag, set["reference"], true)
