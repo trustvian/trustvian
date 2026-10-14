@@ -57,3 +57,18 @@ dist/
 /processor/agent-producer
 /processor/demo-producer
 /processor/trustvian-collector
+
+# The examples' build output: `go build` in examples/<name> writes an
+# executable named <name> beside main.go. One per program, anchored for the
+# reason /trustvian is; scripts/gitignore_test.go fails when a program has
+# no entry, or when any native executable is tracked.
+/examples/ai-agent/ai-agent
+/examples/ai-agent-security/ai-agent-security
+/examples/alert-webhook/alert-webhook
+/examples/basic/basic
+/examples/configured-engine/configured-engine
+/examples/credential-misuse/credential-misuse
+/examples/external-destination/external-destination
+/examples/frequency-abuse/frequency-abuse
+/examples/persistent-baseline/persistent-baseline
+/examples/unexpected-dependency/unexpected-dependency
