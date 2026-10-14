@@ -246,6 +246,10 @@ export class RealtimeSession {
     this.callbacks = callbacks;
 
     this.generation = 0;
+    // Whether watch() has started a subscription that stop() has not ended.
+    // An empty runID is a valid, unfiltered subscription, so it cannot stand
+    // in for this.
+    this.watching = false;
     this.runID = "";
     this.source = null;
     this.handshakeTimer = null;
@@ -264,6 +268,7 @@ export class RealtimeSession {
   // watch starts or restarts on a run, abandoning whatever came before.
   watch(runID) {
     this.stop();
+    this.watching = true;
     this.runID = runID;
     this.everLive = false;
     this.attempt = 0;
@@ -276,6 +281,7 @@ export class RealtimeSession {
   // timer and the socket are released here, so there is one teardown path
   // rather than one per caller.
   stop() {
+    this.watching = false;
     this.generation += 1;
     this.clearHandshakeTimer();
     this.clearReconnectTimer();
@@ -570,8 +576,12 @@ export class RealtimeSession {
   //
   // Present so the reconnect policy is never the browser's only answer: a
   // failed startup stops retrying, and this is how a developer asks again.
+  //
+  // Guarded by whether the session is watching, not by the run id: the global
+  // Live stream watches with an empty run id, which means unfiltered, and it
+  // needs this action as much as the single-run watch does.
   reconnectNow() {
-    if (this.runID === "") {
+    if (!this.watching) {
       return;
     }
     this.generation += 1;

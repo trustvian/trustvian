@@ -152,7 +152,7 @@ the change affects.
 Everything links to the record behind it. A run's chip chooses it for the
 evidence panel and **Open** goes to its workspace; **Reference** and
 **Candidate** assign it as a side in Change Impact's run comparison, which is then ready with both
-runs chosen (the panel's link to it is still labelled **Open Compare**); a
+runs chosen (the panel's link to it is **Open Change Impact**); a
 verdict's **Open** opens its decision; a live card's **Watch** selects it in
 Live.
 
@@ -640,7 +640,7 @@ database's.
 
 | What happened | What the page does |
 |---|---|
-| Never synchronized | Stops retrying: the connection chip says `Disconnected`. For a single-run watch, the state line says *Failed* and **Reconnect** tries again; for the global Live stream, reload the page |
+| Never synchronized | Stops retrying: the connection chip says `Disconnected`. For a single-run watch, the state line says *Failed* and its **Reconnect** tries again; for the global Live stream, the line under *Behavior flow* says so and the **Reconnect** beside it tries again |
 | Was live, then disconnected | Reconnects with bounded backoff: 250ms, 500ms, 1s, 2s, 4s, capped at 5s |
 | Heartbeats but no `stream_ready` | Treated as a failure after a finite handshake window, not as a healthy stream |
 | More than 64 events buffered during a read | Abandons the stream and resynchronizes — never silently drops one |

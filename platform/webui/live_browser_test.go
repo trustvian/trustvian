@@ -260,3 +260,91 @@ func TestLiveStylesEveryDecisionTheStreamSends(t *testing.T) {
 		})
 	}
 }
+
+// reconnectDriver plays the reader: it waits for the global Live stream to
+// report Disconnected, then presses the Live view's Reconnect, recording what
+// it did on <body> so the dumped DOM says. Test-only, served beside the shell.
+const reconnectDriver = `
+const deadline = Date.now() + 8000;
+function step() {
+  const button = document.getElementById("live-reconnect");
+  const state = document.getElementById("conn-text").textContent;
+  if (button !== null && !button.disabled && state === "Disconnected") {
+    document.body.dataset.driver = "clicked";
+    button.click();
+    return;
+  }
+  if (Date.now() < deadline) {
+    setTimeout(step, 50);
+    return;
+  }
+  document.body.dataset.driver = button === null
+    ? "no-live-reconnect-control"
+    : "control-not-usable:" + state + ":" + (button.disabled ? "disabled" : "enabled");
+}
+step();
+`
+
+// TestLiveReconnectsAfterTheStreamDrops is finding F5 of #175, in a browser.
+//
+// The first subscription fails before it ever synchronizes — the case where
+// the client stops retrying by design. The reader's Reconnect must open a new
+// subscription, and the view must go live on it.
+func TestLiveReconnectsAfterTheStreamDrops(t *testing.T) {
+	done := make(chan struct{})
+	defer close(done)
+	release := make(chan struct{})
+	var once sync.Once
+	// Without a reconnect nothing would ever release the page; this bounds
+	// that case so it fails with what the page shows instead of a timeout.
+	fallback := time.AfterFunc(12*time.Second, func() { once.Do(func() { close(release) }) })
+	defer fallback.Stop()
+
+	var mu sync.Mutex
+	connections := 0
+	frames := streamReady(t) + observationFrame(t, 1, "fp-after", "target-after", "allow", "low")
+	v1 := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/realtime":
+			mu.Lock()
+			connections++
+			n := connections
+			mu.Unlock()
+			if n == 1 {
+				// The stream drops before stream_ready.
+				v1NotFound(w)
+				return
+			}
+			once.Do(func() { releaseAfter(release) })
+			holdStream(w, r, frames, done)
+		case "/v1/projects":
+			projectsPage(w)
+		default:
+			v1NotFound(w)
+		}
+	})
+
+	dom := renderedLive(t, v1, release, reconnectDriver)
+	mu.Lock()
+	got := connections
+	mu.Unlock()
+
+	driver := regexp.MustCompile(`<body[^>]*data-driver="([^"]*)"`).FindStringSubmatch(dom)
+	state := regexp.MustCompile(`<span id="conn-text">([^<]*)</span>`).FindStringSubmatch(dom)
+	if driver == nil || state == nil {
+		t.Fatalf("the page carries no driver mark or connection state:\n%.3000s", dom)
+	}
+	t.Logf("driver %q, connections %d, connection state %q", driver[1], got, state[1])
+	if driver[1] != "clicked" {
+		t.Fatalf("the Live view offered no usable Reconnect after the stream dropped: %s", driver[1])
+	}
+	if got != 2 {
+		t.Errorf("Reconnect opened %d subscriptions in total, want 2", got)
+	}
+	if state[1] != "Live" {
+		t.Errorf("after Reconnect the connection reads %q, want Live", state[1])
+	}
+	if !strings.Contains(dom, `data-edge="fp-after"`) {
+		t.Error("the observation sent on the new subscription was not drawn")
+	}
+}

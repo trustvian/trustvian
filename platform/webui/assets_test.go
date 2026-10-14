@@ -3052,3 +3052,67 @@ func TestLiveViewReadsFidelityAndDoesNotDeriveIt(t *testing.T) {
 		}
 	}
 }
+
+// TestLiveStreamCanBeReconnected is finding F5 of #175.
+//
+// The global Live stream subscribes with an empty run id. A reconnect that
+// refused an empty run id left that stream with no way back once it failed to
+// synchronize — the page had to be reloaded. The explicit user action is the
+// same for both streams: a Reconnect button wired to reconnectNow.
+func TestLiveStreamCanBeReconnected(t *testing.T) {
+	realtime := stripJSNoise(readAsset(t, "realtime.js"))
+	start := strings.Index(realtime, "reconnectNow() {")
+	if start < 0 {
+		t.Fatal("realtime.js has no reconnectNow")
+	}
+	body := realtime[start:]
+	if end := strings.Index(body, "\n  }\n"); end > 0 {
+		body = body[:end]
+	}
+	if strings.Contains(body, "this.runID") {
+		t.Error("reconnectNow decides by the run id; the global Live stream has an " +
+			"empty one and could never be reconnected")
+	}
+
+	shell := readAsset(t, "index.html")
+	live := panelBodyForTest(t, shell, "view-live")
+	if !regexp.MustCompile(`<button type="button"[^>]*id="live-reconnect"[^>]*>Reconnect</button>`).
+		MatchString(live) {
+		t.Error(`the Live view has no "Reconnect" button for the global stream`)
+	}
+	app := stripJSComments(readAsset(t, "app.js"))
+	if !regexp.MustCompile(`liveReconnect\.addEventListener\("click",\s*\(\)\s*=>\s*liveSession\.reconnectNow\(\)\)`).
+		MatchString(app) {
+		t.Error("the Live Reconnect button is not wired to liveSession.reconnectNow")
+	}
+}
+
+// TestReconnectWordingNamesTheButton: the state line tells a reader which
+// control to use, so it must use the control's own label.
+func TestReconnectWordingNamesTheButton(t *testing.T) {
+	app := stripJSComments(readAsset(t, "app.js"))
+	if strings.Contains(app, "Reconnect now") {
+		t.Error(`app.js says "Reconnect now"; the button reads "Reconnect"`)
+	}
+	if !strings.Contains(app, "use Reconnect to try again") {
+		t.Error("the failed state no longer tells a reader to use Reconnect")
+	}
+}
+
+// TestNoTextNamesTheRetiredComparePage: the destination is Change Impact.
+//
+// "Compare runs" and "Or compare two runs" stay: they name the action of
+// comparing, not a page. What must not survive is a reference to a page
+// called Compare, which a reader can no longer find in the navigation.
+func TestNoTextNamesTheRetiredComparePage(t *testing.T) {
+	retired := regexp.MustCompile(`Open Compare|(in|for|under) Compare\b|Compare evaluates`)
+	shell := regexp.MustCompile(`(?s)<!--.*?-->`).ReplaceAllString(readAsset(t, "index.html"), "")
+	if match := retired.FindString(shell); match != "" {
+		t.Errorf("index.html says %q; the page is Change Impact", match)
+	}
+	for name, source := range scriptAssets(t) {
+		if match := retired.FindString(stripJSComments(source)); match != "" {
+			t.Errorf("%s says %q; the page is Change Impact", name, match)
+		}
+	}
+}
