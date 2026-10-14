@@ -1,74 +1,17 @@
-# Trustvian v0.12.0 — Change Impact
+# Trustvian v0.12.1 — Audit fixes
 
-`v0.12.0` answers the question a developer asks right after changing a model,
-a prompt or a tool: *what did that do?* One report per scenario execution
-puts it in one table — whether both sides ran the same scenario, inputs, model
-and prompt; every behavior's k/N and calls per run; every target's load,
-latency, status classes and 429s; tokens and, with a pricing table, cost; the
-gate as the execution recorded it; and suggestions beside the evidence. The
-CLI, the pull request comment's renderer and the WebUI's new Change Impact
-destination show the same document. When nothing arrives at all, a Status
-view says why. Upgrade if you run `trustvian eval run` or `trustvian dev`; the
-engine is unchanged. **Back up the platform state first**: the database moves
-from schema 10 to 15 and does not move back.
+<!-- One paragraph: what this release is for, and who should upgrade. -->
 
 Every change is in
-[CHANGELOG.md](https://github.com/trustvian/trustvian/blob/v0.12.0/CHANGELOG.md#v0120--change-impact).
+[CHANGELOG.md](https://github.com/trustvian/trustvian/blob/v0.12.1/CHANGELOG.md#v0121--audit-fixes).
 
 ## What's new
 
-- **Status: why is Live empty?** `GET /v1/status`, `trustvian status`,
-  `trustvian dev --check` and a WebUI Status view show which Collectors report,
-  which producers and model calls they have seen, how each span's actor was
-  bound, and named suggestions for what to check. The WebUI opens on Status
-  when nothing is active and on Live otherwise (task 105).
-- **Scenario, input and prompt provenance.** A scenario may declare `inputs:`,
-  a `model` or `model_env` and a `prompt_ref` per side. Every repeated
-  comparison says whether both sides ran the same scenario, inputs, model and
-  prompt, and warns beside the gate when they differ (task 086).
-- **Frequency evidence.** Every behavior shows k/N and calls per run per side;
-  every target a permille call ratio; `lost` marks a behavior in every
-  reference run missing from a candidate run. Optional limits
-  `min_candidate_frequency`, `max_lost_behaviors` and `max_calls_per_run`
-  (task 106).
-- **Performance and cost evidence.** Latency buckets, span and HTTP status
-  classes, 429s and token counts per behavior, per target and per run, and
-  cost only from a versioned pricing table whose provenance every figure
-  carries (`trustvian-local --pricing`; task 087).
-- **Fidelity.** Every behavior says whether telemetry named it or it was
-  inferred from transport, with counts, and `max_llm_calls_per_run` gates the
-  model calls in one candidate run (task 081).
-- **The scenario execution report.** Each completed execution records the
-  gate it consumed. `trustvian eval report <id>` prints its report — result
-  document version 2 — as JSON or, with `--format md`, as the Markdown the pull
-  request comment's renderer produces, byte for byte. `trustvian eval run
-  --json` now prints the same report (task 107).
-- **Change Impact in the WebUI.** Compare becomes Change Impact: the
-  context's scenario executions and one execution's report, every figure the
-  report's own, every behavior one click from its observations. Overview gains
-  a Latest comparison panel (task 107).
-- **A measured Model Change Report** — `llama3.2` against `gemma3:4b`, ten
-  runs a side — is published under `docs/results/2026-10-12-model-change-report/`,
-  with what it shows and what it does not.
-- **Security.** Builds use Go 1.27.2 and the Collector `golang.org/x/net
-  v0.60.0`, fixing the 2026-10-08 HTTP/2, `net/http`, `mime/multipart`,
-  `crypto/tls` and `html/template` advisories. **v0.11.0's published binaries
-  and image predate the fix**; see the CHANGELOG's Security section for the
-  advisories each carries.
+<!-- The user-facing changes, in the order a user meets them. -->
 
 ## What this release does not include
 
-- **No verdict, score or advice of its own.** Nothing adds an aggregate
-  verdict, an impact score, a cost gate, a rate gate or a percentile.
-  Suggestions are named rule outputs beside the evidence and change no exit
-  code.
-- **No content.** No prompt, completion, tool argument or body is read,
-  retained or shown; a prompt is identified by a reference you declare.
-- **The pull request comment is still the version 1 rendering.** The run and
-  comment actions build the commit their `runtime.env` pins, which predates
-  the report; a later release moves the pin.
-- **No metadata-only detection evaluation (080)**; it moved to `v0.13.0`.
-- **No review decisions or analytics (088, 092)**; deferred to `v0.13.0`.
+<!-- What a reader might expect here and will not find. -->
 
 ## Known limits
 
@@ -143,7 +86,7 @@ Every change is in
 ## Verifying
 
 ```bash
-V=v0.12.0
+V=v0.12.1
 A=trustvian_${V}_linux_amd64.tar.gz
 SHA=$(git ls-remote https://github.com/trustvian/trustvian "refs/tags/$V^{}" | cut -f1)
 
@@ -163,4 +106,4 @@ cosign verify "$IMAGE@$DIGEST" \
   --certificate-github-workflow-sha "$SHA"
 ```
 
-What each flag pins: [supply-chain.md](https://github.com/trustvian/trustvian/blob/v0.12.0/docs/supply-chain.md#verifying-a-published-image).
+What each flag pins: [supply-chain.md](https://github.com/trustvian/trustvian/blob/v0.12.1/docs/supply-chain.md#verifying-a-published-image).

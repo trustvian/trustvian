@@ -8,6 +8,8 @@ actually depend on.
 
 ## Unreleased
 
+## v0.12.1 — Audit fixes
+
 ### Fixed
 
 - **Pull request comments carry the version 2 report.** The `trustvian-run`
