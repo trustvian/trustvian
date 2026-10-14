@@ -687,9 +687,16 @@ closing change. "Met" only where the evidence shows it.
 | [108](tasks/v0.13/108-legacy-http-semantic-conventions.md) | Read the pre-stable HTTP keys. This changes `OperationCategory` and `TargetName`, so every affected fingerprint and baseline; needs a rollout decision first | Proposed |
 | [080](tasks/v1.0/080-metadata-only-detection-evaluation.md) | Metadata-only detection evaluation, a parallel measurement that gates nothing; moved from `v0.12.0` (D13) | Specified |
 | [109](tasks/v0.13/109-live-pause-and-actor-following.md) | The Live Observatory draws one source per actor, lists the actors seen live and follows one, and can pause and resume without disconnecting or replaying. `actor_id` and `actor_type` are added to the realtime observation frame as display metadata; identity is unchanged | Specified |
+| [110](tasks/v0.13/110-browser-computes-nothing.md) | Every figure the WebUI still derives in the browser, decided: the Overview's runs-by-status, gate-verdict tally and most-observed behaviors move to additive `/v1` fields; waterfall offsets and Live counts stay as labelled viewport facts, enforced by a static check | Specified |
 
 088 and 092, deferred from [`v0.12.0`](#v0120--change-impact), are not yet
 specified.
+
+### Known gaps carried to v0.13.0, not patch material
+
+- **F12:** `event.Execution` (`event/execution.go`) has no JSON tags, unlike every other `Event` field, so it encodes as `DurationNanos`, `DurationObserved` and `Status`; adding tags changes the public `event` package's JSON encoding, a public API change, so not a patch.
+- **F13:** `internal/otel` has no non-test importer, and the production span path is `processor/mapping.go`; deleting the package or routing the processor through it is a design change, not a fix.
+- **F14:** the processor's configuration has no `anomaly:` block (`processor/config.go`), so the v0.6/v0.7 sequence signals (transition rarity, Markov surprisal, n-gram) stay at their defaults, off, on the Collector path; adding the block is new configuration surface, a feature, not a patch.
 
 ## v1.0 — Local-First Behavioral Security Platform
 
@@ -1337,6 +1344,7 @@ The **Gate** column says which rows the release actually depends on.
 | 107 | [Change Impact view and Model Change Report](tasks/v0.12/107-change-impact-view-and-report.md) — 081/086/087/106 evidence in one table, the result document version 2, and one renderer for the CLI and the PR comment | Implemented (`v0.12.0`) | none |
 | 108 | [Legacy HTTP semantic conventions](tasks/v0.13/108-legacy-http-semantic-conventions.md) — read `http.method`/`http.url` and the other pre-stable HTTP keys, which changes `OperationCategory` and `TargetName`, so every affected fingerprint and baseline; a staged rollout | Proposed (`v0.13.0`) | none |
 | 109 | [Live Observatory: pause, resume and following one actor](tasks/v0.13/109-live-pause-and-actor-following.md) — the actor on the realtime frame as display metadata, one graph source per actor, an actor list to follow, and pause/resume without disconnect or replay | Specified (`v0.13.0`) | none |
+| 110 | [The browser computes nothing](tasks/v0.13/110-browser-computes-nothing.md) — every figure the WebUI derives, decided: three Overview summaries move to additive `/v1` fields, waterfall and Live counts stay as labelled viewport facts, and a static check keeps the list complete | Specified (`v0.13.0`) | none |
 
 **Production history and scale:**
 
