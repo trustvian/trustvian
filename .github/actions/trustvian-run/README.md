@@ -5,9 +5,9 @@ uploads its result document as an artifact, and exits with the CLI's own code.
 From a runtime carrying task 107-B, the result document is the execution's
 report — result document version 2, exactly what `trustvian eval report --json`
 prints — and a suite's members embed theirs; an older runtime uploads version
-1. The runtime is the commit [`runtime.env`](runtime.env) pins. At v0.12.0 that
-is pull request #140, which predates task 107-B, so the action uploads version
-1 ([guide](../../../docs/ci-github-action.md#an-example)).
+1. The runtime is the commit [`runtime.env`](runtime.env) pins: from v0.12.1,
+v0.12.0's commit, so the action uploads version 2
+([guide](../../../docs/ci-github-action.md#an-example)).
 
 **Run side only.** It renders no verdict and does not comment on the pull
 request. That is [`trustvian-comment`](../trustvian-comment/README.md)'s job, in a

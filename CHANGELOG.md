@@ -8,6 +8,69 @@ actually depend on.
 
 ## Unreleased
 
+### Fixed
+
+- **Pull request comments carry the version 2 report.** The `trustvian-run`
+  and `trustvian-comment` actions built their runtime from #140's commit,
+  older than v0.10.0, so they uploaded result document version 1 and none of
+  v0.12.0's report — sameness, targets, tokens, suggestions — reached a pull
+  request. `runtime.env` now pins v0.12.0's commit (`23beffc`). Re-pin the
+  actions' `uses:` lines to this release's commit to get it. The action's
+  end-to-end workflow now fails unless the posted comment is the version 2
+  rendering, and the release preflight refuses a release whose pin predates
+  the newest stable release
+  ([ADR 0056 § Amendment](docs/adr/0056-the-run-action-builds-a-pinned-source-commit.md#amendment-v0121-the-pin-keeps-up-with-releases)).
+- **The release gates test and scan the platform module.** `trustvian-local`,
+  built from it, ships in every archive, but the release re-ran tests and
+  `govulncheck` only for the root and processor modules. The gates now run
+  the platform module as CI does (race, PostgreSQL, the core/platform
+  boundary), the examples module, and `govulncheck` on all four modules.
+- **`trustvian-local` and `trustvian-collector` report the release version.**
+  They reported `(devel)` and `0.0.0-dev`: Go cannot stamp a version into
+  modules whose paths are outside the repository's root module. The release
+  build now writes it, in the archives and the image, and both gain
+  `--version`. The release verifies all three binaries' versions.
+- **Status counts a short run.** The Collector's status reporter sent no
+  final report when it stopped, so after a run shorter than its interval
+  Status showed zero spans received and evaluated. `Stop` now sends one,
+  bounded by 2 seconds.
+- **The span counts in a status report agree with each other.** A report
+  taken while a span was being processed could count it evaluated before its
+  fidelity and model were recorded, one span short in the fidelity breakdown
+  (#175).
+- **Live colors decisions.** The Live view matched uppercase decision values
+  while the stream sends lowercase ones, so no edge, card or timeline row was
+  ever styled by its decision.
+- **The global Live stream can be reconnected.** After it failed to
+  synchronize, the only way back was a reload. A **Reconnect** button now sits
+  beside Behavior flow, and the status text names it as the button does. The
+  Overview's links and hints say **Change Impact**, not **Compare**.
+- **`trustvian-collector --config <path>` works.** The space-separated form
+  was ignored and the Collector read `./config.yaml`. Both forms are
+  accepted, and an unknown argument is refused with usage and exit 2.
+- **`trustvian dev` warns when the candidate belongs to another agent.** The
+  run is still recorded, as before, but a later scenario under this project
+  exits 3; one stderr line names the owning agent, this agent and that
+  consequence.
+- **`trustvian eval run --scenario` is refused on Windows**, exactly as
+  `--suite` and `dev` are: it runs `dev`, which cannot run there.
+- **`trustvian --help` is complete.** It lists every `eval` subcommand, states
+  every exit code and how the control plane is discovered, and the `eval run`
+  usage names `--suite`, `--scenario-timeout`, `--fail-fast` and
+  `--reference`. `trustvian evidence --help` works.
+- **`trustvian eval create` names a missing environment or candidate** instead
+  of printing a bare `not_found`.
+- **The TUI's last frame after `q` is not `RECONNECTING`.**
+- **The `agent-producer` workload exits 1 when no span was delivered.** It
+  printed "sent" and exited 0 with no Collector to reach.
+- **The reference deployment's smoke test and recovery drill no longer delete
+  your stack's data.** Both ran `docker compose down -v` as the reference
+  deployment's own project. Each now runs as a Compose project of its own.
+- **`backup-postgres.sh` records the bare `pg_dump` version.** On a Debian
+  build the manifest read `pg_dump_version=17.6-1.pgdg120+1)`.
+
+No schema change; nothing to migrate.
+
 ## v0.12.0 — Change Impact
 
 ### Security
