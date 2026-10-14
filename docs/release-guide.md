@@ -243,8 +243,11 @@ make release [PRE=rc]
   ↓ dispatch release.yml (version, commit = origin/main head, derivation)
   preflight  SemVer; one bump above the newest stable tag; newer than every
              v* tag; tag absent; commit == main head; CI and Nightly succeeded
-             on it; CHANGELOG section; release notes
-  gates      modules, gofmt, vet, test, race, PostgreSQL, processor, govulncheck
+             on it; CHANGELOG section; release notes; the actions' runtime
+             pin is not older than the newest stable tag
+  gates      modules, gofmt, vet, test, race, PostgreSQL; processor,
+             platform (with PostgreSQL) and examples with GOWORK=off;
+             core/platform boundary; govulncheck on all four modules
   build      archives (version stamped by a tag local to the runner), checksums,
              build provenance attested for every archive and checksums.txt
   image      scan (gate), push BY DIGEST (no tag), cosign sign the digest

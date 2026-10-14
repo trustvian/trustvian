@@ -160,7 +160,8 @@ jobs:
     name: Gates
     needs: preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 75: the platform module's race run alone may take 15 minutes.
+    timeout-minutes: 75
     environment: release-build
     permissions:
       contents: read
@@ -226,6 +227,10 @@ jobs:
           TRUSTVIAN_TEST_POSTGRES_DSN: postgres://trustvian:trustvian@localhost:5432/trustvian_test?sslmode=disable
         run: go test -race -short ./...
 
+      # Every module whose code ships, or that proves the public API, as
+      # ci.yml gates it: the processor is trustvian-collector, the platform
+      # is trustvian-local, and the examples are the external-consumer proof.
+      # GOWORK=off, because a workspace resolves modules no consumer would.
       - name: Processor module (GOWORK=off)
         env:
           GOWORK: "off"
@@ -235,15 +240,61 @@ jobs:
           go vet ./...
           go test -race ./...
 
+      - name: Platform module (GOWORK=off)
+        env:
+          GOWORK: "off"
+        working-directory: platform
+        # -timeout=15m as ci.yml's platform job: the root package alone runs
+        # about 580s under -race on a hosted runner.
+        run: |
+          go build ./...
+          go vet ./...
+          go test -race -timeout=15m ./...
+
+      - name: Platform module with PostgreSQL (GOWORK=off)
+        # ci.yml's proof that the PostgreSQL tests ran rather than skipped:
+        # without it a broken service would turn the backend's coverage into
+        # silent skips and the gate would still pass.
+        env:
+          GOWORK: "off"
+          TRUSTVIAN_TEST_POSTGRES_DSN: postgres://trustvian:trustvian@localhost:5432/trustvian_test?sslmode=disable
+        working-directory: platform
+        run: |
+          set -o pipefail
+          go test -count=1 -v \
+            -run 'TestStoreConformance|TestStoreBackendsAgreeOnLogicalState|TestPostgres|TestRuntimeOnPostgres' \
+            . ./localruntime | tee "$RUNNER_TEMP/pg-tests.log"
+          if grep -q -- '--- SKIP: TestPostgres' "$RUNNER_TEMP/pg-tests.log"; then
+            echo "::error::PostgreSQL tests skipped; the service or the DSN is wrong"
+            exit 1
+          fi
+          grep -q -- '--- PASS: TestStoreConformance/postgres' "$RUNNER_TEMP/pg-tests.log" ||
+            { echo "::error::TestStoreConformance/postgres did not run and pass"; exit 1; }
+
+      - name: Core/platform boundary
+        run: ./scripts/check-platform-boundary.sh
+
+      - name: Examples module (GOWORK=off)
+        env:
+          GOWORK: "off"
+        working-directory: examples
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
       - name: Go vulnerability scan
         # The vulnerability database moves independently of the code, so a
         # commit that scanned clean when it merged can carry a reachable
-        # advisory by the time it is released. Both modules whose code ships.
+        # advisory by the time it is released. All four modules, as ci.yml
+        # scans them.
         env:
           GOWORK: "off"
         run: |
           go run golang.org/x/vuln/cmd/govulncheck@latest ./...
-          (cd processor && go run golang.org/x/vuln/cmd/govulncheck@latest ./...)
+          for module in processor platform examples; do
+            (cd "$module" && go run golang.org/x/vuln/cmd/govulncheck@latest ./...)
+          done
 
   # ---------------------------------------------------------------------
   # c. Build the archives, and attest them.

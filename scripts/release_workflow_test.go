@@ -454,3 +454,74 @@ func stripShellComments(src string) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// The release gates re-run every module's checks the way ci.yml runs them,
+// with GOWORK=off: the platform module is trustvian-local and the processor
+// is trustvian-collector, both in every archive, and the examples are the
+// proof the public API is usable from outside. Through v0.12.0 the gates ran
+// only the root and the processor, so the code trustvian-local ships was never
+// tested or scanned at release time (finding F10 of #175).
+func TestReleaseGatesCoverEveryModule(t *testing.T) {
+	_, jobs := releaseJobs(t)
+	steps, _ := jobs["gates"]["steps"].([]any)
+	gowork := func(step map[string]any) bool {
+		env, _ := step["env"].(map[string]any)
+		return fmt.Sprint(env["GOWORK"]) == "off"
+	}
+	byDir := map[string]string{}
+	var vuln string
+	var postgresProof bool
+	for _, s := range steps {
+		step, _ := s.(map[string]any)
+		run := stepRun(step)
+		if strings.Contains(run, "govulncheck") {
+			vuln += run
+			if !gowork(step) {
+				t.Errorf("the vulnerability scan %q does not set GOWORK=off", step["name"])
+			}
+		}
+		dir, _ := step["working-directory"].(string)
+		if dir == "" {
+			continue
+		}
+		if !gowork(step) {
+			t.Errorf("step %q in %s does not set GOWORK=off", step["name"], dir)
+		}
+		byDir[dir] += run + "\n"
+		env, _ := step["env"].(map[string]any)
+		if dir == "platform" && env["TRUSTVIAN_TEST_POSTGRES_DSN"] != nil &&
+			strings.Contains(run, "--- SKIP: TestPostgres") {
+			postgresProof = true
+		}
+	}
+	want := map[string][]string{
+		"processor": {"go build ./...", "go vet ./...", "go test -race "},
+		"platform":  {"go build ./...", "go vet ./...", "go test -race "},
+		"examples":  {"go build ./...", "go vet ./...", "go test ./..."},
+	}
+	for dir, commands := range want {
+		for _, c := range commands {
+			if !strings.Contains(byDir[dir], c) {
+				t.Errorf("the gates do not run %q in %s", c, dir)
+			}
+		}
+		if !strings.Contains(vuln, dir) {
+			t.Errorf("the vulnerability scan does not cover %s", dir)
+		}
+	}
+	if !postgresProof {
+		t.Error("the gates do not prove the platform's PostgreSQL tests ran rather than skipped")
+	}
+	if !strings.Contains(stepsText(steps), "check-platform-boundary.sh") {
+		t.Error("the gates do not check the core/platform boundary")
+	}
+}
+
+func stepsText(steps []any) string {
+	var b strings.Builder
+	for _, s := range steps {
+		step, _ := s.(map[string]any)
+		b.WriteString(stepRun(step))
+	}
+	return b.String()
+}
