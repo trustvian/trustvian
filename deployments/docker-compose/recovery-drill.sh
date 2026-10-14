@@ -31,13 +31,20 @@
 #
 # It leaves the environment clean: the stack's volume and the backup directory
 # are removed at the end.
+#
+# It runs as its own Compose project, trustvian-recovery-drill, never as the
+# reference deployment's trustvian-reference: its `down -v` can remove only
+# volumes this script's own project created, never the state of a stack someone
+# started with `make compose-up`. That stack's host ports are the same, so with
+# it running the drill fails at startup instead of touching it.
 
 set -euo pipefail
 
 cd "$(dirname "$0")"
 REPO_ROOT="$(cd ../.. && pwd)"
 
-COMPOSE="docker compose"
+PROJECT="trustvian-recovery-drill"
+COMPOSE="docker compose --project-name $PROJECT"
 SPANS=40
 DB_USER="${TRUSTVIAN_POSTGRES_USER:-trustvian}"
 DB_NAME="${TRUSTVIAN_POSTGRES_DB:-trustvian}"
@@ -45,7 +52,7 @@ DB_PASSWORD="${TRUSTVIAN_POSTGRES_PASSWORD:-change-me}"
 RESTORED_DB="trustvian_restored"
 HEALTH="http://127.0.0.1:${TRUSTVIAN_HEALTH_PORT:-13133}"
 TOOLS_IMAGE="postgres:17-bookworm"
-NETWORK="trustvian-reference_default"
+NETWORK="${PROJECT}_default"
 
 step() { printf '\n=== %s\n' "$1"; }
 ok()   { printf '    ok: %s\n' "$1"; }
@@ -104,7 +111,7 @@ trap finish EXIT
 step "0/8 Clean slate"
 $COMPOSE down -v >/dev/null 2>&1 || true
 docker pull -q "$TOOLS_IMAGE" >/dev/null
-ok "no pre-existing volume; tools image $TOOLS_IMAGE present"
+ok "no pre-existing $PROJECT volume; tools image $TOOLS_IMAGE present"
 
 # ---------------------------------------------------------------------
 step "1/8 Stack starts and the runtime becomes ready"

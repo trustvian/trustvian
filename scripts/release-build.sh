@@ -52,6 +52,18 @@ readonly TARGETS=(
 )
 
 version="${1:-}"
+# The helpers' version flags, for a release build only: see below.
+helper_ldflags=()
+if [ -n "$version" ]; then
+    # trustvian stamps its version from the release tag (Go reads it from VCS).
+    # The helpers cannot: Go stamps a module's version from a tag only when the
+    # module's path lies under the repository's root module, and theirs,
+    # trustvian-platform and trustvian-processor, deliberately do not (ADR
+    # 0022). So the release writes it into each helper's main.version, which
+    # they report in place of Go's "(devel)". A dry run without a version
+    # stamps nothing, and the helpers report Go's build information.
+    helper_ldflags=(-ldflags "-X main.version=$version")
+fi
 if [ -z "$version" ]; then
     # Fall back to the VCS description so a dry run has a sensible name.
     # Not used for anything but filenames — the binary's own version comes
@@ -84,8 +96,8 @@ for target in "${TARGETS[@]}"; do
     # -trimpath: no absolute build paths embedded, so the artifact does not
     # carry the directory layout of whoever built it.
     #
-    # No -ldflags version injection: Go records the module version and VCS
-    # revision itself (see internal/buildinfo).
+    # No -ldflags version injection for trustvian: Go records the module
+    # version and VCS revision itself (see internal/buildinfo).
     CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
         go build -trimpath -o "$stage/${BINARY}${ext}" "$CMD"
 
@@ -107,7 +119,8 @@ for target in "${TARGETS[@]}"; do
             (
                 cd "$module"
                 CGO_ENABLED=0 GOWORK=off GOOS="$os" GOARCH="$arch" \
-                    go build -trimpath -o "../$stage/$helper" "$pkg"
+                    go build -trimpath ${helper_ldflags[@]+"${helper_ldflags[@]}"} \
+                    -o "../$stage/$helper" "$pkg"
             )
         done
         printf '\n  %-16s ' ""

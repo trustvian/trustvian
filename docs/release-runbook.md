@@ -410,6 +410,7 @@ workflow it names:
 | `CHANGELOG.md at … declares no "## vX.Y.Z" section below "## Unreleased"` | No prep PR was merged: run `make release-prep` |
 | `release-notes.md does not name …` | The notes are from the previous release: run `make release-prep` |
 | `commit … is not reachable from …` | Pull `main` and run again |
+| `the actions' runtime pin … predates …` | The `trustvian-run` and `trustvian-comment` actions would build a runtime older than the newest stable release. In a PR, move `TRUSTVIAN_SOURCE_COMMIT` in `.github/actions/trustvian-run/runtime.env` to the commit the message names, or later; the action's end-to-end workflow re-proves it ([ADR 0056](adr/0056-the-run-action-builds-a-pinned-source-commit.md#amendment-v0121-the-pin-keeps-up-with-releases)) |
 
 The command's own checks (`scripts/release.sh`, `scripts/release-prep.sh`):
 
@@ -509,9 +510,10 @@ gh release view "$V" --repo trustvian/trustvian      # assets: 5 archives + chec
 2. **Package visibility** (the first release of a new image only): the GHCR
    package page must say *Public*.
 3. **Follow-ups** in one PR, if they apply: the `trustvian-run` and
-   `trustvian-comment` pin in `.github/actions/trustvian-run/runtime.env`;
-   the ROADMAP's Released Milestones; any "no release carries …" sentence the
-   release made false.
+   `trustvian-comment` pin in `.github/actions/trustvian-run/runtime.env`,
+   moved to the release's commit (the next release's preflight refuses a pin
+   older than this release); the ROADMAP's Released Milestones; any "no
+   release carries …" sentence the release made false.
 4. **Announce** where the project announces releases.
 5. **Close the release issue** with the release URL.
 

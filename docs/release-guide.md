@@ -243,8 +243,11 @@ make release [PRE=rc]
   ↓ dispatch release.yml (version, commit = origin/main head, derivation)
   preflight  SemVer; one bump above the newest stable tag; newer than every
              v* tag; tag absent; commit == main head; CI and Nightly succeeded
-             on it; CHANGELOG section; release notes
-  gates      modules, gofmt, vet, test, race, PostgreSQL, processor, govulncheck
+             on it; CHANGELOG section; release notes; the actions' runtime
+             pin is not older than the newest stable tag
+  gates      modules, gofmt, vet, test, race, PostgreSQL; processor,
+             platform (with PostgreSQL) and examples with GOWORK=off;
+             core/platform boundary; govulncheck on all four modules
   build      archives (version stamped by a tag local to the runner), checksums,
              build provenance attested for every archive and checksums.txt
   image      scan (gate), push BY DIGEST (no tag), cosign sign the digest
@@ -422,10 +425,21 @@ A consumer who wants only the CLI can delete the other two, or use
 
 Built with `CGO_ENABLED=0` (every dependency is pure Go, so the matrix
 cross-compiles from one runner and the binaries carry no libc dependency)
-and `-trimpath` (no build-machine paths embedded). There is no `-ldflags`
-version injection: `trustvian version` reads Go's own build information,
-which records the module version, VCS revision, commit time, and whether
-the tree was dirty.
+and `-trimpath` (no build-machine paths embedded). `trustvian` has no
+`-ldflags` version injection: `trustvian version` reads Go's own build
+information, which records the module version (from the runner-local release
+tag), VCS revision, commit time, and whether the tree was dirty.
+
+The two helpers are the exception. Go stamps a module's version from a tag only
+when the module's path lies under the repository's root module, and theirs,
+`trustvian-platform` and `trustvian-processor`, deliberately do not
+([ADR 0022](adr/0022-core-platform-boundary.md)). Through v0.12.0 they
+reported `(devel)` and `0.0.0-dev`. The release build writes the version into
+each helper's `main.version` with `-ldflags -X` (the image's collector too,
+through the Dockerfile's `VERSION` argument); the revision still comes from
+Go's build information. `trustvian-local --version` and
+`trustvian-collector --version` print it, and the release's verify job checks
+all three binaries.
 
 **Byte-for-byte reproducibility is not claimed.** The build avoids the
 obvious sources of nondeterminism, but this has not been tested, and an

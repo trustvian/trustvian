@@ -352,6 +352,12 @@ jobs:
         working-directory: examples
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+      - name: Run every program
+        # Building and testing does not run them, and each README quotes its
+        # program's output: a program that fails, or no longer runs at all,
+        # fails here rather than leaving its README stale.
+        run: make examples
+
       - name: No internal imports
         # examples/ exists to prove the public API is sufficient. An
         # internal/* import here would compile inside this repository and

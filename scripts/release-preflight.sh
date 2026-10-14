@@ -23,10 +23,16 @@
 #      section;
 #   7. release-notes.md at that commit exists and names the version (for a
 #      prerelease, the version or its base: one set of notes serves a
-#      version's candidates and its stable release).
+#      version's candidates and its stable release);
+#   8. the runtime the trustvian-run and trustvian-comment actions build
+#      (TRUSTVIAN_SOURCE_COMMIT in .github/actions/trustvian-run/runtime.env
+#      at that commit) is the newest stable tag's commit or a descendant of
+#      it, so a release cannot ship actions whose runtime predates the
+#      release before it. See ADR 0056 § 3.
 #
 # Needs git, with the repository's main branch fetched as $RELEASE_MAIN_REF
-# (default origin/main), and an authenticated gh for check 5. Reads nothing
+# (default origin/main) and the runtime pin's commit in the clone (check 8),
+# and an authenticated gh for check 5. Reads nothing
 # from the working tree: CHANGELOG.md and release-notes.md are read from the
 # commit itself, so what is checked is what will be released.
 #
@@ -45,6 +51,9 @@ export LC_ALL=C
 readonly REPO="${RELEASE_REPO:-trustvian/trustvian}"
 readonly MAIN_REF="${RELEASE_MAIN_REF:-origin/main}"
 readonly REMOTE="${RELEASE_REMOTE:-origin}"
+
+# The actions' runtime pin, relative to the repository root.
+readonly RUNTIME_PIN_FILE=".github/actions/trustvian-run/runtime.env"
 
 readonly SEMVER_RE='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
 
@@ -194,6 +203,41 @@ check_notes() {
     fail "release-notes.md does not name $version — it would publish another release's notes"
 }
 
+# runtime_pin FILE: the full commit a runtime.env pins as
+# TRUSTVIAN_SOURCE_COMMIT. Read as text, never sourced.
+runtime_pin() {
+    local pin
+    pin="$(sed -n 's/^TRUSTVIAN_SOURCE_COMMIT=//p' "$1" 2>/dev/null)" || pin=""
+    [[ "$pin" =~ ^[0-9a-f]{40}$ ]] ||
+        fail "$RUNTIME_PIN_FILE pins no full TRUSTVIAN_SOURCE_COMMIT"
+    printf '%s\n' "$pin"
+}
+
+# tag_commit TAG: the commit TAG names on the remote, peeled through an
+# annotated tag.
+tag_commit() {
+    local refs commit
+    refs="$(git ls-remote --tags "$REMOTE" "refs/tags/$1" "refs/tags/$1^{}")" ||
+        fail "could not resolve the tag $1"
+    commit="$(awk '$2 ~ /\^\{\}$/ { print $1 }' <<<"$refs")"
+    [ -n "$commit" ] || commit="$(awk 'NR == 1 { print $1 }' <<<"$refs")"
+    [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "could not resolve the tag $1"
+    printf '%s\n' "$commit"
+}
+
+# check_runtime_pin PIN PREVIOUS PREVIOUS_COMMIT: the actions' runtime pin is
+# PREVIOUS's commit or a descendant of it. PREVIOUS is the newest stable tag,
+# so a release never ships actions that build a runtime older than the
+# release before it. v0.12.0 shipped them on #140's commit, older even than
+# v0.10.0, and none of v0.12.0's report reached a pull request comment.
+check_runtime_pin() {
+    local pin="$1" previous="$2" base="$3"
+    git cat-file -e "$pin^{commit}" 2>/dev/null ||
+        fail "the actions' runtime pin $pin is not in this clone"
+    git merge-base --is-ancestor "$base" "$pin" ||
+        fail "the actions' runtime pin $pin predates $previous: move TRUSTVIAN_SOURCE_COMMIT in $RUNTIME_PIN_FILE to $previous's commit ($base) or later"
+}
+
 # latest_run_succeeded WORKFLOW COMMIT: the newest run of WORKFLOW for
 # exactly COMMIT concluded success.
 latest_run_succeeded() {
@@ -249,6 +293,18 @@ main() {
     git show "$commit:release-notes.md" >"$tmp/release-notes.md" 2>/dev/null || : >"$tmp/release-notes.md"
     check_changelog "$version" "$tmp/CHANGELOG.md"
     check_notes "$version" "$tmp/release-notes.md"
+
+    local previous pin base
+    # shellcheck disable=SC2086 # one tag per word
+    previous="$(latest_stable $tags)"
+    if [ -n "$previous" ]; then
+        git show "$commit:$RUNTIME_PIN_FILE" >"$tmp/runtime.env" 2>/dev/null ||
+            fail "$RUNTIME_PIN_FILE is missing at $commit"
+        # Assigned first, so a failure inside either one stops here.
+        pin="$(runtime_pin "$tmp/runtime.env")"
+        base="$(tag_commit "$previous")"
+        check_runtime_pin "$pin" "$previous" "$base"
+    fi
 
     if [ -n "${RELEASE_PREFLIGHT_MISSING_RUNS:-}" ] && [ -s "$RELEASE_PREFLIGHT_MISSING_RUNS" ]; then
         echo "release preflight: everything else passes; no run yet for $commit: $(tr '\n' ' ' <"$RELEASE_PREFLIGHT_MISSING_RUNS")" >&2

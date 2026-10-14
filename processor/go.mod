@@ -5,7 +5,7 @@ go 1.27
 // This module is built from the repository's own source, not fetched from
 // a proxy, and that is its intended distribution model rather than a
 // temporary state — see
-// docs/tasks/040-release-artifacts-and-module-consistency.md § Module
+// docs/archive/tasks/v0.9/040-release-artifacts-and-module-consistency.md § Module
 // publication model.
 //
 // It cannot be published as written: `trustvian-processor` is not a

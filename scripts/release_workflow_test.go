@@ -454,3 +454,114 @@ func stripShellComments(src string) string {
 	}
 	return strings.Join(out, "\n")
 }
+
+// The release gates re-run every module's checks the way ci.yml runs them,
+// with GOWORK=off: the platform module is trustvian-local and the processor
+// is trustvian-collector, both in every archive, and the examples are the
+// proof the public API is usable from outside. Through v0.12.0 the gates ran
+// only the root and the processor, so the code trustvian-local ships was never
+// tested or scanned at release time (finding F10 of #175).
+func TestReleaseGatesCoverEveryModule(t *testing.T) {
+	_, jobs := releaseJobs(t)
+	steps, _ := jobs["gates"]["steps"].([]any)
+	gowork := func(step map[string]any) bool {
+		env, _ := step["env"].(map[string]any)
+		return fmt.Sprint(env["GOWORK"]) == "off"
+	}
+	byDir := map[string]string{}
+	var vuln string
+	var postgresProof bool
+	for _, s := range steps {
+		step, _ := s.(map[string]any)
+		run := stepRun(step)
+		if strings.Contains(run, "govulncheck") {
+			vuln += run
+			if !gowork(step) {
+				t.Errorf("the vulnerability scan %q does not set GOWORK=off", step["name"])
+			}
+		}
+		dir, _ := step["working-directory"].(string)
+		if dir == "" {
+			continue
+		}
+		if !gowork(step) {
+			t.Errorf("step %q in %s does not set GOWORK=off", step["name"], dir)
+		}
+		byDir[dir] += run + "\n"
+		env, _ := step["env"].(map[string]any)
+		if dir == "platform" && env["TRUSTVIAN_TEST_POSTGRES_DSN"] != nil &&
+			strings.Contains(run, "--- SKIP: TestPostgres") {
+			postgresProof = true
+		}
+	}
+	want := map[string][]string{
+		"processor": {"go build ./...", "go vet ./...", "go test -race "},
+		"platform":  {"go build ./...", "go vet ./...", "go test -race "},
+		"examples":  {"go build ./...", "go vet ./...", "go test ./..."},
+	}
+	for dir, commands := range want {
+		for _, c := range commands {
+			if !strings.Contains(byDir[dir], c) {
+				t.Errorf("the gates do not run %q in %s", c, dir)
+			}
+		}
+		if !strings.Contains(vuln, dir) {
+			t.Errorf("the vulnerability scan does not cover %s", dir)
+		}
+	}
+	if !postgresProof {
+		t.Error("the gates do not prove the platform's PostgreSQL tests ran rather than skipped")
+	}
+	if !strings.Contains(stepsText(steps), "check-platform-boundary.sh") {
+		t.Error("the gates do not check the core/platform boundary")
+	}
+}
+
+func stepsText(steps []any) string {
+	var b strings.Builder
+	for _, s := range steps {
+		step, _ := s.(map[string]any)
+		b.WriteString(stepRun(step))
+	}
+	return b.String()
+}
+
+// Every released binary reports the release version. Go stamps trustvian's
+// from the runner-local tag; it cannot stamp the helpers', because their
+// module paths are not under the repository's root module (ADR 0022), so
+// through v0.12.0 trustvian-local reported "(devel)" and trustvian-collector a
+// hardcoded "0.0.0-dev" (finding F7 of #175). The archives and the image write
+// the version into each helper's main.version, and verify reads it back.
+func TestReleaseStampsTheHelpersVersion(t *testing.T) {
+	build := readFile(t, "release-build.sh")
+	if !strings.Contains(build, `-X main.version=$version`) || !strings.Contains(build, `helper_ldflags[@]`) {
+		t.Error("release-build.sh does not write the release version into the helpers' main.version")
+	}
+	dockerfile := readFile(t, "../Dockerfile")
+	if !strings.Contains(dockerfile, "ARG VERSION") || !strings.Contains(dockerfile, "-X=main.version=${VERSION}") {
+		t.Error("the Dockerfile does not write the VERSION build argument into trustvian-collector's main.version")
+	}
+
+	_, jobs := releaseJobs(t)
+	steps, _ := jobs["image"]["steps"].([]any)
+	builds := 0
+	for _, s := range steps {
+		run := stepRun(s.(map[string]any))
+		if strings.Contains(run, "docker buildx build") {
+			builds++
+			if !strings.Contains(run, `--build-arg VERSION="$VERSION"`) {
+				t.Errorf("an image build does not pass the release version:\n%s", run)
+			}
+		}
+	}
+	if builds == 0 {
+		t.Error("the image job builds nothing")
+	}
+
+	verify := stepsText(jobs["verify"]["steps"].([]any))
+	for _, want := range []string{`for b in trustvian-local trustvian-collector`, `--version`, `docker run --rm "$IMAGE@$DIGEST" --version`} {
+		if !strings.Contains(verify, want) {
+			t.Errorf("verify does not check the helpers' versions: missing %q", want)
+		}
+	}
+}

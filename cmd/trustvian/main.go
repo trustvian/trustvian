@@ -116,16 +116,16 @@ Control-plane commands (see docs/platform-cli.md):
   trustvian candidate  create|get
   trustvian env        create|get|list|set|archive|activate
   trustvian promotion  create|get|list
-  trustvian eval       create|get|start|complete|fail|cancel|
-                       progress|ingest-state|ingest|compare
+  trustvian eval       create|get|start|complete|fail|cancel|progress|
+                       ingest-state|ingest|compare|compare-repeated|
+                       run|report|operational
   trustvian evidence   behaviors|observations
-      Resolve a gate check or a behavioral delta to the evidence behind
-      it: which behavioral identities contributed, and which retained
-      observations carried them.
-      Drive a local control plane over its /v1 HTTP API. Each supports
-      --json, which writes the API's own response to stdout, and takes an
-      optional --api-url; without one, a runtime started by 'make local'
-      is found through ./.trustvian/runtime.json.
+      Drive a control plane over its /v1 HTTP API. Each supports --json,
+      which writes the API's own response to stdout, and takes an optional
+      --api-url (see Control-plane discovery below). 'eval run' runs a
+      behavioral scenario or a suite; 'evidence' resolves a gate check or a
+      behavioral delta to the evidence behind it. Each family prints its own
+      usage when given no subcommand.
 
   trustvian status     [--api-url <url>]
       Print the control plane's pipeline status: Collectors, producers,
@@ -139,12 +139,31 @@ Control-plane commands (see docs/platform-cli.md):
       Run a command under Trustvian. The command is not modified and gains
       no Trustvian dependency. Unix only.
 
-Exit codes differ by command family. analyze, baseline and version keep
-0 success / 1 failure / 2 usage. The control-plane commands and tui use
-0 success / 2 usage / 3 API or network failure, and 'eval compare'
-additionally uses 1 for a gate FAIL — only there. 'dev' exits with its
-child's status, so 2 and 3 mean its own usage and startup failures only
-before the child starts. See docs/compatibility.md.
+Control-plane discovery, for the control-plane commands, status and tui:
+  1. --api-url <url>, when given, always; --api-url "" is a usage error
+  2. ./.trustvian/runtime.json, published by 'make local' (trustvian-local)
+  3. ~/.trustvian/dev/<hash of this directory>/runtime.json, published by
+     'trustvian dev' for this directory
+With none of them, the command exits 3. 'dev' itself starts its own control
+plane unless given --api-url.
+
+Exit codes differ by command family (docs/platform-cli.md § Exit codes):
+  analyze, baseline, version
+      0 success, 1 command failed, 2 usage
+  project, agent, candidate, env, promotion, evidence, tui, and eval
+  (eval report and eval operational included) except the three below
+      0 success, 2 usage, 3 API or network failure
+  eval compare, eval compare-repeated, eval run
+      0 gate PASS, 1 gate FAIL, 2 usage, 3 API or network failure; for
+      eval run also a failed repetition or a scenario past its deadline,
+      and a suite exits with its most severe scenario: 3, 2, 1, then 0
+  status, dev --check
+      0 the document was read, 2 usage, 3 API or network failure
+  dev
+      the command's own status; 2 usage and 3 could not start, only
+      before the command starts
+Exit 1 means gate FAIL only for eval compare, eval compare-repeated and
+eval run. See docs/compatibility.md.
 
 --config <path> loads a schema-v1 YAML policy config (see config.LoadFile)
 and uses it instead of the CLI's built-in default policy. Without it,

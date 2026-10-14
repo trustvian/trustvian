@@ -14,8 +14,8 @@ gate a change to it over repeated runs, then put that gate on your pull
 requests.
 
 **You need:**
-- Linux or macOS, on amd64 or arm64. `trustvian dev` and `eval run --suite`
-  refuse to run on Windows; use WSL2 there.
+- Linux or macOS, on amd64 or arm64. `trustvian dev` and `eval run` (with
+  `--scenario` or `--suite`) refuse to run on Windows; use WSL2 there.
 - `git`. The agent's directory must be a git repository with at least one
   commit. Trustvian names the project after the repository and the candidate
   after the commit.
@@ -124,7 +124,9 @@ runs under the repository's name, so after a `dev --project other` run for the
 same agent it stops with `run is outside the scenario execution's scope`
 (exit `3`). A candidate likewise belongs to the agent that first registered it,
 so two agents in one repository need distinct candidates (`--candidate`, or
-`candidate:` on a scenario side).
+`candidate:` on a scenario side). `dev` still runs against a candidate another
+agent registered, but prints one `warning:` line to stderr naming the owning
+agent, this agent, and that a later scenario for this agent exits `3`.
 
 ### 4. Gate a change with a scenario
 

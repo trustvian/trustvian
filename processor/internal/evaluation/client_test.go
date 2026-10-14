@@ -182,6 +182,14 @@ func TestIngestPostsTheWireContract(t *testing.T) {
 	if record.EventID != "e1" {
 		t.Errorf("record.EventID = %q, want e1", record.EventID)
 	}
+	// Zero Annotations state nothing, and are sent as absent fields — what
+	// Sink's recovery re-presentation sends. See Annotations for how the
+	// control plane reads the absence.
+	for _, field := range []string{"fidelity", "behavior_layer"} {
+		if raw, ok := body[field]; ok {
+			t.Errorf("%s = %s, want the field absent for zero Annotations", field, raw)
+		}
+	}
 }
 
 // TestIngestSurfacesServerErrorEnvelope covers Review Focus item 4: a 409

@@ -142,6 +142,9 @@
       <div class="canvas-head">
         <h2 class="region-title">Behavior flow</h2>
         <p class="region-note" id="canvas-scope">No run selected.</p>
+        <div class="selector-actions">
+          <button type="button" class="btn-quiet" id="live-reconnect" disabled>Reconnect</button>
+        </div>
       </div>
       <div id="canvas-notices"></div>
       <div id="canvas" class="canvas-host"></div>
@@ -631,7 +634,7 @@
         <div id="evidence-provenance-candidate-select"></div>
         <div class="selector-actions"><button type="submit">Load provenance</button></div>
       </div>
-      <p class="hint">Filled from the runs chosen under Compare. The lists offer the current candidate's runs.</p>
+      <p class="hint">Filled from the runs chosen under Change Impact. The lists offer the current candidate's runs.</p>
       <details class="paste-path">
         <summary>Advanced: paste run IDs</summary>
         <div class="row">
@@ -740,7 +743,7 @@
         <div id="promotion-reference-pick"></div>
         <div id="promotion-candidate-pick"></div>
       </div>
-      <p class="hint">Filled from the runs chosen under Compare. The lists offer the current candidate's runs.</p>
+      <p class="hint">Filled from the runs chosen under Change Impact. The lists offer the current candidate's runs.</p>
       <div class="field">
         <label for="promotion-target">Target environment</label>
         <select id="promotion-target" name="target_environment" required>

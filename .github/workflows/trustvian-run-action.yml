@@ -19,13 +19,12 @@
 # only to its checked-in fixtures.
 #
 # A third job runs the action's run script with this commit's own runtime —
-# the pinned one predates result document version 2 — and renders what it
-# uploads: the report the control plane serves (task 107, D15), rendered as
-# version 2, which is the comment the pinned actions post once the pin moves
-# to a commit carrying it.
+# which may be newer than the pinned one — and renders what it uploads: the
+# report the control plane serves (task 107, D15), rendered as version 2.
 #
 # A fourth job posts a real gate comment on this repository's own pull request
-# through the comment action, reads it back, and then replaces it with a
+# through the comment action, reads it back, checks it is the version 2
+# rendering of the pinned runtime's report, and then replaces it with a
 # no-verdict rendering — the failure task 079 names the worst, on the real
 # API. It is the only job here holding a write scope, and why it may run a
 # local action is stated where it is defined. No job uses a secret, and no
@@ -328,9 +327,9 @@ jobs:
           exit "$failed"
 
   # This commit's runtime, through the action's own run script (task 107-B,
-  # D15). The pinned runtime the run job builds predates the report, so its
-  # artifacts are version 1; this job proves what this commit uploads — the
-  # execution's report, unchanged — and that the comment for it is the
+  # D15). The run job proves the pinned runtime; this job proves what this
+  # commit uploads — the execution's report, unchanged — and that the
+  # comment for it is the
   # version 2 rendering: the bare rendering `trustvian eval report --format md`
   # prints, framed by the commit, the run link and the exit code.
   head-runtime:
@@ -483,6 +482,16 @@ jobs:
           check "first line" "$(head -n 1 "$RUNNER_TEMP/body.md" | tr -d '\r')" "$marker"
           grep -qF "$HEAD_SHA" "$RUNNER_TEMP/body.md" || { echo "::error::the comment does not name $HEAD_SHA"; exit 1; }
           grep -qF -- "— PASS" "$RUNNER_TEMP/body.md" || { echo "::error::the comment does not hold the PASS"; exit 1; }
+          # Sections only the version 2 rendering has: a runtime pinned before
+          # the version 2 report (#168, #170) posts a version 1 comment
+          # without them, which is what v0.12.0's actions did.
+          for want in "#### Sameness" "#### Targets" "#### Tokens and cost"; do
+            grep -qF -- "$want" "$RUNNER_TEMP/body.md" ||
+              { echo "::error::the comment lacks '$want': it is not the version 2 rendering"; cat "$RUNNER_TEMP/body.md"; exit 1; }
+          done
+          # The posted body, for the record: the next step replaces it.
+          { echo "### The posted PASS comment"; echo; cat "$RUNNER_TEMP/body.md"; } >>"$GITHUB_STEP_SUMMARY"
+          sed -n '/#### Sameness/,/^#### Targets/p' "$RUNNER_TEMP/body.md"
           jq -r '.[0].id' "$RUNNER_TEMP/ours.json" >"$RUNNER_TEMP/comment-id"
           echo "ok: comment $(cat "$RUNNER_TEMP/comment-id") holds the PASS for $HEAD_SHA"
 

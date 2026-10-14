@@ -269,7 +269,8 @@ type ingestEnvelope struct {
 	// control plane this way reads as transport. Task 075.
 	//
 	// Omitted when empty, matching the server's optional field: absent means
-	// "not stated", which is read as transport.
+	// "not stated". See Annotations for how the control plane reads that and
+	// why no record this Collector applies is sent without it.
 	Fidelity string `json:"fidelity,omitempty"`
 
 	// BehaviorLayer rides here for the same reason and is the same kind of fact:

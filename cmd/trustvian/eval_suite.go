@@ -141,13 +141,9 @@ func (r scenarioRunner) suiteMain(s streams, common commonFlags, opts suiteOptio
 
 	// A suite's deadlines are enforced by terminating process groups, which
 	// only a platform `trustvian dev` supports can do. Refused there before
-	// anything else; single-scenario mode keeps its earlier behavior.
-	supported := r.platformSupported
-	if supported == nil {
-		supported = devPlatformSupported
-	}
-	if err := supported(); err != nil {
-		return usage(usageErrorf("--suite is not supported on this platform: %v", err))
+	// anything else.
+	if err := r.refuseUnsupportedPlatform("--suite"); err != nil {
+		return usage(err)
 	}
 
 	// Global preflight: every check here exits 2 before any workload runs.

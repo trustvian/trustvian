@@ -46,10 +46,10 @@ make examples
 ```
 
 `make examples` (see the root [`Makefile`](../Makefile)) runs every
-example in turn and exits non-zero if any example does. CI builds, vets
-and tests the examples module with `GOWORK=off` and fails on any
-`internal/` import, but it does not run the programs, and nothing
-compares their output with the READMEs. Run `make examples` and re-capture
+example in turn with `GOWORK=off` and exits non-zero if any example does.
+CI builds, vets and tests the examples module with `GOWORK=off`, fails on
+any `internal/` import, and runs `make examples`, so a program that stops
+running fails CI. Nothing compares the output with the READMEs: re-capture
 a README's output when you change what an example prints.
 
 `go test ./...` in this directory runs the tests of `ai-agent-security`,

@@ -1,5 +1,5 @@
 // This file is task 034's mandatory external-consumer proof (see
-// docs/tasks/034-production-store-contract-and-public-boundary.md):
+// docs/archive/tasks/v0.8/034-production-store-contract-and-public-boundary.md):
 // examples/ is a genuinely separate Go module (examples/go.mod, with
 // only a `replace` directive back to this repository), so a passing
 // `go test ./...` here demonstrates empirically that an external OSS

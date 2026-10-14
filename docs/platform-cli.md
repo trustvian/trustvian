@@ -542,7 +542,15 @@ trustvian eval progress --api-url "$URL" --id run-42
 ```
 
 A run may only name an environment its project owns, so `env create` comes
-before `eval create`; without it, `eval create` exits `3` with `not_found`.
+before `eval create`; without it, `eval create` exits `3` and names what is
+missing:
+
+```text
+trustvian: not_found: environment "local" does not exist in project "p1"; create it with `trustvian env create --project-id p1 --ref local --name <name>`
+```
+
+With `--json` it prints the control plane's own envelope, whose message is
+generic.
 
 ## Ingest and the sequence
 
@@ -593,6 +601,16 @@ scope — so two runs of one commit meet one baseline. `--agent` is the one
 derivation that refuses rather than guessing: the processor derives the actor
 from the arriving `service.name`, and an invented Agent id would produce a run
 whose evidence cannot be attributed to it.
+
+A candidate belongs to the agent that first registered it, and a run belongs to
+its candidate's agent. When the candidate already belongs to another agent, `dev`
+still runs, and prints one line to stderr before the workload starts:
+
+```text
+trustvian dev: warning: candidate "git:d7623b1" belongs to agent "billing-agent", not "support-agent", so this run is recorded under "billing-agent" and a later scenario for "support-agent" in project "my-agent" exits 3; pass --candidate to give "support-agent" its own
+```
+
+That scenario's exit 3 is `run is outside the scenario execution's scope`.
 
 ### Checking the pipeline: `--check`
 
@@ -872,6 +890,8 @@ fields and the four limits below are optional.
 - Each repetition is a full `trustvian dev` run against the one control plane
   `--api-url` resolves to. Each has a fresh run id and its own
   `--behavioral-profile`, so no repetition meets a baseline another one taught.
+  That is also why `eval run` is refused on Windows, where `dev` is: exit
+  **2**, before any request, with `--scenario` and `--suite` alike. Use WSL2.
 - The first repetition whose workload exits non-zero ends the scenario with exit
   **3**: the rest do not run and no verdict is produced. A broken workload is
   never a gate failure.
@@ -1221,7 +1241,8 @@ trustvian eval run --suite scenarios/ --scenario-timeout 10m --reference last --
   execution is complete and reusable as a reference, but no verdict was
   received for it.
 - **`--suite` is not supported on Windows** (exit `2`), because deadlines are
-  enforced by stopping process groups. Use WSL2. `--scenario` is unaffected.
+  enforced by stopping process groups. Use WSL2. Neither is `--scenario`, the
+  same way: every repetition runs `trustvian dev`, which Windows refuses.
 - **`--reference last`** is resolved per scenario: the most recent completed
   execution of *that* scenario's name, project, agent and environment, with
   its N. A missing or unusable one is that scenario's error, before it runs

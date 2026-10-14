@@ -2,18 +2,18 @@
 // Foundation end to end, entirely through the direct Go SDK — no OTel
 // adapter and no Collector processor involved anywhere in this program,
 // proving the alert package's independence from both (see
-// docs/tasks/018-alert-notification-foundation.md's Acceptance
-// Criteria).
+// docs/archive/tasks/v0.4/018-alert-notification-foundation.md's
+// Acceptance Criteria).
 //
 // It runs a cold-start (never-before-seen) event through the normal
 // Engine pipeline, evaluates one Alert rule against the resulting
 // Result, and delivers the matching Alert to a signed HTTPS webhook.
 //
 // The event's Decision is OBSERVE_ONLY, not BLOCK — this program uses
-// trustvian.NewEngine() with no custom Policy, since a genuinely
-// external module cannot construct one today (see README.md §
-// Limitations and ADR 0002); OBSERVE_ONLY is the only Decision a
-// default, rule-less Policy ever produces. The Alert rule below
+// trustvian.NewEngine() with no custom Policy (an external module can
+// compile one with config.CompilePolicy; this one keeps the default on
+// purpose, see the examples index's "A note on Decision"); OBSERVE_ONLY
+// is the only Decision a default, rule-less Policy ever produces. The Alert rule below
 // deliberately matches on anomaly score rather than Decision, which is
 // the point this example exists to make concrete: Decision and Alert
 // are different questions (spec § 18.1). A routine OBSERVE_ONLY

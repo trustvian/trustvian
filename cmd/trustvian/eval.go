@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"time"
 )
@@ -65,8 +66,10 @@ const evalUsage = `usage:
                               [--max-calls-per-run <target>=<max> ...]
                               [--max-llm-calls-per-run <n>]
                               [--api-url <url>] [--json]
-  trustvian eval run          --scenario <file> [--collector-bin <path>]
-                              [--api-url <url>] [--json]
+  trustvian eval run          (--scenario <file> | --suite <directory>
+                               --scenario-timeout <duration> [--fail-fast])
+                              [--reference <execution-id>|last]
+                              [--collector-bin <path>] [--api-url <url>] [--json]
   trustvian eval report       <execution-id> [--format md] [--api-url <url>] [--json]
   trustvian eval operational  --reference-run <id> --candidate-run <id>
                               [--reference-run <id> --candidate-run <id> ...]
@@ -129,13 +132,59 @@ func runEvalCreate(s streams, args []string, timeout time.Duration) int {
 	// happened to launch it.
 	return runLeaf(s, common, evalUsage, timeout,
 		func(ctx context.Context, c *platformClient) (apiResult, error) {
-			return c.post(ctx, map[string]string{
+			result, err := c.post(ctx, map[string]string{
 				"id":                 *id,
 				"candidate_id":       *candidateID,
 				"environment":        *environment,
 				"behavioral_profile": *profile,
 			}, "evaluation-runs")
+			if err != nil || result.status != http.StatusNotFound {
+				return result, err
+			}
+			if missing := missingRunReference(ctx, c, *candidateID, *environment); missing != "" {
+				// The server's envelope still travels with it, so --json
+				// prints exactly what the control plane said.
+				return result, &platformError{code: exitOperational,
+					err: fmt.Errorf("not_found: %s", missing), envelope: result.body}
+			}
+			return result, nil
 		}, renderRunBody)
+}
+
+// missingRunReference names the reference a refused eval create is missing,
+// or returns "" when it cannot tell.
+//
+// The control plane answers any missing reference with the same generic
+// not_found, on purpose: it says nothing about what the store holds. The CLI
+// knows what it sent, so it reads those references back — after the failure
+// only, so a request that succeeds costs nothing extra.
+func missingRunReference(ctx context.Context, c *platformClient, candidateID, environment string) string {
+	result, err := c.get(ctx, "candidates", candidateID)
+	if err != nil {
+		return ""
+	}
+	if result.status == http.StatusNotFound {
+		return fmt.Sprintf("candidate %q does not exist", candidateID)
+	}
+	var candidate candidateDTO
+	if checkStatus(result) != nil || json.Unmarshal(result.body, &candidate) != nil || candidate.AgentID == "" {
+		return ""
+	}
+	if result, err = c.get(ctx, "agents", candidate.AgentID); err != nil || checkStatus(result) != nil {
+		return ""
+	}
+	var agent agentDTO
+	if json.Unmarshal(result.body, &agent) != nil || agent.ProjectID == "" {
+		return ""
+	}
+	result, err = c.get(ctx, "projects", agent.ProjectID, "environments", environment)
+	if err != nil || result.status != http.StatusNotFound {
+		return ""
+	}
+	return fmt.Sprintf("environment %q does not exist in project %q; create it with "+
+		"`trustvian env create --project-id %s --ref %s --name <name>`",
+		sanitizeTerminalText(environment), sanitizeTerminalText(agent.ProjectID),
+		sanitizeTerminalText(agent.ProjectID), sanitizeTerminalText(environment))
 }
 
 func runEvalGet(s streams, args []string, timeout time.Duration) int {

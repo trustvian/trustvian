@@ -1,5 +1,5 @@
 // Command persistent-baseline demonstrates v0.8's first slice
-// (docs/tasks/034-production-store-contract-and-public-boundary.md):
+// (docs/archive/tasks/v0.8/034-production-store-contract-and-public-boundary.md):
 // selecting a durable Store through public configuration alone, so a
 // learned baseline survives a process restart.
 //

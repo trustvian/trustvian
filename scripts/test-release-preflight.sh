@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Tests for scripts/release-preflight.sh's offline checks: SemVer shape and
-# precedence, "newer than every tag", and the CHANGELOG and release-notes
-# checks. The network checks (tags on the remote, CI and Nightly runs) are
+# precedence, "newer than every tag", the CHANGELOG and release-notes
+# checks, and the actions' runtime pin against a scratch repository. The network checks (tags on the remote, CI and Nightly runs) are
 # thin wrappers over git ls-remote and gh api and are not faked here.
 #
 #   ./scripts/test-release-preflight.sh
@@ -92,6 +92,38 @@ refuses "notes do not name v0.11.0" check_notes v0.11.0 "$tmp/notes.md"
 : >"$tmp/empty.md"
 refuses "empty notes" check_notes v0.10.0 "$tmp/empty.md"
 refuses "missing notes" check_notes v0.10.0 "$tmp/absent.md"
+
+# --- the actions' runtime pin ----------------------------------------------
+# A scratch history: c0 → c1 (the previous release) → c2, and a side branch
+# s1 from c0 that never contains c1.
+repo="$tmp/repo"
+git init -q "$repo"
+commit_in() { # MESSAGE: an empty commit in $repo; prints its id
+    git -C "$repo" -c user.name=test -c user.email=test@invalid \
+        commit -q --allow-empty -m "$1"
+    git -C "$repo" rev-parse HEAD
+}
+c0="$(commit_in c0)"
+c1="$(commit_in c1)"
+c2="$(commit_in c2)"
+git -C "$repo" checkout -q -b side "$c0"
+s1="$(commit_in s1)"
+in_repo() { (cd "$repo" && "$@"); }
+succeeds "a pin at the previous release passes" in_repo check_runtime_pin "$c1" v0.1.0 "$c1"
+succeeds "a pin after the previous release passes" in_repo check_runtime_pin "$c2" v0.1.0 "$c1"
+refuses "a pin before the previous release fails" in_repo check_runtime_pin "$c0" v0.1.0 "$c1"
+refuses "a pin beside the previous release fails" in_repo check_runtime_pin "$s1" v0.1.0 "$c1"
+refuses "a pin not in the clone fails" in_repo check_runtime_pin 0123456789abcdef0123456789abcdef01234567 v0.1.0 "$c1"
+msg="$( (in_repo check_runtime_pin "$c0" v0.1.0 "$c1") 2>&1 || true)"
+if [[ "$msg" == *"predates v0.1.0"* ]]; then ok "the refusal names the release it predates"; else bad "refusal: $msg"; fi
+
+printf 'TRUSTVIAN_SOURCE_REPOSITORY=https://github.com/trustvian/trustvian.git\nTRUSTVIAN_SOURCE_COMMIT=%s\n' "$c1" >"$tmp/runtime.env"
+if [ "$(runtime_pin "$tmp/runtime.env")" = "$c1" ]; then ok "runtime_pin reads the pin"; else bad "runtime_pin read the wrong pin"; fi
+printf 'TRUSTVIAN_SOURCE_COMMIT=%s\n' "${c1:0:7}" >"$tmp/short.env"
+refuses "a short pin is refused" runtime_pin "$tmp/short.env"
+printf 'GO_VERSION=1.27.2\n' >"$tmp/nopin.env"
+refuses "a file with no pin is refused" runtime_pin "$tmp/nopin.env"
+refuses "a missing file is refused" runtime_pin "$tmp/absent.env"
 
 # --- CI and Nightly runs, through a stubbed gh ------------------------------
 # gh is replaced by a function that answers with $GH_ANSWER, the shape the real

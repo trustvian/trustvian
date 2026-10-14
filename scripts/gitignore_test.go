@@ -101,6 +101,59 @@ func TestTheRootBuildOutputIsStillIgnored(t *testing.T) {
 	}
 }
 
+// TestNoExecutableIsTracked keeps build output out of the index.
+//
+// `go build` in an examples/<name> directory writes an executable called
+// <name> beside main.go. One was committed (a 5.7 MB Mach-O,
+// examples/ai-agent-security/ai-agent-security; finding F18 of #175): every
+// example program's default build output must be ignored, and no tracked
+// file may be a native executable at all.
+func TestNoExecutableIsTracked(t *testing.T) {
+	root := repositoryRootForIgnoreTest(t)
+
+	mains, err := filepath.Glob(filepath.Join(root, "examples", "*", "main.go"))
+	if err != nil || len(mains) == 0 {
+		t.Fatalf("no example programs found: %v", err)
+	}
+	for _, main := range mains {
+		dir := filepath.Base(filepath.Dir(main))
+		path := "examples/" + dir + "/" + dir
+		cmd := exec.Command("git", "check-ignore", "-q", "--no-index", path)
+		cmd.Dir = root
+		if err := cmd.Run(); err != nil {
+			t.Errorf("%s, the output of `go build` in examples/%s, is not ignored", path, dir)
+		}
+	}
+
+	cmd := exec.Command("git", "ls-files", "-z")
+	cmd.Dir = root
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("listing tracked files: %v", err)
+	}
+	magics := map[string]string{
+		"\x7fELF":          "ELF",
+		"\xcf\xfa\xed\xfe": "Mach-O",
+		"\xce\xfa\xed\xfe": "Mach-O",
+		"\xca\xfe\xba\xbe": "Mach-O universal",
+		"MZ":               "PE",
+	}
+	for _, file := range strings.Split(strings.TrimRight(string(output), "\x00"), "\x00") {
+		f, err := os.Open(filepath.Join(root, file))
+		if err != nil {
+			continue // deleted in the working tree, or a submodule
+		}
+		head := make([]byte, 4)
+		n, _ := f.Read(head)
+		f.Close()
+		for magic, kind := range magics {
+			if n >= len(magic) && string(head[:len(magic)]) == magic {
+				t.Errorf("%s is a tracked %s executable", file, kind)
+			}
+		}
+	}
+}
+
 // trackedGoDirectories lists every directory holding a tracked Go file.
 //
 // Derived rather than hard-coded: a list would have to be updated by whoever adds

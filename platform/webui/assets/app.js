@@ -615,6 +615,7 @@ openForm("form-open-run", "open-run-id", loadRun);
 const connChip = byID("conn-chip");
 const connText = byID("conn-text");
 const canvasScope = byID("canvas-scope");
+const liveReconnect = byID("live-reconnect");
 const railHost = byID("rail");
 const canvasNotices = byID("canvas-notices");
 const inspectorHost = byID("inspector");
@@ -653,7 +654,7 @@ const STATE_TEXT = Object.freeze({
   [STATE.RESYNCING]: "Synchronized. Reading authoritative state…",
   [STATE.LIVE]: "Live.",
   [STATE.RECONNECTING]: "Disconnected. Reconnecting…",
-  [STATE.FAILED]: "Failed. The stream never synchronized; use Reconnect now to try again.",
+  [STATE.FAILED]: "Failed. The stream never synchronized; use Reconnect to try again.",
 });
 
 // prefers-reduced-motion, read once and re-read on change.
@@ -905,10 +906,17 @@ const liveSession = new RealtimeSession(
       }
       connText.textContent = CONN_TEXT[state] || state;
       connChip.className = `conn-chip ${CONN_CLASS[state] || "conn-idle"}`;
+      // The same explicit action the single-run watch offers. Needed most when
+      // the stream never synchronized: the session stops retrying then, and
+      // without it the only way back was a reload.
+      liveReconnect.disabled = state === STATE.LIVE || state === STATE.IDLE;
       if (state === STATE.RESYNCING || state === STATE.RECONNECTING) {
         canvasScope.textContent = state === STATE.RECONNECTING
           ? "Disconnected. The graph below is paused and no longer live."
           : "Resynchronizing…";
+      }
+      if (state === STATE.FAILED) {
+        canvasScope.textContent = STATE_TEXT[STATE.FAILED];
       }
       // Back to the selection's own wording once live again; without this the
       // canvas kept saying "Resynchronizing…" after the stream had settled.
@@ -2136,6 +2144,7 @@ byID("form-watch").addEventListener("submit", (event) => {
 });
 
 watchReconnect.addEventListener("click", () => session.reconnectNow());
+liveReconnect.addEventListener("click", () => liveSession.reconnectNow());
 watchStop.addEventListener("click", () => {
   session.stop();
   render.clear(liveSnapshot);

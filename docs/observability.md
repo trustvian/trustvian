@@ -455,7 +455,7 @@ that ends with its request.
 | Resource | Bound | Shutdown owner |
 |---|---|---|
 | Health-server goroutine | One, with a bounded header-read timeout | `Shutdown` → `http.Server.Shutdown` |
-| Status reporter (only with `status:`) | One loop goroutine and one ticker; one report in flight at a time, its request bounded by the smaller of the interval and 5 s, and its body by 256 KiB | `Shutdown` → `Stop`, before anything it reads is torn down |
+| Status reporter (only with `status:`) | One loop goroutine and one ticker; one report in flight at a time, its request bounded by the smaller of the interval and 5 s, and its body by 256 KiB; at stop, the in-flight report is abandoned and one final report is sent, bounded by 2 s | `Shutdown` → `Stop`, before anything it reads is torn down |
 | Queues, timers | None exist | — |
 | PostgreSQL pool | `MaxConns`; connection lifetime 1h, idle 30m | `Shutdown` → `Close`, exactly once |
 | In-memory store | O(distinct actors), each actor's baseline capped | Process lifetime |

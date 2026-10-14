@@ -398,7 +398,7 @@ export function createOverview(deps) {
         const control = element("button", "chip-button", side === "reference" ? "Reference" : "Candidate");
         control.type = "button";
         control.setAttribute("aria-pressed", chosen ? "true" : "false");
-        control.setAttribute("aria-label", `Use ${run.id} as the ${side} in Compare`);
+        control.setAttribute("aria-label", `Use ${run.id} as the ${side} in Change Impact`);
         control.addEventListener("click", () => {
           nav.useInCompare(side, run);
           drawRuns();
@@ -426,8 +426,8 @@ export function createOverview(deps) {
     }
     const chosenCount = (sides.reference !== null ? 1 : 0) + (sides.candidate !== null ? 1 : 0);
     const foot = element("p", "panel-foot");
-    foot.append(document.createTextNode(`${chosenCount} of 2 sides chosen for Compare. `));
-    foot.append(link("Open Compare", () => nav.openCompare()));
+    foot.append(document.createTextNode(`${chosenCount} of 2 sides chosen for Change Impact. `));
+    foot.append(link("Open Change Impact", () => nav.openCompare()));
     host.append(foot);
   }
 
@@ -539,7 +539,7 @@ export function createOverview(deps) {
     const rows = page !== null && Array.isArray(page.promotions) ? page.promotions : [];
     if (rows.length === 0) {
       host.append(emptyState("No decisions recorded",
-        "A promotion records a gate verdict against a target environment. Compare evaluates one without recording it.",
+        "A promotion records a gate verdict against a target environment. Change Impact evaluates one without recording it.",
         "promotion"));
       return;
     }

@@ -252,8 +252,7 @@ trustvian eval report scn-export-tool-20261013T210842-0bb4f40a --format md
 `trustvian-ci-render` produces the same Markdown from the same document.
 `--json` prints the report document instead, and the WebUI's **Change Impact**
 view renders the same document. To run the gate on your pull requests, see
-[GitHub Actions](docs/ci-github-action.md): at v0.12.0 the actions still build
-an earlier pinned runtime, so the comment they post is the version 1 rendering.
+[GitHub Actions](docs/ci-github-action.md).
 
 ### Use the engine
 

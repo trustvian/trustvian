@@ -104,6 +104,15 @@ func WithRealtimeSubscriber(subscriber platform.RealtimeSubscriber) Option {
 	}
 }
 
+// WithReleaseVersion sets the release version this control plane reports as
+// its producer, in place of Go's "(devel)": see BuildVersion. Empty keeps Go's
+// build information.
+func WithReleaseVersion(release string) Option {
+	return func(h *Handler) {
+		h.producerVersion = BuildVersion(release)
+	}
+}
+
 // WithHeartbeatInterval replaces the SSE keepalive interval.
 //
 // Exists so tests can observe a heartbeat without waiting on a real clock. It
@@ -147,7 +156,7 @@ func NewHandler(controlPlane *platform.ControlPlane, options ...Option) (http.Ha
 		mux:                  http.NewServeMux(),
 		heartbeatInterval:    defaultHeartbeatInterval,
 		realtimeWriteTimeout: defaultRealtimeWriteTimeout,
-		producerVersion:      buildVersion(),
+		producerVersion:      BuildVersion(""),
 	}
 	for _, option := range options {
 		option(h)

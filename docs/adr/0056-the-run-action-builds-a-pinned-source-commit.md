@@ -2,6 +2,9 @@
 
 **Status:** Accepted
 
+**Amended in v0.12.1:** the pin may not predate the newest stable release when
+a release is made ([Amendment](#amendment-v0121-the-pin-keeps-up-with-releases)).
+
 ## Context
 
 [Task 079](../tasks/v1.0/079-ci-integration-github-action.md) puts task 078's
@@ -225,3 +228,31 @@ saves is measured in minutes, not correctness.
   - caching across jobs;
   - a release-archive runtime;
   - Windows runners.
+
+## Amendment (v0.12.1): the pin keeps up with releases
+
+§ 3 made the runtime one reviewed commit and left moving it to "a separate
+reviewed change". Nothing made that change happen. v0.12.0 shipped actions
+still pinned to #140's commit, which predates v0.10.0: its control plane
+wrote result document version 1, so none of v0.12.0's report — sameness,
+targets, tokens, suggestions — reached a pull request comment, while the
+release's own end-to-end workflow passed against the version 1 rendering.
+
+The rule is now:
+
+- **A release may not ship a pin older than the release before it.** The
+  release preflight (`scripts/release-preflight.sh`, check 8) reads
+  `runtime.env` at the commit being released and refuses unless its
+  `TRUSTVIAN_SOURCE_COMMIT` is the newest stable tag's commit or a descendant
+  of it. Stable, not any tag: a release candidate's commit does not exist
+  until it is cut, and requiring a re-pin between candidates would add a
+  pull request per candidate for no user-visible gain.
+- **Moving the pin is a follow-up after every release**
+  ([runbook § 5](../release-runbook.md#5-after-every-release)), by a reviewed
+  pull request as before.
+- **The end-to-end workflow checks the posted comment is the version 2
+  rendering**, by sections only version 2 has, so a pin that regresses the
+  report fails on the pull request that moves it.
+
+Everything else in § 3 holds: one reviewed full commit, built and verified,
+never `latest`. v0.12.1 moves the pin to v0.12.0's commit, `23beffc`.

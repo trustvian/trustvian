@@ -36,19 +36,28 @@ COPY . .
 ARG TARGETOS
 ARG TARGETARCH
 
+# The release version, passed by release.yml's image job. Written into the
+# binary's main.version, which trustvian-collector reports in place of Go's
+# "(devel)": Go cannot stamp it from a tag, both because .git is not in this
+# context and because the processor module's path is not under the
+# repository's root module (ADR 0022). Empty — `make container-build` — stamps
+# nothing.
+ARG VERSION=
+
 # CGO_ENABLED=0 for a static binary — required by the distroless static
 # base below, and what lets one builder cross-compile every platform.
 # -trimpath so no build-host paths are embedded.
 #
-# No -ldflags version injection: the binary reports its version from Go's
-# own build information (see internal/buildinfo).
+# The only -ldflags is the release version above, when one is given; the
+# revision still comes from Go's own build information.
 # GOWORK=off explicitly, in addition to .dockerignore excluding go.work:
 # the container build must resolve modules the way a consumer does, not the
 # way a developer's workspace does. Stated here so re-adding go.work to the
 # context cannot silently change how this image is built.
 RUN cd processor && \
     CGO_ENABLED=0 GOWORK=off GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
-    go build -trimpath -o /out/trustvian-collector ./cmd/trustvian-collector
+    go build -trimpath ${VERSION:+-ldflags=-X=main.version=${VERSION}} \
+    -o /out/trustvian-collector ./cmd/trustvian-collector
 
 # ---------------------------------------------------------------------
 # Runtime: distroless static, non-root.

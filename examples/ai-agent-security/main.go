@@ -1,7 +1,7 @@
 // Command ai-agent-security ports
-// docs/tasks/032-agent-security-scenario-validation.md's combined
+// docs/archive/tasks/v0.7/032-agent-security-scenario-validation.md's combined
 // scenario — delegation + sequence + approval evidence, together — and
-// docs/tasks/033-v07-stabilization-release-gate.md's own resolution of
+// docs/archive/tasks/v0.7/033-v07-stabilization-release-gate.md's own resolution of
 // the public-API gap task 032 found: every capability below is
 // configured through config.PolicyConfig/config.AnomalyConfig, both
 // compiled with config.CompilePolicy/config.CompileAnomaly into the
@@ -77,7 +77,7 @@ func main() {
 	}
 
 	// Delegation and sequence signals: entirely declarative Anomaly
-	// config (docs/tasks/033-v07-stabilization-release-gate.md) — the
+	// config (docs/archive/tasks/v0.7/033-v07-stabilization-release-gate.md) — the
 	// same public path that closed the gap task 032 found.
 	anomalyCfg := config.AnomalyConfig{
 		Version:          config.AnomalySchemaVersionV1,

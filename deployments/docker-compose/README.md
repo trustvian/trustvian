@@ -269,9 +269,11 @@ the restored database must reach 80 observations (continued from the
 backup's 40) while the original stays at 40. It removes its own volume and
 backup directory when it finishes. Needs Docker, `curl`, and bash.
 
-**Both this drill and the smoke test start with `docker compose down -v`.**
-They delete whatever learned state this project's `postgres-data` volume
-already holds. Back it up first if you need it.
+The drill and the smoke test each run as a Compose project of their own,
+`trustvian-recovery-drill` and `trustvian-smoke`, not as `trustvian-reference`.
+Each starts with `down -v` on its own project only, so neither touches the
+volume of a stack you started with `make compose-up`. They publish the same
+host ports, so stop that stack first: with it running they fail at startup.
 
 ## Automated smoke test
 

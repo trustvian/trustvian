@@ -162,10 +162,12 @@ integration-postgres: ## Run the PostgreSQL integration+stress suites against th
 	$(COMPOSE) up -d postgres
 	TRUSTVIAN_TEST_POSTGRES_DSN='$(POSTGRES_DSN)' $(GO) test -race ./...
 
+# GOWORK=off, as CI runs it: the programs model an external consumer, and a
+# go.work would resolve the root module the way no consumer does.
 examples: ## Run every examples/* program and fail if any exits non-zero
 	@for d in examples/*/; do \
 		if [ -f "$$d/main.go" ]; then \
 			echo "==> $$d"; \
-			(cd "$$d" && go run .) || exit 1; \
+			(cd "$$d" && GOWORK=off $(GO) run .) || exit 1; \
 		fi; \
 	done

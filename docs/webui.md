@@ -123,10 +123,11 @@ Every bound is a field of the document's `bounds`. The foot of the page names
 300 s. The Fidelity section names the 32 distinct operations counted per HTTP
 target.
 
-A Collector reports on a timer (every ten seconds by default) and sends no final report
-when it stops. After a run shorter than one interval, Status can show a
-Collector whose span counters are still `0` while the run's own progress counts
-its records.
+A Collector reports when it starts, on a timer (every ten seconds by default),
+and once more when it stops, so a run shorter than one interval still shows its
+span counts. The report at stop is bounded by 2 s; a Collector killed rather
+than stopped, or whose control plane does not answer within that bound, keeps
+the counts of its last delivered report.
 
 ## The Overview
 
@@ -152,7 +153,7 @@ the change affects.
 Everything links to the record behind it. A run's chip chooses it for the
 evidence panel and **Open** goes to its workspace; **Reference** and
 **Candidate** assign it as a side in Change Impact's run comparison, which is then ready with both
-runs chosen (the panel's link to it is still labelled **Open Compare**); a
+runs chosen (the panel's link to it is **Open Change Impact**); a
 verdict's **Open** opens its decision; a live card's **Watch** selects it in
 Live.
 
@@ -640,7 +641,7 @@ database's.
 
 | What happened | What the page does |
 |---|---|
-| Never synchronized | Stops retrying: the connection chip says `Disconnected`. For a single-run watch, the state line says *Failed* and **Reconnect** tries again; for the global Live stream, reload the page |
+| Never synchronized | Stops retrying: the connection chip says `Disconnected`. For a single-run watch, the state line says *Failed* and its **Reconnect** tries again; for the global Live stream, the line under *Behavior flow* says so and the **Reconnect** beside it tries again |
 | Was live, then disconnected | Reconnects with bounded backoff: 250ms, 500ms, 1s, 2s, 4s, capped at 5s |
 | Heartbeats but no `stream_ready` | Treated as a failure after a finite handshake window, not as a healthy stream |
 | More than 64 events buffered during a read | Abandons the stream and resynchronizes — never silently drops one |

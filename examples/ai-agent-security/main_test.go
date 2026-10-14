@@ -1,5 +1,5 @@
 // This file is task 033's mandatory external-consumer proof (see
-// docs/tasks/033-v07-stabilization-release-gate.md): examples/ is a
+// docs/archive/tasks/v0.7/033-v07-stabilization-release-gate.md): examples/ is a
 // genuinely separate Go module (examples/go.mod, with only a `replace`
 // directive back to this repository — no shared import path with
 // github.com/trustvian/trustvian's own internal/ tree), so a passing
