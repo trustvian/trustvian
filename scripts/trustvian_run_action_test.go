@@ -42,7 +42,7 @@ const (
 	actionDir   = "../.github/actions/trustvian-run"
 	headSHA     = "1111111111111111111111111111111111111111"
 	mergeSHA    = "2222222222222222222222222222222222222222"
-	runtimePin  = "5521759bb115744498946bfd03d7dd45f688caac"
+	runtimePin  = "23beffc7a85db17cc22913769f6357953e88dfa0"
 	maxResult   = 32*1024*1024 + 64*1024
 	fakeAPIPort = "54321"
 )
@@ -919,7 +919,7 @@ func TestRunActionRuntimePin(t *testing.T) {
 	}
 	good := readFile(t, pin)
 	tests := map[string]string{
-		"short commit":     strings.Replace(good, runtimePin, "5521759", 1),
+		"short commit":     strings.Replace(good, runtimePin, "23beffc", 1),
 		"branch name":      strings.Replace(good, runtimePin, "main", 1),
 		"floating go":      strings.Replace(good, "GO_VERSION=1.27.2", "GO_VERSION=1.27", 1),
 		"unknown key":      good + "GOFLAGS=-insecure\n",
