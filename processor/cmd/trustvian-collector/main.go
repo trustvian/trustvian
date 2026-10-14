@@ -14,7 +14,10 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"go.opentelemetry.io/collector/component"
@@ -50,13 +53,42 @@ func components() (otelcol.Factories, error) {
 	}, nil
 }
 
+// exitUsage matches trustvian-local and the platform command families: 2 is an
+// invocation error.
+const exitUsage = 2
+
+const usage = `usage:
+  trustvian-collector [--config <path>]
+
+Runs a minimal OpenTelemetry Collector with the Trustvian processor.
+
+  --config   the Collector configuration file (default config.yaml);
+             --config <path> and --config=<path> are equivalent`
+
+// parseArgs returns the configuration path. Any argument it does not
+// understand is an error, never ignored: falling back to ./config.yaml after
+// an argument was given would run a configuration nobody named.
+func parseArgs(args []string) (string, error) {
+	fs := flag.NewFlagSet("trustvian-collector", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configPath := fs.String("config", "config.yaml", "the Collector configuration file")
+	if err := fs.Parse(args); err != nil {
+		return "", err
+	}
+	if fs.NArg() != 0 {
+		return "", fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if *configPath == "" {
+		return "", errors.New("--config needs a path")
+	}
+	return *configPath, nil
+}
+
 func main() {
-	configPath := "config.yaml"
-	for _, arg := range os.Args[1:] {
-		const prefix = "--config="
-		if len(arg) > len(prefix) && arg[:len(prefix)] == prefix {
-			configPath = arg[len(prefix):]
-		}
+	configPath, err := parseArgs(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "trustvian-collector: %v\n%s\n", err, usage)
+		os.Exit(exitUsage)
 	}
 
 	settings := otelcol.CollectorSettings{

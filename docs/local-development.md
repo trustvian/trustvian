@@ -175,9 +175,6 @@ service:
 ./bin/trustvian-collector --config=collector.yaml
 ```
 
-The flag takes `=`. `--config collector.yaml`, with a space, is not read, and the
-Collector falls back to `./config.yaml`.
-
 **Terminal C — your workload**, pointed at the receiver:
 
 ```bash
