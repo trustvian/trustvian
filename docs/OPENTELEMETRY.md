@@ -606,7 +606,7 @@ a span carrying conventions the table declined to read is `transport`.
 | Where | How |
 |---|---|
 | outbound span attribute | `trustvian.fidelity`, beside the other enrichment |
-| ingest envelope | optional `fidelity`; absent means transport |
+| ingest envelope | optional `fidelity`; absent shows as transport on the realtime observation and is counted `unrecorded` in the behavior's evidence (task 081). The Collector always states it |
 | realtime observation | always present, so absence never needs interpreting |
 | WebUI inspector | a sentence, not a badge |
 | `StableFeatures` / the fingerprint | **never** — it would reset baselines on an instrumentation upgrade |

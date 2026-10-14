@@ -65,6 +65,62 @@ func TestIngestCountsTheEnvelopesFidelityAndLayer(t *testing.T) {
 	}
 }
 
+// capturingPublisher keeps every realtime event it is handed.
+type capturingPublisher struct{ events []RealtimeEvent }
+
+func (p *capturingPublisher) Publish(e RealtimeEvent) RealtimePublishResult {
+	p.events = append(p.events, e)
+	return RealtimePublishResult{}
+}
+
+// TestUnstatedFidelityIsUnrecordedInEvidence pins the control plane's two
+// readings of one record whose envelope states no fidelity (finding F11 of
+// #175): the realtime observation shows it as transport, and the behavior's
+// persisted fidelity counts it unrecorded. They differ on purpose — a live view
+// must always name a level, and evidence must not claim one nothing stated —
+// and they never meet a record from the Trustvian Collector, which always
+// states one. That half is pinned in the processor module by
+// TestAnnotationsNeverLeaveFidelityUnstated and
+// TestEveryEnvelopeStatesACountablePair; see processor/internal/evaluation's
+// Annotations. A change to either reading has to revisit both.
+func TestUnstatedFidelityIsUnrecordedInEvidence(t *testing.T) {
+	store, _ := testStore(t)
+	run := seedRunningRun(t, store)
+	live := &capturingPublisher{}
+	plane, err := NewControlPlane(store, store, store, WithRealtimePublisher(live))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := plane.IngestDecisionRecord(t.Context(), IngestRequest{
+		RunID: run.ID(), Sequence: 1, BehavioralProfile: run.BehavioralProfile(),
+		Record: operationalTestRecord(run, "e0", "1000", event.StatusOK),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, snapshot, err := store.EvaluationEvidence(t.Context(), run.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := snapshot.Entries()[0].Fidelity
+	if stored != unrecordedFidelity(1) {
+		t.Fatalf("evidence counted an unstated fidelity as %+v, want it unrecorded", stored)
+	}
+	if level, _ := stored.Reported(); level != FidelityLevelUnrecorded {
+		t.Fatalf("evidence reported an unstated fidelity as %s, want %s", level, FidelityLevelUnrecorded)
+	}
+
+	var observed []event.Fidelity
+	for _, e := range live.events {
+		if e.Kind == RealtimeObservationRecorded {
+			observed = append(observed, e.Observation.Fidelity)
+		}
+	}
+	if len(observed) != 1 || observed[0] != event.FidelityTransport {
+		t.Fatalf("realtime observations carried fidelity %q, want one reading %q", observed, event.FidelityTransport)
+	}
+}
+
 func TestIngestRefusesAContradictoryPairBeforeWriting(t *testing.T) {
 	store, _ := testStore(t)
 	run := seedRunningRun(t, store)
