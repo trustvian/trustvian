@@ -46,6 +46,11 @@ func runEvidence(s streams, args []string, timeout time.Duration) int {
 		return usageFailure(s, evidenceUsage, fmt.Errorf("evidence requires a subcommand"))
 	}
 	switch args[0] {
+	case "-h", "--help", "help":
+		// Asked for, so stdout and success, the way `trustvian --help` and
+		// `trustvian dev --help` answer.
+		fmt.Fprintln(s.out, evidenceUsage)
+		return exitOK
 	case "behaviors":
 		return runEvidenceBehaviors(s, args[1:], timeout)
 	case "observations":

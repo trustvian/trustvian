@@ -65,8 +65,10 @@ const evalUsage = `usage:
                               [--max-calls-per-run <target>=<max> ...]
                               [--max-llm-calls-per-run <n>]
                               [--api-url <url>] [--json]
-  trustvian eval run          --scenario <file> [--collector-bin <path>]
-                              [--api-url <url>] [--json]
+  trustvian eval run          (--scenario <file> | --suite <directory>
+                               --scenario-timeout <duration> [--fail-fast])
+                              [--reference <execution-id>|last]
+                              [--collector-bin <path>] [--api-url <url>] [--json]
   trustvian eval report       <execution-id> [--format md] [--api-url <url>] [--json]
   trustvian eval operational  --reference-run <id> --candidate-run <id>
                               [--reference-run <id> --candidate-run <id> ...]

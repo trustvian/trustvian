@@ -32,11 +32,11 @@ import (
 // Exit codes for the platform command families.
 //
 // Deliberately skipping 1, which legacy commands already use for "the command
-// failed". Leaving it unclaimed here is what lets `eval compare` give it a
+// failed". Leaving it unclaimed here is what lets the gate commands give it a
 // single unambiguous meaning; see docs/compatibility.md.
 const (
 	exitOK          = 0
-	exitGateFail    = 1 // eval compare only
+	exitGateFail    = 1 // gate FAIL: eval compare, eval compare-repeated and eval run only
 	exitUsage       = 2
 	exitOperational = 3
 )
@@ -361,10 +361,11 @@ const (
 	// localStateDir and localDiscoveryFile locate the endpoint a local
 	// runtime published.
 	//
-	// Exactly this path in the current working directory: no environment
-	// variable, no parent-directory walk, no $HOME, no network scan. A
-	// directory owns its runtime, and nothing outside it should be able to
-	// redirect a command.
+	// This path in the current working directory first, then the one
+	// `trustvian dev` publishes for this directory under $HOME
+	// (devDiscoveryPath): no environment variable, no parent-directory walk,
+	// no network scan. Both are keyed to this directory, so a command run
+	// here finds only a runtime started for here.
 	localStateDir       = ".trustvian"
 	localDiscoveryFile  = "runtime.json"
 	localDiscoveryLimit = 4 << 10

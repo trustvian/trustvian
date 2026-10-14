@@ -53,8 +53,10 @@ func registerCommonFlags(fs *flag.FlagSet) commonFlags {
 //
 // Shared rather than repeated so the four command families cannot drift into
 // describing the same resolution rule three different ways.
-const apiURLNote = "\n\n" + `--api-url is optional: a runtime started with ` + "`make local`" + ` is found
-through ./.trustvian/runtime.json in the current directory.`
+const apiURLNote = "\n\n" + `--api-url is optional. Without it the control plane is discovered from
+./.trustvian/runtime.json (published by ` + "`make local`" + `), then from
+~/.trustvian/dev/<hash of this directory>/runtime.json (published by
+` + "`trustvian dev`" + ` for this directory).`
 
 // apiURLSet reports whether --api-url appeared on the command line.
 //
