@@ -640,8 +640,9 @@ additive; changing one scripts depend on would not be.
 
 ## Environment variables
 
-Only variables read by a shipped binary or by the reference deployment
-are operational surface:
+Only variables read by a shipped binary or by the reference deployment,
+or set by `trustvian dev` for the workload it starts, are operational
+surface:
 
 | Variable | Class | Role |
 |---|---|---|
@@ -649,8 +650,10 @@ are operational surface:
 | `TRUSTVIAN_HEALTH_PORT`, `TRUSTVIAN_OTLP_GRPC_PORT`, `TRUSTVIAN_POSTGRES_HOST_PORT` | OPERATIONALLY STABLE | Reference-deployment port mapping |
 | `TRUSTVIAN_RUNTIME_POSTGRES_DB` | OPERATIONALLY STABLE | Database the runtime uses after a restore cutover |
 | `TRUSTVIAN_IMAGE_REGISTRY` | OPERATIONALLY STABLE | Registry override for image resolution |
+| `TRUSTVIAN_DEV_OTLP_GRPC_ENDPOINT` | OPERATIONALLY STABLE | Set by `trustvian dev` for its workload: the Collector's OTLP/gRPC endpoint, for a workload that builds its exporter in code ([platform CLI](platform-cli.md)) |
 | `TRUSTVIAN_DEMO_*` | OBSERVATIONAL | Demo producer only; not a production interface |
 | `TRUSTVIAN_TEST_*`, `TRUSTVIAN_WORKFLOW_DIR`, `TRUSTVIAN_ACTION_REF_RESOLVER` | INTERNAL | Test and CI plumbing; may change at any time |
+| `TRUSTVIAN_LOCAL_BIN`, `TRUSTVIAN_COLLECTOR_BIN` | INTERNAL | Developer overrides for the helper binaries `trustvian dev` starts; outside the compatibility promise |
 
 ## Collector processor
 
