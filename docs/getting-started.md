@@ -1,5 +1,9 @@
 # Getting Started
 
+**First time?** The [QuickStart](quickstart.md) runs an agent we provide, with
+only the release archive and Python, in about ten minutes. This page is for
+running **your own** agent.
+
 Two paths:
 - [**Developer preview**](#developer-preview) runs an agent you already have
   under Trustvian, from the release archive alone, with no Go toolchain and no
@@ -9,9 +13,10 @@ Two paths:
 
 ## Developer preview
 
-From `v0.10.0`; the commands below install `v0.12.0`. Run your agent under Trustvian, watch its behavior in a browser,
-gate a change to it over repeated runs, then put that gate on your pull
-requests.
+From `v0.10.0`; the commands below are from `v0.12.1`. Run your agent under
+Trustvian, watch its behavior in a browser, gate a change to it over repeated
+runs, then put that gate on your pull requests. The
+[learning path](learning-path.md) explains each step level by level.
 
 **You need:**
 - Linux or macOS, on amd64 or arm64. `trustvian dev` and `eval run` (with
@@ -24,36 +29,17 @@ requests.
   [instrumentation ownership](platform-cli.md#instrumentation-ownership). It
   must also declare `OTEL_SERVICE_NAME`: that is the agent Trustvian reports on.
 
+The outputs below come from the [QuickStart agent](../examples/quickstart/)
+standing in for yours, in a repository named `my-agent`, as the agent
+`support-agent`.
+
 ### 1. Install from the archive
 
-```bash
-V=v0.12.0
-A=trustvian_${V}_linux_amd64          # or linux_arm64, darwin_amd64, darwin_arm64
-curl -sLO https://github.com/trustvian/trustvian/releases/download/$V/$A.tar.gz
-curl -sLO https://github.com/trustvian/trustvian/releases/download/$V/checksums.txt
-sha256sum -c checksums.txt --ignore-missing   # macOS: shasum -a 256 -c checksums.txt --ignore-missing
-tar -xzf $A.tar.gz
-export PATH="$PWD/$A:$PATH"
-trustvian version
-```
-
-```text
-trustvian_v0.12.0_darwin_arm64.tar.gz: OK
-trustvian v0.12.0
-  revision:  23beffc7a85db17cc22913769f6357953e88dfa0
-  committed: 2026-10-13T12:55:34Z
-  go:        go1.27.2
-  platform:  darwin/arm64
-```
-
-The archive holds three binaries, beside `LICENSE` and `README.md`, and they must stay side by side: `trustvian`
-finds the other two next to itself.
-
-```text
-trustvian            the CLI
-trustvian-local      the local control plane
-trustvian-collector  the OTLP receiver and the Trustvian processor
-```
+Install the three binaries exactly as
+[QuickStart § 1](quickstart.md#1-install-from-the-archive) does, checking the
+archive against `checksums.txt`, and put their directory on your `PATH`. They
+must stay side by side: `trustvian` finds `trustvian-local` and
+`trustvian-collector` next to itself.
 
 ### 2. Start the control plane
 
@@ -67,9 +53,11 @@ trustvian-local
 ```
 
 ```text
+[main 93d3ae8] Ignore Trustvian local state
+ 1 file changed, 1 insertion(+)
 Trustvian local runtime
-API:   http://127.0.0.1:62622
-Web:   http://127.0.0.1:62622/
+API:   http://127.0.0.1:58861
+Web:   http://127.0.0.1:58861/
 Store: sqlite
 State: .trustvian/platform.db
 Local clients in this directory can now omit --api-url.
@@ -78,8 +66,9 @@ Press Ctrl-C to stop.
 
 It keeps its state in `.trustvian/` and binds loopback only. Ignoring that
 directory matters: an untracked file there makes the worktree dirty, so the
-candidate would read `git:<sha>+dirty`. Leave it running and open the `Web:` URL
-in a browser.
+candidate would read `git:<sha>+dirty`. Ignore your virtual environment and
+build output the same way. Leave it running and open the `Web:` URL in a
+browser: with nothing arriving it opens on **Status**, which says why.
 
 ### 3. Run your agent under Trustvian
 
@@ -87,7 +76,7 @@ In a second terminal, in the same directory, with the `API:` URL from step 2:
 
 ```bash
 OTEL_SERVICE_NAME=support-agent \
-  trustvian dev --api-url http://127.0.0.1:62622 -- ./agent.sh
+  trustvian dev --api-url http://127.0.0.1:58861 -- .venv/bin/python agent.py
 ```
 
 ```text
@@ -95,23 +84,34 @@ Trustvian dev
 
   Project     my-agent
   Agent       support-agent   (declared by the workload)
-  Candidate   git:d7623b1
+  Candidate   git:93d3ae8
   Environment local
-  Run         dev-git-d7623b1-20261013T210951.574Z
+  Run         dev-git-93d3ae8-20261015T235209.355Z
+
+  State    ~/.trustvian/dev/faecabcba6f0
 …
   Attached to a control plane this command did not start.
   Owner    existing   (auto: $OTEL_SERVICE_NAME is set)
 …
-Run dev-git-d7623b1-20261013T210951.574Z complete.
+Running python (+1 arguments)
+
+agent: reference run complete, 6 spans delivered
+
+Run dev-git-93d3ae8-20261015T235209.355Z complete.
 ```
 
+Replace `.venv/bin/python agent.py` with the command that starts your agent.
 `dev` prints the project, agent, candidate and run it provisioned. It runs your
-command unchanged with an OTLP receiver around it, and exits with your command's
-status. The browser's **Live** view shows the run as soon as telemetry arrives,
-with no identifier to type. Select it to see the agent, tool and service flow
-with the decision, risk, trust and anomaly the server computed. Several actors
-inside one run draw as one agent there; following one actor and pausing the
-view are planned ([task 109](ROADMAP.md#v0130--proposed)).
+command unchanged with an OTLP receiver around it, and exits with your
+command's status. The browser's **Live** view shows the run as soon as
+telemetry arrives, with no identifier to type. Select it to see the agent, tool
+and service flow with the decision, risk, trust and anomaly the server
+computed. Several actors inside one run draw as one agent there; following one
+actor and pausing the view are planned
+([task 109](ROADMAP.md#v0130--proposed)). After the run, **Status** shows the
+spans it received, its producers and the model calls the telemetry named. If
+nothing arrives, Status's suggestions say what to check, and
+`trustvian dev --check` proves the pipeline with no workload at all.
 
 `dev` does not use step 2's discovery file. Without `--api-url` it starts a
 control plane of its own that stops when your command exits, which is too soon
@@ -130,75 +130,34 @@ agent, this agent, and that a later scenario for this agent exits `3`.
 
 ### 4. Gate a change with a scenario
 
-A scenario runs each side `runs` times and compares which behaviors appear. Save
-this as `scenarios/export-tool.yaml`. It is the scenario this path is tested
-with, where the candidate's one change is that it reaches a third tool:
+A scenario runs each side `runs` times and compares which behaviors appear.
+Start from the QuickStart's
+[`scenario.yaml`](../examples/quickstart/scenario.yaml) and change, for your
+agent:
 
-```yaml
-version: v1
-name: export-tool
-runs: 3
-instrumentation: existing
-reference:
-  command: [./agent.sh]
-  env: {SPAN_COUNT: "2", OTEL_SERVICE_NAME: support-agent}
-candidate:
-  command: [./agent.sh]
-  env: {SPAN_COUNT: "3", OTEL_SERVICE_NAME: support-agent}
-gate:
-  added_candidate_presence_minimum: 1        # k
-  added_reference_presence_maximum: 0        # j
-  max_repeated_added_behaviors: 0
-  max_block_decisions_per_run: 0
-  max_critical_risk_observations_per_run: 0
-```
+- each side's `command`, to the command that starts your agent;
+- each side's `env`: your `OTEL_SERVICE_NAME`, and whatever selects the
+  reference and the candidate behavior. The two sides may also differ by
+  `candidate:`, a candidate identifier of their own;
+- `model_env` (or `model:`), to declare the model each side ran with, so
+  sameness can say whether it changed;
+- `name` and `runs`. The five gate limits are required, and none has a
+  default.
+
+Commit the scenario, then run it:
 
 ```bash
-trustvian eval run --scenario scenarios/export-tool.yaml
+trustvian eval run --scenario scenarios/my-change.yaml
 echo $?    # 0 PASS, 1 gate FAIL, 2 usage, 3 operational
 ```
 
 `eval run` finds step 2's control plane on its own. It prints each repetition's
 `dev` output to stderr. On stdout it prints what each side recorded, the
 behaviors with their presence counts, the gate's six checks, and whether both
-sides ran the same scenario, inputs, model and prompt reference:
-
-```text
-export-tool   runs 3   (execution scn-export-tool-20261013T210554-7cce71d1)
-Recorded
-  reference: scenario sha256:83f685cef295de851a3e0a3e0c4c5c4c104957418ea84fe69f589b8992b89265   inputs not_declared   model not_recorded   prompt_ref not_recorded
-  candidate: scenario sha256:83f685cef295de851a3e0a3e0c4c5c4c104957418ea84fe69f589b8992b89265   inputs not_declared   model not_recorded   prompt_ref not_recorded
-
-Behavior                                  reference   candidate
-  tool/crm_lookup → tools.localhost              3/3         3/3
-  tool/export_customer → tools.localhost         0/3         3/3   + added
-  tool/knowledge_search → tools.localho…         3/3         3/3
-
-Gate (k = 1, j = 0)
-  PASS reference repetitions completed: 3 (== 3)
-  PASS candidate repetitions completed: 3 (== 3)
-  PASS repetitions failing minimum evidence: 0 (<= 0)
-  FAIL repeatedly added behaviors: 1 (<= 0)
-  PASS worst candidate block decisions: 0 (<= 0)   advisory: fresh scope
-  PASS worst candidate critical risk observations: 0 (<= 0)   advisory: fresh scope
-
-Sameness
-  same_scenario    true
-  same_inputs      true
-  same_model       not_recorded
-  same_prompt_ref  not_recorded
-…
-
-Gate: FAIL
-```
-
-`export_customer` appears in every candidate run and in no reference run, so
-the gate FAILs with exit `1`: the candidate added a behavior. `--json` writes
-the result document instead.
-
-`version`, `name`, `runs`, each side's `command` and the five gate limits are
-required, and none has a default. `instrumentation` is optional. The format is
-in
+sides ran the same scenario, inputs, model and prompt reference.
+[QuickStart § 6](quickstart.md#6-gate-a-change) shows that output for the
+QuickStart agent, and [§ 7](quickstart.md#7-read-the-report) its report.
+`--json` writes the result document instead. The format is in
 [Platform CLI § Behavioral scenarios](platform-cli.md#behavioral-scenarios-trustvian-eval-run).
 
 **More than one scenario:**
@@ -213,7 +172,7 @@ within the timeout. The suite exits with its most severe result. See
 
 ### 5. Calibrate `N`, `k` and `j` before trusting a FAIL
 
-The stand-in above is deterministic, so an unchanged candidate always passes.
+The QuickStart agent is deterministic, so an unchanged candidate always passes.
 **A model-driven agent is not.** Its behavior set moves between runs, and no
 default `k` ships. Before you rely on a verdict, run a scenario whose candidate
 is identical to its reference several times. Count how often it FAILs against
@@ -231,32 +190,15 @@ has two jobs:
 - **`run`** runs the scenario on your pull request's code with read-only
   permissions. Its exit code is the check.
 - **`comment`** holds the workflow's only write scope. It runs no pull request
-  code and posts the result as one comment, edited in place on each push.
+  code and posts the result as one comment, edited in place on each push: the
+  version 2 report, the same Markdown as `trustvian eval report --format md`.
 
-The actions build Trustvian from the pinned commit rather than downloading this
-archive. On a pull request from a fork, GitHub gives the comment job a
-read-only token: you get a warning and the job summary, not a comment. See
+The actions build Trustvian from the commit their `runtime.env` pins rather
+than downloading this archive. Pin them to a release's commit, and re-pin when
+you upgrade: a pin older than `v0.12.1` posts the version 1 rendering. On a
+pull request from a fork, GitHub gives the comment job a read-only token: you
+get a warning and the job summary, not a comment. See
 [Running behavioral scenarios in GitHub Actions](ci-github-action.md).
-
-### The agent this path is tested with
-
-`./agent.sh` stands in for your agent. It wraps the repository's model-free
-test producer,
-[`processor/cmd/agent-producer`](../processor/cmd/agent-producer/main.go). The
-producer emits `crm_lookup`, `knowledge_search` and `export_customer` as GenAI
-tool spans, `SPAN_COUNT` of them, in that order. To reproduce the walkthrough
-exactly, build it with Go from a clone
-(`cd processor && go build ./cmd/agent-producer`) and copy it into your
-directory beside this wrapper. Commit `agent.sh` and the scenario, and add
-`agent-producer` to `.gitignore`: an untracked file makes the candidate
-`git:<sha>+dirty`.
-
-```sh
-#!/bin/sh
-# agent-producer reads its own variables rather than OTEL_EXPORTER_OTLP_*.
-OTLP_ENDPOINT="$TRUSTVIAN_DEV_OTLP_GRPC_ENDPOINT" SERVICE_NAME="$OTEL_SERVICE_NAME" \
-ENVIRONMENT=local MODE=semantic exec ./agent-producer
-```
 
 ## Requirements
 

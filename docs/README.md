@@ -11,10 +11,15 @@ earlier in the project's life is kept separately under
 
 1. [Project overview](../README.md) — what Trustvian is and the problem it
    solves.
-2. [Getting Started](getting-started.md) — run an agent you already have under
+2. [QuickStart](quickstart.md) — try Trustvian in about ten minutes with an
+   agent we provide, the release archive and Python 3: watch it live, gate a
+   change to it and read the report.
+3. [From first run to a release gate](learning-path.md) — the learning path:
+   what Trustvian adds, level by level, from a first run to a gate in CI.
+4. [Getting Started](getting-started.md) — run an agent you already have under
    Trustvian from the release archive and gate a change to it, or install the
    CLI and SDK and run a first analysis.
-3. Then pick your integration style: the [local platform](#use-the-local-platform)
+5. Then pick your integration style: the [local platform](#use-the-local-platform)
    to watch and gate an agent, the [Go SDK](sdk-guide.md) to embed the engine,
    or the [CLI](cli-guide.md) to analyze events from files.
 
