@@ -4,6 +4,7 @@
 [![Nightly](https://img.shields.io/github/actions/workflow/status/trustvian/trustvian/nightly.yml?branch=main&label=nightly&logo=github)](https://github.com/trustvian/trustvian/actions/workflows/nightly.yml)
 [![Release](https://img.shields.io/github/v/release/trustvian/trustvian?sort=semver&label=release&color=blue)](https://github.com/trustvian/trustvian/releases/latest)
 [![License](https://img.shields.io/github/license/trustvian/trustvian?color=blue)](LICENSE)
+[![Status](https://img.shields.io/badge/status-pre--1.0%20%C2%B7%20not%20production--ready-orange)](#project-status)
 <br>
 [![Go](https://img.shields.io/github/go-mod/go-version/trustvian/trustvian?logo=go&logoColor=white)](go.mod)
 [![Go Reference](https://pkg.go.dev/badge/github.com/trustvian/trustvian.svg)](https://pkg.go.dev/github.com/trustvian/trustvian)
@@ -14,6 +15,21 @@
 
 > OpenTelemetry observes behavior. Trustvian evaluates whether that
 > behavior should be trusted.
+
+**[QuickStart](docs/quickstart.md)** ·
+[Documentation](docs/README.md) ·
+[Roadmap](#roadmap) ·
+[Changelog](CHANGELOG.md) ·
+[Contributing](CONTRIBUTING.md) ·
+[Security](.github/SECURITY.md)
+
+> [!WARNING]
+> **Trustvian is under active development and is not production-ready.** It is
+> pre-`v1.0`: a minor release may still change the public Go API, the
+> configuration format and the platform's `/v1` API, and the local platform is
+> an unauthenticated, loopback-only developer tool. Use it to evaluate agents on
+> a laptop and in CI, not as the control a production system depends on. [Project status](#project-status) says what that means in detail,
+> and the [roadmap](#roadmap) shows where it is going.
 
 Trustvian is an open-source, local-first behavioral security and evaluation
 platform for AI agents and agentic applications, built on a behavioral trust
@@ -277,7 +293,7 @@ func main() {
 
 See the [SDK guide](docs/sdk-guide.md).
 
-## Production Persistence
+## Persistence
 
 `NewEngine()` uses an in-memory store, so nothing persists unless you ask
 for it. Three backends are available, all selected through the same public
@@ -287,7 +303,7 @@ configuration document.
 |---|---|---|---|
 | `memory` | Tests and ephemeral workloads. The default. | No | No |
 | `file` | Single-process durable use — a CLI run, or one long-lived service | Yes | No — there is no cross-process file locking |
-| `postgres` | Production and horizontally-scaled deployments | Yes | Yes |
+| `postgres` | Several instances that must share one baseline | Yes | Yes |
 
 PostgreSQL is the backend to choose when more than one instance must agree
 about an actor. Two instances with two separate files hold two different
@@ -483,7 +499,7 @@ use an archive, or build from a clone. The `trustvian-platform` and
 
 ## Reference Deployment
 
-A runnable Compose stack demonstrating the full production path:
+A runnable Compose stack demonstrating the whole Collector-to-PostgreSQL path:
 
 ```bash
 cd deployments/docker-compose
@@ -678,19 +694,82 @@ make integration-postgres
 `make help` lists every target. Engineering conventions are documented in
 [CLAUDE.md](CLAUDE.md) and [.claude/rules/](.claude/rules/).
 
-## Project Status & Releases
+## Project Status
 
-Trustvian is pre-`v1.0` and under active development. Every release since
-`v0.10.0` carries both the engine and the local-first platform described above.
-`v1.0` is the release gate beyond them: [docs/ROADMAP.md](docs/ROADMAP.md) says
-what it still needs and what is planned, and
-[GitHub Releases](https://github.com/trustvian/trustvian/releases) lists the
-newest release.
+Trustvian is **pre-`v1.0` and under active development. It is not
+production-ready.** Every release since `v0.10.0` carries both the engine and
+the local-first platform, and both are usable today for what they are: a way to
+see, compare and gate an agent's behavior during development.
 
-- **Release history** — [CHANGELOG.md](CHANGELOG.md)
-- **Milestone status and planned work** — [docs/ROADMAP.md](docs/ROADMAP.md)
-- **Published releases** — [GitHub Releases](https://github.com/trustvian/trustvian/releases)
-- **Early design history** — [docs/archive/project-spec.md](docs/archive/project-spec.md) (historical, not maintained)
+| Area | Where it stands |
+|---|---|
+| **Behavioral engine:** Go SDK, CLI, Collector processor, storage | Released since `v0.1.0` and covered by tests, benchmarks and signed releases. Its production-readiness gate is `v1.0` [Track A](docs/ROADMAP.md#track-a--engine-production-readiness) |
+| **Local platform:** `trustvian dev`, `eval run`, WebUI, CI action | Released since `v0.10.0` as a developer preview. Unauthenticated and loopback-only; platform security hardening, backup and restore, and multi-node and load validation are planned, not built |
+| **Platform `/v1` API** | The intended `v1` contract, which may still change through reviewed work before `v1.0` ([compatibility](docs/compatibility.md)) |
+
+Until `v1.0`, SemVer allows a minor release to break compatibility. This
+project limits that
+([pre-`v1.0` discipline](docs/governance/branching.md#pre-v10-discipline)):
+
+- a breaking change to the public API lands only in a **minor** release, and
+  `CHANGELOG.md` gives the migration;
+- a **patch** release carries fixes only: no API, behavior or storage-schema
+  change;
+- any change to the stored baseline bumps the storage schema version, and a
+  newer schema aborts startup rather than being rewritten.
+
+## Roadmap
+
+Each release builds on the one before. The engine came first; the platform
+turns it into a workflow; `v1.0` makes both something to depend on.
+
+```mermaid
+flowchart LR
+    subgraph done["Shipped"]
+        direction LR
+        engine["<b>v0.1 – v0.9</b><br/>Behavioral engine<br/>SDK · OpenTelemetry · PostgreSQL<br/>signed releases"]
+        preview["<b>v0.10</b><br/>Developer preview<br/>trustvian dev · eval run<br/>CI gate"]
+        webui["<b>v0.11</b><br/>WebUI experience"]
+        impact["<b>v0.12</b><br/>Change Impact<br/><i>current release</i>"]
+        engine --> preview --> webui --> impact
+    end
+
+    subgraph ahead["Ahead"]
+        direction LR
+        next["<b>v0.13</b><br/>Proposed<br/>Live actor following<br/>browser computes nothing"]
+        v1["<b>v1.0</b><br/>Local-first behavioral<br/>security platform<br/><i>next milestone</i>"]
+        beyond["<b>Beyond v1.0</b><br/>Direction, not committed"]
+        next --> v1 --> beyond
+    end
+
+    impact -.-> next
+
+    classDef shipped fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef current fill:#dbeafe,stroke:#2563eb,stroke-width:3px,color:#1e3a8a
+    classDef planned fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef future fill:#f3f4f6,stroke:#9ca3af,stroke-dasharray:4 3,color:#374151
+    class engine,preview,webui shipped
+    class impact current
+    class next,v1 planned
+    class beyond future
+```
+
+| Stage | Status | What it brings |
+|---|---|---|
+| `v0.1` – `v0.9` | Shipped | The behavioral engine: pipeline, sequence analysis, policy, alerts, OpenTelemetry, PostgreSQL, operations and supply-chain signing |
+| `v0.10` – `v0.11` | Shipped | The platform: `trustvian dev`, repeated scenarios with a k-of-N gate, the CI action, the WebUI |
+| `v0.12` | **Current** | Change Impact: frequency, operational and cost evidence, provenance and sameness, the recorded gate and the scenario report |
+| `v0.13` | Proposed | Live Observatory actor following and pause ([109](docs/tasks/v0.13/109-live-pause-and-actor-following.md)), moving the WebUI's remaining derived figures server-side ([110](docs/tasks/v0.13/110-browser-computes-nothing.md)), metadata-only detection measurement ([080](docs/tasks/v1.0/080-metadata-only-detection-evaluation.md)) |
+| `v1.0` | Next | **Track A**, engine production readiness: stability, hardening and compatibility commitments. **Track B**, the platform: multi-node and load validation, platform security hardening, backup, restore and upgrade, and the release gate |
+| Beyond `v1.0` | Future | Directions only: deeper behavioral evidence, agent-security depth, policy-engine interoperability, organizational scale |
+
+Nothing on this roadmap carries a date, and nothing beyond `v1.0` is scoped or
+committed. [docs/ROADMAP.md](docs/ROADMAP.md) is the authoritative plan, with
+each milestone's tasks and exit criteria; [CHANGELOG.md](CHANGELOG.md) is the
+release history, and [GitHub Releases](https://github.com/trustvian/trustvian/releases)
+has the published archives. The early design history is in
+[docs/archive/project-spec.md](docs/archive/project-spec.md) (historical, not
+maintained).
 
 ## Contributing
 
