@@ -14,7 +14,8 @@ To go further with this one, see the [learning path](learning-path.md).
 **You need:**
 - macOS or Linux, on amd64 or arm64. On Windows use WSL2: `trustvian dev` and
   `eval run` refuse to run on Windows.
-- Python 3.10 or newer, with its `venv` module.
+- Python 3.10 or newer, with its `venv` module, as `python3`. Check with
+  `python3 --version`: on macOS, `/usr/bin/python3` is 3.9 and is too old.
 - `git`, with a user name and email configured, because the agent's directory
   becomes a repository with one commit.
 - `curl`, and a browser.
@@ -118,8 +119,13 @@ not at that tag. `requirements.txt` pins every package, with hashes. The
 *If this does not happen:* `curl` failing on a file means the URL is wrong or
 GitHub is unreachable. `ensurepip is not available` means your Python has no
 `venv` module (on Debian and Ubuntu, install `python3-venv`).
+`No matching distribution found for googleapis-common-protos==1.75.5` (or
+another pinned package) means `python3` is older than 3.10: the pinned
+packages need 3.10. Delete `.venv` and create it again with a newer Python.
 `Author identity unknown` means git has no user configured: set
 `git config --global user.name` and `user.email`, then run the `git` line again.
+Where git does not stop, it may guess an identity from your login and host
+name; `git log -1` shows what it recorded.
 
 ## 3. Start the control plane
 
