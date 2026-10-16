@@ -1,0 +1,21 @@
+# The QuickStart's scenario: the agent's reference mode against its candidate
+# mode, three runs each. Both sides declare the same model, read from the
+# variable the agent itself reads.
+version: v1
+name: quickstart
+runs: 3
+instrumentation: existing
+reference:
+  command: [.venv/bin/python, agent.py]
+  env: {QUICKSTART_MODE: reference, QUICKSTART_MODEL: stub-model-v1, OTEL_SERVICE_NAME: quickstart-agent}
+  model_env: QUICKSTART_MODEL
+candidate:
+  command: [.venv/bin/python, agent.py]
+  env: {QUICKSTART_MODE: candidate, QUICKSTART_MODEL: stub-model-v1, OTEL_SERVICE_NAME: quickstart-agent}
+  model_env: QUICKSTART_MODEL
+gate:
+  added_candidate_presence_minimum: 1        # k
+  added_reference_presence_maximum: 0        # j
+  max_repeated_added_behaviors: 0
+  max_block_decisions_per_run: 0
+  max_critical_risk_observations_per_run: 0

@@ -342,8 +342,9 @@ positional argument, an unknown flag); `3` an API or network failure — an
 unknown execution (`404`) or one still running or failed (`409`) among them —
 with nothing on stdout. A `--format` other than `md` or `json` is `2`.
 
-The GitHub actions at v0.12.0 build an earlier pinned runtime and post the
-version 1 rendering; see [GitHub Actions](ci-github-action.md#the-runtime).
+Since v0.12.1 the GitHub actions' pinned runtime posts the version 2
+rendering below; a workflow pinned to an older action commit posts version 1.
+See [GitHub Actions](ci-github-action.md#the-runtime).
 `--format md` prints the report as Markdown, rendered by `internal/cirender` —
 the renderer `trustvian-ci-render` uses:
 
@@ -954,8 +955,8 @@ Sameness
 Gate: FAIL
 ```
 
-That is [Getting Started](getting-started.md#4-gate-a-change-with-a-scenario)'s
-scenario. With optional limits set, each prints under the six:
+That scenario's candidate reaches one more tool than its reference. With
+optional limits set, each prints under the six:
 
 ```text
   PASS min candidate frequency: 2 (>= 2)

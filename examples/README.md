@@ -31,7 +31,14 @@ README below has real, `go run`-captured output, not hand-written output.
 | [configured-engine](configured-engine/) | Five `Engine` options configured from outside the module: policy, storage, anomaly and trust through the `config` facade, plus a context-risk callback over `trustvian.StableFeatures` — and the caller-owned cleanup that goes with a compiled store. Prints the `Result.DecisionRecord()` JSON. It does not use the sixth option, `WithLearningScope` | — |
 | [persistent-baseline](persistent-baseline/) | A learned baseline survives a process restart: a durable store selected through `config.StorageConfig`/`CompileStorage`, an `Engine` discarded entirely, and a fresh one reading the same state back off disk — the only example that reads learned state back after a restart, and impossible to write externally before `v0.8` | [persistent-baseline/README.md](persistent-baseline/README.md) |
 
-Not a Go program: [`github-actions/behavioral-gate.yml`](github-actions/behavioral-gate.yml)
+Not a Go program either: [`quickstart/`](quickstart/) is the Python agent
+[the QuickStart](../docs/quickstart.md) runs under `trustvian dev`. It is
+model-free and deterministic, and it needs Python 3, its pinned
+`requirements.txt` and an OTLP receiver, which `trustvian dev` provides; see
+[its README](quickstart/README.md). `make examples` runs only the Go programs,
+and CI runs the agent's tests and the QuickStart itself.
+
+Also not a Go program: [`github-actions/behavioral-gate.yml`](github-actions/behavioral-gate.yml)
 is a copyable two-job workflow: a read-only job runs a behavioral scenario on
 every pull request into `main` and gates on it, and a separate job that runs no pull
 request code posts the result as one comment — see
@@ -55,7 +62,7 @@ a README's output when you change what an example prints.
 `go test ./...` in this directory runs the tests of `ai-agent-security`,
 `configured-engine` and `persistent-baseline`.
 
-No example requires network access, external services, or any setup
+No Go example requires network access, external services, or any setup
 beyond `go run`.
 
 ## A note on `Decision`

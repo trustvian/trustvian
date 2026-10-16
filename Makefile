@@ -9,7 +9,7 @@ GO       := go
 .PHONY: help build run demo baseline-demo test test-race bench vet fmt fmt-check tidy coverage install clean check examples \
 	compose-up compose-down compose-smoke recovery-drill integration-postgres \
 	local check-modules check-platform-boundary release-dry-run release-prep release vulncheck container-build container-scan sbom \
-	pr-title docs-links
+	pr-title docs-links quickstart-check
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -171,3 +171,6 @@ examples: ## Run every examples/* program and fail if any exits non-zero
 			(cd "$$d" && GOWORK=off $(GO) run .) || exit 1; \
 		fi; \
 	done
+
+quickstart-check: ## Run docs/quickstart.md's commands, as written, against binaries built from this checkout (needs Python 3, git, curl and network for pip)
+	cd scripts && TRUSTVIAN_QUICKSTART_CHECK=1 GOWORK=off $(GO) test -count=1 -v -timeout 20m -run 'TestQuickstart|TestParseQuickstart|TestMissingQuickstart' .

@@ -370,6 +370,51 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------
+  # The QuickStart, run as written: docs/quickstart.md's own commands,
+  # parsed from the page, against binaries built from this commit, with
+  # the example agent from this commit. A walkthrough that stops working
+  # fails here instead of on a new user's machine. It needs Python for the
+  # agent and network access for pip; it needs no permission beyond the
+  # workflow's read-only one.
+  # ---------------------------------------------------------------------
+  quickstart:
+    name: QuickStart, as written
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOWORK: "off"
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # No token in .git/config: nothing after checkout needs one.
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            platform/go.sum
+            processor/go.sum
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: The example agent's tests
+        working-directory: examples/quickstart
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --disable-pip-version-check -r requirements.txt
+          .venv/bin/python -m unittest -v
+
+      - name: The QuickStart's commands
+        run: make quickstart-check
+
+  # ---------------------------------------------------------------------
   # Platform module: the control-plane domain (task 052). Separate for the
   # reason ADR 0022 gives — its module path is deliberately NOT under
   # github.com/trustvian/trustvian, so Go's internal/ rule makes a core

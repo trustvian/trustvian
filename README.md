@@ -117,142 +117,61 @@ their own section below.
 
 ## Quick Start
 
-Two paths. [Run your agent under Trustvian](#run-your-agent-under-trustvian)
-from the release archive alone, with no Go toolchain and no clone. Or
-[use the engine](#use-the-engine) directly, through the CLI or the Go SDK, over
-events you construct.
-
-### Run your agent under Trustvian
-
-You need Linux or macOS, a git repository with at least one commit, and an
-agent that already sends OpenTelemetry traces over OTLP and sets
-`OTEL_SERVICE_NAME`. [Getting Started](docs/getting-started.md#developer-preview)
-walks through every step, with the model-free stand-in agent (`./agent.sh`)
-that produced the output below.
-
-**1. Install.** The archive holds `trustvian`, `trustvian-local` and
-`trustvian-collector`. Keep them side by side: `trustvian` finds the other two
-next to itself.
+**[QuickStart](docs/quickstart.md)**: try Trustvian in about ten minutes with an
+agent we provide, the release archive and Python 3. No clone, no Go, no model,
+no Docker. In short, on macOS arm64:
 
 ```bash
-V=v0.12.0
-A=trustvian_${V}_linux_amd64          # or linux_arm64, darwin_amd64, darwin_arm64
-curl -sLO https://github.com/trustvian/trustvian/releases/download/$V/$A.tar.gz
-curl -sLO https://github.com/trustvian/trustvian/releases/download/$V/checksums.txt
-sha256sum -c checksums.txt --ignore-missing   # macOS: shasum -a 256 -c checksums.txt --ignore-missing
+V=v0.12.1
+A=trustvian_${V}_darwin_arm64          # or darwin_amd64, linux_amd64, linux_arm64
+curl -sfLO https://github.com/trustvian/trustvian/releases/download/$V/$A.tar.gz
+curl -sfLO https://github.com/trustvian/trustvian/releases/download/$V/checksums.txt
+shasum -a 256 -c checksums.txt --ignore-missing   # or: sha256sum -c checksums.txt --ignore-missing
 tar -xzf $A.tar.gz
 export PATH="$PWD/$A:$PATH"
+
+mkdir trustvian-quickstart && cd trustvian-quickstart
+R=https://raw.githubusercontent.com/trustvian/trustvian/main/examples/quickstart
+for f in .gitignore agent.py requirements.txt scenario.yaml; do curl -sfLO "$R/$f"; done
+python3 -m venv .venv
+.venv/bin/pip install -q --disable-pip-version-check -r requirements.txt
+git init -q && git add . && git commit -qm 'Trustvian QuickStart agent'
+
+trustvian-local &        # prints its API: and Web: URL; open Web: in a browser
+OTEL_SERVICE_NAME=quickstart-agent trustvian dev --api-url http://127.0.0.1:57746 -- .venv/bin/python agent.py
+trustvian eval run --scenario scenario.yaml
+trustvian eval report scn-quickstart-20261015T233559-1527db69 --format md
 ```
 
-**2. Start the control plane** in your agent's repository, in a terminal of its
-own. Add `.trustvian/` to `.gitignore` first, or the candidate reads
-`git:<sha>+dirty`.
-
-```bash
-trustvian-local
-```
+Use your own `API:` URL and the execution id `eval run` prints. The scenario
+runs the agent's reference and candidate modes three times each; the candidate
+adds one tool, and the gate fails with exit `1`:
 
 ```text
-Trustvian local runtime
-API:   http://127.0.0.1:62279
-Web:   http://127.0.0.1:62279/
-Store: sqlite
-State: .trustvian/platform.db
-Local clients in this directory can now omit --api-url.
-Press Ctrl-C to stop.
-```
-
-Open the `Web:` URL. With nothing arriving, it opens on **Status**, which says
-why Live is empty and what to check. `trustvian status` prints the same
-document.
-
-**3. Run your agent under it**, in a second terminal in the same directory:
-
-```bash
-OTEL_SERVICE_NAME=support-agent \
-  trustvian dev --api-url http://127.0.0.1:62279 -- ./agent.sh
-```
-
-```text
-Trustvian dev
-
-  Project     my-agent
-  Agent       support-agent   (declared by the workload)
-  Candidate   git:3c3d787
-  Environment local
-  Run         dev-git-3c3d787-20261013T211422.481Z
-…
-Run dev-git-3c3d787-20261013T211422.481Z complete.
-```
-
-`dev` runs your command unchanged, with an OTLP receiver around it, and exits
-with its status. The browser's **Live** view shows the run as telemetry
-arrives. `trustvian dev --check` proves the pipeline with no workload at all.
-
-**4. Gate a change.** A scenario runs a reference and a candidate `runs` times
-each and gates the difference. In
-[the scenario this path is tested with](docs/getting-started.md#4-gate-a-change-with-a-scenario),
-the candidate reaches one more tool:
-
-```bash
-trustvian eval run --scenario scenarios/export-tool.yaml
-echo $?    # 0 PASS, 1 gate FAIL, 2 usage, 3 operational
-```
-
-```text
-export-tool   runs 3   (execution scn-export-tool-20261013T210842-0bb4f40a)
+quickstart   runs 3   (execution scn-quickstart-20261015T233559-1527db69)
 …
 Behavior                                  reference   candidate
-  tool/crm_lookup → tools.localhost              3/3         3/3
-  tool/export_customer → tools.localhost         0/3         3/3   + added
-  tool/knowledge_search → tools.localho…         3/3         3/3
-
-Gate (k = 1, j = 0)
-…
-  FAIL repeatedly added behaviors: 1 (<= 0)
-…
-Sameness
-  same_scenario    true
-  same_inputs      true
-  same_model       not_recorded
-  same_prompt_ref  not_recorded
+  tool/crm_lookup → crm.localhost                3/3         3/3
+  tool/send_reply → mail.localhost               3/3         3/3
+  tool/export_data → export.localhost            0/3         3/3   + added
+  external/stub-model-v1 → stub                  3/3         3/3
+  tool/knowledge_search → kb.localhost           3/3         3/3
+  tool/quickstart-agent                          3/3         3/3
 …
 Gate: FAIL
 ```
 
-**5. Read the report.** Every completed execution keeps its report: sameness,
-every behavior's presence and calls per run, every target's load, latency and
-status, tokens and cost, the gate as it was recorded, and the suggestions.
+`eval report --format md` prints the whole report, the same Markdown a pull
+request comment shows, and the WebUI's **Change Impact** view renders the same
+document. The [QuickStart](docs/quickstart.md) walks through every step and
+its output.
 
-```bash
-trustvian eval report scn-export-tool-20261013T210842-0bb4f40a --format md
-```
-
-```text
-### Trustvian behavioral gate — FAIL
-
-**Scenario** `export-tool` · **runs** 3 · **execution** `scn-export-tool-20261013T210842-0bb4f40a`
-
-#### Sameness
-…
-#### Behaviors
-…
-#### Targets
-…
-#### Tokens and cost
-…
-#### Gate
-
-**Verdict: FAIL**, as the execution recorded it when it completed.
-…
-#### Suggestions
-…
-```
-
-`trustvian-ci-render` produces the same Markdown from the same document.
-`--json` prints the report document instead, and the WebUI's **Change Impact**
-view renders the same document. To run the gate on your pull requests, see
-[GitHub Actions](docs/ci-github-action.md).
+**Next:**
+- [Getting Started](docs/getting-started.md): run **your own** agent, which
+  already sends OpenTelemetry.
+- [From first run to a release gate](docs/learning-path.md): what Trustvian
+  adds, level by level.
+- [GitHub Actions](docs/ci-github-action.md): the gate on your pull requests.
 
 ### Use the engine
 
@@ -508,7 +427,7 @@ telemetry → live behavior → behavioral evidence
 plane, the realtime bus, and a loopback HTTP listener serving both the `/v1`
 API and the browser. Clients started in the same directory discover that
 endpoint themselves, so there is no account to create.
-[Quick Start](#run-your-agent-under-trustvian) runs it from the release
+[Quick Start](#quick-start) runs it from the release
 archive. From a clone, `make local` starts the same control plane, and
 `make dev ARGS='-- python agent.py'` builds the two helpers and runs a workload
 under `trustvian dev`.
@@ -688,7 +607,7 @@ Found a vulnerability? Report it privately, not in a public issue — see
 
 | Topic | Document |
 |---|---|
-| Getting started | [getting-started.md](docs/getting-started.md) |
+| QuickStart · Learning path · Getting started | [quickstart.md](docs/quickstart.md) · [learning-path.md](docs/learning-path.md) · [getting-started.md](docs/getting-started.md) |
 | Architecture · Domain model | [ARCHITECTURE.md](docs/ARCHITECTURE.md) · [DOMAIN.md](docs/DOMAIN.md) |
 | Go SDK · CLI | [sdk-guide.md](docs/sdk-guide.md) · [cli-guide.md](docs/cli-guide.md) |
 | Storage and persistence | [storage-guide.md](docs/storage-guide.md) |
