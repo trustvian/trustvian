@@ -1,5 +1,15 @@
 # Trustvian
 
+[![CI](https://img.shields.io/github/actions/workflow/status/trustvian/trustvian/ci.yml?branch=main&event=push&label=CI&logo=github)](https://github.com/trustvian/trustvian/actions/workflows/ci.yml?query=branch%3Amain)
+[![Nightly](https://img.shields.io/github/actions/workflow/status/trustvian/trustvian/nightly.yml?branch=main&label=nightly&logo=github)](https://github.com/trustvian/trustvian/actions/workflows/nightly.yml)
+[![Release](https://img.shields.io/github/v/release/trustvian/trustvian?sort=semver&label=release&color=blue)](https://github.com/trustvian/trustvian/releases/latest)
+[![License](https://img.shields.io/github/license/trustvian/trustvian?color=blue)](LICENSE)
+<br>
+[![Go](https://img.shields.io/github/go-mod/go-version/trustvian/trustvian?logo=go&logoColor=white)](go.mod)
+[![Go Reference](https://pkg.go.dev/badge/github.com/trustvian/trustvian.svg)](https://pkg.go.dev/github.com/trustvian/trustvian)
+[![OpenTelemetry](https://img.shields.io/badge/OpenTelemetry-GenAI%20semconv-425CC7?logo=opentelemetry&logoColor=white)](docs/OPENTELEMETRY.md)
+[![Security policy](https://img.shields.io/badge/security-policy-brightgreen)](.github/SECURITY.md)
+
 **Behavioral security and evaluation for AI agents** — *Trust the Behavior.*
 
 > OpenTelemetry observes behavior. Trustvian evaluates whether that
@@ -34,11 +44,6 @@ answers *what did this actor do, and is that normal* from metadata — actor,
 operation, target, tool and model identity, sequence, timing, status and
 correlation — and does not need, retain, fingerprint or display prompt text,
 completions, reasoning, tool arguments, tool results, request bodies or SQL.
-
-[![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](go.mod)
-[![CI](https://github.com/trustvian/trustvian/actions/workflows/ci.yml/badge.svg)](https://github.com/trustvian/trustvian/actions/workflows/ci.yml)
-[![Latest tag](https://img.shields.io/github/v/tag/trustvian/trustvian?label=latest)](https://github.com/trustvian/trustvian/tags)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 ## Why Trustvian?
 
