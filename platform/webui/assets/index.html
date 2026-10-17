@@ -44,6 +44,9 @@
     <span class="conn-chip" id="conn-chip" role="status" aria-live="polite">
       <span class="conn-dot" aria-hidden="true"></span><span id="conn-text">Connecting</span>
     </span>
+    <!-- Beside the chip, not inside it: the chip keeps reporting the
+         connection truthfully, and a paused view is not a paused stream. -->
+    <span class="conn-paused" id="conn-paused" hidden>· PAUSED</span>
   </div>
 
   <!-- Grouped by what a reader came to do. Seven flat peers made every one
@@ -143,9 +146,15 @@
         <h2 class="region-title">Behavior flow</h2>
         <p class="region-note" id="canvas-scope">No run selected.</p>
         <div class="selector-actions">
+          <button type="button" class="btn-quiet" id="live-pause" aria-pressed="false"
+                  aria-keyshortcuts="P" title="Pause or resume the Live view (P)">Pause</button>
           <button type="button" class="btn-quiet" id="live-reconnect" disabled>Reconnect</button>
         </div>
       </div>
+      <!-- Frame counts while paused. Not a live region: it changes with every
+           frame. Pause and resume are announced once each, below. -->
+      <p class="region-note live-pause-state" id="live-pause-state" hidden></p>
+      <p class="visually-hidden" id="live-announce" aria-live="polite"></p>
       <div id="canvas-notices"></div>
       <div id="canvas" class="canvas-host"></div>
       <p class="region-note canvas-foot">

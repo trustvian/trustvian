@@ -66,6 +66,26 @@
 .conn-wait { border-color: currentColor; color: var(--chrome-note); }
 .conn-down { border-color: currentColor; color: var(--chrome-stop); }
 .conn-idle { color: var(--chrome-muted); }
+/* The Live view is paused (task 109). A word, beside the chip. */
+.conn-paused {
+  color: var(--chrome-note);
+  font-size: var(--t-micro);
+  font-weight: var(--w-semi);
+  letter-spacing: 0.04em;
+}
+
+/* Read by a screen reader, not drawn. */
+.visually-hidden {
+  border: 0;
+  clip: rect(0 0 0 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
 
 /* Destinations are grouped by what a reader came to do. Seven flat peers
    made every one look equally likely; four short groups make the shape of

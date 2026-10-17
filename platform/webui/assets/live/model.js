@@ -29,6 +29,9 @@ export const MAX_SCOPE_CARDS = 16;
 export const MAX_SOURCE_NODES = 8;
 export const MAX_TARGET_NODES = 64;
 export const MAX_EDGES = 128;
+// The selected run's actors listed as seen live (task 109): twice the graph's
+// sources, so an actor whose source the graph evicted can still be followed.
+export const MAX_ACTORS_LISTED = 16;
 
 // ---------------------------------------------------------------------
 // Scope identity
@@ -62,6 +65,51 @@ export function scopeKey(scope) {
 // printable character, so a concatenation could collide with a different pair.
 function targetKey(behavior) {
   return JSON.stringify([behavior.target_name || "", behavior.target_category || ""]);
+}
+
+// actorKey identifies the graph source an observation is drawn from: the
+// actor the frame names (task 109).
+//
+// The server states the actor; this only keys by it, which is equality, not a
+// computation. Structured like scopeKey so no delimiter can collide.
+//
+//   - actor_id_state "carried": the frame's actor_id.
+//   - "exceeds_frame_bound": one shared key for every actor whose id was too
+//     long to travel. It is labelled as exactly that and never claims to be one
+//     actor.
+//   - absent: a server older than task 109 sent no actor. The source is the
+//     scope's agent, which is what such a frame was always drawn as.
+export function actorKey(observation, scope) {
+  const state = observation.actor_id_state;
+  if (state === "exceeds_frame_bound") {
+    return JSON.stringify(["", "exceeds_frame_bound"]);
+  }
+  if (state === "carried" && typeof observation.actor_id === "string") {
+    return JSON.stringify([observation.actor_id, "carried"]);
+  }
+  return JSON.stringify([scope.agent_id || "", "carried"]);
+}
+
+// OVER_BOUND_ACTOR_LABEL names the one source every over-bound actor shares.
+// It says why, and never claims to be one actor.
+export const OVER_BOUND_ACTOR_LABEL = "actor id not carried (over 256 bytes)";
+
+// actorOf is the actor an observation names, in the shape a source keeps.
+export function actorOf(observation, scope) {
+  if (observation.actor_id_state === "exceeds_frame_bound") {
+    return { actorID: "", overBound: true };
+  }
+  if (observation.actor_id_state === "carried" && typeof observation.actor_id === "string") {
+    return { actorID: observation.actor_id, overBound: false };
+  }
+  return { actorID: scope.agent_id || "", overBound: false };
+}
+
+// edgeKey identifies one line: one actor performing one behavior. The same
+// fingerprint from two actors is one behavior drawn twice, each line carrying
+// its own actor's latest answer.
+export function edgeKey(sourceID, fingerprintID) {
+  return JSON.stringify([sourceID, fingerprintID]);
 }
 
 // ---------------------------------------------------------------------
@@ -131,6 +179,61 @@ export class ScopeCards {
 }
 
 // ---------------------------------------------------------------------
+// Actors seen live in the selected run
+// ---------------------------------------------------------------------
+
+// SeenActors lists the actors whose frames this connection received for the
+// selected run (task 109), bounded and least-recently-seen evicted.
+//
+// Not the run's actors: those are in its observations. Each row's count is
+// frames that arrived here, labelled "seen live" wherever it is shown, and its
+// time is the browser's arrival time. It is cleared with the graph — on a run
+// change and on every reconnect.
+export class SeenActors {
+  constructor(capacity = MAX_ACTORS_LISTED) {
+    this.capacity = capacity;
+    // Insertion-ordered and re-inserted on touch, as ScopeCards is.
+    this.actors = new Map();
+    this.evicted = 0;
+  }
+
+  observe(key, actor, actorType, at) {
+    let row = this.actors.get(key);
+    if (row === undefined) {
+      row = { key, actorID: actor.actorID, overBound: actor.overBound, actorType: "", seenLive: 0, lastSeen: at };
+    } else {
+      this.actors.delete(key);
+    }
+    row.seenLive += 1;
+    row.lastSeen = at;
+    row.actorType = actorType;
+    this.actors.set(key, row);
+    while (this.actors.size > this.capacity) {
+      this.actors.delete(this.actors.keys().next().value);
+      this.evicted += 1;
+    }
+    return row;
+  }
+
+  get(key) {
+    return this.actors.get(key);
+  }
+
+  // ordered returns the most recently seen first, least recently seen last.
+  ordered() {
+    return Array.from(this.actors.values()).reverse();
+  }
+
+  get size() {
+    return this.actors.size;
+  }
+
+  get saturated() {
+    return this.evicted > 0;
+  }
+}
+
+// ---------------------------------------------------------------------
 // The run-scoped behavior graph
 // ---------------------------------------------------------------------
 
@@ -144,9 +247,13 @@ export class ScopeCards {
 // fingerprint_id, and merging them would let one run's new_behavior, decision
 // and risk overwrite another's.
 //
-// Inside a fixed run the fingerprint is a sufficient edge key, because the run
-// is already fixed. Observations for any other scope are not drawn here at
-// all; they update their own card.
+// Inside a fixed run, a line is one actor performing one behavior: the edge key
+// is (actor, fingerprint), and each actor is its own source (task 109). Keyed by
+// the fingerprint alone, two actors doing the same thing shared one line and the
+// later one's decision overwrote the earlier one's. The fingerprint stays the
+// behavior's identity across actors — the same behavior from two actors is one
+// fingerprint drawn as two lines to one target. Observations for any other
+// scope are not drawn here at all; they update their own card.
 export class RunGraph {
   constructor(key, bounds = {}) {
     this.scopeKey = key;
@@ -162,6 +269,10 @@ export class RunGraph {
     this.droppedTargets = 0;
     this.droppedEdges = 0;
 
+    // The run's actors seen live. Held by the graph so it is cleared exactly
+    // when the graph is: on a run change and on every reconnect.
+    this.actors = new SeenActors(bounds.maxActors ?? MAX_ACTORS_LISTED);
+
     // The platform's statement about its own evidence, carried through
     // unchanged. Not this graph's saturation, and never reported as it.
     this.behaviorComplete = true;
@@ -176,19 +287,27 @@ export class RunGraph {
     if (observation.behavior_complete === false) {
       this.behaviorComplete = false;
     }
+    // Every frame of the run lists its actor, including one a bound below
+    // refuses to draw: what is lost there is a line, not the fact the actor
+    // was seen.
+    this.actors.observe(actorKey(observation, scope), actorOf(observation, scope),
+      observation.actor_type || "", at);
 
     const behavior = observation.behavior || {};
-    const edgeID = observation.fingerprint_id || "";
-    if (edgeID === "") {
+    const fingerprintID = observation.fingerprint_id || "";
+    if (fingerprintID === "") {
       return null;
     }
-    const sourceID = scope.agent_id || "";
+    const sourceID = actorKey(observation, scope);
+    const edgeID = edgeKey(sourceID, fingerprintID);
     const targetID = targetKey(behavior);
 
-    const source = this.touchSource(sourceID, at);
+    const source = this.touchSource(sourceID, actorOf(observation, scope), at);
     if (source === null) {
       return null;
     }
+    // The actor type of the actor's most recent frame, read as sent.
+    source.actorType = observation.actor_type || "";
     const target = this.touchTarget(targetID, behavior, at);
     if (target === null) {
       return null;
@@ -204,6 +323,7 @@ export class RunGraph {
       }
       edge = {
         id: edgeID,
+        fingerprintID,
         sourceID,
         targetID,
         // Exactly the descriptor's own strings. No inference, no prettifying,
@@ -259,6 +379,11 @@ export class RunGraph {
     // Sticky: a behavior that was new when first observed stays labelled new
     // for this viewport, because the badge describes the observation that
     // introduced it rather than the most recent repeat.
+    //
+    // It goes on the line of the frame that said so, and nowhere else. "New"
+    // is the run-level fact the server stated; another actor's later frame of
+    // the same behavior says false, and its line carries no badge. Nothing here
+    // says "new for this actor".
     if (observation.new_behavior === true) {
       edge.newBehavior = true;
       target.newBehavior = true;
@@ -266,7 +391,7 @@ export class RunGraph {
     return edge;
   }
 
-  touchSource(id, at) {
+  touchSource(id, actor, at) {
     const existing = this.sources.get(id);
     if (existing !== undefined) {
       this.sources.delete(id);
@@ -280,7 +405,13 @@ export class RunGraph {
         return null;
       }
     }
-    const source = { id, lastActivity: at };
+    const source = {
+      id,
+      actorID: actor.actorID,
+      overBound: actor.overBound,
+      actorType: "",
+      lastActivity: at,
+    };
     this.sources.set(id, source);
     return source;
   }
@@ -371,6 +502,18 @@ export class LiveModel {
     // platform state.
     this.following = true;
     this.graph = null;
+    // The actor the view is narrowed to, by actor key; "" is all actors. A
+    // display filter by equality over frames already held (task 109): it
+    // sends no request and computes nothing, and frames from every actor keep
+    // folding into the graph so All actors restores the run at once.
+    // Ephemeral like the follow mode: a reload starts on all actors.
+    this.followedActor = "";
+  }
+
+  // followActor narrows the view to one actor of the selected run, or back to
+  // all of them with "".
+  followActor(key) {
+    this.followedActor = key;
   }
 
   // follow returns to auto-selection and immediately adopts the most recently
@@ -432,6 +575,8 @@ export class LiveModel {
     }
     this.selectedKey = key;
     this.graph = key === "" ? null : new RunGraph(key, this.bounds);
+    // An actor belongs to one run; a new run starts on all actors.
+    this.followedActor = "";
   }
 
   selectedCard() {

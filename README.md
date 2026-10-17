@@ -736,7 +736,7 @@ flowchart LR
 
     subgraph ahead["Ahead"]
         direction LR
-        next["<b>v0.13</b><br/>Proposed<br/>Live actor following<br/>browser computes nothing"]
+        next["<b>v0.13</b><br/>In progress<br/>Live actors and pause, on main<br/>browser computes nothing, next"]
         v1["<b>v1.0</b><br/>Local-first behavioral<br/>security platform<br/><i>next milestone</i>"]
         beyond["<b>Beyond v1.0</b><br/>Direction, not committed"]
         next --> v1 --> beyond
@@ -759,7 +759,7 @@ flowchart LR
 | `v0.1` – `v0.9` | Shipped | The behavioral engine: pipeline, sequence analysis, policy, alerts, OpenTelemetry, PostgreSQL, operations and supply-chain signing |
 | `v0.10` – `v0.11` | Shipped | The platform: `trustvian dev`, repeated scenarios with a k-of-N gate, the CI action, the WebUI |
 | `v0.12` | **Current** | Change Impact: frequency, operational and cost evidence, provenance and sameness, the recorded gate and the scenario report |
-| `v0.13` | Proposed | Live Observatory actor following and pause ([109](docs/tasks/v0.13/109-live-pause-and-actor-following.md)), moving the WebUI's remaining derived figures server-side ([110](docs/tasks/v0.13/110-browser-computes-nothing.md)), metadata-only detection measurement ([080](docs/tasks/v1.0/080-metadata-only-detection-evaluation.md)) |
+| `v0.13` | In progress | On `main`: the Live Observatory draws one source per actor, follows one and pauses without disconnecting ([109](docs/tasks/v0.13/109-live-pause-and-actor-following.md)). Next: moving the WebUI's remaining derived figures server-side ([110](docs/tasks/v0.13/110-browser-computes-nothing.md)). Specified: metadata-only detection measurement ([080](docs/tasks/v1.0/080-metadata-only-detection-evaluation.md)) |
 | `v1.0` | Next | **Track A**, engine production readiness: stability, hardening and compatibility commitments. **Track B**, the platform: multi-node and load validation, platform security hardening, backup, restore and upgrade, and the release gate |
 | Beyond `v1.0` | Future | Directions only: deeper behavioral evidence, agent-security depth, policy-engine interoperability, organizational scale |
 

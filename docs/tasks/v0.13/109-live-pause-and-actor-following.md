@@ -1,7 +1,7 @@
 # 109 — Live Observatory: pause, resume and following one actor
 
-Status: Specified; not implemented
-Milestone: `v0.13.0` (proposed)
+Status: Implemented (Phase B) — see [What shipped](#what-shipped)
+Milestone: [`v0.13.0`](../../ROADMAP.md#v0130--proposed); accepted by the maintainer
 Depends on: [059](../v1.0/059-realtime-infrastructure.md),
 [074](../v1.0/074-zero-input-live-behavior-webui.md),
 [067](../v1.0/067-event-history-capability-boundary.md) (all implemented)
@@ -421,3 +421,51 @@ Phase B is built from this file as merged, one commit per layer:
 It is measured with the quickstarts' live mode, three actors in one run. The
 measurement records: the actors listed, following one, and a 30-second pause
 with its frames-since-pause count and what the redraw showed.
+
+## What shipped
+
+Phase B, in five commits, one per layer, with decisions 1–6 as written. The
+engine, `StableFeatures`, fingerprints, baseline keys and `RealtimeFilter`
+are unchanged, and no route was added. Each departure below was taken while
+building, and none changes a decision.
+
+| Specified | Shipped | Why |
+|---|---|---|
+| Decision 1: `actor_type` is the record's, copied | Copied only when it is one of the six `event.ActorType` values; otherwise `""`, never substituted | Ingest validates the behavior's actor type but not the record's (`platform/behavior.go:811`; nothing checks `record.ActorType`). A 5,000-byte record `actor_type` was accepted at ingest, so copying it would put an unbounded string on every frame, against decision 1's own bound. Genuine engine output always carries a recognized type, because `event.Validate` refuses any other. Reported before building; the maintainer said to continue, and this was the recommended option |
+| "Current state" `file:line` references, verified at `a3dcaf9` | Re-verified on `main` at `97e6dbe` | Moved since: `httpapi/dto.go` 650-683 and 1012-1013, `httpapi/mapping.go` 265-306, `app.js` 884 and 3656 (the subscription), 744-749 (the label), 997-1009 (the reconnect reset), 841-878 (progress), `live/model.js` 181-186, `live/graph.js` 158, 204 and 250-263, and the bounds table at `docs/webui.md` 340-350. Every other row held |
+| The **Actors seen live** list "under the selected run's card" | Below the run cards, outside their listbox | The cards are `role="option"` in a listbox; toggle buttons nested in an option would not be reachable as buttons |
+| "the row links to the run's Observations tab" | One link under the list's heading, "The run's observations name every actor." | No `/v1` route narrows observations by actor, so every row would open the same page |
+| Layout: "the fixed left-to-right fan keeps its shape" | It does. With more than one source, a line's operation label sits where the lines meet the target, and its decision and risk stay at the line's middle | At the middle, three actors' labels for one behavior were drawn at three points and read as three behaviors. At the target, one behavior's labels coincide. One source draws exactly as before |
+| Frame without actor fields | Drawn as the scope's agent | A server older than 109 sends none; that is how such a frame was always drawn |
+
+The counts the view adds are frame counts and arrival times, labelled the way
+[task 110](110-browser-computes-nothing.md)'s D6 asks: an actor row says
+"N seen live" and "last arrival", the pause line says "seen live, all runs",
+the narrowed timeline says "frames seen live", and the actor list's bound
+says "not listed" and "a display limit".
+
+### Measured: three actors in one run
+
+The QuickStart agent as three workers under one `trustvian dev` run
+(`OTEL_SERVICE_NAME=support-fleet`), each worker with its own
+`OTEL_SERVICE_NAME`, built from this branch, read in headless Chrome over the
+DevTools protocol:
+
+| | Measured |
+|---|---|
+| Rate, workers pausing 1 s between runs | 14.7 frames a second (147 in 10 s) |
+| Actors seen live | `billing-agent` 88, `support-agent` 55, `accounts-agent` 55 seen live, each `ai_agent`, each its own source |
+| Lines on the QuickStart's 6 behaviors | 16 (5 + 5 + 6), against the 128-edge bound |
+| Following `billing-agent` | 1 source, 6 lines; 45 timeline rows, "45 of this actor's 97 frames seen live are in the last 100 rows"; header "Following billing-agent"; inspector closed. No request |
+| **All actors** | 3 sources, 16 lines. No request |
+| A 30-second pause | 487 frames since pause, 487 in this run; canvas unchanged and no pulse throughout; chip `Live` beside `PAUSED` |
+| Resume | 0 pulses; "Live view resumed. 487 frames arrived while paused."; one `…/progress` read, which moved the header's Observations from 55 to 798; no `…/behaviors` read |
+| Overrun, workers not pausing | 45.7 frames a second; the buffer filled after 21 s ("1030 frames since pause … Pause buffer full (1,024)"); resume said "Paused longer than this view holds: 1126 frames were not kept. Retained history is in Evidence." and drew from then on |
+| One actor named like the agent | The QuickStart agent's candidate run drew a canvas byte-identical, internal key attributes removed, to `main` at `97e6dbe`'s |
+
+The rate is about five times the 3 frames a second this specification
+assumed, so 1,024 frames hold about 70 seconds of this fleet rather than five
+minutes, and the overrun is reachable in ordinary use by a fast producer. It
+is stated, as decision 5 requires; raising the bound is a separate decision.
+No other bound saturated.
+

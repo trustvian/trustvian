@@ -81,6 +81,64 @@ func TestHTTPAdapterDoesNotComputeEvaluationLogic(t *testing.T) {
 	if scanned == 0 {
 		t.Fatal("scanned no source files; the check would pass vacuously")
 	}
+
+	realtimeMappingReadsOnlyTheEvent(t)
+}
+
+// realtimeMappingReadsOnlyTheEvent: a realtime frame is a rendering of the
+// event the control plane published, and nothing else (task 109).
+//
+// The frame's actor fields could otherwise be "completed" here — a lookup of
+// the observation, or of the run, to fill in what the event did not carry —
+// and the frame would then describe a state read at a different moment from
+// the one it was published at. So the mapping takes the event as its only
+// parameter and calls nothing but the pure helpers listed below.
+func realtimeMappingReadsOnlyTheEvent(t *testing.T) {
+	t.Helper()
+	const name = "newRealtimeEventPayload"
+	allowed := map[string]bool{
+		"u64": true, "string": true, "formatTime": true, "OrTransport": true,
+		"newRealtimeScopeDTO": true, "newBehaviorDescriptorDTO": true,
+	}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "mapping.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse mapping.go: %v", err)
+	}
+	var fn *ast.FuncDecl
+	for _, decl := range file.Decls {
+		if f, ok := decl.(*ast.FuncDecl); ok && f.Name.Name == name {
+			fn = f
+		}
+	}
+	if fn == nil {
+		t.Fatalf("mapping.go has no %s; the check would pass vacuously", name)
+	}
+	if params := fn.Type.Params.List; len(params) != 1 || len(params[0].Names) != 1 {
+		t.Fatalf("%s must take exactly one parameter, the published event", name)
+	}
+
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		var callee string
+		switch f := call.Fun.(type) {
+		case *ast.Ident:
+			callee = f.Name
+		case *ast.SelectorExpr:
+			callee = f.Sel.Name
+		default:
+			callee = "<expression>"
+		}
+		if !allowed[callee] {
+			t.Errorf("%s calls %s at %s; a frame is filled from the published event only",
+				name, callee, fset.Position(call.Pos()))
+		}
+		return true
+	})
 }
 
 // Task 052 made these unexported-field domain values on purpose. A JSON tag

@@ -2041,6 +2041,8 @@ func TestLiveBoundsAreTheDocumentedValues(t *testing.T) {
 		"MAX_SOURCE_NODES": 8,
 		"MAX_TARGET_NODES": 64,
 		"MAX_EDGES":        128,
+		// Task 109: the selected run's actors listed as seen live.
+		"MAX_ACTORS_LISTED": 16,
 	}
 	for name, want := range bounds {
 		pattern := regexp.MustCompile(`export const ` + name + ` = (\d+);`)
@@ -2052,6 +2054,12 @@ func TestLiveBoundsAreTheDocumentedValues(t *testing.T) {
 		if match[1] != fmt.Sprint(want) {
 			t.Errorf("%s = %s, want %d", name, match[1], want)
 		}
+	}
+
+	// Task 109: the frames kept while the Live view is paused.
+	pause := stripJSNoise(readAsset(t, "pause.js"))
+	if !regexp.MustCompile(`export const PAUSE_BUFFER_MAX = 1024;`).MatchString(pause) {
+		t.Error("pause.js does not declare PAUSE_BUFFER_MAX = 1024")
 	}
 
 	// The existing two are reused, not duplicated. A second feed bound or a

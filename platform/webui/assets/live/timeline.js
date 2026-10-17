@@ -22,7 +22,8 @@ export class TimelineFeed {
 
   // add records one observation. scopeKey lets the view show only the rows
   // belonging to the selected run when a developer wants that, without a
-  // second copy of the data.
+  // second copy of the data; sourceKey and edgeKey do the same for one actor
+  // and one of its lines (task 109).
   add(entry) {
     this.rows.push(entry);
     while (this.rows.length > this.capacity) {
@@ -58,13 +59,35 @@ export class TimelineFeed {
 // a reader could follow. The table is reachable and readable on demand, and
 // the connection state — which is the thing worth announcing — lives in the
 // header's status region.
+//
+// options.actor narrows the rows to one actor of one run (task 109): rows whose
+// scopeKey and sourceKey equal options.actor.scopeKey and options.actor.key. A
+// display filter by equality over rows already held. The feed keeps its 100
+// rows across every actor, so a quiet actor may have fewer rows here than its
+// frame count, and the caption says how many of them are.
 export function renderTimeline(host, feed, options = {}) {
   host.replaceChildren();
 
-  if (feed.rows.length === 0) {
+  const actor = options.actor || null;
+  const rows = actor === null
+    ? feed.rows
+    : feed.rows.filter((row) => row.scopeKey === actor.scopeKey && row.sourceKey === actor.key);
+
+  if (actor !== null) {
+    const note = document.createElement("p");
+    note.className = "region-note timeline-narrowed";
+    note.textContent =
+      `Following ${actor.label}: ${rows.length} of this actor's ${actor.seenLive} ` +
+      `frames seen live are in the last ${feed.capacity} rows of this connection.`;
+    host.append(note);
+  }
+
+  if (rows.length === 0) {
     const empty = document.createElement("p");
     empty.className = "empty";
-    empty.textContent = "No observations on this connection yet.";
+    empty.textContent = actor === null
+      ? "No observations on this connection yet."
+      : "None of this actor's frames are in the rows this view still holds.";
     host.append(empty);
     return;
   }
@@ -78,7 +101,7 @@ export function renderTimeline(host, feed, options = {}) {
   const caption = document.createElement("caption");
   // Says what it is, every time it is drawn.
   caption.textContent =
-    `Live stream · current connection · showing ${feed.rows.length} of at most ` +
+    `Live stream · current connection · showing ${rows.length} of at most ` +
     `${feed.capacity} observations. Not retained history.`;
   table.append(caption);
 
@@ -94,8 +117,8 @@ export function renderTimeline(host, feed, options = {}) {
   table.append(head);
 
   const body = document.createElement("tbody");
-  for (let i = feed.rows.length - 1; i >= 0; i -= 1) {
-    body.append(buildRow(feed.rows[i], options));
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    body.append(buildRow(rows[i], options));
   }
   table.append(body);
   scroll.append(table);
@@ -108,7 +131,7 @@ function buildRow(entry, options) {
   if (entry.newBehavior) {
     row.classList.add("timeline-new");
   }
-  if (options.selectedFingerprint && entry.fingerprintID === options.selectedFingerprint) {
+  if (options.selectedEdge && entry.edgeKey === options.selectedEdge) {
     row.classList.add("timeline-selected");
   }
 

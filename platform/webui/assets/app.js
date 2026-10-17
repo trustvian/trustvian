@@ -15,7 +15,8 @@
 import * as api from "./v1/api.js";
 import * as render from "./v1/render.js";
 import { RealtimeSession, STATE } from "./v1/realtime.js";
-import { LiveModel } from "./live/model.js";
+import { LiveModel, OVER_BOUND_ACTOR_LABEL, actorKey, actorOf, edgeKey, scopeKey } from "./live/model.js";
+import { PauseBuffer, isTypingTarget } from "./live/pause.js";
 import { GraphCanvas, PULSE_MS } from "./live/graph.js";
 import { renderRail, renderCanvasNotices } from "./live/rail.js";
 import { TimelineFeed, renderTimeline } from "./live/timeline.js";
@@ -616,6 +617,10 @@ const connChip = byID("conn-chip");
 const connText = byID("conn-text");
 const canvasScope = byID("canvas-scope");
 const liveReconnect = byID("live-reconnect");
+const livePause = byID("live-pause");
+const livePauseState = byID("live-pause-state");
+const liveAnnounce = byID("live-announce");
+const connPaused = byID("conn-paused");
 const railHost = byID("rail");
 const canvasNotices = byID("canvas-notices");
 const inspectorHost = byID("inspector");
@@ -668,6 +673,8 @@ let reducedMotion = reducedMotionQuery.matches;
 
 const liveModel = new LiveModel();
 const timeline = new TimelineFeed();
+// Pause and its buffer (task 109). Ephemeral: a reload starts live.
+const pause = new PauseBuffer();
 const labels = new LabelCache({ getAgent: (id) => api.getAgent(id) });
 const hierarchy = new HierarchyBrowser({
   listProjects: (after) => api.listProjects(after),
@@ -686,8 +693,8 @@ reducedMotionQuery.addEventListener("change", (event) => {
   canvas.reducedMotion = reducedMotion;
 });
 
-// The inspected behavior, by fingerprint within the selected run. Ephemeral UI
-// state: a reload legitimately forgets it.
+// The inspected line — one actor's behavior — by edge key within the selected
+// run. Ephemeral UI state: a reload legitimately forgets it.
 let inspectedEdgeID = "";
 
 // Authoritative counters for the selected run, read from /v1 once per
@@ -697,6 +704,30 @@ let inspectedEdgeID = "";
 let authoritative = { runID: "", recordCount: "", distinctCount: "", complete: null };
 
 const labelForScope = (scope) => labels.labelFor("agent", scope.agent_id);
+
+// nameActor names one actor of a run, as a graph source and a timeline row
+// show it (task 109).
+//
+// The run's own agent keeps exactly the name it always had: the agent's
+// resolved name, falling back to its id. Any other actor is named by the id its
+// frames stated — actors are not platform entities, so there is no name to look
+// up — and actorType goes into its title. actor is "" for the agent, so the
+// agent's lines are described exactly as before.
+function nameActor(scope, actor, actorType) {
+  if (actor.overBound) {
+    return { label: OVER_BOUND_ACTOR_LABEL, title: `Actor ${OVER_BOUND_ACTOR_LABEL}`,
+      actor: OVER_BOUND_ACTOR_LABEL };
+  }
+  if (actor.actorID === (scope.agent_id || "")) {
+    const label = labelForScope(scope) || scope.agent_id || "";
+    return { label, title: `Agent ${label}`, actor: "" };
+  }
+  return {
+    label: actor.actorID,
+    title: actorType ? `Actor ${actor.actorID}, ${actorType}` : `Actor ${actor.actorID}`,
+    actor: actor.actorID,
+  };
+}
 
 labels.onChange = () => {
   drawRail();
@@ -726,17 +757,70 @@ function drawRail() {
       void refreshAuthoritative();
       drawAll();
     },
+    actors: liveModel.graph === null ? null : liveModel.graph.actors,
+    followedActor: liveModel.followedActor,
+    nameActor: (row) => {
+      const card = liveModel.selectedCard();
+      return card === undefined
+        ? { label: row.actorID, title: "" }
+        : nameActor(card.scope, row, row.actorType);
+    },
+    onFollowActor: (key) => followActor(key),
+    onOpenObservations: () => {
+      const card = liveModel.selectedCard();
+      if (card !== undefined && card.scope.run_id) {
+        void openRunDetail(card.scope.run_id);
+        byID("run-tabs").querySelector('[data-section="run-observations"]').click();
+      }
+    },
   });
+}
+
+// followActor narrows the Live view to one actor of the selected run, or back
+// to all of them with "" (task 109).
+//
+// It sends no request: the graph, the timeline and the inspector are narrowed
+// by equality over frames the view already holds, and the header's counts stay
+// the run's, from …/progress. An inspector open on another actor's line closes.
+function followActor(key) {
+  liveModel.followActor(key);
+  const edge = liveModel.graph === null ? undefined : liveModel.graph.edges.get(inspectedEdgeID);
+  if (key !== "" && edge !== undefined && edge.sourceID !== key) {
+    inspectedEdgeID = "";
+  }
+  drawAll();
+}
+
+// followedActorView is the followed actor as the views name it, or null.
+function followedActorView() {
+  const card = liveModel.selectedCard();
+  const graph = liveModel.graph;
+  if (card === undefined || graph === null || liveModel.followedActor === "") {
+    return null;
+  }
+  const row = graph.actors.get(liveModel.followedActor);
+  const source = graph.sources.get(liveModel.followedActor);
+  const actor = row || source;
+  const name = actor === undefined
+    ? { label: "(unnamed agent)" }
+    : nameActor(card.scope, actor, actor.actorType);
+  return {
+    key: liveModel.followedActor,
+    scopeKey: card.key,
+    label: name.label || "(unnamed agent)",
+    seenLive: row === undefined ? 0 : row.seenLive,
+  };
 }
 
 function drawCanvas() {
   const card = liveModel.selectedCard();
-  const agentLabel = card === undefined
-    ? ""
-    : (labelForScope(card.scope) || card.scope.agent_id || "");
-  canvas.render(liveModel.graph, agentLabel);
+  canvas.render(liveModel.graph, (source) => card === undefined
+    ? { label: "", title: "Agent ", actor: "" }
+    : nameActor(card.scope, source, source.actorType), liveModel.followedActor);
   canvas.highlight(inspectedEdgeID, liveModel.graph);
-  renderCanvasNotices(canvasNotices, liveModel.graph);
+  const followed = followedActorView();
+  renderCanvasNotices(canvasNotices, liveModel.graph,
+    followed === null ? { key: "", label: "" } : followed);
 }
 
 function drawInspector() {
@@ -744,7 +828,27 @@ function drawInspector() {
   const edge = liveModel.graph === null || inspectedEdgeID === ""
     ? null
     : liveModel.graph.edges.get(inspectedEdgeID) || null;
+  // The same behavior's other lines in this graph: the actors this view has
+  // drawn it from. Equality over what the view holds, labelled seen live.
+  const others = [];
+  let actor = "";
+  if (edge !== null && card !== undefined) {
+    for (const other of liveModel.graph.edges.values()) {
+      const source = liveModel.graph.sources.get(other.sourceID);
+      if (source === undefined || other.fingerprintID !== edge.fingerprintID) {
+        continue;
+      }
+      const name = nameActor(card.scope, source, source.actorType);
+      if (other.id === edge.id) {
+        actor = name.actor;
+      } else {
+        others.push(name.label || "(unnamed agent)");
+      }
+    }
+  }
   renderInspector(inspectorHost, edge, {
+    actor,
+    otherActors: others,
     hasActivity: liveModel.cards.size > 0,
     agentID: card === undefined ? "" : card.scope.agent_id,
     runID: card === undefined ? "" : card.scope.run_id,
@@ -755,7 +859,8 @@ function drawInspector() {
 
 function drawTimeline() {
   renderTimeline(timelineHost, timeline, {
-    selectedFingerprint: inspectedEdgeID,
+    selectedEdge: inspectedEdgeID,
+    actor: followedActorView(),
     onSelect: (entry) => {
       // Selecting a row selects the behavior — and the run it belongs to,
       // because inspecting evidence from a run the canvas is not drawing
@@ -764,7 +869,7 @@ function drawTimeline() {
         liveModel.select(entry.scopeKey);
         void refreshAuthoritative();
       }
-      inspectedEdgeID = entry.fingerprintID;
+      inspectedEdgeID = entry.edgeKey;
       drawAll();
       // Focus follows the selection, so a keyboard user lands on what they
       // just opened rather than staying in the table.
@@ -801,6 +906,12 @@ function drawHeader() {
   if (card.scope.run_id) {
     items.push({ key: "Run", value: card.scope.run_id });
   }
+  // Which actor the view is narrowed to. The counts beside it stay the run's:
+  // no /v1 route returns a per-actor count, so none is shown (task 109).
+  const followed = followedActorView();
+  if (followed !== null) {
+    items.push({ key: "Following", value: followed.label });
+  }
   items.push({ key: "Seen on this connection", value: String(card.seenLive) });
 
   if (authoritative.runID === card.scope.run_id && authoritative.recordCount !== "") {
@@ -818,9 +929,11 @@ function drawHeader() {
   }
   dash.summaryStrip(byID("live-strip"), items);
 
-  canvasScope.textContent = card.scope.run_id
-    ? `Drawing run ${card.scope.run_id}.`
-    : "Drawing the selected run.";
+  canvasScope.textContent = (card.scope.run_id
+    ? `Drawing run ${card.scope.run_id}`
+    : "Drawing the selected run") +
+    (followed === null ? "." : `, following ${followed.label}.`) +
+    (pause.paused && pause.reconnected ? " From the previous connection." : "");
 }
 
 function drawAll() {
@@ -942,24 +1055,14 @@ const liveSession = new RealtimeSession(
     onProblem: (reason) => showProblem(`Activity stream: ${reason}`),
     onObservation: (scope, observation) => {
       const at = Date.now();
-      const { card, edge } = liveModel.observe(scope, observation, at);
-
-      // One lookup per newly seen agent, never per observation. The card
-      // renders its identifier immediately and gains a name when one arrives.
-      void labels.resolveAgent(scope.agent_id);
-
-      timeline.add({
-        at,
-        scopeKey: card.key,
-        agentLabel: labelForScope(scope) || scope.agent_id || "",
-        fingerprintID: observation.fingerprint_id || "",
-        operationCategory: observation.behavior ? observation.behavior.operation_category || "" : "",
-        operationName: observation.behavior ? observation.behavior.operation_name || "" : "",
-        targetName: observation.behavior ? observation.behavior.target_name || "" : "",
-        decision: observation.decision || "",
-        riskLevel: observation.risk_level || "",
-        newBehavior: observation.new_behavior === true,
-      });
+      // Paused: the frame is kept, in order, and nothing is drawn. The
+      // connection, the chip and status_changed carry on (task 109).
+      if (pause.paused) {
+        pause.add({ scope, observation, at }, scopeKey(scope) === liveModel.selectedKey);
+        drawPauseState();
+        return;
+      }
+      const { card, edge } = foldObservation(scope, observation, at);
 
       // A newly selected scope needs its authoritative counts.
       if (authoritative.runID !== (card.scope.run_id || "")) {
@@ -988,25 +1091,185 @@ const liveSession = new RealtimeSession(
       // inspector opens it — unless they are already reading something else,
       // in which case stealing the panel would be the same discourtesy as
       // stealing the graph.
-      if (edge.newBehavior && inspectedEdgeID === "") {
+      // Narrowed to one actor, another actor's NEW line is not on screen, so
+      // it does not open either: following an actor changes nothing visible
+      // when another actor's frame arrives.
+      if (edge.newBehavior && inspectedEdgeID === "" &&
+          (liveModel.followedActor === "" || edge.sourceID === liveModel.followedActor)) {
         inspectedEdgeID = edge.id;
         drawCanvas();
         drawInspector();
       }
     },
     onConnect: () => {
-      // A card, an edge and a timeline row are all statements about the
-      // current stream. A view that survived a reconnect would assert a
-      // continuity stream_ready explicitly denies.
-      liveModel.reset();
-      timeline.breakSegment();
-      inspectedEdgeID = "";
-      authoritative = { runID: "", recordCount: "", distinctCount: "", complete: null };
-      canvas.clear("");
-      drawAll();
+      // Paused, the frozen picture stays on screen, labelled as the previous
+      // connection's, and the reset below is applied on resume.
+      if (pause.paused) {
+        pause.connectionChanged();
+        drawPauseState();
+        drawHeader();
+        return;
+      }
+      resetLiveViewport();
     },
   },
 );
+
+// resetLiveViewport clears everything one connection owned.
+//
+// A card, an edge and a timeline row are all statements about the current
+// stream. A view that survived a reconnect would assert a continuity
+// stream_ready explicitly denies.
+function resetLiveViewport() {
+  liveModel.reset();
+  timeline.breakSegment();
+  inspectedEdgeID = "";
+  authoritative = { runID: "", recordCount: "", distinctCount: "", complete: null };
+  canvas.clear("");
+  drawAll();
+}
+
+// foldObservation folds one frame into the model and the timeline, and draws
+// nothing. Live, the caller draws and pulses; on resume, buffered frames are
+// folded in arrival order and drawn once.
+function foldObservation(scope, observation, at) {
+  const { card, edge } = liveModel.observe(scope, observation, at);
+
+  // One lookup per newly seen agent, never per observation. The card renders
+  // its identifier immediately and gains a name when one arrives.
+  void labels.resolveAgent(scope.agent_id);
+
+  const sourceKey = actorKey(observation, scope);
+  timeline.add({
+    at,
+    scopeKey: card.key,
+    sourceKey,
+    edgeKey: edgeKey(sourceKey, observation.fingerprint_id || ""),
+    agentLabel: nameActor(scope, actorOf(observation, scope), observation.actor_type || "").label,
+    fingerprintID: observation.fingerprint_id || "",
+    operationCategory: observation.behavior ? observation.behavior.operation_category || "" : "",
+    operationName: observation.behavior ? observation.behavior.operation_name || "" : "",
+    targetName: observation.behavior ? observation.behavior.target_name || "" : "",
+    decision: observation.decision || "",
+    riskLevel: observation.risk_level || "",
+    newBehavior: observation.new_behavior === true,
+  });
+  return { card, edge };
+}
+
+// ---------------------------------------------------------------------
+// Pause and resume (task 109, decisions 5 and 6)
+// ---------------------------------------------------------------------
+
+// announceLive speaks one sentence in the Live view's polite region. Pause
+// and resume say different things, so consecutive announcements always change
+// the region's text.
+function announceLive(text) {
+  liveAnnounce.textContent = text;
+}
+
+// The sentence a resume that overran states, on screen and announced.
+let pauseOverrunNote = "";
+
+// drawPauseState shows the pause in words: PAUSED beside the connection chip,
+// the button's pressed state, and the frame counts since pause. The counts are
+// frames this connection received, labelled as such, and not a live region.
+function drawPauseState() {
+  connPaused.hidden = !pause.paused;
+  livePause.setAttribute("aria-pressed", pause.paused ? "true" : "false");
+  if (!pause.paused) {
+    livePauseState.hidden = pauseOverrunNote === "";
+    livePauseState.textContent = pauseOverrunNote;
+    return;
+  }
+  const lines = [
+    `${pause.sincePause} ${pause.sincePause === 1 ? "frame" : "frames"} since pause · ` +
+    `seen live, all runs · ${pause.inRun} in this run.`,
+  ];
+  if (pause.overrun) {
+    lines.push(`Pause buffer full (${pause.capacity.toLocaleString("en-US")}): this view ` +
+      "will start again from now when you resume.");
+  }
+  if (pause.reconnected) {
+    lines.push("The stream reconnected while paused: this picture is from the previous connection.");
+  }
+  livePauseState.hidden = false;
+  livePauseState.textContent = lines.join(" ");
+}
+
+function pauseLive() {
+  pauseOverrunNote = "";
+  pause.pause();
+  drawPauseState();
+  announceLive("Live view paused. The connection stays open.");
+}
+
+// resumeLive folds what the pause kept, without a pulse, redraws once, and
+// re-reads the selected run's progress — once, and not its behaviors: a
+// behavior row carries no actor and no frame, so drawing from it would put
+// lines on the canvas with nothing behind them.
+function resumeLive() {
+  const kept = pause.resume();
+  if (kept.overrun || kept.reconnected) {
+    // The reset a connect would have applied: an overrun abandons the pause,
+    // and a reconnect's frames cannot be joined to the previous connection's.
+    liveModel.reset();
+    timeline.breakSegment();
+    inspectedEdgeID = "";
+    canvas.clear("");
+  }
+
+  let opened = "";
+  for (const frame of kept.frames) {
+    const { edge } = foldObservation(frame.scope, frame.observation, frame.at);
+    // The live inspector rule, applied once after the redraw: the first new
+    // behavior opens when nothing is being read.
+    if (opened === "" && edge !== null && frame.observation.new_behavior === true &&
+        (liveModel.followedActor === "" || edge.sourceID === liveModel.followedActor)) {
+      opened = edge.id;
+    }
+  }
+  if (inspectedEdgeID === "" && opened !== "") {
+    inspectedEdgeID = opened;
+  }
+
+  authoritative = { runID: "", recordCount: "", distinctCount: "", complete: null };
+  pauseOverrunNote = kept.overrun
+    ? `Paused longer than this view holds: ${kept.sincePause} frames were not kept. ` +
+      "Retained history is in Evidence."
+    : "";
+  drawAll();
+  drawPauseState();
+  void refreshAuthoritative();
+  announceLive(kept.overrun
+    ? pauseOverrunNote
+    : `Live view resumed. ${kept.sincePause} ${kept.sincePause === 1 ? "frame" : "frames"} arrived while paused.`);
+}
+
+function togglePause() {
+  if (pause.paused) {
+    resumeLive();
+  } else {
+    pauseLive();
+  }
+}
+
+livePause.addEventListener("click", togglePause);
+
+// P toggles pause on the Live view: no modifier, and never while typing.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "p" && event.key !== "P") {
+    return;
+  }
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.repeat) {
+    return;
+  }
+  if (currentView !== "view-live" || isTypingTarget(event.target)) {
+    return;
+  }
+  event.preventDefault();
+  togglePause();
+});
 
 // ---------------------------------------------------------------------
 // Bounded discovery, as a console

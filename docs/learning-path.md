@@ -86,10 +86,13 @@ strip are read from the control plane, never accumulated from frames.
 - `observe` is not "safe". The default policy observes everything; a decision
   is only as meaningful as the [policy](policy-guide.md) that produced it.
 - `NEW` is not "dangerous", and a dashed edge is not an alert.
-- Several actors inside one `trustvian dev` run draw as one agent: the stream
-  frame carries the run's scope, not the observation's actor. Following one
-  actor, and pausing Live without disconnecting, are planned
-  ([task 109](ROADMAP.md#v0130--proposed)).
+- In `v0.12.1`, several actors inside one `trustvian dev` run draw as one
+  agent: the stream frame carries the run's scope, not the observation's
+  actor. From `v0.13.0` (on `main`, not yet released) the frame also carries
+  `actor_id`, `actor_id_state` and `actor_type`, Live draws one source per
+  actor and follows one, and **Pause** freezes the view without disconnecting
+  ([Web interface § Following one actor](webui.md#following-one-actor),
+  [§ Pausing the view](webui.md#pausing-the-view)).
 
 **Reference.** [Web interface § The Status view](webui.md#the-status-view),
 [§ The Live Observatory](webui.md#the-live-observatory),
