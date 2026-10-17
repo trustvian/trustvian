@@ -9,6 +9,7 @@
 // returned would make the live view as slow as the slowest read, for a label.
 
 import { decisionToken, decisionClass, riskClass } from "./graph.js";
+import { formatClock } from "./timeline.js";
 
 // renderRail draws the active scopes, most recently observed first.
 //
@@ -18,6 +19,11 @@ import { decisionToken, decisionClass, riskClass } from "./graph.js";
 //   labelFor     (scope) => display name, or "" when none is resolved yet
 //   onSelect     (key) => pin that scope
 //   onFollow     () => return to auto-follow
+//   actors       the selected run's SeenActors, or null
+//   followedActor  the actor key the view is narrowed to, "" for all
+//   nameActor    (row) => { label, title } for one listed actor
+//   onFollowActor  (key) => narrow to that actor, "" for all actors
+//   onOpenObservations  () => open the selected run's Observations
 export function renderRail(host, cards, options) {
   host.replaceChildren();
 
@@ -39,6 +45,13 @@ export function renderRail(host, cards, options) {
     list.append(item);
   });
   host.append(list);
+
+  // Under the selected run's cards, the actors its frames named (task 109).
+  // Outside the listbox: its rows are toggle buttons, not options of it.
+  const selected = cards.get(options.selectedKey);
+  if (selected !== undefined && options.actors && options.actors.size > 0) {
+    host.append(actorList(options.actors, options));
+  }
 
   if (cards.saturated) {
     host.append(saturationNote(
@@ -111,6 +124,96 @@ function buildCard(card, isNewest, options) {
 
   button.setAttribute("aria-label", railCardLabel(card, name, selected));
   button.addEventListener("click", () => options.onSelect(card.key));
+  return button;
+}
+
+// actorList draws the selected run's actors seen live, most recently seen first,
+// and the control back to all actors (task 109).
+//
+// Every figure in it is a frame count from this connection, labelled seen live,
+// or an arrival time from this browser's clock, labelled as arrival. Nothing
+// here is a per-actor aggregate of the run, which no /v1 route returns.
+function actorList(actors, options) {
+  const section = document.createElement("section");
+  section.className = "rail-actors";
+  section.setAttribute("aria-label", "Actors seen live in the selected run");
+
+  const heading = document.createElement("p");
+  heading.className = "rail-actors-title";
+  heading.textContent = "Actors seen live";
+  section.append(heading);
+
+  const note = document.createElement("p");
+  note.className = "rail-actors-note";
+  note.append(document.createTextNode(
+    "Actors named by the frames this connection received for the selected run, " +
+    "not the run's actors. "));
+  const observations = document.createElement("button");
+  observations.type = "button";
+  observations.className = "link-button";
+  observations.textContent = "The run's observations name every actor.";
+  observations.addEventListener("click", () => options.onOpenObservations());
+  note.append(observations);
+  section.append(note);
+
+  const list = document.createElement("ul");
+  list.className = "rail-actor-list";
+  for (const row of actors.ordered()) {
+    const item = document.createElement("li");
+    item.append(actorRow(row, options));
+    list.append(item);
+  }
+  section.append(list);
+
+  if (actors.saturated) {
+    section.append(saturationNote(
+      `${actors.size} actors listed, ${actors.evicted} not listed: the least ` +
+      `recently seen are evicted past ${actors.capacity}. A display limit, not ` +
+      `the run's actors.`));
+  }
+
+  const all = document.createElement("button");
+  all.type = "button";
+  all.className = "btn-quiet rail-actors-all";
+  all.textContent = "All actors";
+  all.setAttribute("aria-pressed", options.followedActor === "" ? "true" : "false");
+  all.addEventListener("click", () => options.onFollowActor(""));
+  section.append(all);
+  return section;
+}
+
+function actorRow(row, options) {
+  const name = options.nameActor(row);
+  const followed = row.key === options.followedActor;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = followed ? "rail-actor rail-actor-followed" : "rail-actor";
+  // A toggle: pressed while the view follows this actor. Not carried by the
+  // border alone.
+  button.setAttribute("aria-pressed", followed ? "true" : "false");
+
+  const title = document.createElement("span");
+  title.className = "rail-actor-name";
+  title.textContent = name.label === "" ? "(unnamed agent)" : name.label;
+  button.append(title);
+
+  const detail = document.createElement("span");
+  detail.className = "rail-actor-detail";
+  detail.textContent = [
+    row.actorType,
+    `last arrival ${formatClock(row.lastSeen)}`,
+    `${row.seenLive} seen live`,
+  ].filter((part) => part !== "").join(" · ");
+  button.append(detail);
+
+  button.setAttribute("aria-label", [
+    name.label === "" ? "(unnamed agent)" : name.label,
+    row.actorType,
+    `last frame arrived ${formatClock(row.lastSeen)}`,
+    `${row.seenLive} frames seen live on this connection`,
+    followed ? "the view follows this actor" : "",
+  ].filter((part) => part !== "").join(", "));
+  button.addEventListener("click", () => options.onFollowActor(followed ? "" : row.key));
   return button;
 }
 
@@ -202,10 +305,17 @@ export function saturationNote(text) {
 // chose not to draw everything; behavior_complete: false means the platform's
 // behavioral evidence itself saturated at 512 distinct behaviors. Reporting
 // one as the other would misdescribe the run.
-export function renderCanvasNotices(host, graph) {
+export function renderCanvasNotices(host, graph, followed = { key: "", label: "" }) {
   host.replaceChildren();
   if (graph === null || graph === undefined) {
     return;
+  }
+  // A followed actor whose source the graph evicted is not drawn, and the
+  // view says so rather than showing an empty canvas as the actor's work.
+  if (followed.key !== "" && !graph.sources.has(followed.key)) {
+    host.append(saturationNote(
+      `${followed.label} is not drawn: the graph evicted its source under the ` +
+      `${graph.maxSources}-source display limit. It is drawn again on its next frame.`));
   }
   // The legend for a run with several actors (task 109). One fingerprint
   // performed by three actors is three lines to one target, and without this

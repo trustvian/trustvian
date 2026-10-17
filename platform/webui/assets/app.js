@@ -750,16 +750,70 @@ function drawRail() {
       void refreshAuthoritative();
       drawAll();
     },
+    actors: liveModel.graph === null ? null : liveModel.graph.actors,
+    followedActor: liveModel.followedActor,
+    nameActor: (row) => {
+      const card = liveModel.selectedCard();
+      return card === undefined
+        ? { label: row.actorID, title: "" }
+        : nameActor(card.scope, row, row.actorType);
+    },
+    onFollowActor: (key) => followActor(key),
+    onOpenObservations: () => {
+      const card = liveModel.selectedCard();
+      if (card !== undefined && card.scope.run_id) {
+        void openRunDetail(card.scope.run_id);
+        byID("run-tabs").querySelector('[data-section="run-observations"]').click();
+      }
+    },
   });
+}
+
+// followActor narrows the Live view to one actor of the selected run, or back
+// to all of them with "" (task 109).
+//
+// It sends no request: the graph, the timeline and the inspector are narrowed
+// by equality over frames the view already holds, and the header's counts stay
+// the run's, from …/progress. An inspector open on another actor's line closes.
+function followActor(key) {
+  liveModel.followActor(key);
+  const edge = liveModel.graph === null ? undefined : liveModel.graph.edges.get(inspectedEdgeID);
+  if (key !== "" && edge !== undefined && edge.sourceID !== key) {
+    inspectedEdgeID = "";
+  }
+  drawAll();
+}
+
+// followedActorView is the followed actor as the views name it, or null.
+function followedActorView() {
+  const card = liveModel.selectedCard();
+  const graph = liveModel.graph;
+  if (card === undefined || graph === null || liveModel.followedActor === "") {
+    return null;
+  }
+  const row = graph.actors.get(liveModel.followedActor);
+  const source = graph.sources.get(liveModel.followedActor);
+  const actor = row || source;
+  const name = actor === undefined
+    ? { label: "(unnamed agent)" }
+    : nameActor(card.scope, actor, actor.actorType);
+  return {
+    key: liveModel.followedActor,
+    scopeKey: card.key,
+    label: name.label || "(unnamed agent)",
+    seenLive: row === undefined ? 0 : row.seenLive,
+  };
 }
 
 function drawCanvas() {
   const card = liveModel.selectedCard();
   canvas.render(liveModel.graph, (source) => card === undefined
     ? { label: "", title: "Agent ", actor: "" }
-    : nameActor(card.scope, source, source.actorType));
+    : nameActor(card.scope, source, source.actorType), liveModel.followedActor);
   canvas.highlight(inspectedEdgeID, liveModel.graph);
-  renderCanvasNotices(canvasNotices, liveModel.graph);
+  const followed = followedActorView();
+  renderCanvasNotices(canvasNotices, liveModel.graph,
+    followed === null ? { key: "", label: "" } : followed);
 }
 
 function drawInspector() {
@@ -799,6 +853,7 @@ function drawInspector() {
 function drawTimeline() {
   renderTimeline(timelineHost, timeline, {
     selectedEdge: inspectedEdgeID,
+    actor: followedActorView(),
     onSelect: (entry) => {
       // Selecting a row selects the behavior — and the run it belongs to,
       // because inspecting evidence from a run the canvas is not drawing
@@ -844,6 +899,12 @@ function drawHeader() {
   if (card.scope.run_id) {
     items.push({ key: "Run", value: card.scope.run_id });
   }
+  // Which actor the view is narrowed to. The counts beside it stay the run's:
+  // no /v1 route returns a per-actor count, so none is shown (task 109).
+  const followed = followedActorView();
+  if (followed !== null) {
+    items.push({ key: "Following", value: followed.label });
+  }
   items.push({ key: "Seen on this connection", value: String(card.seenLive) });
 
   if (authoritative.runID === card.scope.run_id && authoritative.recordCount !== "") {
@@ -861,9 +922,10 @@ function drawHeader() {
   }
   dash.summaryStrip(byID("live-strip"), items);
 
-  canvasScope.textContent = card.scope.run_id
-    ? `Drawing run ${card.scope.run_id}.`
-    : "Drawing the selected run.";
+  canvasScope.textContent = (card.scope.run_id
+    ? `Drawing run ${card.scope.run_id}`
+    : "Drawing the selected run") +
+    (followed === null ? "." : `, following ${followed.label}.`);
 }
 
 function drawAll() {
@@ -1034,7 +1096,11 @@ const liveSession = new RealtimeSession(
       // inspector opens it — unless they are already reading something else,
       // in which case stealing the panel would be the same discourtesy as
       // stealing the graph.
-      if (edge.newBehavior && inspectedEdgeID === "") {
+      // Narrowed to one actor, another actor's NEW line is not on screen, so
+      // it does not open either: following an actor changes nothing visible
+      // when another actor's frame arrives.
+      if (edge.newBehavior && inspectedEdgeID === "" &&
+          (liveModel.followedActor === "" || edge.sourceID === liveModel.followedActor)) {
         inspectedEdgeID = edge.id;
         drawCanvas();
         drawInspector();

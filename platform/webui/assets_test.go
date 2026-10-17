@@ -2041,6 +2041,8 @@ func TestLiveBoundsAreTheDocumentedValues(t *testing.T) {
 		"MAX_SOURCE_NODES": 8,
 		"MAX_TARGET_NODES": 64,
 		"MAX_EDGES":        128,
+		// Task 109: the selected run's actors listed as seen live.
+		"MAX_ACTORS_LISTED": 16,
 	}
 	for name, want := range bounds {
 		pattern := regexp.MustCompile(`export const ` + name + ` = (\d+);`)

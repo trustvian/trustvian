@@ -29,6 +29,9 @@ export const MAX_SCOPE_CARDS = 16;
 export const MAX_SOURCE_NODES = 8;
 export const MAX_TARGET_NODES = 64;
 export const MAX_EDGES = 128;
+// The selected run's actors listed as seen live (task 109): twice the graph's
+// sources, so an actor whose source the graph evicted can still be followed.
+export const MAX_ACTORS_LISTED = 16;
 
 // ---------------------------------------------------------------------
 // Scope identity
@@ -176,6 +179,61 @@ export class ScopeCards {
 }
 
 // ---------------------------------------------------------------------
+// Actors seen live in the selected run
+// ---------------------------------------------------------------------
+
+// SeenActors lists the actors whose frames this connection received for the
+// selected run (task 109), bounded and least-recently-seen evicted.
+//
+// Not the run's actors: those are in its observations. Each row's count is
+// frames that arrived here, labelled "seen live" wherever it is shown, and its
+// time is the browser's arrival time. It is cleared with the graph — on a run
+// change and on every reconnect.
+export class SeenActors {
+  constructor(capacity = MAX_ACTORS_LISTED) {
+    this.capacity = capacity;
+    // Insertion-ordered and re-inserted on touch, as ScopeCards is.
+    this.actors = new Map();
+    this.evicted = 0;
+  }
+
+  observe(key, actor, actorType, at) {
+    let row = this.actors.get(key);
+    if (row === undefined) {
+      row = { key, actorID: actor.actorID, overBound: actor.overBound, actorType: "", seenLive: 0, lastSeen: at };
+    } else {
+      this.actors.delete(key);
+    }
+    row.seenLive += 1;
+    row.lastSeen = at;
+    row.actorType = actorType;
+    this.actors.set(key, row);
+    while (this.actors.size > this.capacity) {
+      this.actors.delete(this.actors.keys().next().value);
+      this.evicted += 1;
+    }
+    return row;
+  }
+
+  get(key) {
+    return this.actors.get(key);
+  }
+
+  // ordered returns the most recently seen first, least recently seen last.
+  ordered() {
+    return Array.from(this.actors.values()).reverse();
+  }
+
+  get size() {
+    return this.actors.size;
+  }
+
+  get saturated() {
+    return this.evicted > 0;
+  }
+}
+
+// ---------------------------------------------------------------------
 // The run-scoped behavior graph
 // ---------------------------------------------------------------------
 
@@ -211,6 +269,10 @@ export class RunGraph {
     this.droppedTargets = 0;
     this.droppedEdges = 0;
 
+    // The run's actors seen live. Held by the graph so it is cleared exactly
+    // when the graph is: on a run change and on every reconnect.
+    this.actors = new SeenActors(bounds.maxActors ?? MAX_ACTORS_LISTED);
+
     // The platform's statement about its own evidence, carried through
     // unchanged. Not this graph's saturation, and never reported as it.
     this.behaviorComplete = true;
@@ -225,6 +287,11 @@ export class RunGraph {
     if (observation.behavior_complete === false) {
       this.behaviorComplete = false;
     }
+    // Every frame of the run lists its actor, including one a bound below
+    // refuses to draw: what is lost there is a line, not the fact the actor
+    // was seen.
+    this.actors.observe(actorKey(observation, scope), actorOf(observation, scope),
+      observation.actor_type || "", at);
 
     const behavior = observation.behavior || {};
     const fingerprintID = observation.fingerprint_id || "";
@@ -435,6 +502,18 @@ export class LiveModel {
     // platform state.
     this.following = true;
     this.graph = null;
+    // The actor the view is narrowed to, by actor key; "" is all actors. A
+    // display filter by equality over frames already held (task 109): it
+    // sends no request and computes nothing, and frames from every actor keep
+    // folding into the graph so All actors restores the run at once.
+    // Ephemeral like the follow mode: a reload starts on all actors.
+    this.followedActor = "";
+  }
+
+  // followActor narrows the view to one actor of the selected run, or back to
+  // all of them with "".
+  followActor(key) {
+    this.followedActor = key;
   }
 
   // follow returns to auto-selection and immediately adopts the most recently
@@ -496,6 +575,8 @@ export class LiveModel {
     }
     this.selectedKey = key;
     this.graph = key === "" ? null : new RunGraph(key, this.bounds);
+    // An actor belongs to one run; a new run starts on all actors.
+    this.followedActor = "";
   }
 
   selectedCard() {

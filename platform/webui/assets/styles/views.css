@@ -172,6 +172,41 @@
 }
 .rail-follow-state { color: var(--muted); }
 
+/* Actors seen live in the selected run (task 109). The followed row is marked
+   by aria-pressed and a border and weight change, never by colour alone. */
+.rail-actors { margin: 0.6rem 0 0; padding-top: 0.5rem; border-top: 1px solid var(--line-soft); }
+.rail-actors-title { margin: 0; font-weight: 600; font-size: 0.84rem; }
+.rail-actors-note { margin: 0.2rem 0 0.4rem; color: var(--muted); font-size: 0.74rem; line-height: 1.45; }
+.rail-actor-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.rail-actor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  width: 100%;
+  padding: 0.35rem 0.55rem;
+  background: var(--sunken);
+  border: 1px solid var(--line-soft);
+  border-left: 3px solid transparent;
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rail-actor:hover { border-color: var(--line); }
+.rail-actor[aria-pressed="true"] { border-left-color: var(--accent); background: var(--accent-soft); }
+.rail-actor[aria-pressed="true"] .rail-actor-name::before { content: "Following · "; font-weight: 400; }
+.rail-actor-name {
+  font-weight: 600;
+  font-size: 0.84rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-actor-detail { color: var(--muted); font-size: 0.72rem; overflow-wrap: anywhere; }
+.rail-actors-all { margin-top: 0.4rem; }
+.timeline-narrowed { margin: 0 0 0.4rem; }
+
 .rail-empty { color: var(--muted); font-size: 0.82rem; line-height: 1.5; }
 .rail-empty-title { margin: 0 0 0.35rem; color: var(--ink); font-weight: 600; }
 .rail-empty p { margin: 0 0 0.5rem; }

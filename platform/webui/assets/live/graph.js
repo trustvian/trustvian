@@ -162,8 +162,18 @@ export class GraphCanvas {
   // identifier — a name is never waited for) when the actor is the run's
   // agent, and otherwise the actor id the frame stated. actor is "" for the
   // agent's own source, so its lines are described exactly as before.
-  render(graph, nameSource) {
+  //
+  // actor narrows the drawing to one source by its key (task 109): that
+  // actor's source, its lines and the targets they reach. "" draws them all.
+  // When the narrowed actor's source was evicted under the source bound,
+  // nothing is drawn, and the notices say why.
+  render(graph, nameSource, actor = "") {
     if (graph === null || graph === undefined || graph.edges.size === 0) {
+      this.clear("");
+      return;
+    }
+    const view = drawnTopology(graph, actor);
+    if (view.sources.length === 0) {
       this.clear("");
       return;
     }
@@ -171,7 +181,7 @@ export class GraphCanvas {
     // A signature of what the topology is, not of what state it carries. When
     // it is unchanged only the state classes are refreshed, so an edge that
     // pulses fifty times is laid out once.
-    const signature = topologySignature(graph);
+    const signature = topologySignature(view);
     if (this.root !== null && this.renderedScope === graph.scopeKey &&
         this.renderedEdges === signature) {
       this.refreshState(graph);
@@ -179,9 +189,8 @@ export class GraphCanvas {
     }
 
     this.host.replaceChildren();
-    const targets = Array.from(graph.targets.values());
     // Least recently observed first, top to bottom: the model's own order.
-    const sources = Array.from(graph.sources.values());
+    const { sources, targets, edges } = view;
     // The taller column sets the height, and the shorter one is centred
     // against it. With one source this is exactly the single agent node's
     // position: centred on the targets.
@@ -212,7 +221,7 @@ export class GraphCanvas {
 
     // Each source's drawn targets, for its "N targets" line.
     const reached = new Map(sources.map((source) => [source.id, new Set()]));
-    for (const edge of graph.edges.values()) {
+    for (const edge of edges) {
       const y1 = this.geometry.sources.get(edge.sourceID);
       const y2 = this.geometry.targets.get(edge.targetID);
       if (y1 === undefined || y2 === undefined) {
@@ -456,10 +465,36 @@ export function describeEdge(edge, actor = "") {
   return parts.join(", ");
 }
 
+// drawnTopology is what one render draws: every source, line and target, or
+// one actor's source, its lines and the targets they reach. Selection by
+// equality over what the graph holds; nothing is computed.
+function drawnTopology(graph, actor) {
+  if (actor === "") {
+    return {
+      actor,
+      sources: Array.from(graph.sources.values()),
+      targets: Array.from(graph.targets.values()),
+      edges: Array.from(graph.edges.values()),
+    };
+  }
+  const source = graph.sources.get(actor);
+  if (source === undefined) {
+    return { actor, sources: [], targets: [], edges: [] };
+  }
+  const edges = Array.from(graph.edges.values()).filter((edge) => edge.sourceID === actor);
+  const reached = new Set(edges.map((edge) => edge.targetID));
+  return {
+    actor,
+    sources: [source],
+    targets: Array.from(graph.targets.values()).filter((target) => reached.has(target.id)),
+    edges,
+  };
+}
+
 // topologySignature changes when the shape changes and not when state does.
-function topologySignature(graph) {
-  const parts = Array.from(graph.sources.keys());
-  for (const edge of graph.edges.values()) {
+function topologySignature(view) {
+  const parts = [view.actor, ...view.sources.map((source) => source.id)];
+  for (const edge of view.edges) {
     parts.push(`${edge.id}>${edge.targetID}${edge.newBehavior ? "!" : ""}`);
   }
   return parts.join("|");
