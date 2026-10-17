@@ -2056,6 +2056,12 @@ func TestLiveBoundsAreTheDocumentedValues(t *testing.T) {
 		}
 	}
 
+	// Task 109: the frames kept while the Live view is paused.
+	pause := stripJSNoise(readAsset(t, "pause.js"))
+	if !regexp.MustCompile(`export const PAUSE_BUFFER_MAX = 1024;`).MatchString(pause) {
+		t.Error("pause.js does not declare PAUSE_BUFFER_MAX = 1024")
+	}
+
 	// The existing two are reused, not duplicated. A second feed bound or a
 	// second resync bound would be two numbers meaning one thing.
 	if !regexp.MustCompile(`DISPLAY_MAX = 100`).MatchString(realtime) {

@@ -15,7 +15,8 @@
 import * as api from "./v1/api.js";
 import * as render from "./v1/render.js";
 import { RealtimeSession, STATE } from "./v1/realtime.js";
-import { LiveModel, OVER_BOUND_ACTOR_LABEL, actorKey, actorOf, edgeKey } from "./live/model.js";
+import { LiveModel, OVER_BOUND_ACTOR_LABEL, actorKey, actorOf, edgeKey, scopeKey } from "./live/model.js";
+import { PauseBuffer, isTypingTarget } from "./live/pause.js";
 import { GraphCanvas, PULSE_MS } from "./live/graph.js";
 import { renderRail, renderCanvasNotices } from "./live/rail.js";
 import { TimelineFeed, renderTimeline } from "./live/timeline.js";
@@ -616,6 +617,10 @@ const connChip = byID("conn-chip");
 const connText = byID("conn-text");
 const canvasScope = byID("canvas-scope");
 const liveReconnect = byID("live-reconnect");
+const livePause = byID("live-pause");
+const livePauseState = byID("live-pause-state");
+const liveAnnounce = byID("live-announce");
+const connPaused = byID("conn-paused");
 const railHost = byID("rail");
 const canvasNotices = byID("canvas-notices");
 const inspectorHost = byID("inspector");
@@ -668,6 +673,8 @@ let reducedMotion = reducedMotionQuery.matches;
 
 const liveModel = new LiveModel();
 const timeline = new TimelineFeed();
+// Pause and its buffer (task 109). Ephemeral: a reload starts live.
+const pause = new PauseBuffer();
 const labels = new LabelCache({ getAgent: (id) => api.getAgent(id) });
 const hierarchy = new HierarchyBrowser({
   listProjects: (after) => api.listProjects(after),
@@ -925,7 +932,8 @@ function drawHeader() {
   canvasScope.textContent = (card.scope.run_id
     ? `Drawing run ${card.scope.run_id}`
     : "Drawing the selected run") +
-    (followed === null ? "." : `, following ${followed.label}.`);
+    (followed === null ? "." : `, following ${followed.label}.`) +
+    (pause.paused && pause.reconnected ? " From the previous connection." : "");
 }
 
 function drawAll() {
@@ -1047,27 +1055,14 @@ const liveSession = new RealtimeSession(
     onProblem: (reason) => showProblem(`Activity stream: ${reason}`),
     onObservation: (scope, observation) => {
       const at = Date.now();
-      const { card, edge } = liveModel.observe(scope, observation, at);
-
-      // One lookup per newly seen agent, never per observation. The card
-      // renders its identifier immediately and gains a name when one arrives.
-      void labels.resolveAgent(scope.agent_id);
-
-      const sourceKey = actorKey(observation, scope);
-      timeline.add({
-        at,
-        scopeKey: card.key,
-        sourceKey,
-        edgeKey: edgeKey(sourceKey, observation.fingerprint_id || ""),
-        agentLabel: nameActor(scope, actorOf(observation, scope), observation.actor_type || "").label,
-        fingerprintID: observation.fingerprint_id || "",
-        operationCategory: observation.behavior ? observation.behavior.operation_category || "" : "",
-        operationName: observation.behavior ? observation.behavior.operation_name || "" : "",
-        targetName: observation.behavior ? observation.behavior.target_name || "" : "",
-        decision: observation.decision || "",
-        riskLevel: observation.risk_level || "",
-        newBehavior: observation.new_behavior === true,
-      });
+      // Paused: the frame is kept, in order, and nothing is drawn. The
+      // connection, the chip and status_changed carry on (task 109).
+      if (pause.paused) {
+        pause.add({ scope, observation, at }, scopeKey(scope) === liveModel.selectedKey);
+        drawPauseState();
+        return;
+      }
+      const { card, edge } = foldObservation(scope, observation, at);
 
       // A newly selected scope needs its authoritative counts.
       if (authoritative.runID !== (card.scope.run_id || "")) {
@@ -1107,18 +1102,174 @@ const liveSession = new RealtimeSession(
       }
     },
     onConnect: () => {
-      // A card, an edge and a timeline row are all statements about the
-      // current stream. A view that survived a reconnect would assert a
-      // continuity stream_ready explicitly denies.
-      liveModel.reset();
-      timeline.breakSegment();
-      inspectedEdgeID = "";
-      authoritative = { runID: "", recordCount: "", distinctCount: "", complete: null };
-      canvas.clear("");
-      drawAll();
+      // Paused, the frozen picture stays on screen, labelled as the previous
+      // connection's, and the reset below is applied on resume.
+      if (pause.paused) {
+        pause.connectionChanged();
+        drawPauseState();
+        drawHeader();
+        return;
+      }
+      resetLiveViewport();
     },
   },
 );
+
+// resetLiveViewport clears everything one connection owned.
+//
+// A card, an edge and a timeline row are all statements about the current
+// stream. A view that survived a reconnect would assert a continuity
+// stream_ready explicitly denies.
+function resetLiveViewport() {
+  liveModel.reset();
+  timeline.breakSegment();
+  inspectedEdgeID = "";
+  authoritative = { runID: "", recordCount: "", distinctCount: "", complete: null };
+  canvas.clear("");
+  drawAll();
+}
+
+// foldObservation folds one frame into the model and the timeline, and draws
+// nothing. Live, the caller draws and pulses; on resume, buffered frames are
+// folded in arrival order and drawn once.
+function foldObservation(scope, observation, at) {
+  const { card, edge } = liveModel.observe(scope, observation, at);
+
+  // One lookup per newly seen agent, never per observation. The card renders
+  // its identifier immediately and gains a name when one arrives.
+  void labels.resolveAgent(scope.agent_id);
+
+  const sourceKey = actorKey(observation, scope);
+  timeline.add({
+    at,
+    scopeKey: card.key,
+    sourceKey,
+    edgeKey: edgeKey(sourceKey, observation.fingerprint_id || ""),
+    agentLabel: nameActor(scope, actorOf(observation, scope), observation.actor_type || "").label,
+    fingerprintID: observation.fingerprint_id || "",
+    operationCategory: observation.behavior ? observation.behavior.operation_category || "" : "",
+    operationName: observation.behavior ? observation.behavior.operation_name || "" : "",
+    targetName: observation.behavior ? observation.behavior.target_name || "" : "",
+    decision: observation.decision || "",
+    riskLevel: observation.risk_level || "",
+    newBehavior: observation.new_behavior === true,
+  });
+  return { card, edge };
+}
+
+// ---------------------------------------------------------------------
+// Pause and resume (task 109, decisions 5 and 6)
+// ---------------------------------------------------------------------
+
+// announceLive speaks one sentence in the Live view's polite region. Pause
+// and resume say different things, so consecutive announcements always change
+// the region's text.
+function announceLive(text) {
+  liveAnnounce.textContent = text;
+}
+
+// The sentence a resume that overran states, on screen and announced.
+let pauseOverrunNote = "";
+
+// drawPauseState shows the pause in words: PAUSED beside the connection chip,
+// the button's pressed state, and the frame counts since pause. The counts are
+// frames this connection received, labelled as such, and not a live region.
+function drawPauseState() {
+  connPaused.hidden = !pause.paused;
+  livePause.setAttribute("aria-pressed", pause.paused ? "true" : "false");
+  if (!pause.paused) {
+    livePauseState.hidden = pauseOverrunNote === "";
+    livePauseState.textContent = pauseOverrunNote;
+    return;
+  }
+  const lines = [
+    `${pause.sincePause} ${pause.sincePause === 1 ? "frame" : "frames"} since pause · ` +
+    `seen live, all runs · ${pause.inRun} in this run.`,
+  ];
+  if (pause.overrun) {
+    lines.push(`Pause buffer full (${pause.capacity.toLocaleString("en-US")}): this view ` +
+      "will start again from now when you resume.");
+  }
+  if (pause.reconnected) {
+    lines.push("The stream reconnected while paused: this picture is from the previous connection.");
+  }
+  livePauseState.hidden = false;
+  livePauseState.textContent = lines.join(" ");
+}
+
+function pauseLive() {
+  pauseOverrunNote = "";
+  pause.pause();
+  drawPauseState();
+  announceLive("Live view paused. The connection stays open.");
+}
+
+// resumeLive folds what the pause kept, without a pulse, redraws once, and
+// re-reads the selected run's progress — once, and not its behaviors: a
+// behavior row carries no actor and no frame, so drawing from it would put
+// lines on the canvas with nothing behind them.
+function resumeLive() {
+  const kept = pause.resume();
+  if (kept.overrun || kept.reconnected) {
+    // The reset a connect would have applied: an overrun abandons the pause,
+    // and a reconnect's frames cannot be joined to the previous connection's.
+    liveModel.reset();
+    timeline.breakSegment();
+    inspectedEdgeID = "";
+    canvas.clear("");
+  }
+
+  let opened = "";
+  for (const frame of kept.frames) {
+    const { edge } = foldObservation(frame.scope, frame.observation, frame.at);
+    // The live inspector rule, applied once after the redraw: the first new
+    // behavior opens when nothing is being read.
+    if (opened === "" && edge !== null && frame.observation.new_behavior === true &&
+        (liveModel.followedActor === "" || edge.sourceID === liveModel.followedActor)) {
+      opened = edge.id;
+    }
+  }
+  if (inspectedEdgeID === "" && opened !== "") {
+    inspectedEdgeID = opened;
+  }
+
+  authoritative = { runID: "", recordCount: "", distinctCount: "", complete: null };
+  pauseOverrunNote = kept.overrun
+    ? `Paused longer than this view holds: ${kept.sincePause} frames were not kept. ` +
+      "Retained history is in Evidence."
+    : "";
+  drawAll();
+  drawPauseState();
+  void refreshAuthoritative();
+  announceLive(kept.overrun
+    ? pauseOverrunNote
+    : `Live view resumed. ${kept.sincePause} ${kept.sincePause === 1 ? "frame" : "frames"} arrived while paused.`);
+}
+
+function togglePause() {
+  if (pause.paused) {
+    resumeLive();
+  } else {
+    pauseLive();
+  }
+}
+
+livePause.addEventListener("click", togglePause);
+
+// P toggles pause on the Live view: no modifier, and never while typing.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "p" && event.key !== "P") {
+    return;
+  }
+  if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || event.repeat) {
+    return;
+  }
+  if (currentView !== "view-live" || isTypingTarget(event.target)) {
+    return;
+  }
+  event.preventDefault();
+  togglePause();
+});
 
 // ---------------------------------------------------------------------
 // Bounded discovery, as a console

@@ -206,6 +206,8 @@
 .rail-actor-detail { color: var(--muted); font-size: 0.72rem; overflow-wrap: anywhere; }
 .rail-actors-all { margin-top: 0.4rem; }
 .timeline-narrowed { margin: 0 0 0.4rem; }
+.live-pause-state { margin: 0.2rem 0 0.4rem; font-weight: 600; }
+#live-pause[aria-pressed="true"] { border-color: currentColor; }
 
 .rail-empty { color: var(--muted); font-size: 0.82rem; line-height: 1.5; }
 .rail-empty-title { margin: 0 0 0.35rem; color: var(--ink); font-weight: 600; }
