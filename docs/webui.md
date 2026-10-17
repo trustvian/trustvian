@@ -215,7 +215,8 @@ into three unreadable columns.
 
 **The connection state is in the sidebar.** A chip beside the wordmark says
 `Connecting`, `Syncing`, `Live`, `Reconnecting` or `Disconnected` in words; its
-dot is decoration.
+dot is decoration. While the view is [paused](#pausing-the-view), `· PAUSED`
+sits beside the chip, which still reports the connection.
 
 **The strip is operational.** It names the agent being watched, its
 environment and run, how many frames arrived for it on this connection, and the
@@ -225,7 +226,9 @@ evidence is complete. Those counts are read from
 count derived from frames would drift the moment one was dropped, and the
 stream's own bound makes dropping possible by design. The frame count is
 labelled *Seen on this connection* on the strip and *seen live* on a card,
-which is a different fact.
+which is a different fact. While you [follow one actor](#following-one-actor)
+the strip adds *Following* and the actor; its counts stay the run's, because no
+`/v1` route returns a count per actor.
 
 The page subscribes to `GET /v1/realtime` with no filter. An empty filter is
 unconstrained on every dimension — that is what the server already means by it
@@ -276,11 +279,14 @@ support-agent ──┼─ tool knowledge_search ─┼──▶ tools.localhost
                 └─ tool export_customer ──┘
 ```
 
-The source is the agent from the event's scope. Each edge is one behavioral
-fingerprint, labelled with the operation category and name, with the decision
-and risk level beneath. The target is the target name and category. Those four
-come from the observation's behavior descriptor (`StableFeatures`) exactly as
-it carried them.
+The source is the actor the observation names: its `actor_id`, the record's
+actor (task 109). For a run with one actor named like the agent — what
+`trustvian dev` produces when `service.name` names the agent — that is the
+agent, labelled with the agent's name as before. Each edge is one behavioral
+fingerprint performed by that actor, labelled with the operation category and
+name, with the decision and risk level beneath. The target is the target name
+and category. Those four come from the observation's behavior descriptor
+(`StableFeatures`) exactly as it carried them.
 
 **No semantic names are invented.** The descriptor names a tool only when the
 producer's telemetry named one (task 075); if telemetry proves only `POST`
@@ -300,6 +306,104 @@ behavior*, its target carries a `NEW` word, its timeline row a `NEW` column,
 and — if you are not already reading something else — the inspector opens it.
 `NEW` means new: it is never labelled dangerous, malicious or unsafe, because
 those would be judgements the server did not make.
+
+### Several actors in one run
+
+```text
+accounts-agent ──╮
+support-agent  ──┼── tool knowledge_search ──▶ kb.localhost
+billing-agent  ──╯
+```
+
+Several workers under one `trustvian dev` run — each its own process with its
+own `service.name` — are several actors of one run. Each frame names its actor,
+so the graph draws **one source per actor** and **one line per actor and
+behavior**: the same behavior from three actors is one fingerprint drawn as
+three lines to one target. Each line carries its own actor's latest decision
+and risk; keyed by the fingerprint alone, one actor's answer would overwrite
+another's. The canvas says so under its heading: *One line per actor and
+behavior*.
+
+- **One behavior, not several.** With more than one source, a line's operation
+  label sits where the lines meet the target, so one behavior's labels coincide.
+  Each line's decision and risk stay at its middle. The inspector names the
+  other actors this view has drawn the same fingerprint from, *seen live*, and
+  the strip's behavior count is the run's distinct count from `…/progress`,
+  never a count of lines.
+- **Labels.** The run's own agent keeps its name. Any other actor is labelled by
+  its id, with its actor type in the node's title, which is its accessible name;
+  its lines are described *by* that actor. Actors are not platform entities, so
+  there is no name to look up.
+- **An over-long actor id.** A frame carries the actor id only when it is at
+  most 256 bytes. Longer ids arrive as `""` with `actor_id_state:
+  "exceeds_frame_bound"`, and every such actor shares one source labelled
+  *actor id not carried (over 256 bytes)*, which never claims to be one actor.
+  The run's observations hold the full id.
+- **`NEW` stays the run's fact.** It goes on the line of the frame that said
+  `new_behavior: true`. Another actor's later frame of the same behavior says
+  `false`, and its line has no badge. Nothing says "new for this actor".
+
+The actor is display metadata. It is not part of `StableFeatures`, a
+fingerprint, a baseline key or a scope: the same behavior from two actors is
+one fingerprint.
+
+### Following one actor
+
+Under the run cards, **Actors seen live** lists the selected run's actors that
+frames on this connection named, most recently seen first: the actor id, its
+actor type, the arrival time of its last frame (this browser's clock), and its
+frame count, *seen live*. These are frames this connection received, not the
+run's actors; the run's **Observations** name every actor, and the list links
+there. It holds at most 16 actors, twice the graph's sources, so an actor whose
+source the graph evicted can still be followed. It is cleared when the selected
+run changes and on every reconnect.
+
+Selecting an actor follows it. The graph draws only its source, its lines and
+the targets they reach; the timeline shows only its rows, and says how many of
+its frames are still among the last 100 rows; an inspector open on another
+actor's line closes, and another actor's `NEW` does not open it. **All actors**
+returns to the whole run. Both are a display filter by equality over frames the
+view already holds: they send no request and compute nothing, and frames from
+every actor keep arriving into the model while you follow one. If the graph
+evicted the followed actor's source, the canvas says so and draws it again on
+its next frame. The choice is not persisted: a reload starts on all actors.
+
+### Pausing the view
+
+**Pause** (or <kbd>P</kbd> on the Live view) freezes everything the view draws
+from frames — the graph, the timeline, the inspector, the actor list, the run
+cards and the Overview's *Live now* panel — and keeps the connection. The chip,
+its backoff and resync, and the Status view's updates carry on, and nothing
+about the agent or the run changes. While paused you can still click an edge,
+a row, a run card or an actor, over the frozen picture.
+
+```text
+Trustvian (● Live) · PAUSED
+487 frames since pause · seen live, all runs · 487 in this run.
+```
+
+- **Frames are kept, not drawn.** Observation frames that arrive while paused
+  are kept in order, up to 1,024. The line under the canvas heading counts
+  them, for all runs and for the run being drawn. It is not a live region.
+- **Resume** folds the kept frames into the model, redraws once with no pulse
+  — a pulse reports a frame arriving now, and these did not — and continues
+  live. It re-reads the run's `…/progress` once, so the strip's counts are the
+  database's again, and does not re-read its behaviors: a behavior row carries
+  no actor and no frame. If a kept frame was a new behavior and nothing is
+  being inspected, the inspector opens it; otherwise what you were reading
+  stays open.
+- **Past 1,024 frames** the buffer is discarded and counting continues. The
+  line says *Pause buffer full (1,024): this view will start again from now
+  when you resume*, and resume clears the view as a reconnect does and says
+  *Paused longer than this view holds: N frames were not kept. Retained history
+  is in Evidence.* Drawing only part of a pause would mislabel what is drawn.
+  The QuickStart agent as three workers produced 14.7 frames a second, so the
+  buffer holds about 70 seconds of that fleet.
+- **A reconnect while paused** discards the buffer: frames from two connections
+  cannot be joined. The frozen picture stays, labelled *From the previous
+  connection*, and resume applies the reset the reconnect would have applied.
+
+The pause is not persisted: a reload starts live.
 
 ### The inspector
 
@@ -339,15 +443,17 @@ the visual hierarchy: what you are reading is what the agent did.
 
 ### Bounds, and what saturation means
 
-| Bound | Value |
-|---|---|
-| active scope cards | 16 |
-| graph source nodes | 8 |
-| graph target nodes | 64 |
-| graph edges | 128 |
-| timeline rows | 100 |
-| frames buffered during resync | 64 |
-| automatic collection requests at startup or reconnect | 1 |
+| Bound | Value | When it is reached |
+|---|---|---|
+| active scope cards | 16 | The least recently observed card is evicted, and the rail says *+N more active scopes are not listed … a display limit* |
+| graph source nodes (one per actor) | 8 | The least recently observed actor's source is evicted: *Graph limited to 8 source nodes. N additional observed source nodes are not currently drawn.* A followed actor whose source was evicted is stated by name |
+| graph target nodes | 64 | The same sentence, for target nodes |
+| graph edges (one per actor and behavior) | 128 | The same sentence, for edges. A behavior shared by A actors is A edges, so a run with several actors reaches it sooner: the QuickStart's 6 behaviors with 3 actors drew 16 |
+| actors listed as seen live | 16 | The least recently seen actor is evicted: *16 actors listed, N not listed … A display limit* |
+| timeline rows | 100 | The oldest row leaves; the caption says *showing N of at most 100*, and a followed actor's view says how many of its frames are among them |
+| frames buffered during resync | 64 | The stream is abandoned and resynchronized, never drawn with a gap |
+| frames kept while paused | 1,024 | The buffer is discarded and counting continues: *Pause buffer full (1,024)*, and resume starts again from then |
+| automatic collection requests at startup or reconnect | 1 | Not a saturation: one page, and no continuation is followed by itself |
 
 Eviction is least-recently-observed, and saturation is always stated: the view
 names which bound it hit and how many items it is not drawing. It never
@@ -441,6 +547,14 @@ the decision, the risk level, the `NEW` badge, the connection state — remains
 as text or a badge.
 
 Nothing is conveyed by colour alone: every state carries a word or a marker.
+**Pause** is one button whose visible label stays *Pause*; its state is in
+`aria-pressed`, in the `PAUSED` word and in the frames-since-pause line. Its
+shortcut is <kbd>P</kbd>, on the Live view only, with no modifier key, and never
+while focus is in a text field, a select or an editable element. Pausing and
+resuming each make one polite announcement — *Live view paused. The connection
+stays open.* and *Live view resumed. N frames arrived while paused.* — and no
+frame is announced. Each row of **Actors seen live** is a toggle button with
+`aria-pressed`.
 Graph edges are focusable and activate on Enter or Space, with accessible
 names describing the operation, new-behavior state, decision, risk and how many
 times the edge was observed on this stream. Target nodes are focusable and

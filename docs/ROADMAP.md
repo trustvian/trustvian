@@ -199,7 +199,9 @@ today, by task:
   - The CLI evaluation workflow (060) and the terminal dashboard (061).
   - The integrated local runtime (062) and the WebUI served from it: the
     minimal web control plane (063), zero-input live behavior (074), and the
-    record-first admin console (096).
+    record-first admin console (096). On `main` for `v0.13.0`, Live draws one
+    source per actor, lists the actors seen live, follows one, and pauses
+    without disconnecting (109).
 - **Environments and history.** The environment model (065), promotion as a
   recorded decision on gate evidence (066), and bounded per-observation event
   history (067).
@@ -671,23 +673,31 @@ closing change. "Met" only where the evidence shows it.
   `ollama.localhost`) are two behaviors, so the report's targets show the same
   calls twice and `max_calls_per_run` needs a limit on each. The measured report
   shows it ([`docs/results`](results/)). A reader must not add the two rows.
-- **Actors inside one live run are indistinguishable.** The realtime frame
-  carries the run's scope and not the observation's actor, so several workers
-  under one `trustvian dev` run draw as one agent until
-  [task 109](tasks/v0.13/109-live-pause-and-actor-following.md); the retained
+- **Actors inside one live run are indistinguishable.** In `v0.12.x` the
+  realtime frame carries the run's scope and not the observation's actor, so
+  several workers under one `trustvian dev` run draw as one agent; the retained
   observations name each actor.
+  [Task 109](tasks/v0.13/109-live-pause-and-actor-following.md), implemented
+  on `main` for `v0.13.0`, puts the actor on the frame and draws one source
+  per actor.
 
 ## v0.13.0 — proposed
 
-**PROPOSED.** Nothing here is scheduled. Tasks are in
-[`tasks/v0.13/`](tasks/v0.13/README.md).
+**PROPOSED.** Tasks are in [`tasks/v0.13/`](tasks/v0.13/README.md).
+
+Maintainer decisions: **109 is accepted** and implemented as specified, with
+decisions 1–6 binding. **110 is accepted** and follows 109 in its own pull
+request, because both touch the Live and Overview files. **108 stays
+Proposed**: it changes `OperationCategory` and `TargetName`, and so
+fingerprints and baselines, and needs its own rollout decision. **080 stays
+Specified**; it gates nothing.
 
 | Task | What it is | Status |
 |---|---|---|
 | [108](tasks/v0.13/108-legacy-http-semantic-conventions.md) | Read the pre-stable HTTP keys. This changes `OperationCategory` and `TargetName`, so every affected fingerprint and baseline; needs a rollout decision first | Proposed |
 | [080](tasks/v1.0/080-metadata-only-detection-evaluation.md) | Metadata-only detection evaluation, a parallel measurement that gates nothing; moved from `v0.12.0` (D13) | Specified |
-| [109](tasks/v0.13/109-live-pause-and-actor-following.md) | The Live Observatory draws one source per actor, lists the actors seen live and follows one, and can pause and resume without disconnecting or replaying. `actor_id` and `actor_type` are added to the realtime observation frame as display metadata; identity is unchanged | Specified |
-| [110](tasks/v0.13/110-browser-computes-nothing.md) | Every figure the WebUI still derives in the browser, decided: the Overview's runs-by-status, gate-verdict tally and most-observed behaviors move to additive `/v1` fields; waterfall offsets and Live counts stay as labelled viewport facts, enforced by a static check | Specified |
+| [109](tasks/v0.13/109-live-pause-and-actor-following.md) | The Live Observatory draws one source per actor, lists the actors seen live and follows one, and can pause and resume without disconnecting or replaying. `actor_id`, `actor_id_state` and `actor_type` are added to the realtime observation frame as display metadata; identity is unchanged | **Implemented** (accepted) |
+| [110](tasks/v0.13/110-browser-computes-nothing.md) | Every figure the WebUI still derives in the browser, decided: the Overview's runs-by-status, gate-verdict tally and most-observed behaviors move to additive `/v1` fields; waterfall offsets and Live counts stay as labelled viewport facts, enforced by a static check | Accepted; next, after 109 |
 
 088 and 092, deferred from [`v0.12.0`](#v0120--change-impact), are not yet
 specified.
@@ -1343,8 +1353,8 @@ The **Gate** column says which rows the release actually depends on.
 | 106 | [Frequency evidence](tasks/v0.12/106-frequency-evidence.md) — calls per run, per-target permille ratio, `lost` behaviors, and three optional named integer gate limits over them | **Implemented** (`v0.12.0`) | none |
 | 107 | [Change Impact view and Model Change Report](tasks/v0.12/107-change-impact-view-and-report.md) — 081/086/087/106 evidence in one table, the result document version 2, and one renderer for the CLI and the PR comment | Implemented (`v0.12.0`) | none |
 | 108 | [Legacy HTTP semantic conventions](tasks/v0.13/108-legacy-http-semantic-conventions.md) — read `http.method`/`http.url` and the other pre-stable HTTP keys, which changes `OperationCategory` and `TargetName`, so every affected fingerprint and baseline; a staged rollout | Proposed (`v0.13.0`) | none |
-| 109 | [Live Observatory: pause, resume and following one actor](tasks/v0.13/109-live-pause-and-actor-following.md) — the actor on the realtime frame as display metadata, one graph source per actor, an actor list to follow, and pause/resume without disconnect or replay | Specified (`v0.13.0`) | none |
-| 110 | [The browser computes nothing](tasks/v0.13/110-browser-computes-nothing.md) — every figure the WebUI derives, decided: three Overview summaries move to additive `/v1` fields, waterfall and Live counts stay as labelled viewport facts, and a static check keeps the list complete | Specified (`v0.13.0`) | none |
+| 109 | [Live Observatory: pause, resume and following one actor](tasks/v0.13/109-live-pause-and-actor-following.md) — the actor on the realtime frame as display metadata, one graph source per actor, an actor list to follow, and pause/resume without disconnect or replay | **Implemented** (`v0.13.0`) | none |
+| 110 | [The browser computes nothing](tasks/v0.13/110-browser-computes-nothing.md) — every figure the WebUI derives, decided: three Overview summaries move to additive `/v1` fields, waterfall and Live counts stay as labelled viewport facts, and a static check keeps the list complete | Accepted (`v0.13.0`); after 109 | none |
 
 **Production history and scale:**
 

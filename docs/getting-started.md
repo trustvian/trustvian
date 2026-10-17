@@ -106,9 +106,11 @@ command unchanged with an OTLP receiver around it, and exits with your
 command's status. The browser's **Live** view shows the run as soon as
 telemetry arrives, with no identifier to type. Select it to see the agent, tool
 and service flow with the decision, risk, trust and anomaly the server
-computed. Several actors inside one run draw as one agent there; following one
-actor and pausing the view are planned
-([task 109](ROADMAP.md#v0130--proposed)). After the run, **Status** shows the
+computed. In `v0.12.1`, several actors inside one run draw as one agent there.
+From `v0.13.0` (on `main`, not yet released) Live draws one source per actor,
+follows one, and pauses without disconnecting
+([Web interface § Several actors in one run](webui.md#several-actors-in-one-run)).
+After the run, **Status** shows the
 spans it received, its producers and the model calls the telemetry named. If
 nothing arrives, Status's suggestions say what to check, and
 `trustvian dev --check` proves the pipeline with no workload at all.

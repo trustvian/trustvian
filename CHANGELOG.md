@@ -8,6 +8,26 @@ actually depend on.
 
 ## Unreleased
 
+### Added
+
+- **The Live view tells the actors of one run apart.** Every realtime
+  `observation` frame carries `actor_id`, `actor_id_state` and `actor_type`,
+  the ingested record's actor as display metadata: an id over 256 bytes
+  travels as `""` with `exceeds_frame_bound`, and an unrecognized actor type
+  as `""`. Fingerprints, `StableFeatures` and baseline keys are unchanged. The
+  Live graph draws one source per actor and one line per actor and behavior,
+  each line with its own actor's decision, and a run with one actor named like
+  the agent draws as before
+  ([task 109](docs/tasks/v0.13/109-live-pause-and-actor-following.md)).
+- **Follow one actor.** **Actors seen live** lists the selected run's actors
+  with their frame counts and last arrival, at most 16. Following one narrows
+  the graph, the timeline and the inspector to it without a request; **All
+  actors** restores the run.
+- **Pause the Live view without disconnecting.** **Pause**, or <kbd>P</kbd>,
+  freezes the view and keeps up to 1,024 frames while the connection stays
+  open; resume draws them with no pulse and re-reads the run's progress once.
+  A longer pause is stated, never silent, and the view starts again from then.
+
 ## v0.12.1 — Audit fixes
 
 ### Fixed
