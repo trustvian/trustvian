@@ -10,7 +10,7 @@
 //
 //   <svg>
 //     <g class="edges">    the persistent topology
-//     <g class="nodes">    the agent and its targets
+//     <g class="nodes">    the actors and their targets
 //     <g class="pulses">   one transient element per received observation
 //
 // Every string drawn comes from the API and is untrusted. It reaches the DOM
@@ -19,8 +19,9 @@
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
-// Layout. A fixed left-to-right fan: the agent on the left, its targets
-// stacked on the right. Deterministic, dependency-free, and legible at the
+// Layout. A fixed left-to-right fan: the run's actors stacked on the left, one
+// source each (task 109), their targets stacked on the right. A run with one
+// actor draws one source where the single agent node always was. Deterministic, dependency-free, and legible at the
 // bounds this view enforces — a force-directed layout would be a dependency
 // bought for a picture that is never crowded.
 const ROW_HEIGHT = 40;
@@ -132,7 +133,10 @@ export class GraphCanvas {
     this.renderedScope = "";
     this.renderedEdges = "";
     this.selectedEdgeID = "";
-    this.geometry = { agentY: 0, targets: new Map() };
+    this.geometry = { sources: new Map(), targets: new Map() };
+    // How each drawn source is named, so a refresh can describe its lines
+    // without asking the caller again.
+    this.sourceNames = new Map();
   }
 
   // clear empties the canvas and forgets what it drew.
@@ -141,7 +145,8 @@ export class GraphCanvas {
     this.root = null;
     this.renderedScope = "";
     this.renderedEdges = "";
-    this.geometry = { agentY: 0, targets: new Map() };
+    this.geometry = { sources: new Map(), targets: new Map() };
+    this.sourceNames = new Map();
     if (message) {
       const empty = document.createElement("p");
       empty.className = "canvas-empty";
@@ -152,10 +157,12 @@ export class GraphCanvas {
 
   // render draws the topology of one run.
   //
-  // graph is a RunGraph, or null when nothing is selected. agentLabel is the
-  // human-facing name when one has been resolved and the agent's own
-  // identifier otherwise — a name is never waited for.
-  render(graph, agentLabel) {
+  // graph is a RunGraph, or null when nothing is selected. nameSource maps a
+  // source to { label, title, actor }: the agent's human-facing name (or its
+  // identifier — a name is never waited for) when the actor is the run's
+  // agent, and otherwise the actor id the frame stated. actor is "" for the
+  // agent's own source, so its lines are described exactly as before.
+  render(graph, nameSource) {
     if (graph === null || graph === undefined || graph.edges.size === 0) {
       this.clear("");
       return;
@@ -173,7 +180,13 @@ export class GraphCanvas {
 
     this.host.replaceChildren();
     const targets = Array.from(graph.targets.values());
-    const height = Math.max(MIN_HEIGHT, TOP_PADDING + targets.length * ROW_HEIGHT + 20);
+    // Least recently observed first, top to bottom: the model's own order.
+    const sources = Array.from(graph.sources.values());
+    // The taller column sets the height, and the shorter one is centred
+    // against it. With one source this is exactly the single agent node's
+    // position: centred on the targets.
+    const rows = Math.max(targets.length, sources.length);
+    const height = Math.max(MIN_HEIGHT, TOP_PADDING + rows * ROW_HEIGHT + 20);
 
     this.root = svg("svg", [
       ["class", "canvas"],
@@ -186,22 +199,34 @@ export class GraphCanvas {
     this.pulseLayer = svg("g", [["class", "pulses"], ["aria-hidden", "true"]]);
     this.root.append(this.edgeLayer, this.nodeLayer, this.pulseLayer);
 
-    const agentY = TOP_PADDING + Math.max(0, (targets.length - 1) * ROW_HEIGHT) / 2;
-    this.geometry = { agentY, targets: new Map() };
+    const targetOffset = ((rows - targets.length) * ROW_HEIGHT) / 2;
+    const sourceOffset = (Math.max(0, rows - 1) - Math.max(0, sources.length - 1)) * ROW_HEIGHT / 2;
+    this.geometry = { sources: new Map(), targets: new Map() };
     targets.forEach((target, index) => {
-      this.geometry.targets.set(target.id, TOP_PADDING + index * ROW_HEIGHT);
+      this.geometry.targets.set(target.id, TOP_PADDING + targetOffset + index * ROW_HEIGHT);
     });
+    sources.forEach((source, index) => {
+      this.geometry.sources.set(source.id, TOP_PADDING + sourceOffset + index * ROW_HEIGHT);
+    });
+    this.sourceNames = new Map(sources.map((source) => [source.id, nameSource(source)]));
 
+    // Each source's drawn targets, for its "N targets" line.
+    const reached = new Map(sources.map((source) => [source.id, new Set()]));
     for (const edge of graph.edges.values()) {
-      const y = this.geometry.targets.get(edge.targetID);
-      if (y === undefined) {
+      const y1 = this.geometry.sources.get(edge.sourceID);
+      const y2 = this.geometry.targets.get(edge.targetID);
+      if (y1 === undefined || y2 === undefined) {
         // An endpoint was evicted under a bound. The edge is not drawn, and
         // the omission is already counted in graph.saturation().
         continue;
       }
-      this.edgeLayer.append(this.buildEdge(edge, agentY, y));
+      reached.get(edge.sourceID).add(edge.targetID);
+      this.edgeLayer.append(this.buildEdge(edge, y1, y2, sources.length > 1));
     }
-    this.nodeLayer.append(this.buildAgentNode(agentLabel, agentY, targets.length));
+    for (const source of sources) {
+      this.nodeLayer.append(this.buildSourceNode(source, this.sourceNames.get(source.id),
+        this.geometry.sources.get(source.id), reached.get(source.id).size));
+    }
     for (const target of targets) {
       this.nodeLayer.append(this.buildTargetNode(target, this.geometry.targets.get(target.id)));
     }
@@ -212,10 +237,17 @@ export class GraphCanvas {
     this.refreshState(graph);
   }
 
-  buildEdge(edge, y1, y2) {
+  // shared is true when the drawing has more than one source. The operation
+  // label then sits where the lines meet their target rather than at each
+  // line's middle, so one behavior performed by several actors reads as one
+  // label over converging lines rather than as several behaviors (task 109).
+  // Each line's own decision and risk stay at its middle. One source draws
+  // exactly as before.
+  buildEdge(edge, y1, y2, shared = false) {
     const group = svg("g", [
       ["class", "edge"],
       ["data-edge", edge.id],
+      ["data-fingerprint", edge.fingerprintID],
       ["role", "button"],
       ["tabindex", "0"],
     ]);
@@ -225,8 +257,9 @@ export class GraphCanvas {
 
     const midX = (AGENT_X + TARGET_X) / 2;
     const midY = Math.min(y1, y2) + Math.abs(y2 - y1) / 2;
-    group.append(svgText(midX, midY - 7, operationLabel(edge), "edge-op",
-      [["text-anchor", "middle"]]));
+    group.append(shared
+      ? svgText(TARGET_X - 10, y2 - 6, operationLabel(edge), "edge-op", [["text-anchor", "end"]])
+      : svgText(midX, midY - 7, operationLabel(edge), "edge-op", [["text-anchor", "middle"]]));
 
     const state = svgText(midX, midY + 10, "", "edge-state", [["text-anchor", "middle"]]);
     group.append(state);
@@ -247,17 +280,21 @@ export class GraphCanvas {
     return group;
   }
 
-  buildAgentNode(label, y, targetCount) {
-    const group = svg("g", [["class", "node node-agent"]]);
+  // buildSourceNode draws one actor. The run's own agent keeps the agent
+  // node's label and title; any other actor is named by the id its frames
+  // stated, with its actor type in the title, which is the node's accessible
+  // name. Actors are not platform entities, so there is no name to look up.
+  buildSourceNode(source, name, y, targetCount) {
+    const group = svg("g", [["class", "node node-agent"], ["data-source", source.id]]);
     group.append(svg("rect", [
       ["class", "node-box"], ["x", 10], ["y", y - 19],
       ["width", AGENT_X - 20], ["height", 38], ["rx", 6],
     ]));
-    group.append(svgText(22, y - 2, label === "" ? "(unnamed agent)" : label, "node-title"));
+    group.append(svgText(22, y - 2, name.label === "" ? "(unnamed agent)" : name.label, "node-title"));
     group.append(svgText(22, y + 13,
       `${targetCount} ${targetCount === 1 ? "target" : "targets"}`, "node-sub"));
     const title = svg("title");
-    title.textContent = `Agent ${label}`;
+    title.textContent = name.title;
     group.append(title);
     return group;
   }
@@ -309,7 +346,8 @@ export class GraphCanvas {
           .filter((part) => part !== "").join(" · ");
       }
       const title = group.querySelector("title");
-      const described = describeEdge(edge);
+      const name = this.sourceNames.get(edge.sourceID);
+      const described = describeEdge(edge, name === undefined ? "" : name.actor);
       if (title !== null) {
         title.textContent = described;
       }
@@ -330,8 +368,9 @@ export class GraphCanvas {
     if (this.root === null || this.reducedMotion) {
       return;
     }
+    const y1 = this.geometry.sources.get(edge.sourceID);
     const y2 = this.geometry.targets.get(edge.targetID);
-    if (y2 === undefined) {
+    if (y1 === undefined || y2 === undefined) {
       return;
     }
     const dot = svg("circle", [["class", "pulse"], ["r", 4.5]]);
@@ -339,7 +378,7 @@ export class GraphCanvas {
       ["dur", `${PULSE_MS}ms`],
       ["repeatCount", "1"],
       ["fill", "freeze"],
-      ["path", edgePath(this.geometry.agentY, y2)],
+      ["path", edgePath(y1, y2)],
     ]);
     dot.append(motion);
     this.pulseLayer.append(dot);
@@ -394,11 +433,16 @@ function edgeClasses(edge, selected) {
 // describeEdge is the accessible name and the tooltip.
 //
 // Built from the same allowlisted fields the visual uses. A tooltip is not an
-// exemption: it carries nothing the canvas does not already show.
-export function describeEdge(edge) {
+// exemption: it carries nothing the canvas does not already show. actor names
+// the line's actor when it is not the run's own agent: two actors' lines for one
+// behavior carry the same operation label, and only this tells them apart.
+export function describeEdge(edge, actor = "") {
   const parts = [];
   const operation = operationLabel(edge);
   parts.push(operation === "" ? "operation unknown" : operation);
+  if (actor !== "") {
+    parts.push(`by ${actor}`);
+  }
   if (edge.newBehavior) {
     parts.push("new behavior");
   }
@@ -414,7 +458,7 @@ export function describeEdge(edge) {
 
 // topologySignature changes when the shape changes and not when state does.
 function topologySignature(graph) {
-  const parts = [];
+  const parts = Array.from(graph.sources.keys());
   for (const edge of graph.edges.values()) {
     parts.push(`${edge.id}>${edge.targetID}${edge.newBehavior ? "!" : ""}`);
   }

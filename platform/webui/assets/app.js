@@ -15,7 +15,7 @@
 import * as api from "./v1/api.js";
 import * as render from "./v1/render.js";
 import { RealtimeSession, STATE } from "./v1/realtime.js";
-import { LiveModel } from "./live/model.js";
+import { LiveModel, OVER_BOUND_ACTOR_LABEL, actorKey, actorOf, edgeKey } from "./live/model.js";
 import { GraphCanvas, PULSE_MS } from "./live/graph.js";
 import { renderRail, renderCanvasNotices } from "./live/rail.js";
 import { TimelineFeed, renderTimeline } from "./live/timeline.js";
@@ -686,8 +686,8 @@ reducedMotionQuery.addEventListener("change", (event) => {
   canvas.reducedMotion = reducedMotion;
 });
 
-// The inspected behavior, by fingerprint within the selected run. Ephemeral UI
-// state: a reload legitimately forgets it.
+// The inspected line — one actor's behavior — by edge key within the selected
+// run. Ephemeral UI state: a reload legitimately forgets it.
 let inspectedEdgeID = "";
 
 // Authoritative counters for the selected run, read from /v1 once per
@@ -697,6 +697,30 @@ let inspectedEdgeID = "";
 let authoritative = { runID: "", recordCount: "", distinctCount: "", complete: null };
 
 const labelForScope = (scope) => labels.labelFor("agent", scope.agent_id);
+
+// nameActor names one actor of a run, as a graph source and a timeline row
+// show it (task 109).
+//
+// The run's own agent keeps exactly the name it always had: the agent's
+// resolved name, falling back to its id. Any other actor is named by the id its
+// frames stated — actors are not platform entities, so there is no name to look
+// up — and actorType goes into its title. actor is "" for the agent, so the
+// agent's lines are described exactly as before.
+function nameActor(scope, actor, actorType) {
+  if (actor.overBound) {
+    return { label: OVER_BOUND_ACTOR_LABEL, title: `Actor ${OVER_BOUND_ACTOR_LABEL}`,
+      actor: OVER_BOUND_ACTOR_LABEL };
+  }
+  if (actor.actorID === (scope.agent_id || "")) {
+    const label = labelForScope(scope) || scope.agent_id || "";
+    return { label, title: `Agent ${label}`, actor: "" };
+  }
+  return {
+    label: actor.actorID,
+    title: actorType ? `Actor ${actor.actorID}, ${actorType}` : `Actor ${actor.actorID}`,
+    actor: actor.actorID,
+  };
+}
 
 labels.onChange = () => {
   drawRail();
@@ -731,10 +755,9 @@ function drawRail() {
 
 function drawCanvas() {
   const card = liveModel.selectedCard();
-  const agentLabel = card === undefined
-    ? ""
-    : (labelForScope(card.scope) || card.scope.agent_id || "");
-  canvas.render(liveModel.graph, agentLabel);
+  canvas.render(liveModel.graph, (source) => card === undefined
+    ? { label: "", title: "Agent ", actor: "" }
+    : nameActor(card.scope, source, source.actorType));
   canvas.highlight(inspectedEdgeID, liveModel.graph);
   renderCanvasNotices(canvasNotices, liveModel.graph);
 }
@@ -744,7 +767,27 @@ function drawInspector() {
   const edge = liveModel.graph === null || inspectedEdgeID === ""
     ? null
     : liveModel.graph.edges.get(inspectedEdgeID) || null;
+  // The same behavior's other lines in this graph: the actors this view has
+  // drawn it from. Equality over what the view holds, labelled seen live.
+  const others = [];
+  let actor = "";
+  if (edge !== null && card !== undefined) {
+    for (const other of liveModel.graph.edges.values()) {
+      const source = liveModel.graph.sources.get(other.sourceID);
+      if (source === undefined || other.fingerprintID !== edge.fingerprintID) {
+        continue;
+      }
+      const name = nameActor(card.scope, source, source.actorType);
+      if (other.id === edge.id) {
+        actor = name.actor;
+      } else {
+        others.push(name.label || "(unnamed agent)");
+      }
+    }
+  }
   renderInspector(inspectorHost, edge, {
+    actor,
+    otherActors: others,
     hasActivity: liveModel.cards.size > 0,
     agentID: card === undefined ? "" : card.scope.agent_id,
     runID: card === undefined ? "" : card.scope.run_id,
@@ -755,7 +798,7 @@ function drawInspector() {
 
 function drawTimeline() {
   renderTimeline(timelineHost, timeline, {
-    selectedFingerprint: inspectedEdgeID,
+    selectedEdge: inspectedEdgeID,
     onSelect: (entry) => {
       // Selecting a row selects the behavior — and the run it belongs to,
       // because inspecting evidence from a run the canvas is not drawing
@@ -764,7 +807,7 @@ function drawTimeline() {
         liveModel.select(entry.scopeKey);
         void refreshAuthoritative();
       }
-      inspectedEdgeID = entry.fingerprintID;
+      inspectedEdgeID = entry.edgeKey;
       drawAll();
       // Focus follows the selection, so a keyboard user lands on what they
       // just opened rather than staying in the table.
@@ -948,10 +991,13 @@ const liveSession = new RealtimeSession(
       // renders its identifier immediately and gains a name when one arrives.
       void labels.resolveAgent(scope.agent_id);
 
+      const sourceKey = actorKey(observation, scope);
       timeline.add({
         at,
         scopeKey: card.key,
-        agentLabel: labelForScope(scope) || scope.agent_id || "",
+        sourceKey,
+        edgeKey: edgeKey(sourceKey, observation.fingerprint_id || ""),
+        agentLabel: nameActor(scope, actorOf(observation, scope), observation.actor_type || "").label,
         fingerprintID: observation.fingerprint_id || "",
         operationCategory: observation.behavior ? observation.behavior.operation_category || "" : "",
         operationName: observation.behavior ? observation.behavior.operation_name || "" : "",

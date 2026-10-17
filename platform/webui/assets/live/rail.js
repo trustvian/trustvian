@@ -207,6 +207,18 @@ export function renderCanvasNotices(host, graph) {
   if (graph === null || graph === undefined) {
     return;
   }
+  // The legend for a run with several actors (task 109). One fingerprint
+  // performed by three actors is three lines to one target, and without this
+  // the picture reads as three behaviors. A run with one actor draws as it
+  // always did, so it gets no legend.
+  if (graph.sources.size > 1) {
+    const legend = document.createElement("p");
+    legend.className = "region-note canvas-legend";
+    legend.textContent =
+      "One line per actor and behavior: a behavior two actors performed is one " +
+      "fingerprint drawn twice, to one target.";
+    host.append(legend);
+  }
   for (const hit of graph.saturation()) {
     host.append(saturationNote(
       `Graph limited to ${hit.limit} ${hit.bound}. ${hit.omitted} additional ` +

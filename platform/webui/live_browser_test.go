@@ -185,7 +185,7 @@ func releaseAfter(release chan struct{}) {
 }
 
 var (
-	edgeGroup = regexp.MustCompile(`<g class="([^"]*)" data-edge="([^"]+)"[^>]*>(.*?)</g>`)
+	edgeGroup = regexp.MustCompile(`<g class="([^"]*)" data-edge="[^"]+" data-fingerprint="([^"]+)"[^>]*>(.*?)</g>`)
 	edgeState = regexp.MustCompile(`<text[^>]*class="edge-state"[^>]*>([^<]*)</text>`)
 )
 
@@ -344,7 +344,7 @@ func TestLiveReconnectsAfterTheStreamDrops(t *testing.T) {
 	if state[1] != "Live" {
 		t.Errorf("after Reconnect the connection reads %q, want Live", state[1])
 	}
-	if !strings.Contains(dom, `data-edge="fp-after"`) {
+	if !strings.Contains(dom, `data-fingerprint="fp-after"`) {
 		t.Error("the observation sent on the new subscription was not drawn")
 	}
 }

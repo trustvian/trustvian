@@ -168,13 +168,28 @@ export function renderInspector(host, edge, context = {}) {
     "behavior on the current connection. Authoritative counts come from /v1.";
   host.append(observed);
 
+  // One fingerprint, several lines. The same behavior performed by several
+  // actors is drawn once per actor (task 109), so the panel names the others
+  // this view has drawn it from — and says it is one behavior, so the lines are
+  // not read as several.
+  const others = Array.isArray(context.otherActors) ? context.otherActors : [];
+  if (others.length > 0) {
+    const shared = document.createElement("p");
+    shared.className = "note-inline";
+    shared.textContent =
+      `The same behavior, one fingerprint, also seen live from ${others.join(", ")} ` +
+      "on this connection. The canvas draws one line per actor and behavior.";
+    host.append(shared);
+  }
+
   // Identifiers last, as technical detail. They are not the visual hierarchy:
   // a developer reading this panel is looking at what the agent did, and the
   // opaque strings are what they need only when filing a bug or querying the
   // API.
   host.append(sectionHeading("Identifiers"));
   host.append(fieldList([
-    ["Fingerprint", edge.id],
+    ["Fingerprint", edge.fingerprintID],
+    ["Actor", context.actor],
     ["Agent", context.agentID],
     ["Run", context.runID],
     ["Candidate", context.candidateID],

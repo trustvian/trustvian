@@ -22,7 +22,8 @@ export class TimelineFeed {
 
   // add records one observation. scopeKey lets the view show only the rows
   // belonging to the selected run when a developer wants that, without a
-  // second copy of the data.
+  // second copy of the data; sourceKey and edgeKey do the same for one actor
+  // and one of its lines (task 109).
   add(entry) {
     this.rows.push(entry);
     while (this.rows.length > this.capacity) {
@@ -108,7 +109,7 @@ function buildRow(entry, options) {
   if (entry.newBehavior) {
     row.classList.add("timeline-new");
   }
-  if (options.selectedFingerprint && entry.fingerprintID === options.selectedFingerprint) {
+  if (options.selectedEdge && entry.edgeKey === options.selectedEdge) {
     row.classList.add("timeline-selected");
   }
 
