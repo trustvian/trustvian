@@ -281,6 +281,12 @@ func newRealtimeEventPayload(e platform.RealtimeEvent) realtimeEventPayload {
 			RecordCount:      u64(o.RecordCount),
 			BehaviorComplete: o.BehaviorComplete,
 
+			// Copied from the published event as it is. The domain already held
+			// them to the frame's bounds; nothing here reads the store.
+			ActorID:      o.ActorID,
+			ActorIDState: string(o.ActorIDState),
+			ActorType:    string(o.ActorType),
+
 			FingerprintID: o.FingerprintID,
 			Behavior:      newBehaviorDescriptorDTO(o.Behavior),
 			// Always emitted, never omitted: a consumer that had to interpret an

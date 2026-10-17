@@ -1097,6 +1097,9 @@ func (c *ControlPlane) publishObservation(
 	}
 
 	record := request.Record
+	// The record's actor, as display metadata within the frame's bounds. Read
+	// from the record being published, never from the store. Task 109.
+	actorID, actorIDState, actorType := realtimeActor(record.ActorID, record.ActorType)
 	c.realtime.Publish(RealtimeEvent{
 		Kind:  RealtimeObservationRecorded,
 		Scope: scope,
@@ -1107,6 +1110,10 @@ func (c *ControlPlane) publishObservation(
 			// view must not show complete behavioral evidence when the
 			// snapshot has stopped being the whole truth.
 			BehaviorComplete: committed.BehaviorComplete,
+
+			ActorID:      actorID,
+			ActorIDState: actorIDState,
+			ActorType:    actorType,
 
 			FingerprintID: record.FingerprintID,
 			Behavior:      record.Behavior,

@@ -128,6 +128,24 @@ type RealtimeObservation struct {
 	// behaviors. Behavioral evidence then no longer describes the whole run.
 	BehaviorComplete bool
 
+	// ActorID, ActorIDState and ActorType say who performed this observation:
+	// the ingested record's actor, so a live view can tell several actors in
+	// one run apart. Task 109.
+	//
+	// Display metadata, never identity. Nothing here enters StableFeatures, a
+	// fingerprint, a baseline key or a scope; the engine already keyed its
+	// baseline by this actor, and the frame only reports which one it was.
+	//
+	// Bounded so that every frame, and so the bus's worst-case memory, stays
+	// a constant. ActorID is carried when it is at most maxIdentifierLength
+	// bytes, and is otherwise empty with ActorIDState saying why — never
+	// truncated, because two ids sharing a prefix would become one actor.
+	// ActorType is carried only when it is a recognized event.ActorType;
+	// nothing at ingest bounds the record's own value. See realtimeActor.
+	ActorID      string
+	ActorIDState RealtimeActorIDState
+	ActorType    event.ActorType
+
 	FingerprintID string
 	Behavior      trustvian.StableFeatures
 
@@ -162,6 +180,38 @@ type RealtimeObservation struct {
 	// True even when the snapshot had already saturated and cannot retain it:
 	// that is a live factual observation, and nothing is evicted to make room.
 	NewBehavior bool
+}
+
+// RealtimeActorIDState says whether an observation frame carries its actor id.
+type RealtimeActorIDState string
+
+const (
+	// RealtimeActorIDCarried: the frame's ActorID is the record's, whole.
+	RealtimeActorIDCarried RealtimeActorIDState = "carried"
+	// RealtimeActorIDExceedsFrameBound: the record's actor id is longer than
+	// maxIdentifierLength, so the frame carries none. The retained
+	// observation still holds the full value.
+	RealtimeActorIDExceedsFrameBound RealtimeActorIDState = "exceeds_frame_bound"
+)
+
+// realtimeActor projects a record's actor onto a frame, within the frame's
+// bounds.
+//
+// The id is carried whole or not at all. The type is carried only when it is
+// one of the recognized actor types: genuine engine output always is, because
+// event.Validate refuses any other, but ingest does not check the record's own
+// value, so an unrecognized one is dropped rather than copied at any length.
+// Nothing is substituted for it — an empty type reads as "not stated", which
+// is the truth.
+func realtimeActor(id string, actorType event.ActorType) (string, RealtimeActorIDState, event.ActorType) {
+	state := RealtimeActorIDCarried
+	if len(id) > maxIdentifierLength {
+		id, state = "", RealtimeActorIDExceedsFrameBound
+	}
+	if !validActorType(actorType) {
+		actorType = ""
+	}
+	return id, state, actorType
 }
 
 // RealtimeEvent is one notification.

@@ -657,6 +657,14 @@ type realtimeObservationDTO struct {
 	RecordCount      string `json:"record_count"`
 	BehaviorComplete bool   `json:"behavior_complete"`
 
+	// The ingested record's actor: display metadata, not identity. All three
+	// are always present. actor_id is "" when actor_id_state is
+	// "exceeds_frame_bound"; actor_type is "" when the record's value is not a
+	// recognized actor type. Task 109.
+	ActorID      string `json:"actor_id"`
+	ActorIDState string `json:"actor_id_state"`
+	ActorType    string `json:"actor_type"`
+
 	FingerprintID string                `json:"fingerprint_id"`
 	Behavior      behaviorDescriptorDTO `json:"behavior"`
 

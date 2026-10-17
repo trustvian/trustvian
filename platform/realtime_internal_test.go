@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/trustvian/trustvian/event"
 )
 
 // testBus is a bus with small bounds, so saturation is reachable without
@@ -597,4 +599,37 @@ func BenchmarkRealtimePublish64Subscribers(b *testing.B) {
 // this measures the matching cost without enqueue.
 func BenchmarkRealtimeFilteredPublish64Subscribers(b *testing.B) {
 	benchmarkPublish(b, realtimeMaxSubscribers, RealtimeFilter{RunID: "run-elsewhere"})
+}
+
+// TestRealtimeActorHoldsTheFrameBound: the actor id is carried whole or not at
+// all, and the actor type only when it is a recognized one (task 109). Every
+// other string on a frame is already bounded at ingest; these two are not.
+func TestRealtimeActorHoldsTheFrameBound(t *testing.T) {
+	tests := []struct {
+		name      string
+		id        string
+		actorType event.ActorType
+		wantID    string
+		wantState RealtimeActorIDState
+		wantType  event.ActorType
+	}{
+		{"ordinary", "billing-agent", event.ActorTypeService,
+			"billing-agent", RealtimeActorIDCarried, event.ActorTypeService},
+		{"at the bound", strings.Repeat("a", maxIdentifierLength), event.ActorTypeUser,
+			strings.Repeat("a", maxIdentifierLength), RealtimeActorIDCarried, event.ActorTypeUser},
+		{"one byte over", strings.Repeat("a", maxIdentifierLength+1), event.ActorTypeUser,
+			"", RealtimeActorIDExceedsFrameBound, event.ActorTypeUser},
+		{"unrecognized type", "x", event.ActorType("robot"),
+			"x", RealtimeActorIDCarried, ""},
+		{"empty type", "x", "", "x", RealtimeActorIDCarried, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id, state, actorType := realtimeActor(tt.id, tt.actorType)
+			if id != tt.wantID || state != tt.wantState || actorType != tt.wantType {
+				t.Errorf("realtimeActor() = (%d bytes, %q, %q), want (%d bytes, %q, %q)",
+					len(id), state, actorType, len(tt.wantID), tt.wantState, tt.wantType)
+			}
+		})
+	}
 }
